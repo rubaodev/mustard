@@ -7,16 +7,16 @@
 
   "permissions": {
     "allow": [
-      "Bash(git:*)",
-      "Bash(cd:*)",
-      "Bash(find:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(echo:*)",
-      "Bash(node:*)",
-      "Bash(pnpm:*)",
-      "Bash(dotnet build:*)",
-      "Bash(dotnet test:*)"
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Skill",
+      "Task",
+      "WebFetch",
+      "WebSearch",
+      "Bash"
     ],
     "deny": [
       "Bash(rm -rf:*)",

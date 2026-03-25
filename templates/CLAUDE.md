@@ -26,5 +26,52 @@ ANALYZE → PLAN → EXECUTE → CLOSE
 Agents auto-load skills from `{subproject}/.claude/skills/` based on task description.
 Guards always loaded via `{subproject}/CLAUDE.md`.
 
+## Stack
+
+Node.js (>=18), CommonJS, no external dependencies. 8 lifecycle hooks, 3 sync scripts, 14 slash commands, 6 foundation skills.
+
+## Commands
+
+```bash
+# Run hook tests
+node --test hooks/__tests__/hooks.test.js
+
+# Subproject discovery (outputs JSON)
+node scripts/sync-detect.js
+node scripts/sync-detect.js --no-cache
+
+# Entity registry generation
+node scripts/sync-registry.js
+node scripts/sync-registry.js --force
+```
+
+## Guards
+
+- All hooks fail-open (exit 0 on error) — never block due to hook bugs
+- All hooks use only Node.js built-ins — no npm dependencies
+- PreToolUse hooks use `permissionDecision` response format
+- PostToolUse hooks use `decision` response format
+- Every new hook must be registered in `settings.json` with a timeout
+- Generated files must start with `<!-- mustard:generated -->` header
+- Skills must have YAML frontmatter BEFORE the `<!-- mustard:generated -->` line
+
+## Scan References
+
+| File | Description |
+|------|-------------|
+| `.claude/commands/stack.md` | Technology stack, structure, tooling |
+| `.claude/commands/patterns.md` | 12 recurring code patterns with refs |
+| `.claude/commands/guards.md` | DO/DON'T rules for hooks, scripts, commands, skills |
+| `.claude/commands/recipes.md` | Implementation recipes for new hooks, commands, skills, scripts |
+| `.claude/commands/notes.md` | Manual notes (never overwritten) |
+
+## Recommended Skills
+
+- `templates-hook-protocol` — Hook stdin/stdout JSON protocol
+- `templates-settings-wiring` — settings.json hook registration
+- `templates-sync-detect` — Subproject discovery and role detection
+- `templates-command-authoring` — Slash command SKILL.md structure
+- `templates-skill-authoring` — Foundation/subproject skill creation
+
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

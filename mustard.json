@@ -1,0 +1,13 @@
+{
+  "git": {
+    "flow": {
+      "dev_rubens": "dev",
+      "dev": "main"
+    },
+    "pr": {
+      "enabled": false,
+      "provider": "github"
+    },
+    "submodules": false
+  }
+}

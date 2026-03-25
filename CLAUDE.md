@@ -224,6 +224,21 @@ Generates `entity-registry.json` v3.1:
 - Scans .NET entities (`DbSet`, `class T`)
 - Outputs `_patterns`, `_enums`, entity refs/subs
 
+## Project Structure
+
+| Subproject | Technology | Port | CLAUDE.md |
+|------------|------------|------|-----------|
+| templates | Node.js (CommonJS), hooks, scripts, commands | - | [templates](./templates/CLAUDE.md) |
+
+## Entity Registry
+
+**CRITICAL:** Before searching for ANY entity, read `.claude/entity-registry.json` first.
+
+## Ignore Paths
+
+Never search in:
+- `node_modules/`, `.next/`, `bin/`, `obj/`, `dist/`, `migrations/`
+
 ## Stacks Detected
 
 TypeScript/JS, C#, Python, Java, Go, Rust, React, Next.js, .NET, FastAPI, Django, Drizzle, Prisma, TypeORM
