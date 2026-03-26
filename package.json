@@ -1,5 +1,5 @@
 {
-  "name": "@atiz/mustard",
+  "name": "mustard-claude",
   "version": "3.0.6",
   "description": "Framework-agnostic CLI for Claude Code project setup",
   "type": "module",
@@ -28,15 +28,15 @@
     "cli",
     "scaffold"
   ],
-  "author": "Competi",
+  "author": "rubensrpj",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Competi/mustard.git"
+    "url": "git+https://github.com/rubensrpj/mustard.git"
   },
-  "homepage": "https://github.com/Competi/mustard#readme",
+  "homepage": "https://github.com/rubensrpj/mustard#readme",
   "bugs": {
-    "url": "https://github.com/Competi/mustard/issues"
+    "url": "https://github.com/rubensrpj/mustard/issues"
   },
   "publishConfig": {
     "access": "public"

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0.0-yellow?style=for-the-badge" alt="Version">
+  <a href="https://www.npmjs.com/package/mustard-claude"><img src="https://img.shields.io/npm/v/mustard-claude?style=for-the-badge&color=yellow&label=npm" alt="npm"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=for-the-badge&logo=node.js" alt="Node">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License">
 </p>
@@ -32,6 +32,56 @@ Mustard sets up a `.claude/` folder that turns Claude Code into a structured dev
 - **3 sync scripts** — subproject detection, entity registry sync, statusline
 - **Monorepo + single repo** — works with any project structure
 
+## Quick Start
+
+```bash
+# Install globally
+npm install -g mustard-claude
+
+# Initialize your project
+cd my-project
+mustard init
+
+# Open Claude Code and run /scan
+```
+
+That's it. After `/scan`, use `/feature`, `/bugfix`, `/task` to work through structured pipelines.
+
+## Installation
+
+### Prerequisites
+
+- **Node.js** >= 18.0.0
+- **Claude Code** CLI or IDE extension
+
+### Option 1: Global Install (recommended)
+
+```bash
+npm install -g mustard-claude
+```
+
+After install, the `mustard` command is available globally:
+
+```bash
+mustard init
+mustard update
+mustard auto-update
+```
+
+### Option 2: Run Without Installing
+
+```bash
+npx mustard-claude init
+npx mustard-claude update
+npx mustard-claude auto-update
+```
+
+### Verify Installation
+
+```bash
+mustard --version
+```
+
 ## How It Works
 
 1. `mustard init` copies the `.claude/` structure into your project
@@ -41,38 +91,15 @@ Mustard sets up a `.claude/` folder that turns Claude Code into a structured dev
 
 The CLI is a **one-time setup tool**. All intelligence lives in the skills and hooks inside `.claude/`.
 
-## Installation
-
-### Prerequisites
-
-- **Node.js** >= 18.0.0
-
-### Install
-
-```bash
-# Global
-npm install -g mustard-claude
-
-# Or run without installing
-npx mustard-claude init
-```
-
-### Initialize a Project
-
-```bash
-cd my-project
-mustard init
-```
-
-That's it. Open Claude Code and run `/scan`.
-
 ## CLI Commands
 
-```
-mustard init [options]     Copy .claude/ structure into current project
-mustard update [options]   Update Mustard core files (preserves user customizations)
-mustard auto-update        Check npm for newer version and install
-```
+| Command | Description |
+|---------|-------------|
+| `mustard init` | Copy `.claude/` structure into current project |
+| `mustard update` | Update core files (preserves user customizations) |
+| `mustard auto-update` | Check npm for newer version and install |
+| `mustard --version` | Show installed version |
+| `mustard --help` | Show help |
 
 ### `mustard init`
 
@@ -105,6 +132,13 @@ mustard auto-update        Check npm for newer version and install
 - `entity-registry.json` — entity map (populated by sync-registry)
 - `commands/*.md` — user commands outside `mustard/`
 - `docs/`, `agent-memory/`, `spec/`, `plans/`
+
+### `mustard auto-update`
+
+| Option | Description |
+|--------|-------------|
+| `--check-only` | Only check for updates, do not install |
+| `-y, --yes` | Skip confirmation prompts |
 
 ## What Gets Installed
 
@@ -255,10 +289,36 @@ Mustard is **framework-agnostic**. The CLI just copies templates. `/scan` handle
 | **Monorepo** | Any combination of the above |
 | **Single repo** | Any single project |
 
+## Updating
+
+### Update Mustard CLI
+
+```bash
+# Check if there's a new version
+mustard auto-update --check-only
+
+# Update to latest
+mustard auto-update
+
+# Or manually
+npm install -g mustard-claude@latest
+```
+
+### Update Project Templates
+
+After updating the CLI, update your project's `.claude/` files:
+
+```bash
+cd my-project
+mustard update
+```
+
+This recreates core files (hooks, skills, scripts, commands) while preserving your customizations.
+
 ## Development
 
 ```bash
-git clone https://github.com/Competi/mustard.git
+git clone https://github.com/rubensrpj/mustard.git
 cd mustard
 npm install
 npm run build
