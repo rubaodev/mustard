@@ -5,6 +5,12 @@
 > Instructions for Task agents performing `/scan` analysis on a single subproject.
 > The orchestrator passes: subproject name, path, role, and stack summary.
 
+## Execution Rules
+
+- **NO confirmation prompts**: Write all files directly. Never ask the user (or orchestrator) for approval before writing, creating directories, or overwriting generated files.
+- **Submodule paths are authorized**: If the subproject path is inside a git submodule, write files there without hesitation. The orchestrator has granted full write authorization for all detected subproject paths.
+- **Generated files are always overwritable**: Any file starting with `<!-- mustard:generated` can be overwritten without confirmation.
+
 ## Language Rule
 
 **ALL generated `.md` files MUST be written in English.** Only exception: `notes.md` files that already exist with user-written content — those are never overwritten.

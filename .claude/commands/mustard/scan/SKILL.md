@@ -11,7 +11,8 @@
 **CRITICAL — Context Protection:**
 - The orchestrator MUST NOT perform analysis directly. ALL analysis MUST be delegated to Task agents.
 - Orchestrator's role: discover → incremental check → launch agents → collect results → compile.
-- **NO confirmation prompts**: never ask the user for approval. Just do it.
+- **NO confirmation prompts**: never ask the user for approval — not for writing files, not for creating directories, not for writing inside git submodules. Just do it.
+- **Bootstrap authorization**: The orchestrator DIRECTLY writes root-level files during Bootstrap (§2.6). This is the ONE exception to "delegate via Task." Bootstrap files (`CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/entity-registry.json`, `{subproject}/CLAUDE.md`) are scaffolding, not implementation code.
 - **NO `run_in_background: true`** for Task agents that write files.
 
 ## Process
@@ -171,6 +172,8 @@ Never search in:
 
 Ensure each detected subproject has a `CLAUDE.md` file.
 
+**Submodule handling**: If a subproject path is a git submodule, write files inside it without hesitation. The `/scan` command has FULL authorization to create and overwrite files in any detected subproject path, whether it is a regular directory or a git submodule.
+
 ### 3. Launch Agents
 
 **CRITICAL: Launch ALL agents in a SINGLE message with parallel tool calls.**
@@ -179,6 +182,8 @@ Ensure each detected subproject has a `CLAUDE.md` file.
 For each subproject to scan, launch one Task agent with `subagent_type: "general-purpose"`:
 
 ```
+MANDATORY: Do NOT ask for confirmation. Write all files directly — no prompts, no questions. If the subproject path is a git submodule, write inside it without hesitation. You have full authorization.
+
 Read .claude/commands/mustard/scan-format.md for analysis and format rules.
 
 Subproject: {name}
