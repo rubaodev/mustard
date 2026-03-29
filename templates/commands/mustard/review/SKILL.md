@@ -100,5 +100,3 @@ Present the review results as returned by the skill/agent.
 - **Max Bash calls**: 1 (PR detection)
 - **Max Skill/Task calls**: 1
 - **Max API calls total**: ≤ 4
-
-ULTRATHINK

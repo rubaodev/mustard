@@ -348,5 +348,3 @@ This runs detect WITH cache writing (no `--no-cache` flag), persisting current h
   "errors": []
 }
 ```
-
-ULTRATHINK

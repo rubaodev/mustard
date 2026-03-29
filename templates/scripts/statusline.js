@@ -16,6 +16,8 @@ const os = require('os');
 
 const GIT_CACHE_FILE = path.join(os.tmpdir(), 'claude-statusline-git.json');
 const GIT_CACHE_TTL = 5000;
+const RTK_CACHE_FILE = path.join(os.tmpdir(), 'claude-statusline-rtk.json');
+const RTK_CACHE_TTL = 30000;
 const PIPELINE_STALE_MS = 4 * 60 * 60 * 1000;
 const MAX_AGENTS_SHOWN = 3;
 
@@ -77,6 +79,10 @@ process.stdin.on('end', () => {
     // Duration
     const dur = buildDurationSegment(data);
     if (dur) line1.push(dur);
+
+    // RTK token economy
+    const rtk = buildRtkSegment();
+    if (rtk) line1.push(rtk);
 
     // Lines +/-
     const la = data.cost?.total_lines_added ?? 0;
@@ -211,6 +217,48 @@ function buildDurationSegment(data) {
     str += ` ${C.dim}(api ${Math.round((apiMs / durMs) * 100)}%)${C.reset}`;
   }
   return str;
+}
+
+function buildRtkSegment() {
+  try {
+    // Check cache first
+    if (fs.existsSync(RTK_CACHE_FILE)) {
+      try {
+        const stat = fs.statSync(RTK_CACHE_FILE);
+        if (Date.now() - stat.mtimeMs < RTK_CACHE_TTL) {
+          const cached = JSON.parse(fs.readFileSync(RTK_CACHE_FILE, 'utf8'));
+          if (cached === null) return null;
+          return cached;
+        }
+      } catch {}
+    }
+
+    // Cache miss — run rtk
+    const raw = execSync('rtk gain --all --format json', {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const parsed = JSON.parse(raw);
+    const savedTokens = parsed.saved_tokens ?? parsed.savedTokens ?? 0;
+    const savingsPct = parsed.savings_pct ?? parsed.savingsPct ?? parsed.savings_percent ?? 0;
+
+    if (!savedTokens && !savingsPct) {
+      try { fs.writeFileSync(RTK_CACHE_FILE, JSON.stringify(null)); } catch {}
+      return null;
+    }
+
+    const savedK = Math.round(savedTokens / 1000);
+    const pct = Math.round(savingsPct);
+    const color = pct > 50 ? C.green : pct > 20 ? C.yellow : C.gray;
+    const result = `${color}\u26A1 ${pct}%${C.reset} ${C.gray}${savedK}k saved${C.reset}`;
+
+    try { fs.writeFileSync(RTK_CACHE_FILE, JSON.stringify(result)); } catch {}
+    return result;
+  } catch {
+    try { fs.writeFileSync(RTK_CACHE_FILE, JSON.stringify(null)); } catch {}
+    return null;
+  }
 }
 
 function buildPipelineSegment(dir, hasActiveAgents) {

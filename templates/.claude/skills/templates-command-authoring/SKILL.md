@@ -1,8 +1,8 @@
 ---
 name: templates-command-authoring
 description: "Pattern for writing slash command SKILL.md files with trigger, procedure,
-  rules, and ULTRATHINK. Use when creating a new mustard command, adding a pipeline
-  command, writing a /command, or the user says 'new command', 'add slash command',
+  and rules. Use when creating a new mustard command, adding a pipeline command,
+  writing a /command, or the user says 'new command', 'add slash command',
   'create /feature-like command', 'write command template'."
 ---
 <!-- mustard:generated at:2026-03-25T00:00:00.000Z role:general -->
@@ -16,7 +16,7 @@ Slash commands are SKILL.md files in `commands/mustard/{command-name}/SKILL.md` 
 ### File Convention
 - Location: `commands/mustard/{command-name}/SKILL.md`
 - No YAML frontmatter (commands are not auto-loaded by description)
-- End with `ULTRATHINK` keyword
+- End with `ULTRATHINK` keyword **only for `/feature` and `/bugfix` commands** — do NOT add it to other commands
 
 ### Structure
 
@@ -42,9 +42,9 @@ Step-by-step process. Use:
 - Explicit constraints (NEVER, ALWAYS, MUST)
 - Budget limits (max reads, max API calls)
 - Delegation requirements
-
-ULTRATHINK
 ```
+
+> Note: Add `ULTRATHINK` at the end only for `/feature` and `/bugfix` commands. All other commands end after the last rule/section.
 
 ### Key Rules
 - Commands NEVER implement code directly — they orchestrate via Task tool
@@ -79,8 +79,6 @@ ULTRATHINK
 - NEVER implement code directly
 - ALWAYS delegate via Task tool
 - Budget: max 5 API calls
-
-ULTRATHINK
 ```
 Ref: `commands/mustard/feature/SKILL.md`, `commands/mustard/status/SKILL.md`
 

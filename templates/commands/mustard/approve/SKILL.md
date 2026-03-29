@@ -54,5 +54,3 @@ Approves the active spec and prepares the implementation phase. Does NOT execute
 If the spec is not satisfactory:
 - Provide textual feedback for adjustments
 - Use /complete to cancel
-
-ULTRATHINK

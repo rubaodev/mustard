@@ -108,5 +108,3 @@ Output: Executive summary, metrics table, implemented features, bugs fixed, chan
 
 - Use real git data only — do not invent commits
 - Categorize commits by type and project
-
-ULTRATHINK

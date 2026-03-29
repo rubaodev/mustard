@@ -126,5 +126,3 @@ When an agent fails:
 - ALWAYS read `pipeline-config.md` for agent/wave/model config — NEVER hardcode project-specific values
 - ALWAYS use agent-prompt template — NEVER build prompts from scratch
 - ALWAYS execute wave transitions between waves
-
-ULTRATHINK

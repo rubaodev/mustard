@@ -147,5 +147,3 @@ Update the skill-creator from the anthropics/skills repo.
 - ALWAYS validate SKILL.md after install with quick_validate.py
 - ALWAYS use skill-creator for `/skill create` — don't write skills from scratch
 - `/skill optimize` and `/skill eval` require Python 3 and `claude` CLI
-
-ULTRATHINK

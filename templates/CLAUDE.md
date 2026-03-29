@@ -73,5 +73,14 @@ node scripts/sync-registry.js --force
 - `templates-command-authoring` — Slash command SKILL.md structure
 - `templates-skill-authoring` — Foundation/subproject skill creation
 
+## Token Economy
+
+RTK (Rust Token Killer) is integrated as core infrastructure. A PreToolUse hook automatically rewrites Bash commands through `rtk`, reducing token consumption by 60-90% on CLI outputs.
+
+- **Hook**: `hooks/rtk-rewrite.js` — transparent, fail-open
+- **Analytics**: `rtk gain` — view token savings
+- **Statusline**: Shows real-time savings when RTK is active
+- If RTK is not installed, the hook silently passes through (zero impact)
+
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

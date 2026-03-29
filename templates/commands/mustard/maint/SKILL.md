@@ -66,5 +66,3 @@ Scans the project and updates `.claude/entity-registry.json`.
 - After creating new entity
 - After importing existing code
 - To sync after manual changes
-
-ULTRATHINK

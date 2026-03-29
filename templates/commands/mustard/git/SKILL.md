@@ -275,5 +275,3 @@ Print a summary table at the end:
 - **Max Task agents**: 1 per dirty submodule
 - **Max Bash calls per agent**: 1 (all commands chained)
 - **Max API calls total**: ≤ 12
-
-ULTRATHINK

@@ -25,5 +25,3 @@ Shows consolidated project status.
 4. **Entity Registry**
    - Number of entities
    - Last update
-
-ULTRATHINK

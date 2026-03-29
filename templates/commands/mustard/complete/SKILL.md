@@ -33,6 +33,10 @@ If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If
 6. **Pipeline State — cleanup:**
    - Extract `spec-name` from the spec directory (e.g. `2026-02-26-linked-services-card`)
    - **Delete** `.claude/.pipeline-states/{spec-name}.json` (removes from statusline)
+6b. **Token Economy — RTK report (if available):**
+   - Run `rtk gain --all --format json` via Bash
+   - If RTK available: extract `saved_tokens` and `savings_pct`
+   - Include in output block below
 7. **Output — visual feedback:**
 
    ```
@@ -40,8 +44,11 @@ If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If
      PIPELINE COMPLETE — {spec-name}
      Agents: {n} ok | Files: {created} created, {modified} modified
      [v] Registry updated | [v] Spec moved to completed/
+     Token Economy: {saved}k saved ({pct}% reduction) — RTK
    ================================================================
    ```
+
+   If RTK is not installed or the gain command fails, omit the Token Economy line.
 
 ## Cancellation Flow
 
@@ -62,5 +69,3 @@ On completion, the output must include:
 - After successful implementation and review
 - To cancel an ongoing pipeline
 - To force close if something went wrong
-
-ULTRATHINK

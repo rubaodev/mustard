@@ -257,5 +257,3 @@ For each generated skill, ALSO create in `{subproject}/.claude/skills/{skill-nam
 
 Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
 This keeps subproject-specific knowledge self-contained and avoids duplication.
-
-ULTRATHINK

@@ -199,5 +199,3 @@ After receiving results from `audit` or `compare`:
 ```
 
 Replace `{subproject}` with actual subproject name. Single repo: omit the subproject argument.
-
-ULTRATHINK

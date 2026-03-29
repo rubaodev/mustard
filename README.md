@@ -27,9 +27,10 @@
 Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline:
 
 - **14 pipeline skills** — feature, bugfix, scan, resume, approve, complete, git, maint, task, knowledge, skill, status, scan-format, agent-prompt template
-- **8 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking
+- **9 enforcement hooks** — bash safety, file guard, registry validation, guard verification, auto-format, pre-compact, session cleanup, subagent tracking, RTK rewrite
 - **6 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution
 - **3 sync scripts** — subproject detection, entity registry sync, statusline
+- **Token economy** — auto-installs [RTK](https://github.com/rtk-ai/rtk) to reduce token consumption by 60-90% on CLI outputs
 - **Monorepo + single repo** — works with any project structure
 
 ## Quick Start
@@ -53,6 +54,7 @@ That's it. After `/scan`, use `/feature`, `/bugfix`, `/task` to work through str
 
 - **Node.js** >= 18.0.0
 - **Claude Code** CLI or IDE extension
+- **RTK** (auto-installed) — [Rust Token Killer](https://github.com/rtk-ai/rtk) for token economy
 
 ### Option 1: Global Install (recommended)
 
@@ -85,9 +87,10 @@ mustard --version
 ## How It Works
 
 1. `mustard init` copies the `.claude/` structure into your project
-2. Inside Claude Code, run `/scan` to analyze your codebase
-3. `/scan` generates guards, recipes, patterns, agents, and skills specific to your project
-4. Use `/feature`, `/bugfix`, `/task` to work through structured pipelines
+2. RTK is auto-installed for token economy (60-90% savings on CLI outputs)
+3. Inside Claude Code, run `/scan` to analyze your codebase
+4. `/scan` generates guards, recipes, patterns, agents, and skills specific to your project
+5. Use `/feature`, `/bugfix`, `/task` to work through structured pipelines
 
 The CLI is a **one-time setup tool**. All intelligence lives in the skills and hooks inside `.claude/`.
 
@@ -112,6 +115,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 - If `.claude/` doesn't exist → copies all templates
 - If `.claude/` exists → asks: backup & overwrite, merge (skip existing), or cancel
 - Merge mode preserves all existing files and only adds new ones
+- Auto-installs RTK if not present (silent, never blocks on failure)
 
 ### `mustard update`
 
@@ -164,6 +168,7 @@ The CLI is a **one-time setup tool**. All intelligence lives in the skills and h
 │   ├── status/SKILL.md                #   /status — project status
 │   └── templates/agent-prompt/SKILL.md #  Agent prompt template
 ├── hooks/                             # Enforcement hooks
+│   ├── rtk-rewrite.js                 #   Rewrites Bash commands through RTK
 │   ├── bash-safety.js                 #   Blocks dangerous commands
 │   ├── file-guard.js                  #   Blocks sensitive file access
 │   ├── enforce-registry.js            #   Blocks pipeline if no registry
@@ -275,6 +280,26 @@ After `/scan`, the pipeline commands (`/feature`, `/bugfix`) have full context t
 
 **Light scope** (≤5 files, known pattern): ANALYZE → EXECUTE → CLOSE in one session.
 **Full scope** (3+ layers, new entity): ANALYZE → PLAN → `/approve` → new session → `/resume` → CLOSE.
+
+## Token Economy
+
+Mustard integrates [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) as core infrastructure to reduce token consumption:
+
+- **Auto-install** — `mustard init` and `mustard update` install RTK silently if not present
+- **Transparent hook** — a `PreToolUse` hook rewrites every Bash command through `rtk`, compressing output before it reaches Claude's context
+- **Fail-open** — if RTK is not available, the hook passes through with zero impact
+- **Statusline** — real-time token savings displayed in the Claude Code status bar
+- **Pipeline report** — `/complete` shows total tokens saved at the end of each pipeline
+
+| Command Type | Token Savings |
+|-------------|--------------|
+| `git status/diff/log` | 75-80% |
+| `npm test` / `cargo test` | 90-99% |
+| `git add/commit/push` | 92% |
+| Build output | 80-90% |
+| `ls` / `tree` / `grep` | 80% |
+
+RTK only applies to Bash tool calls. Claude Code's built-in tools (Read, Grep, Glob) are already optimized and bypass the hook.
 
 ## Supported Projects
 
