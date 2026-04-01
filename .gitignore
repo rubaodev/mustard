@@ -31,3 +31,6 @@ coverage/
 
 # Agent memory (session-scoped, auto-cleaned)
 .claude/.agent-memory/
+
+# Pipeline states (ephemeral, modified by hooks)
+.claude/.pipeline-states/
