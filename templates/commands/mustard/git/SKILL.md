@@ -222,13 +222,23 @@ feature/login → dev
 
 ## merge main
 
-Explicit promotion of `dev` → `main`. **Must be on `dev` branch to use this.** This is the ONLY operation allowed on the dev branch.
+Full promotion to `main` — cascades through the entire flow chain, then returns to the original branch.
 
-**Branch check**: If NOT on `dev` → refuse with error: `'/git merge main' must be run from the dev branch. Currently on '<branch>'.`
+**Branch check**: If on `main` → refuse (terminal branch).
 
-### Step 1 — Ensure pushed
+### Behavior
 
-Check if local `dev` is ahead of remote. If yes, push first.
+`$ORIGIN` = current branch (saved for return at end).
+
+1. If NOT on `dev`: first execute `merge` action (current branch → dev). If it fails → STOP.
+2. Then promote `dev → main`.
+3. Return to `$ORIGIN`.
+
+This means from ANY feature/fix branch: `/git merge main` does `feature → dev → main → back to feature` in one shot.
+
+### Step 1 — Merge current branch into dev (if not already on dev)
+
+Execute the full `merge` action (see above). This handles sync, ensure pushed, and ff-merge into dev.
 
 ### Step 2 — Merge dev into main
 
@@ -236,29 +246,44 @@ Check if local `dev` is ahead of remote. If yes, push first.
 
 #### Submodules FIRST (PARALLEL — monorepo only)
 
+For each submodule, ONE chained Bash call with auto-stash:
+
 ```bash
-cd <SUBMODULE_ABSOLUTE_PATH> && git fetch origin && git checkout dev && git pull origin dev && git checkout main && git pull origin main && git merge dev --ff-only && git push origin main && git checkout dev
+cd <SUBMODULE_ABSOLUTE_PATH> && git add -A && git stash push -m "mustard-git-autostash" 2>/dev/null; git fetch origin && git checkout dev && git pull origin dev && git checkout main && git pull origin main && git merge dev --ff-only && git push origin main && git checkout dev ; git stash list | grep -q "mustard-git-autostash" && git stash drop 2>/dev/null; true
 ```
 
 Skip submodules with no commits ahead.
 
 #### Parent repo
 
+ONE chained Bash call with auto-stash:
+
 ```bash
-git fetch origin && git checkout dev && git pull origin dev && git checkout main && git pull origin main && git merge dev --ff-only && git push origin main && git checkout dev
+git add -A && git stash push -m "mustard-git-autostash" 2>/dev/null; git fetch origin && git checkout dev && git pull origin dev && git checkout main && git pull origin main && git merge dev --ff-only && git push origin main && git checkout $ORIGIN ; git stash list | grep -q "mustard-git-autostash" && git stash drop 2>/dev/null; true
 ```
+
+Note: final `git checkout $ORIGIN` returns to the original branch (not dev).
 
 ### Fast-forward failure
 
-If `--ff-only` fails, STOP and report. Resolve manually.
+If `--ff-only` fails at any step, STOP and report. Resolve manually.
 
-### Example: `/git merge main`
+### Example: `/git merge main` from `feature/login`
 
 ```
-dev → main
-  ├── SubprojectA:  ff-merged + pushed
-  ├── SubprojectB:  ff-merged + pushed
-  └── Parent:       ff-merged + pushed
+feature/login → dev → main → back to feature/login
+  Step 1: feature/login → dev  (ff-merged + pushed)
+  Step 2: dev → main           (ff-merged + pushed)
+  Return: checkout feature/login
+```
+
+### Example: `/git merge main` from `dev`
+
+```
+dev → main → back to dev
+  Step 1: skipped (already on dev)
+  Step 2: dev → main (ff-merged + pushed)
+  Return: checkout dev
 ```
 
 ### Output
@@ -266,12 +291,11 @@ dev → main
 Print a summary table at the end:
 
 ```
-| Repo            | Status             |
-|-----------------|--------------------|
-| SubprojectA     | ff-merged + pushed |
-| SubprojectB     | ff-merged + pushed |
-| SubprojectC     | skipped            |
-| Parent          | ff-merged + pushed |
+| Step                    | Status             |
+|-------------------------|--------------------|
+| feature/login → dev     | ff-merged + pushed |
+| dev → main              | ff-merged + pushed |
+| Return to feature/login | done               |
 ```
 
 ---
@@ -285,7 +309,7 @@ Print a summary table at the end:
 - If any operation fails, stop and report
 - After merge, return to the original branch (`$SOURCE`)
 - NEVER commit, push, or sync directly on `main` or `dev`
-- `/git merge main` is the ONLY operation permitted on dev
+- `/git merge main` cascades the full chain (branch → dev → main → back to branch)
 
 ## Performance Budget
 
