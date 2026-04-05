@@ -134,6 +134,7 @@ async function ensureRtk(): Promise<void> {
     // Not installed — proceed to install
   }
 
+  console.log(chalk.yellow('  ! RTK not found — attempting auto-install for token economy (saves 60-90%)...'));
   const spinner = ora('Installing RTK (token economy)...').start();
   try {
     if (isWin) {
@@ -155,7 +156,9 @@ async function ensureRtk(): Promise<void> {
     // Activate RTK native integration (hook, RTK.md, etc.)
     try { execSync('rtk init -g --no-patch', { stdio: 'pipe', timeout: 10000 }); } catch { /* fail-open */ }
   } catch {
-    spinner.warn('RTK not installed — token economy will activate when RTK is available');
+    spinner.warn('RTK not installed. Install manually for 60-90% token savings:');
+    console.log(chalk.dim('    macOS/Linux: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh'));
+    console.log(chalk.dim('    Windows:     scoop install rtk   (or cargo install --git https://github.com/rtk-ai/rtk)'));
   }
 }
 
