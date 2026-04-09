@@ -1,5 +1,5 @@
 {
-  "lastScan": "2026-04-01T11:43:01.241Z",
+  "lastScan": "2026-04-09T08:33:19.708Z",
   "subprojects": [
     {
       "name": "templates",
@@ -14,12 +14,11 @@
         "stack.md"
       ],
       "stackSummary": "",
-      "gitDirty": true,
-      "gitDirtyCount": 1
+      "hashChanged": true
     }
   ],
   "sourceHashes": {
-    "templates": "b5cac7abdf199eaebc189d9a4621ef76f81db467f33f140ca09806b8949223d0"
+    "templates": "44105ee4d2905d153315ee54700dd071205fedca0720bf128f4f47e8b7a82c90"
   },
   "moduleHashes": {}
 }
