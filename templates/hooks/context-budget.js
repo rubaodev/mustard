@@ -23,7 +23,16 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
 
-const MODE = process.env.CONTEXT_BUDGET_MODE || 'strict';
+function getMode() {
+  if (process.env.CONTEXT_BUDGET_MODE) return process.env.CONTEXT_BUDGET_MODE;
+  try {
+    const modeFile = path.join(process.cwd(), '.claude', '.metrics', '.mode');
+    if (fs.existsSync(modeFile)) return fs.readFileSync(modeFile, 'utf8').trim();
+  } catch (_) { /* fail-silent, fallback to default */ }
+  return 'strict';
+}
+
+const MODE = getMode();
 const METRICS_DIR = path.join(process.cwd(), '.claude', '.metrics');
 const METRICS_FILE = path.join(METRICS_DIR, 'budget-observations.jsonl');
 
