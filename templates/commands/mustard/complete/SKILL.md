@@ -32,6 +32,8 @@ node .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
 
 If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If review wasn't run → run it now before completing.
 
+**Re-review model selection:** Before re-review dispatch: consult `review/SKILL.md § Model Selection` decision table. Set `model: "haiku"` if the first row matches.
+
 #### Surface Accumulated Concerns
 
 Before finalizing, scan the active spec for any `## Concerns` section written during EXECUTE:

@@ -11,7 +11,7 @@ Finalizes the current pipeline, either completing or canceling.
 ## Verification Gate (MANDATORY)
 
 1. **Review completed**: Check pipeline state — review agent MUST have run and returned APPROVED. If not → dispatch review first (see resume.md step 19)
-2. **Build passes**: run build command for each affected subproject (from pipeline-config.md)
+2. **Build passes**: run build command for each affected subproject (from .claude/pipeline-config.md)
 3. **Changes match spec**: each `[x]` corresponds to a real file
 4. **Zero CRITICAL issues**: review report shows zero CRITICAL violations (SOLID, design system, patterns, i18n, integration)
 5. **No regressions**: existing features still work
@@ -32,6 +32,8 @@ node .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
 
 If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If review wasn't run → run it now before completing.
 
+**Re-review model selection:** Before re-review dispatch: consult `review/SKILL.md § Model Selection` decision table. Set `model: "haiku"` if the first row matches.
+
 #### Surface Accumulated Concerns
 
 Before finalizing, scan the active spec for any `## Concerns` section written during EXECUTE:
@@ -41,7 +43,7 @@ Before finalizing, scan the active spec for any `## Concerns` section written du
 - If all concerns are `CONCERN` or `DEFERRED` (non-blocking): note them and proceed
 - This step is a read-only scan — do NOT alter or dismiss concerns during CLOSE
 
-See `pipeline-config.md` Escalation Statuses for concern classification rules.
+See `.claude/pipeline-config.md` Escalation Statuses for concern classification rules.
 
 ## Action
 

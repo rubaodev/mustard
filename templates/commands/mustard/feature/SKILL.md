@@ -104,6 +104,12 @@ After ANALYZE completes, if the analysis required heavy exploration (>8 file rea
 - Suggest to user: _"Analysis complete. Context is heavy — consider `/compact` before we proceed to implementation, then `/resume`."_
 - This is advisory only — proceed immediately if user declines or ignores.
 
+### End of ANALYZE — Validation
+
+Run: `rtk node .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
+If output `ok: false`, append each `issues[]` entry to the spec under `## Concerns` (non-blocking).
+Continue to PLAN regardless.
+
 ### PLAN Phase
 
 #### Full Scope
@@ -161,6 +167,47 @@ Rules:
 - Be specific: prefer exact files over broad directories when the change is known
 - Out-of-boundary edits during EXECUTE will surface a `[BOUNDARY WARNING]` from guard-verify — treat as a signal to re-evaluate, not an error to suppress
 
+### Pre-EXECUTE Existence Gate (Full scope only)
+
+**Skip conditions**: Light scope OR `## Files` section lists more than 8 files (cost-benefit inverts — Haiku 10-tool-use cap will not cover).
+
+Before dispatching implementation agents, run 1 Haiku explorer to verify the work is still needed.
+
+**Dispatch:**
+
+```javascript
+Task({
+  subagent_type: "Explore",
+  model: "haiku",
+  description: "Pre-EXECUTE existence check",
+  prompt: `# EXISTENCE CHECK
+Read .claude/spec/active/{specName}/spec.md sections: "## Files" and "## Checklist".
+
+For EACH checklist task (task-level, NOT file-level):
+  1. Extract 1-3 concrete identifiers from the task text — function names, component names, file path fragments, string literals.
+     Example: task "Add LogoutButton component with handleLogout handler" → identifiers: ["LogoutButton", "handleLogout"].
+  2. Identify target files for the task from "## Files" (match by extension, name hint, or task context).
+  3. Grep each target file for the identifiers.
+  4. Verdict for this task:
+     - ALL target files contain a MAJORITY of identifiers → all_present=yes
+     - SOME do, SOME do not → all_present=partial
+     - NONE do → all_present=no
+
+Return a markdown table:
+| task | target_files | all_present | evidence |
+|------|--------------|-------------|----------|
+| <task text> | <comma-sep files> | yes/partial/no | <identifier:line or "none"> |
+
+Return ≤20 lines total. Self-cap: ≤10 tool uses (the tool-use budget is the true limit, not the task count).`
+})
+```
+
+**Decision after return (orchestrator inspects the returned table):**
+
+- **All tasks `all_present=no`** → Gate is transparent. Proceed to EXECUTE normally.
+- **Mixed** (any combination that is NOT all-no AND NOT all-yes — includes all-partial, yes+no, partial+no, yes+partial, yes+partial+no) → Edit the spec: mark `[x]` on tasks where `all_present=yes`. Leave `[ ]` on `partial` and `no` (both require re-dispatch). Re-dispatch EXECUTE only for tasks still `[ ]`. Keep the original scope (Light/Full). Do NOT invent a new "PARTIAL" state.
+- **All tasks `all_present=yes`** → **MANDATORY user surface** via `AskUserQuestion`: _"Pre-EXECUTE Existence Gate detected all N tasks already implemented. Evidence: {inline table}. Choose: (a) Close as already-implemented, (b) Force EXECUTE anyway (the gate may be wrong), (c) Abort pipeline."_ Never silently skip EXECUTE.
+
 ### EXECUTE Phase (Light scope — same session)
 
 When user chooses "Approve and implement now":
@@ -188,7 +235,9 @@ After each agent returns, check the return value for an escalation status before
 
 If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
-9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops)
+9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops).
+
+   **Before re-review dispatch:** consult `review/SKILL.md § Model Selection` decision table. Set `model: "haiku"` if the first row matches.
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report
 

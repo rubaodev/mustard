@@ -80,6 +80,23 @@ Present the review results as returned by the skill/agent.
 
 ---
 
+## Model Selection
+
+**Initial reviews**: always use default model (per `pipeline-config.md § Models`).
+
+**Re-reviews**: apply this decision BEFORE dispatching the re-review Task:
+
+1. Count lines in the previous review's return content matching `^\[(CRITICAL|WARNING)\]`. This is `issue_count`.
+2. Count files in the pending fix step. This is `files_changed`.
+3. Decision table:
+
+   | issue_count | files_changed | model           |
+   |-------------|---------------|-----------------|
+   | ≤3          | <5            | `haiku`         |
+   | else        | else          | default         |
+
+4. Set `model: "..."` on the re-review Task dispatch per the matching row.
+
 ## Rules
 
 - NEVER ask for confirmation before invoking the review
