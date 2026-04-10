@@ -24,6 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 const CACHE_FILE = path.join(os.tmpdir(), 'rtk-available.json');
 const CACHE_TTL_MS = 60_000;
@@ -108,6 +109,16 @@ process.stdin.on('end', () => {
       // No optimization available or same command — pass through
       process.exit(0);
     }
+
+    // Record the rewrite invocation. tokens_saved is intentionally 0 — actual
+    // token savings are measured by `rtk gain`. This metric only tracks how
+    // often the rewrite path fired so it can be correlated with the gain total.
+    emitMetric('rtk-rewrite', {
+      tokensAffected: Math.round(cmd.length / 4),
+      tokensSaved: 0,
+      note: 'rewritten via rtk',
+      extras: { command_head: cmd.slice(0, 60) },
+    });
 
     console.log(JSON.stringify({
       hookSpecificOutput: {

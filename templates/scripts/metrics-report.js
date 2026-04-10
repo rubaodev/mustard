@@ -63,8 +63,20 @@ const header = '| Event | Count | Tokens Affected | Tokens Saved | Notes |';
 const sep    = '|-------|-------|-----------------|--------------|-------|';
 console.log(header);
 console.log(sep);
+let totalSaved = 0;
+let totalAffected = 0;
+let totalCount = 0;
 for (const evt of events.sort()) {
   const { count, tokensAffected, tokensSaved, notes } = agg[evt];
   const noteStr = [...notes].slice(0, 2).join('; ') || '-';
-  console.log(`| ${evt} | ${count} | ${tokensAffected || '-'} | ${tokensSaved || '-'} | ${noteStr} |`);
+  // When the event records "affected" but no "saved" (e.g. rtk-rewrite,
+  // budget-check passing), surface the affected count instead of `-`.
+  const affectedCell = tokensAffected > 0 ? tokensAffected : '-';
+  const savedCell = tokensSaved > 0 ? tokensSaved : '-';
+  console.log(`| ${evt} | ${count} | ${affectedCell} | ${savedCell} | ${noteStr} |`);
+  totalSaved += tokensSaved;
+  totalAffected += tokensAffected;
+  totalCount += count;
 }
+console.log(sep);
+console.log(`| **TOTAL** | ${totalCount} | ${totalAffected || '-'} | ${totalSaved || '-'} | - |`);

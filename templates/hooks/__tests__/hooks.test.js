@@ -628,3 +628,189 @@ describe("subagent-tracker.js overload detection", () => {
     }
   });
 });
+
+// ─── _lib/metrics-emit.js ───────────────────────────────────────────────────
+
+describe("_lib/metrics-emit.js", () => {
+  const { emitMetric } = require("../_lib/metrics-emit.js");
+
+  it("should append a valid JSONL line and create the metrics dir", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "metrics-emit-"));
+    try {
+      emitMetric("unit-test-event", {
+        tokensAffected: 123,
+        tokensSaved: 45,
+        note: "hello",
+        extras: { source: "test", count: 7 },
+        cwd: tmpDir,
+      });
+      const file = path.join(tmpDir, ".claude", ".metrics", "unit-test-event.jsonl");
+      assert.ok(fs.existsSync(file), "JSONL file should be created");
+      const lines = fs.readFileSync(file, "utf8").trim().split("\n");
+      assert.equal(lines.length, 1, "should have one line");
+      const entry = JSON.parse(lines[0]);
+      assert.equal(entry.event, "unit-test-event");
+      assert.equal(entry.tokens_affected, 123);
+      assert.equal(entry.tokens_saved, 45);
+      assert.equal(entry.note, "hello");
+      assert.equal(entry.source, "test");
+      assert.equal(entry.count, 7);
+      assert.ok(entry.ts, "ts must be set");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should fail-silent when the cwd is unwritable / invalid", () => {
+    // Pointing cwd at an existing FILE (not dir) makes mkdir/append fail.
+    const tmpFile = path.join(os.tmpdir(), `metrics-emit-fail-${Date.now()}.tmp`);
+    fs.writeFileSync(tmpFile, "not-a-dir");
+    try {
+      // Must NOT throw
+      assert.doesNotThrow(() => {
+        emitMetric("should-not-throw", {
+          tokensAffected: 1,
+          tokensSaved: 1,
+          note: "x",
+          cwd: tmpFile, // a file, not a dir → mkdir under it will fail
+        });
+      });
+    } finally {
+      fs.rmSync(tmpFile, { force: true });
+    }
+  });
+
+  it("should default missing fields to safe values", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "metrics-emit-defaults-"));
+    try {
+      emitMetric("defaults-event", { cwd: tmpDir });
+      const file = path.join(tmpDir, ".claude", ".metrics", "defaults-event.jsonl");
+      const entry = JSON.parse(fs.readFileSync(file, "utf8").trim());
+      assert.equal(entry.tokens_affected, 0);
+      assert.equal(entry.tokens_saved, 0);
+      assert.equal(entry.note, "");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── context-budget.js metrics emission ─────────────────────────────────────
+
+describe("context-budget.js metrics emission", () => {
+  const hook = "context-budget.js";
+
+  it("should emit JSONL with tokens_saved > 0 and note='blocked' when over budget in strict mode", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-budget-metrics-"));
+    try {
+      // Explore budget = 10_000 chars. Send a 12_000 char prompt → over budget.
+      const oversizePrompt = "x".repeat(12000);
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "Explore",
+          description: "metrics test",
+          prompt: oversizePrompt,
+        },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      // strict mode is the default — denial expected
+      assert.equal(result.parsed?.permissionDecision, "deny");
+
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "budget-check.jsonl");
+      assert.ok(fs.existsSync(metricsFile), "budget-check.jsonl must exist");
+      const lines = fs.readFileSync(metricsFile, "utf8").trim().split("\n");
+      const entry = JSON.parse(lines[lines.length - 1]);
+      assert.equal(entry.event, "budget-check");
+      assert.equal(entry.note, "blocked");
+      assert.ok(entry.tokens_saved > 0, "tokens_saved should be > 0 on block");
+      assert.ok(entry.tokens_affected > 0, "tokens_affected should reflect prompt size");
+      assert.equal(entry.would_block, true);
+      assert.equal(entry.role, "Explore");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should emit note='passed' and tokens_saved=0 when under budget", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-budget-metrics-pass-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "Explore",
+          description: "small",
+          prompt: "x".repeat(500),
+        },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "budget-check.jsonl");
+      assert.ok(fs.existsSync(metricsFile));
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
+      assert.equal(entry.note, "passed");
+      assert.equal(entry.tokens_saved, 0);
+      assert.ok(entry.tokens_affected > 0);
+      assert.equal(entry.would_block, false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── spec-hygiene.js metrics emission ───────────────────────────────────────
+
+describe("spec-hygiene.js metrics emission", () => {
+  const hook = "spec-hygiene.js";
+
+  it("should emit spec-hygiene-move with tokens_saved > 0 when an active spec is auto-moved", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "spec-hygiene-metrics-"));
+    try {
+      const specName = "2026-04-10-test-completed";
+      const specDir = path.join(tmpDir, ".claude", "spec", "active", specName);
+      fs.mkdirSync(specDir, { recursive: true });
+      // A spec marked completed with all checklist items done → auto-move.
+      const body = [
+        "# Test",
+        "",
+        "### Status: completed | Phase: CLOSE | Scope: light",
+        "",
+        "## Checklist",
+        "",
+        "- [x] step one",
+        "- [x] step two",
+        "",
+        // Pad the file so tokensSaved > 0 (file size / 4 must round up)
+        "## Body",
+        "lorem ipsum ".repeat(50),
+        "",
+      ].join("\n");
+      fs.writeFileSync(path.join(specDir, "spec.md"), body);
+
+      const result = await runHook(hook, {
+        hook_event_name: "SessionStart",
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+
+      // Spec must have moved
+      const completedSpec = path.join(tmpDir, ".claude", "spec", "completed", specName, "spec.md");
+      assert.ok(fs.existsSync(completedSpec), "spec must be relocated to completed/");
+
+      // Metric must be emitted
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "spec-hygiene-move.jsonl");
+      assert.ok(fs.existsSync(metricsFile), "spec-hygiene-move.jsonl must exist");
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
+      assert.equal(entry.event, "spec-hygiene-move");
+      assert.ok(entry.tokens_saved > 0, "tokens_saved must be > 0");
+      assert.ok(entry.tokens_affected > 0);
+      assert.ok(/stale spec/i.test(entry.note));
+      assert.ok(entry.from && entry.to, "extras (from/to) must be present");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
