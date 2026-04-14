@@ -7,7 +7,7 @@
  * - PreToolUse(Task):  queues description + type before agent starts
  * - PostToolUse(Task): detects API overload / dispatch failures and flags pipeline state
  * - SubagentStart:     writes agent state file (consumes from queue)
- * - SubagentStop:      removes agent state file + prunes stale queue
+ * - SubagentStop:      removes agent state file + persists agent findings to .agent-memory + prunes stale queue
  * - SessionStart:      cleans up stale state from previous sessions
  *
  * State dir: .claude/.agent-state/{agent_id}.json
@@ -16,7 +16,7 @@
  * Also injects agent memory (from .claude/.agent-memory/) into new agents
  * via additionalContext — enabling zero-parent-token cross-wave communication.
  *
- * @version 2.1.0
+ * @version 3.0.0
  */
 
 const fs = require('fs');
@@ -29,7 +29,7 @@ const MAX_QUEUE_SIZE = 10;
 
 const MEMORY_DIR = '.agent-memory';
 const MEMORY_INDEX = '_index.json';
-const MEMORY_MAX_CHARS = 1500;
+const MEMORY_MAX_CHARS = 800;
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -289,35 +289,6 @@ function handleStart(data, stateDir) {
     }
   } catch {} // fail-open: memory injection is advisory
 
-  try {
-    const memDir = path.join(projectDir, '.claude', 'memory');
-    const decisions = loadPersistentEntries(path.join(memDir, 'decisions.json'), 5);
-    const lessons = loadPersistentEntries(path.join(memDir, 'lessons.json'), 5);
-    if (decisions.length > 0 || lessons.length > 0) {
-      context += '\n\n[Persistent Memory]';
-      if (decisions.length > 0) {
-        context += '\nDecisions: ' + decisions.map(d => d.content).join('; ');
-      }
-      if (lessons.length > 0) {
-        context += '\nLessons: ' + lessons.map(l => l.content).join('; ');
-      }
-    }
-  } catch {} // fail-open
-
-  try {
-    const kbPath = path.join(projectDir, '.claude', 'knowledge.json');
-    if (fs.existsSync(kbPath)) {
-      const kb = JSON.parse(fs.readFileSync(kbPath, 'utf8'));
-      const entries = (kb.entries || []).slice(-10);
-      if (entries.length > 0) {
-        context += '\n\n[Project Knowledge]';
-        for (const e of entries) {
-          context += `\n- [${e.type}] ${e.name}: ${e.description}`;
-        }
-      }
-    }
-  } catch {} // fail-open
-
   const response = {
     hookSpecificOutput: {
       hookEventName: 'SubagentStart',
@@ -329,13 +300,56 @@ function handleStart(data, stateDir) {
 
 function handleStop(data, stateDir) {
   const agentId = data.agent_id || '';
+  const agentType = data.agent_type || 'unknown';
   const stateFile = path.join(stateDir, `${agentId}.json`);
+
+  // Read agent state before deleting (for pipeline info)
+  let agentState = {};
+  try {
+    if (fs.existsSync(stateFile)) {
+      agentState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    }
+  } catch {}
 
   try {
     if (fs.existsSync(stateFile)) {
       fs.unlinkSync(stateFile);
     }
   } catch {}
+
+  // Persist agent findings to .agent-memory via memory-write.js
+  try {
+    const toolResponse = data.tool_response || {};
+    const responseText = typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
+    // Extract summary: first 300 chars, sentence-bounded
+    let summary = (responseText || '').slice(0, 500);
+    // Try to find first meaningful sentence
+    const sentenceEnd = summary.search(/[.!?]\s/);
+    if (sentenceEnd > 30) {
+      summary = summary.slice(0, sentenceEnd + 1);
+    } else if (summary.length > 300) {
+      summary = summary.slice(0, 297) + '...';
+    }
+
+    if (summary.length > 20) {
+      const projectDir = path.resolve(stateDir, '..', '..');
+      const memScript = path.join(projectDir, '.claude', 'scripts', 'memory-write.js');
+      if (fs.existsSync(memScript)) {
+        const { execFileSync } = require('child_process');
+        execFileSync(process.execPath, [memScript], {
+          input: JSON.stringify({
+            agent_type: agentType,
+            wave: agentState.wave || null,
+            pipeline: agentState.pipeline || '',
+            summary: summary,
+            cwd: projectDir,
+          }),
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      }
+    }
+  } catch {} // fail-open: memory persistence is advisory
 
   // Prune stale queue entries (>60s old)
   pruneQueue(stateDir);
@@ -418,16 +432,6 @@ function loadRelevantMemories(projectDir, agentType) {
   }
 
   return result;
-}
-
-// ── Persistent memory helper ──
-
-function loadPersistentEntries(filePath, max) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    return (data.entries || []).slice(-max);
-  } catch { return []; }
 }
 
 // ── Queue helpers ──

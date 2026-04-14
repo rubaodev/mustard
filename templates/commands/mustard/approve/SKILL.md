@@ -29,6 +29,13 @@ Approves the active spec and prepares the implementation phase. Does NOT execute
    - Parse Tasks from spec to extract tasks per agent (DB, Backend, Frontend, etc.)
    - Create `.claude/.pipeline-states/` directory if it doesn't exist
    - Write state file with `specName`, `status: "approved"`, `phaseName: "PLAN"`, `tasks` with names and agents, `model`, `updatedAt`
+5b. **Memory Persist — record architectural decisions:**
+   - For each significant decision in the spec (technology choices, design patterns, trade-offs):
+     ```bash
+     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | node .claude/scripts/memory-persist.js
+     ```
+   - Focus on: why a pattern was chosen over alternatives, constraints that shaped the design
+   - Skip trivial or obvious decisions (max 3 entries)
 6. **Model selection** — read `Model Selection` from `.claude/pipeline-config.md` and record `"model"` field in state:
    - Count total estimated files in spec
    - Apply rule: ≤5 files/known patterns → `"model": "sonnet"`, 5+ files/new patterns → `"model": "opus"`
