@@ -31,7 +31,7 @@ Guards always loaded via `{subproject}/CLAUDE.md`.
 
 ## Stack
 
-Node.js (>=18), CommonJS, no external dependencies. 16 lifecycle hooks, 10 scripts, 16 slash commands, 6 foundation skills.
+Node.js (>=18), CommonJS, no external dependencies. 19 lifecycle hooks, 10 scripts, 16 slash commands, 6 foundation skills.
 
 ## Commands
 
@@ -82,9 +82,24 @@ node scripts/sync-registry.js --force
 RTK (Rust Token Killer) is integrated as core infrastructure. A PreToolUse hook automatically rewrites Bash commands through `rtk`, reducing token consumption by 60-90% on CLI outputs.
 
 - **Hook**: `hooks/rtk-rewrite.js` — transparent, fail-open
-- **Analytics**: `rtk gain` — view token savings
+- **Analytics**: `rtk gain` — view token savings; `metrics-report.js` integrates RTK data
 - **Statusline**: Shows real-time savings when RTK is active
 - If RTK is not installed, the hook silently passes through (zero impact)
+
+### Cost Optimization Hooks
+
+Three enforcement hooks reduce token waste across all projects:
+
+| Hook | Matcher | Mode | Effect |
+|------|---------|------|--------|
+| `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find → suggests Grep/Glob/Read tools |
+| `model-routing-gate.js` | Task | warn/strict/off | Validates model selection vs pipeline routing table |
+| `tool-use-counter.js` | .* + SubagentStart/Stop | hard | Caps Explore agents at 20 tool uses |
+
+**Environment overrides:**
+- `MUSTARD_BASH_REDIRECT_MODE=warn|strict|off` (default: strict)
+- `MUSTARD_MODEL_GATE_MODE=warn|strict|off` (default: warn)
+- All hooks can be disabled via `MUSTARD_DISABLED_HOOKS=bash-native-redirect,model-routing-gate,tool-use-counter`
 
 ## Full Reference
 Rules, pipeline, naming: `.claude/pipeline-config.md`

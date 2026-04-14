@@ -80,3 +80,74 @@ for (const evt of events.sort()) {
 }
 console.log(sep);
 console.log(`| **TOTAL** | ${totalCount} | ${totalAffected || '-'} | ${totalSaved || '-'} | - |`);
+
+// ── RTK Integration ────────────────────────────────────────────────────
+// Query RTK for actual savings data (if RTK is installed)
+try {
+  const { execFileSync } = require('child_process');
+  let rtkAvailable = false;
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('where', ['rtk'], { stdio: 'ignore' });
+    } else {
+      execFileSync('which', ['rtk'], { stdio: 'ignore' });
+    }
+    rtkAvailable = true;
+  } catch (_) {}
+
+  if (rtkAvailable) {
+    const rtkRaw = execFileSync('rtk', ['gain', '--all', '--format', 'json'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const rtkData = JSON.parse(rtkRaw);
+
+    console.log('');
+    console.log('## RTK Token Savings');
+    console.log('');
+
+    if (rtkData.total_saved !== undefined) {
+      const totalSaved = rtkData.total_saved || 0;
+      const totalOriginal = rtkData.total_original || 0;
+      const pct = totalOriginal > 0 ? Math.round((totalSaved / totalOriginal) * 100) : 0;
+      console.log(`| Metric | Value |`);
+      console.log(`|--------|-------|`);
+      console.log(`| Total tokens saved | ${totalSaved.toLocaleString()} |`);
+      console.log(`| Total original tokens | ${totalOriginal.toLocaleString()} |`);
+      console.log(`| Savings rate | ${pct}% |`);
+      console.log(`| Commands rewritten | ${rtkData.total_commands || '-'} |`);
+    }
+
+    // Per-command breakdown if available
+    if (rtkData.by_command && typeof rtkData.by_command === 'object') {
+      const cmds = Object.entries(rtkData.by_command);
+      if (cmds.length > 0) {
+        console.log('');
+        console.log('### By Command');
+        console.log('| Command | Saved | Original | Rate |');
+        console.log('|---------|-------|----------|------|');
+        for (const [cmd, stats] of cmds.sort((a, b) => (b[1].saved || 0) - (a[1].saved || 0)).slice(0, 10)) {
+          const saved = stats.saved || 0;
+          const orig = stats.original || 0;
+          const rate = orig > 0 ? Math.round((saved / orig) * 100) + '%' : '-';
+          console.log(`| ${cmd} | ${saved.toLocaleString()} | ${orig.toLocaleString()} | ${rate} |`);
+        }
+      }
+    }
+  }
+} catch (_) {
+  // RTK not installed or gain command failed — skip section silently
+}
+
+// ── Correlation: hook rewrites vs RTK actual savings ──────────────────
+if (agg['rtk-rewrite']) {
+  const hookRewrites = agg['rtk-rewrite'].count;
+  const hookEstimatedSaved = agg['rtk-rewrite'].tokensSaved;
+  console.log('');
+  console.log('## RTK Hook Activity');
+  console.log(`| Metric | Value |`);
+  console.log(`|--------|-------|`);
+  console.log(`| Commands rewritten by hook | ${hookRewrites} |`);
+  console.log(`| Estimated tokens saved | ${hookEstimatedSaved > 0 ? hookEstimatedSaved.toLocaleString() : '-'} |`);
+}

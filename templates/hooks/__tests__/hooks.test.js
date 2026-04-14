@@ -814,3 +814,536 @@ describe("spec-hygiene.js metrics emission", () => {
     }
   });
 });
+
+// ─── bash-native-redirect.js ────────────────────────────────────────────────
+
+describe("bash-native-redirect.js", () => {
+  const hook = "bash-native-redirect.js";
+
+  it("should deny simple grep command", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "grep -r pattern src/" },
+    });
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+      "Expected deny for grep command"
+    );
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecisionReason?.includes("Grep"),
+      "Should suggest Grep tool"
+    );
+  });
+
+  it("should deny cat and suggest Read", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "cat src/main.ts" },
+    });
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+      "Expected deny for cat"
+    );
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecisionReason?.includes("Read"),
+      "Should suggest Read tool"
+    );
+  });
+
+  it("should deny ls and suggest Glob", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "ls -la src/" },
+    });
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+      "Expected deny for ls"
+    );
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecisionReason?.includes("Glob"),
+      "Should suggest Glob"
+    );
+  });
+
+  it("should deny head/tail/find", async () => {
+    for (const cmd of ["head -20 file.txt", "tail -50 app.log", "find . -name '*.ts'"]) {
+      const result = await runHook(hook, {
+        tool_name: "Bash",
+        tool_input: { command: cmd },
+      });
+      assert.ok(
+        result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+        `Expected deny for: ${cmd}`
+      );
+    }
+  });
+
+  it("should allow piped commands through", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "grep foo bar.txt | wc -l" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.hookSpecificOutput) {
+      assert.notEqual(result.parsed.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+
+  it("should allow chained commands through", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "grep foo bar.txt && echo found" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.hookSpecificOutput) {
+      assert.notEqual(result.parsed.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+
+  it("should allow rtk-prefixed commands", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "rtk grep -r pattern src/" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.hookSpecificOutput) {
+      assert.notEqual(result.parsed.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+
+  it("should allow non-mapped commands (git, npm)", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.hookSpecificOutput) {
+      assert.notEqual(result.parsed.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+
+  it("should allow sed -i (write operation)", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "sed -i 's/old/new/g' file.txt" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.hookSpecificOutput) {
+      assert.notEqual(result.parsed.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+
+  it("should allow commands with output redirect", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "cat file.txt > output.txt" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.hookSpecificOutput) {
+      assert.notEqual(result.parsed.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+
+  it("should handle env var prefix before command", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "NODE_ENV=test grep pattern file.txt" },
+    });
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+      "Expected deny for grep after env prefix"
+    );
+  });
+
+  it("should strip 2>/dev/null before analysis", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "grep pattern file 2>/dev/null" },
+    });
+    assert.ok(
+      result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+      "Expected deny even with 2>/dev/null"
+    );
+  });
+
+  it("should emit metrics on redirect", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bash-redir-metrics-"));
+    try {
+      await runHook(hook, {
+        tool_name: "Bash",
+        tool_input: { command: "grep pattern file.txt" },
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "bash-native-redirect.jsonl");
+      assert.ok(fs.existsSync(metricsFile), "Metrics file should exist");
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim());
+      assert.equal(entry.event, "bash-native-redirect");
+      assert.equal(entry.note, "redirected");
+      assert.equal(entry.from, "grep");
+      assert.equal(entry.to, "Grep");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── model-routing-gate.js ──────────────────────────────────────────────────
+
+describe("model-routing-gate.js", () => {
+  const hook = "model-routing-gate.js";
+
+  function setupPipelineState(tmpDir, state) {
+    const statesDir = path.join(tmpDir, ".claude", ".pipeline-states");
+    fs.mkdirSync(statesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(statesDir, "test.json"),
+      JSON.stringify({ v: 1, ...state }), "utf8"
+    );
+  }
+
+  /** Run hook with custom env override */
+  function runHookEnv(inputObj, env, opts) {
+    return new Promise((resolve, reject) => {
+      const cwd = opts.cwd || PROJECT_DIR;
+      const { spawn } = require("child_process");
+      const child = spawn(process.execPath, [path.join(HOOKS_DIR, hook)], {
+        cwd,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: opts.projectDir || PROJECT_DIR, ...env },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.on("error", reject);
+      child.on("close", (code) => {
+        let parsed = null;
+        if (stdout.trim()) { try { parsed = JSON.parse(stdout.trim()); } catch {} }
+        resolve({ code, parsed });
+      });
+      child.stdin.write(JSON.stringify(inputObj));
+      child.stdin.end();
+    });
+  }
+
+  it("should allow when no model specified", async () => {
+    const result = await runHook(hook, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: { subagent_type: "general-purpose", description: "do work", prompt: "test" },
+    });
+    assert.equal(result.code, 0);
+    if (result.parsed?.permissionDecision) {
+      assert.notEqual(result.parsed.permissionDecision, "deny");
+    }
+  });
+
+  it("should warn when Explore uses opus (default warn mode)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-warn-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "explore code", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("Model Gate"), "Should include Model Gate warning");
+      assert.ok(ctx.includes("haiku"), "Should suggest haiku");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny when Explore uses opus in strict mode", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-strict-"));
+    try {
+      const result = await runHookEnv({
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "explore", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { MUSTARD_MODEL_GATE_MODE: "strict" }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.parsed?.permissionDecision, "deny", "Should deny in strict mode");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should warn for bugfix pipeline dispatching opus", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-bugfix-"));
+    try {
+      setupPipelineState(tmpDir, { type: "bugfix", scope: "light", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "fix bug", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("sonnet"), "Should suggest sonnet for bugfix");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow opus for feature full scope", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-full-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "full", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "implement", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(!ctx.includes("Model Gate"), "Should NOT warn for correct model");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow downgrade (sonnet where opus expected)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-down-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "full" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "impl", prompt: "test", model: "sonnet" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(!ctx.includes("Model Gate"), "Should NOT warn on downgrade");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should emit metrics", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-metrics-"));
+    try {
+      await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "find", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "model-routing-gate.jsonl");
+      assert.ok(fs.existsSync(metricsFile), "Metrics file should exist");
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim());
+      assert.equal(entry.note, "violation");
+      assert.equal(entry.expected, "haiku");
+      assert.equal(entry.actual, "opus");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should skip non-Task tools", async () => {
+    const result = await runHook(hook, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "test.txt" },
+    });
+    assert.equal(result.code, 0);
+  });
+});
+
+// ─── tool-use-counter.js ────────────────────────────────────────────────────
+
+describe("tool-use-counter.js", () => {
+  const hook = "tool-use-counter.js";
+
+  it("should create counter file on SubagentStart for Explore", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-start-"));
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".agent-state"), { recursive: true });
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "SubagentStart",
+        agent_id: "explore-123",
+        agent_type: "Explore",
+        session_id: "test",
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      const f = path.join(tmpDir, ".claude", ".agent-state", "explore-123.counter.json");
+      assert.ok(fs.existsSync(f), "Counter file should exist");
+      const counter = JSON.parse(fs.readFileSync(f, "utf8"));
+      assert.equal(counter.type, "Explore");
+      assert.equal(counter.limit, 20);
+      assert.equal(counter.count, 0);
+
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("Tool Budget"), "Should inject budget reminder");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should NOT create counter for non-Explore agents", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-nope-"));
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".agent-state"), { recursive: true });
+    try {
+      await runHook(hook, {
+        hook_event_name: "SubagentStart",
+        agent_id: "impl-1",
+        agent_type: "general-purpose",
+        session_id: "test",
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+      const f = path.join(tmpDir, ".claude", ".agent-state", "impl-1.counter.json");
+      assert.ok(!fs.existsSync(f), "Counter should NOT exist for general-purpose");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should increment counter on PreToolUse", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-inc-"));
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "e.counter.json"),
+      JSON.stringify({ type: "Explore", limit: 20, warnAt: 15, count: 5, createdAt: new Date().toISOString() }));
+    try {
+      await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Grep",
+        tool_input: { pattern: "test" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const counter = JSON.parse(fs.readFileSync(path.join(stateDir, "e.counter.json"), "utf8"));
+      assert.equal(counter.count, 6, "Counter should increment to 6");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should warn at threshold", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-warn-"));
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "e.counter.json"),
+      JSON.stringify({ type: "Explore", limit: 20, warnAt: 15, count: 14, createdAt: new Date().toISOString() }));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_input: { file_path: "t.txt" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("15/20"), "Should show count at threshold");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny when hard limit exceeded", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-deny-"));
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "e.counter.json"),
+      JSON.stringify({ type: "Explore", limit: 20, warnAt: 15, count: 20, createdAt: new Date().toISOString() }));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Grep",
+        tool_input: { pattern: "x" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.ok(
+        result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
+        "Should deny over hard limit"
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should remove counter on SubagentStop", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-stop-"));
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const f = path.join(stateDir, "done.counter.json");
+    fs.writeFileSync(f, "{}");
+    try {
+      await runHook(hook, {
+        hook_event_name: "SubagentStop",
+        agent_id: "done",
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+      assert.ok(!fs.existsSync(f), "Counter should be removed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should clean all counters on SessionStart", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-sess-"));
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "a.counter.json"), "{}");
+    fs.writeFileSync(path.join(stateDir, "b.counter.json"), "{}");
+    fs.writeFileSync(path.join(stateDir, "agent-1.json"), "{}"); // should survive
+    try {
+      await runHook(hook, {
+        hook_event_name: "SessionStart",
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+      const remaining = fs.readdirSync(stateDir);
+      assert.ok(!remaining.some(f => f.endsWith(".counter.json")), "Counters cleaned");
+      assert.ok(remaining.includes("agent-1.json"), "Agent state files survive");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should delete stale counter during PreToolUse", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-stale-"));
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const f = path.join(stateDir, "old.counter.json");
+    fs.writeFileSync(f, JSON.stringify({
+      type: "Explore", limit: 20, warnAt: 15, count: 10,
+      createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+    }));
+    try {
+      await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Grep",
+        tool_input: { pattern: "x" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+      assert.ok(!fs.existsSync(f), "Stale counter should be deleted");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should exit fast when no state dir (parent context)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-fast-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_input: { file_path: "t.txt" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+      assert.equal(result.code, 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

@@ -177,6 +177,9 @@ Hooks are registered in `templates/settings.json`:
 
 | Hook | Matcher | Behavior |
 |------|---------|----------|
+| `bash-native-redirect.js` | `Bash` | **BLOCKS** grep/ls/cat/head/tail/find → native tools |
+| `model-routing-gate.js` | `Task` | **WARNS** model vs routing table (strict: blocks) |
+| `tool-use-counter.js` | `.*` + Subagent | **BLOCKS** Explore agents at 20 tool uses |
 | `enforce-registry.js` | `Skill` | **BLOCKS** if registry missing |
 | `mcp-budget.js` | `startup` | **WARNS** (advisory, MCP tool budget) |
 | `session-knowledge.js` | `prompt_input_exit\|clear\|other` | **EXTRACTS** patterns from session |
