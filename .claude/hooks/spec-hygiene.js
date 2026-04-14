@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 try {
   if (!shouldRun('spec-hygiene')) process.exit(0);
@@ -50,9 +51,25 @@ function runHygiene() {
         const dest = path.join(completedDir, name);
         fs.mkdirSync(completedDir, { recursive: true });
 
+        // Capture spec size BEFORE the rename so the path still resolves.
+        let fileSize = 0;
+        try { fileSize = fs.statSync(specFile).size; } catch (_) { /* best-effort */ }
+
         // Phase 1 (critical): atomic rename. If this fails, state is untouched.
         fs.renameSync(specDir, dest);
         process.stderr.write(`[hygiene] Moved ${name} → completed/\n`);
+
+        // Heuristic: tokens "saved" ≈ file_size / 4 (chars-to-tokens). The spec
+        // would otherwise have been re-read in future sessions; moving it to
+        // completed/ removes it from the active scan path.
+        const tokens = Math.round(fileSize / 4);
+        emitMetric('spec-hygiene-move', {
+          tokensAffected: tokens,
+          tokensSaved: tokens,
+          note: 'stale spec moved from active/',
+          extras: { from: specDir, to: dest },
+          cwd,
+        });
 
         // Phase 2 (best-effort): cleanup orphan state files.
         // Each wrapped independently so a failure in one doesn't skip the others.

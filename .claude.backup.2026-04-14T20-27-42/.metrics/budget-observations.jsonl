@@ -1,0 +1,10 @@
+{"ts":"2026-04-09T13:10:01.377Z","event":"budget-check","role":"Explore","actual_chars":10000,"limit":10000,"would_block":false,"mode":"strict"}
+{"ts":"2026-04-09T13:10:01.421Z","event":"budget-check","role":"Explore","actual_chars":10001,"limit":10000,"would_block":true,"mode":"strict"}
+{"ts":"2026-04-09T13:10:01.506Z","event":"budget-check","role":"Explore","actual_chars":10001,"limit":10000,"would_block":true,"mode":"strict"}
+{"ts":"2026-04-09T13:10:01.592Z","event":"budget-check","role":"general-purpose","actual_chars":20000,"limit":20000,"would_block":false,"mode":"strict"}
+{"ts":"2026-04-09T13:10:01.638Z","event":"budget-check","role":"general-purpose","actual_chars":20001,"limit":20000,"would_block":true,"mode":"strict"}
+{"ts":"2026-04-09T13:10:01.702Z","event":"budget-check","role":"general-purpose(review)","actual_chars":12000,"limit":12000,"would_block":false,"mode":"strict"}
+{"ts":"2026-04-09T13:10:01.747Z","event":"budget-check","role":"general-purpose(review)","actual_chars":12001,"limit":12000,"would_block":true,"mode":"strict"}
+{"ts":"2026-04-09T13:10:02.152Z","event":"budget-check","role":"general-purpose","actual_chars":1000,"limit":20000,"would_block":false,"mode":"strict"}
+{"ts":"2026-04-09T13:10:02.256Z","event":"budget-check","role":"Explore","actual_chars":10001,"limit":10000,"would_block":true,"mode":"strict"}
+{"ts":"2026-04-09T13:10:02.320Z","event":"budget-check","role":"general-purpose","actual_chars":1000,"limit":20000,"would_block":false,"mode":"strict"}

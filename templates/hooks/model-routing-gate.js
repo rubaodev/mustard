@@ -5,19 +5,18 @@
  * Task/Agent dispatches against the pipeline's model routing table.
  *
  * Routing table:
- *   Explore agents          → haiku
- *   Bugfix pipeline         → sonnet
- *   Feature light (≤5 files)→ sonnet
- *   Feature full (5+ files) → opus
- *   Audit/review tasks      → sonnet
- *   Default (no pipeline)   → sonnet
+ *   Explore agents           → haiku  (mechanical search only)
+ *   Plan agents              → opus   (bad plan = bad implementation)
+ *   Feature pipeline (any)   → opus   (quality-first)
+ *   Bugfix pipeline          → opus   (diagnosis needs deep reasoning)
+ *   Everything else          → sonnet (safe default)
  *
- * Upgrades are blocked (e.g., expected sonnet but got opus).
+ * Upgrades are blocked (e.g., expected haiku but got opus).
  * Downgrades are allowed (saving money is fine).
  *
  * MODE (MUSTARD_MODEL_GATE_MODE env var):
- *   warn   — advisory additionalContext, always allow  (DEFAULT)
- *   strict — deny with reason on upgrade violations
+ *   strict — deny with reason on upgrade violations (DEFAULT)
+ *   warn   — advisory additionalContext, always allow
  *   off    — completely skip all checks
  *
  * Fail-open: exits 0 on any error — never blocks due to hook bugs.
@@ -84,73 +83,58 @@ function loadNewestPipelineState(projectDir) {
   }
 }
 
+// No non-code signal matching — Haiku is restricted to Explore agents only.
+// Everything involving analysis, judgment, or reasoning uses Sonnet or Opus.
+
 /**
  * Determine the expected model and the human-readable reason.
+ *
+ * Model philosophy (quality-first):
+ *   - Explore          → haiku  (mechanical file search, no judgment)
+ *   - Feature pipeline → opus   (quality matters most)
+ *   - Bugfix pipeline  → sonnet (focused fix)
+ *   - Everything else  → sonnet (safe default for analysis, review, planning)
+ *
  * @param {string} subagentType  e.g. 'Explore', 'general-purpose', 'Plan', 'Bash'
  * @param {string} description   Task description text
  * @param {object|null} state    Parsed pipeline state (or null)
  * @returns {{ expected: string, reason: string }}
  */
 function determineExpected(subagentType, description, state) {
-  const desc = (description || '').toLowerCase();
+  const agentType = (subagentType || '').toLowerCase();
 
-  // Rule 1: Explore always uses haiku
-  if ((subagentType || '').toLowerCase() === 'explore') {
-    return { expected: 'haiku', reason: 'Explore agents use haiku' };
+  // Rule 1: Explore is purely mechanical search → haiku
+  if (agentType === 'explore') {
+    return { expected: 'haiku', reason: 'Explore agents use haiku (mechanical search)' };
   }
 
-  // Rule 2: Active pipeline type drives the choice
+  // Rule 2: Plan needs deep reasoning — bad plan = bad implementation → opus
+  if (agentType === 'plan') {
+    return { expected: 'opus', reason: 'Plan agents use opus (architectural reasoning)' };
+  }
+
+  // Rule 3: Active pipeline drives model
   if (state && state.type) {
     const pipelineType = (state.type || '').toLowerCase();
-    const scope        = (state.scope || '').toLowerCase();
 
-    // Audit/review description overrides pipeline scope
-    if (desc.includes('audit') || desc.includes('review')) {
-      return {
-        expected: 'sonnet',
-        reason: 'Audit/review tasks use sonnet',
-      };
+    if (pipelineType === 'feature') {
+      return { expected: 'opus', reason: 'Feature pipelines use opus (quality-first)' };
     }
 
     if (pipelineType === 'bugfix') {
-      return { expected: 'sonnet', reason: 'Bugfix pipelines use sonnet' };
-    }
-
-    if (pipelineType === 'feature') {
-      if (scope === 'full') {
-        return {
-          expected: 'opus',
-          reason: 'Feature full scope (5+ files / new patterns) uses opus',
-        };
-      }
-      if (scope === 'light') {
-        return {
-          expected: 'sonnet',
-          reason: 'Feature light scope (≤5 files, known patterns) uses sonnet',
-        };
-      }
-      // Feature with unknown scope → sonnet default
-      return {
-        expected: 'sonnet',
-        reason: 'Feature pipeline (unknown scope) defaults to sonnet',
-      };
+      return { expected: 'opus', reason: 'Bugfix pipelines use opus (diagnosis needs deep reasoning)' };
     }
   }
 
-  // Rule 3: Description hints with no pipeline
-  if (desc.includes('audit') || desc.includes('review')) {
-    return { expected: 'sonnet', reason: 'Audit/review tasks use sonnet' };
-  }
-
-  // Default fallback
-  return { expected: 'sonnet', reason: 'Default model for tasks with no active pipeline' };
+  // Default: sonnet for everything else (plan, review, audit, analysis, etc.)
+  return { expected: 'sonnet', reason: 'Default model (analysis/review/planning)' };
 }
 
 // ── Mode resolution ──────────────────────────────────────────────────────────
 function getMode() {
-  const raw = (process.env.MUSTARD_MODEL_GATE_MODE || 'warn').toLowerCase();
+  const raw = (process.env.MUSTARD_MODEL_GATE_MODE || 'strict').toLowerCase();
   if (raw === 'strict' || raw === 'off' || raw === 'warn') return raw;
-  return 'warn';
+  return 'strict';
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -173,8 +157,40 @@ process.stdin.on('end', () => {
     const description  = toolInput.description  || '';
     const projectDir   = process.env.CLAUDE_PROJECT_DIR || data.cwd || process.cwd();
 
-    // If no model specified Claude uses its own default — nothing to validate
-    if (!rawModel) { process.exit(0); }
+    // If no model specified, recommend the expected model via advisory context.
+    // Claude inherits the parent model (often opus), so nudging explicit routing
+    // prevents silent overspend on tasks that should use cheaper models.
+    if (!rawModel) {
+      const state = loadNewestPipelineState(projectDir);
+      const { expected, reason } = determineExpected(subagentType, description, state);
+
+      // Only advise when the expected model is cheaper than opus (the typical parent)
+      if (expected !== 'opus') {
+        emitMetric('model-routing-gate', {
+          tokensAffected: 0,
+          tokensSaved: estimateSavings('opus', expected),
+          note: 'no-model-advisory',
+          extras: {
+            expected,
+            actual: 'inherited',
+            pipeline_type: state ? (state.type || 'unknown') : 'none',
+            scope:         state ? (state.scope || 'unknown') : 'none',
+            reason,
+            subagent_type: subagentType,
+          },
+        });
+
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext:
+              `[Model Gate] No model specified — this task should use model: '${expected}'. ` +
+              `${reason}. Add model: '${expected}' to reduce costs.`,
+          },
+        }) + '\n');
+      }
+      process.exit(0);
+    }
 
     const model = normalizeModel(rawModel);
     if (!model) { process.exit(0); } // Unknown model name — can't rank, skip

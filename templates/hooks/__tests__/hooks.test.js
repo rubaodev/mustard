@@ -900,6 +900,18 @@ describe("bash-native-redirect.js", () => {
     }
   });
 
+  it("should warn on piped commands with redirectable first segment", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "grep foo bar.txt | sort | uniq" },
+    });
+    assert.equal(result.code, 0);
+    const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+    assert.ok(ctx.includes("Grep"), "Should suggest Grep for piped grep command");
+    assert.ok(ctx.includes("Native Tool Redirect"), "Should include redirect warning");
+    assert.equal(result.parsed?.hookSpecificOutput?.permissionDecision, "allow", "Should allow, not deny");
+  });
+
   it("should allow rtk-prefixed commands", async () => {
     const result = await runHook(hook, {
       tool_name: "Bash",
@@ -1036,7 +1048,7 @@ describe("model-routing-gate.js", () => {
     }
   });
 
-  it("should warn when Explore uses opus (default warn mode)", async () => {
+  it("should deny when Explore uses opus (default strict mode)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-warn-"));
     try {
       const result = await runHook(hook, {
@@ -1046,9 +1058,7 @@ describe("model-routing-gate.js", () => {
         cwd: tmpDir,
       }, { cwd: tmpDir, projectDir: tmpDir });
 
-      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("Model Gate"), "Should include Model Gate warning");
-      assert.ok(ctx.includes("haiku"), "Should suggest haiku");
+      assert.equal(result.parsed?.permissionDecision, "deny", "Should deny opus for Explore in default strict mode");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1070,7 +1080,7 @@ describe("model-routing-gate.js", () => {
     }
   });
 
-  it("should warn for bugfix pipeline dispatching opus", async () => {
+  it("should allow opus for bugfix pipeline (deep diagnosis)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-bugfix-"));
     try {
       setupPipelineState(tmpDir, { type: "bugfix", scope: "light", phaseName: "EXECUTE" });
@@ -1081,8 +1091,28 @@ describe("model-routing-gate.js", () => {
         cwd: tmpDir,
       }, { cwd: tmpDir, projectDir: tmpDir });
 
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Opus is correct for bugfix");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should warn when model-gate in warn mode", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-warnmode-"));
+    try {
+      const result = await runHookEnv({
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "explore code", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { MUSTARD_MODEL_GATE_MODE: "warn" }, { cwd: tmpDir, projectDir: tmpDir });
+
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("sonnet"), "Should suggest sonnet for bugfix");
+      assert.ok(ctx.includes("Model Gate"), "Should include Model Gate warning in warn mode");
+      assert.ok(ctx.includes("haiku"), "Should suggest haiku");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1121,6 +1151,84 @@ describe("model-routing-gate.js", () => {
       assert.equal(result.code, 0);
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
       assert.ok(!ctx.includes("Model Gate"), "Should NOT warn on downgrade");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow sonnet for audit task (quality-first, no haiku for analysis)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-audit-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "audit dependencies", prompt: "test", model: "sonnet" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Sonnet is correct for audit tasks");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny sonnet for Plan agent (Plan needs opus)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-plan-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Plan", description: "plan implementation", prompt: "test", model: "sonnet" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      // sonnet is a downgrade from opus — allowed (saving money is fine)
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Downgrade from opus to sonnet is allowed");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow opus for Plan agent", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-plan2-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Plan", description: "plan implementation", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Opus is correct for Plan");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow opus for feature pipeline (any scope)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-feat-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "light", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "implement login", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Opus is correct for any feature scope");
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

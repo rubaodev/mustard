@@ -92,13 +92,13 @@ Three enforcement hooks reduce token waste across all projects:
 
 | Hook | Matcher | Mode | Effect |
 |------|---------|------|--------|
-| `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find → suggests Grep/Glob/Read tools |
-| `model-routing-gate.js` | Task | warn/strict/off | Validates model selection vs pipeline routing table |
+| `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find → suggests Grep/Glob/Read tools. Warns on piped commands too. |
+| `model-routing-gate.js` | Task | strict/warn/off | Blocks model upgrades vs routing table. Advises when no model specified. |
 | `tool-use-counter.js` | .* + SubagentStart/Stop | hard | Caps Explore agents at 20 tool uses |
 
 **Environment overrides:**
 - `MUSTARD_BASH_REDIRECT_MODE=warn|strict|off` (default: strict)
-- `MUSTARD_MODEL_GATE_MODE=warn|strict|off` (default: warn)
+- `MUSTARD_MODEL_GATE_MODE=warn|strict|off` (default: strict)
 - All hooks can be disabled via `MUSTARD_DISABLED_HOOKS=bash-native-redirect,model-routing-gate,tool-use-counter`
 
 ## Full Reference

@@ -98,8 +98,33 @@ process.stdin.on('end', () => {
     // Pass through: output redirect (writing to file, not reading)
     if (OUTPUT_REDIRECT_RE.test(cmd)) { process.exit(0); }
 
-    // Pass through: any shell operators — complex/piped command
-    if (SHELL_OPERATOR_RE.test(cmd)) { process.exit(0); }
+    // Piped/chained commands: can't block safely, but warn if first segment
+    // starts with a redirectable command (e.g. "grep foo | sort" → advise Grep)
+    if (SHELL_OPERATOR_RE.test(cmd)) {
+      const firstSegment = cmd.split(/\s*[|&;]\s*/)[0].trim();
+      const segToken = firstToken(firstSegment);
+      if (segToken && segToken !== 'rtk') {
+        const segInfo = REDIRECT_MAP[segToken.toLowerCase()];
+        if (segInfo) {
+          emitMetric('bash-native-redirect', {
+            tokensAffected: Math.round(cmd.length / 4),
+            tokensSaved: 0,
+            note: 'piped-warn',
+            extras: { from: segToken.toLowerCase(), to: segInfo.tool, command_head: cmd.slice(0, 80) },
+          });
+          console.log(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              additionalContext:
+                `[Native Tool Redirect] The \`${segToken}\` part of this piped command could use the ${segInfo.tool} tool instead. ` +
+                `${segInfo.tip}. Consider splitting the pipeline to use native tools where possible.`,
+            },
+          }));
+        }
+      }
+      process.exit(0);
+    }
 
     // Extract first executable token
     const token = firstToken(cmd);

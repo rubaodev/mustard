@@ -70,6 +70,15 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Focus on: naming conventions used, architectural decisions, integration patterns
    - Skip trivial or already-known patterns
 
+6b2. **Lessons Persist — record lessons learned:**
+   - Review what went well or poorly during this pipeline
+   - For each lesson worth remembering across sessions:
+     ```bash
+     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | node .claude/scripts/memory-persist.js
+     ```
+   - Focus on: integration gotchas, naming issues discovered, performance pitfalls
+   - Skip trivial or already-captured lessons (max 3 entries)
+
 6c. **Token Economy — RTK report (if available):**
    - Run `rtk gain --all --format json` via Bash
    - If RTK available: extract `saved_tokens` and `savings_pct`

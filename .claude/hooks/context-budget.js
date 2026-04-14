@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 function getMode() {
   if (process.env.CONTEXT_BUDGET_MODE) return process.env.CONTEXT_BUDGET_MODE;
@@ -33,8 +34,6 @@ function getMode() {
 }
 
 const MODE = getMode();
-const METRICS_DIR = path.join(process.cwd(), '.claude', '.metrics');
-const METRICS_FILE = path.join(METRICS_DIR, 'budget-observations.jsonl');
 
 // Conservative regex: only match .claude/skills/**/*.md, .claude/context/**/*.md, SKILL.md references
 const MD_REF_PATTERN = /\.claude\/(?:skills|context)\/[^\s"'`]+\.md|SKILL\.md/g;
@@ -94,18 +93,19 @@ process.stdin.on('end', () => {
           : subagentType;
 
         // ALWAYS log (unconditional, fail-silent) — all modes including strict
-        try {
-          fs.mkdirSync(METRICS_DIR, { recursive: true });
-          fs.appendFileSync(METRICS_FILE, JSON.stringify({
-            ts: new Date().toISOString(),
-            event: 'budget-check',
+        const wouldBlock = actual > limit;
+        emitMetric('budget-check', {
+          tokensAffected: Math.round(actual / 4),
+          tokensSaved: wouldBlock ? Math.max(0, Math.round((actual - limit) / 4)) : 0,
+          note: wouldBlock ? 'blocked' : 'passed',
+          extras: {
             role: roleLabel,
             actual_chars: actual,
             limit,
-            would_block: actual > limit,
-            mode: MODE
-          }) + '\n');
-        } catch (_) {}
+            would_block: wouldBlock,
+            mode: MODE,
+          },
+        });
 
         // Apply mode decision (separate concern):
         if (MODE === 'observe') {
