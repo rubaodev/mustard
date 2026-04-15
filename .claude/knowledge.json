@@ -13,10 +13,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 14,
+      "occurrences": 16,
       "createdAt": "2026-04-09T09:00:09.572Z",
-      "updatedAt": "2026-04-14T20:42:51.625Z",
-      "lastSeen": "2026-04-14T20:42:51.625Z"
+      "updatedAt": "2026-04-15T20:17:42.776Z",
+      "lastSeen": "2026-04-15T20:17:42.776Z"
     },
     {
       "id": "convention-1775740608559",
@@ -30,10 +30,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 13,
+      "occurrences": 15,
       "createdAt": "2026-04-09T13:16:48.558Z",
-      "updatedAt": "2026-04-14T20:42:51.588Z",
-      "lastSeen": "2026-04-14T20:42:51.588Z"
+      "updatedAt": "2026-04-15T20:17:42.738Z",
+      "lastSeen": "2026-04-15T20:17:42.738Z"
     },
     {
       "id": "convention-1775724563724",
@@ -47,10 +47,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 14,
+      "occurrences": 16,
       "createdAt": "2026-04-09T08:49:23.724Z",
-      "updatedAt": "2026-04-14T20:42:51.552Z",
-      "lastSeen": "2026-04-14T20:42:51.552Z"
+      "updatedAt": "2026-04-15T20:17:42.692Z",
+      "lastSeen": "2026-04-15T20:17:42.692Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -63,10 +63,10 @@
         "pipeline"
       ],
       "confidence": 1,
-      "occurrences": 14,
+      "occurrences": 16,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-14T20:42:51.516Z",
-      "lastSeen": "2026-04-14T20:42:51.516Z"
+      "updatedAt": "2026-04-15T20:17:42.663Z",
+      "lastSeen": "2026-04-15T20:17:42.663Z"
     },
     {
       "id": "convention-1775737658433",
@@ -80,10 +80,10 @@
         "lesson"
       ],
       "confidence": 1,
-      "occurrences": 14,
+      "occurrences": 16,
       "createdAt": "2026-04-09T12:27:38.433Z",
-      "updatedAt": "2026-04-14T20:42:51.480Z",
-      "lastSeen": "2026-04-14T20:42:51.480Z"
+      "updatedAt": "2026-04-15T20:17:42.628Z",
+      "lastSeen": "2026-04-15T20:17:42.628Z"
     },
     {
       "id": "convention-1775842911884",
@@ -96,11 +96,11 @@
         "pipeline",
         "lesson"
       ],
-      "confidence": 0.5,
-      "occurrences": 2,
+      "confidence": 0.6000000000000001,
+      "occurrences": 3,
       "createdAt": "2026-04-10T17:41:51.884Z",
-      "updatedAt": "2026-04-14T18:57:15.092Z",
-      "lastSeen": "2026-04-14T18:57:15.092Z"
+      "updatedAt": "2026-04-15T19:47:19.940Z",
+      "lastSeen": "2026-04-15T19:47:19.940Z"
     },
     {
       "id": "convention-1775734997481",

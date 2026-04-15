@@ -157,14 +157,43 @@ process.stdin.on('end', () => {
     const description  = toolInput.description  || '';
     const projectDir   = process.env.CLAUDE_PROJECT_DIR || data.cwd || process.cwd();
 
-    // If no model specified, recommend the expected model via advisory context.
-    // Claude inherits the parent model (often opus), so nudging explicit routing
-    // prevents silent overspend on tasks that should use cheaper models.
+    // If no model specified, check whether the agent is an explorer type.
+    // Explorers (subagent_type === 'Explore' or containing 'explorer') MUST
+    // specify model explicitly — inheriting the parent (usually opus) costs
+    // ~3-10x more than the required haiku/sonnet.  All other agent types
+    // fall back to the existing advisory path.
     if (!rawModel) {
       const state = loadNewestPipelineState(projectDir);
       const { expected, reason } = determineExpected(subagentType, description, state);
+      const agentTypeLower = (subagentType || '').toLowerCase();
+      const isExplorer = agentTypeLower === 'explore' || agentTypeLower.includes('explorer');
 
-      // Only advise when the expected model is cheaper than opus (the typical parent)
+      if (isExplorer) {
+        emitMetric('model-routing-gate', {
+          tokensAffected: 0,
+          tokensSaved: estimateSavings('opus', expected),
+          note: 'no-model-denied',
+          extras: {
+            expected,
+            actual: 'inherited',
+            pipeline_type: state ? (state.type || 'unknown') : 'none',
+            scope:         state ? (state.scope || 'unknown') : 'none',
+            reason,
+            subagent_type: subagentType,
+          },
+        });
+
+        process.stdout.write(JSON.stringify({
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            `[Model Routing] Explorer agents must specify model explicitly (haiku or sonnet). ` +
+            `Add model: "haiku" to your Task dispatch. ` +
+            `${reason}.`,
+        }) + '\n');
+        process.exit(0);
+      }
+
+      // Non-explorer: advisory only when expected model is cheaper than opus
       if (expected !== 'opus') {
         emitMetric('model-routing-gate', {
           tokensAffected: 0,

@@ -27,6 +27,10 @@ const QUEUE_FILE = '_queue.json';
 const QUEUE_STALE_MS = 60_000; // 60 seconds
 const MAX_QUEUE_SIZE = 10;
 
+const DEDUP_FILE = 'explorer-dedup.json';
+const DEDUP_DENY_MS  = 60_000;  // deny window: same type within 60s → block
+const DEDUP_CLEAN_MS = 120_000; // prune entries older than 120s when reading
+
 const MEMORY_DIR = '.agent-memory';
 const MEMORY_INDEX = '_index.json';
 const MEMORY_MAX_CHARS = 800;
@@ -79,6 +83,32 @@ function handlePreToolUse(data, stateDir) {
   if (!description && !subagentType) return;
 
   ensureDir(stateDir);
+
+  // ── Explorer dedup: deny if same subagent_type was dispatched within 60s ──
+  if (isExplorerAgent(subagentType)) {
+    try {
+      const { cache, changed } = readDedupCache(stateDir);
+      const lastTs = cache[subagentType];
+      const now = Date.now();
+
+      if (lastTs !== undefined && (now - lastTs) < DEDUP_DENY_MS) {
+        const secondsAgo = Math.round((now - lastTs) / 1000);
+        // Flush stale entries if any were pruned (best-effort, not required for deny path)
+        if (changed) writeDedupCache(stateDir, cache);
+        process.stdout.write(JSON.stringify({
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            `[Dedup] ${subagentType} already dispatched ${secondsAgo}s ago. ` +
+            `Wait or use a different explorer.`,
+        }) + '\n');
+        process.exit(0);
+      }
+
+      // Record this dispatch
+      cache[subagentType] = now;
+      writeDedupCache(stateDir, cache);
+    } catch {} // fail-open: dedup is advisory — allow on any error
+  }
 
   pruneQueue(stateDir);
 
@@ -432,6 +462,53 @@ function loadRelevantMemories(projectDir, agentType) {
   }
 
   return result;
+}
+
+// ── Explorer dedup helpers ──
+
+/**
+ * Returns true when the subagent_type represents an explorer agent.
+ * Matches "Explore" (native Claude Code type) and any custom type containing
+ * "explorer" (case-insensitive, e.g. "Sialia.Backend-explorer").
+ */
+function isExplorerAgent(subagentType) {
+  if (!subagentType) return false;
+  return subagentType === 'Explore' || /explorer/i.test(subagentType);
+}
+
+/**
+ * Read the dedup cache, pruning entries older than DEDUP_CLEAN_MS.
+ * Returns { cache, changed } where changed=true if stale entries were removed.
+ * Fail-open: returns empty cache on any I/O error.
+ */
+function readDedupCache(stateDir) {
+  const filePath = path.join(stateDir, DEDUP_FILE);
+  try {
+    let raw = {};
+    if (fs.existsSync(filePath)) {
+      raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+    const now = Date.now();
+    let changed = false;
+    for (const [key, ts] of Object.entries(raw)) {
+      if (now - ts > DEDUP_CLEAN_MS) {
+        delete raw[key];
+        changed = true;
+      }
+    }
+    return { cache: raw, changed };
+  } catch {
+    return { cache: {}, changed: false };
+  }
+}
+
+/**
+ * Persist the dedup cache to disk. Fail-open: silently ignores write errors.
+ */
+function writeDedupCache(stateDir, cache) {
+  try {
+    fs.writeFileSync(path.join(stateDir, DEDUP_FILE), JSON.stringify(cache), 'utf8');
+  } catch {}
 }
 
 // ── Queue helpers ──
