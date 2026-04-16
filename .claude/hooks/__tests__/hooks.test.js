@@ -1678,3 +1678,121 @@ describe("subagent-tracker.js explorer dedup", () => {
     }
   });
 });
+
+// ─── debug-loop-guard.js ─────────────────────────────────────────────────────
+
+describe("debug-loop-guard.js", () => {
+  const hook = "debug-loop-guard.js";
+
+  function makeStateDir(tmpDir) {
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    return stateDir;
+  }
+
+  function editEvent(tmpDir, filePath) {
+    return runHook(hook, {
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: filePath },
+      tool_response: {},
+      cwd: tmpDir,
+    }, { cwd: tmpDir, projectDir: tmpDir });
+  }
+
+  function bashEvent(tmpDir, command, exitCode) {
+    return runHook(hook, {
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command },
+      tool_response: { exit_code: exitCode },
+      cwd: tmpDir,
+    }, { cwd: tmpDir, projectDir: tmpDir });
+  }
+
+  it("should warn after 5 consecutive edits to the same file", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-edit-warn-"));
+    makeStateDir(tmpDir);
+    const file = path.join(tmpDir, "src", "foo.ts");
+    try {
+      let result;
+      for (let i = 0; i < 5; i++) {
+        result = await editEvent(tmpDir, file);
+      }
+      assert.equal(result.code, 0);
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("[Debug Loop Guard]"), "Should include Debug Loop Guard header");
+      assert.ok(ctx.includes("foo.ts"), "Warning should name the file");
+      assert.ok(ctx.includes("Task(Plan)"), "Should recommend Task(Plan)");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should NOT warn when edits alternate between two different files", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-edit-alt-"));
+    makeStateDir(tmpDir);
+    const fileA = path.join(tmpDir, "src", "a.ts");
+    const fileB = path.join(tmpDir, "src", "b.ts");
+    try {
+      let result;
+      for (let i = 0; i < 6; i++) {
+        result = await editEvent(tmpDir, i % 2 === 0 ? fileA : fileB);
+      }
+      assert.equal(result.code, 0);
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(!ctx.includes("[Debug Loop Guard]"), "Should NOT warn when files alternate");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should warn after 3 consecutive Bash failures on npm test", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-bash-fail-"));
+    makeStateDir(tmpDir);
+    try {
+      let result;
+      for (let i = 0; i < 3; i++) {
+        result = await bashEvent(tmpDir, "npm test", 1);
+      }
+      assert.equal(result.code, 0);
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("[Debug Loop Guard]"), "Should include Debug Loop Guard header");
+      assert.ok(ctx.includes("Task(Plan)"), "Should recommend Task(Plan)");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should NOT warn on Bash success (exit_code 0)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-bash-ok-"));
+    makeStateDir(tmpDir);
+    try {
+      let result;
+      for (let i = 0; i < 5; i++) {
+        result = await bashEvent(tmpDir, "npm test", 0);
+      }
+      assert.equal(result.code, 0);
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(!ctx.includes("[Debug Loop Guard]"), "Should NOT warn on success");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should fail-open on malformed state JSON", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dlg-corrupt-"));
+    const stateDir = makeStateDir(tmpDir);
+    fs.writeFileSync(
+      path.join(stateDir, "debug-loop-state.json"),
+      "NOT VALID JSON",
+      "utf8"
+    );
+    try {
+      const result = await editEvent(tmpDir, path.join(tmpDir, "src", "x.ts"));
+      assert.equal(result.code, 0, "Should exit 0 even with corrupt state (fail-open)");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

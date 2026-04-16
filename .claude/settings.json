@@ -183,6 +183,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/debug-loop-guard.js",
+            "timeout": 5000
+          }
+        ]
       }
     ],
 
