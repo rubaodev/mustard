@@ -1,0 +1,203 @@
+{"ts":"2026-04-14T19:12:56.653Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T19:12:56.692Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T19:12:56.733Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T19:12:56.772Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T19:12:56.812Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T19:12:56.851Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T19:12:57.120Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T19:12:57.162Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T19:13:44.232Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T19:13:44.272Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T19:13:44.315Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T19:13:44.357Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T19:13:44.405Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T19:13:44.446Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T19:13:44.729Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T19:13:44.770Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T20:20:54.485Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T20:20:54.523Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T20:20:54.561Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T20:20:54.599Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T20:20:54.635Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T20:20:54.672Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T20:20:54.929Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T20:20:54.972Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T20:21:10.414Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T20:21:10.453Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T20:21:10.493Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T20:21:10.531Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T20:21:10.568Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T20:21:10.604Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T20:21:10.858Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T20:21:10.895Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T20:21:46.158Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T20:21:46.196Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T20:21:46.233Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T20:21:46.273Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T20:21:46.312Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T20:21:46.351Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T20:21:46.611Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T20:21:46.649Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:15:45.035Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:15:45.083Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:15:45.128Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:15:45.172Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:15:45.218Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:15:45.259Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:15:45.299Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:15:45.343Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:15:45.538Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:15:45.579Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:16:35.995Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:16:36.038Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:16:36.079Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:16:36.120Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:16:36.165Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:16:36.205Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:16:36.249Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:16:36.288Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:16:36.331Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-14T23:16:36.518Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:16:36.557Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:17:02.381Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:17:02.420Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:17:02.459Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:17:02.498Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:17:02.537Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:17:02.578Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:17:02.615Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:17:02.657Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:17:02.700Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-14T23:17:02.907Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:17:02.949Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:22:52.375Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:22:52.414Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:22:52.451Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:22:52.490Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:22:52.530Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:22:52.568Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:22:52.614Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:22:52.654Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:22:52.693Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-14T23:22:52.880Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:22:52.918Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:26:56.926Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:26:56.966Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:26:57.003Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:26:57.041Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:26:57.079Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:26:57.116Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:26:57.154Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:26:57.195Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:26:57.234Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-14T23:26:57.464Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:26:57.505Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:30:57.170Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:30:57.209Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:30:57.248Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:30:57.286Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:30:57.324Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:30:57.364Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:30:57.403Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:30:57.442Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:30:57.488Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-14T23:30:57.692Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:30:57.730Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-14T23:32:10.319Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-14T23:32:10.360Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-14T23:32:10.396Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-14T23:32:10.436Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-14T23:32:10.474Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-14T23:32:10.512Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-14T23:32:10.549Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-14T23:32:10.587Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-14T23:32:10.627Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-14T23:32:10.814Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-14T23:32:10.852Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-15T19:48:46.664Z","event":"bash-native-redirect","tokens_affected":16,"tokens_saved":16,"note":"redirected","from":"cat","to":"Read","command_head":"cat \"/c/Atiz/Competi/projetos/CRM/.claude/settings.local.json\""}
+{"ts":"2026-04-15T19:51:42.296Z","event":"bash-native-redirect","tokens_affected":21,"tokens_saved":21,"note":"redirected","from":"find","to":"Glob","command_head":"find \"C:/Atiz/Competi/projetos/CRM/.claude/.pipeline-states/\" -name \"*2026-04-15"}
+{"ts":"2026-04-15T19:52:18.285Z","event":"bash-native-redirect","tokens_affected":15,"tokens_saved":15,"note":"redirected","from":"ls","to":"Glob","command_head":"ls \"/c/Atiz/Competi/projetos/CRM/.claude/.pipeline-states/\""}
+{"ts":"2026-04-15T20:08:28.547Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-15T20:08:28.622Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-15T20:08:28.668Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-15T20:08:28.726Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-15T20:08:28.782Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-15T20:08:28.841Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-15T20:08:28.895Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-15T20:08:28.948Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-15T20:08:28.994Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-15T20:08:29.212Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-15T20:08:29.260Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-15T20:09:40.810Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-15T20:09:40.859Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-15T20:09:40.904Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-15T20:09:40.946Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-15T20:09:40.987Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-15T20:09:41.026Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-15T20:09:41.070Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-15T20:09:41.112Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-15T20:09:41.142Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-15T20:09:41.353Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-15T20:09:41.393Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-15T20:10:32.447Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-15T20:10:32.488Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-15T20:10:32.534Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-15T20:10:32.576Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-15T20:10:32.605Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-15T20:10:32.655Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-15T20:10:32.688Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-15T20:10:32.737Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-15T20:10:32.775Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-15T20:10:32.961Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-15T20:10:32.996Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-15T20:11:03.916Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-15T20:11:03.965Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-15T20:11:04.001Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-15T20:11:04.035Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-15T20:11:04.075Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-15T20:11:04.115Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-15T20:11:04.153Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-15T20:11:04.190Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-15T20:11:04.222Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-15T20:11:04.399Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-15T20:11:04.449Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-15T20:18:03.388Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":8,"note":"redirected","from":"cat","to":"Read","command_head":"cat C:/Atiz/Mustard/mustard.json"}
+{"ts":"2026-04-16T01:04:53.975Z","event":"bash-native-redirect","tokens_affected":59,"tokens_saved":59,"note":"redirected","from":"find","to":"Glob","command_head":"find /c/Atiz/Competi/projetos/CRM/Sialia.Backend /c/Atiz/Competi/projetos/CRM/Si"}
+{"ts":"2026-04-16T01:19:27.388Z","event":"bash-native-redirect","tokens_affected":13,"tokens_saved":13,"note":"redirected","from":"find","to":"Glob","command_head":"find /c/Atiz/Mustard -name \"settings.json\" -type f"}
+{"ts":"2026-04-16T01:19:36.551Z","event":"bash-native-redirect","tokens_affected":14,"tokens_saved":14,"note":"redirected","from":"find","to":"Glob","command_head":"find \"C:\\Atiz\\Mustard\\templates\" -name \"sync-compile.js\""}
+{"ts":"2026-04-16T01:20:32.505Z","event":"bash-native-redirect","tokens_affected":13,"tokens_saved":13,"note":"redirected","from":"find","to":"Glob","command_head":"find /c/Atiz/Mustard/templates -type d -name context"}
+{"ts":"2026-04-16T01:22:10.418Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":8,"note":"redirected","from":"ls","to":"Glob","command_head":"ls \"C:/Atiz/Mustard/templates/\""}
+{"ts":"2026-04-16T01:34:08.109Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"ls","to":"Glob","command_head":"ls C:/Atiz/Mustard/templates/scripts/"}
+{"ts":"2026-04-16T01:34:20.035Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-16T01:34:20.083Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-16T01:34:20.137Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-16T01:34:20.187Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-16T01:34:20.246Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-16T01:34:20.310Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-16T01:34:20.355Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-16T01:34:20.407Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-16T01:34:20.454Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-16T01:34:20.696Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-16T01:34:20.747Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-16T01:34:30.256Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-16T01:34:30.297Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-16T01:34:30.338Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-16T01:34:30.376Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-16T01:34:30.415Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-16T01:34:30.460Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-16T01:34:30.501Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-16T01:34:30.543Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-16T01:34:30.586Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-16T01:34:30.787Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-16T01:34:30.827Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}
+{"ts":"2026-04-16T01:55:48.207Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"grep","to":"Grep","command_head":"grep -r pattern src/"}
+{"ts":"2026-04-16T01:55:48.249Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"cat","to":"Read","command_head":"cat src/main.ts"}
+{"ts":"2026-04-16T01:55:48.293Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"ls","to":"Glob","command_head":"ls -la src/"}
+{"ts":"2026-04-16T01:55:48.329Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"head","to":"Read","command_head":"head -20 file.txt"}
+{"ts":"2026-04-16T01:55:48.376Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"tail","to":"Read","command_head":"tail -50 app.log"}
+{"ts":"2026-04-16T01:55:48.414Z","event":"bash-native-redirect","tokens_affected":5,"tokens_saved":5,"note":"redirected","from":"find","to":"Glob","command_head":"find . -name '*.ts'"}
+{"ts":"2026-04-16T01:55:48.456Z","event":"bash-native-redirect","tokens_affected":6,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | wc -l"}
+{"ts":"2026-04-16T01:55:48.498Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt && echo found"}
+{"ts":"2026-04-16T01:55:48.530Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":0,"note":"piped-warn","from":"grep","to":"Grep","command_head":"grep foo bar.txt | sort | uniq"}
+{"ts":"2026-04-16T01:55:48.741Z","event":"bash-native-redirect","tokens_affected":9,"tokens_saved":9,"note":"redirected","from":"grep","to":"Grep","command_head":"NODE_ENV=test grep pattern file.txt"}
+{"ts":"2026-04-16T01:55:48.774Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"grep","to":"Grep","command_head":"grep pattern file"}

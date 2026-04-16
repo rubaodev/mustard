@@ -22,6 +22,10 @@ const { emitMetric } = require('./_lib/metrics-emit.js');
 
 const HARD_LIMIT = 20;
 const WARN_THRESHOLD = 15;
+// Explore agents get a tighter budget: warn at 12, deny at 15.
+// Parallel tool calls cause the deny-at-20 to arrive too late (agents reach 27+).
+const EXPLORE_LIMIT = 15;
+const EXPLORE_WARN = 12;
 const ENFORCED_TYPES = new Set(['Explore']);
 const COUNTER_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -68,10 +72,12 @@ function handleStart(data, stateDir) {
   ensureDir(stateDir);
 
   const counterFile = path.join(stateDir, `${agentId}.counter.json`);
+  const limit = agentType === 'Explore' ? EXPLORE_LIMIT : HARD_LIMIT;
+  const warnAt = agentType === 'Explore' ? EXPLORE_WARN : WARN_THRESHOLD;
   const counter = {
     type: agentType,
-    limit: HARD_LIMIT,
-    warnAt: WARN_THRESHOLD,
+    limit,
+    warnAt,
     count: 0,
     createdAt: new Date().toISOString(),
   };
@@ -81,7 +87,7 @@ function handleStart(data, stateDir) {
     hookSpecificOutput: {
       hookEventName: 'SubagentStart',
       additionalContext:
-        `[Tool Budget] This agent has a ${HARD_LIMIT}-tool-use budget. ` +
+        `[Tool Budget] This agent has a ${limit}-tool-use budget. ` +
         `Use Grep over Read where possible. Return findings as soon as root cause is clear.`,
     },
   };
@@ -158,7 +164,7 @@ function handlePreToolUse(data, stateDir) {
     const limit = counter.limit || HARD_LIMIT;
     const warnAt = counter.warnAt || WARN_THRESHOLD;
 
-    if (count > limit) {
+    if (count >= limit) {
       emitMetric('tool-use-counter', {
         tokensAffected: 0,
         tokensSaved: limit * 50,
@@ -174,8 +180,8 @@ function handlePreToolUse(data, stateDir) {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
           permissionDecisionReason:
-            `[Tool Budget] Explore agent exceeded tool-use limit (${count}/${limit}). ` +
-            `Return your findings now — do not make more tool calls.`,
+            `[Tool Budget] Explore agent reached ${limit} tool uses (limit). ` +
+            `Wrap up your findings.`,
         },
       };
       // Deny takes priority — no need to check remaining counters

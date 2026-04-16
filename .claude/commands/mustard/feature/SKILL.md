@@ -37,11 +37,11 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 ### Diff Context (automatic)
 
-**Diff snapshot (run once per phase):**
-Run `node .claude/scripts/diff-context.js` at the start of ANALYZE, PLAN, and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff.md` (overwrite each phase).
+**Diff snapshot (run once per phase, per subproject):**
+Run `node .claude/scripts/diff-context.js --subproject {subproject_path}` at the start of ANALYZE, PLAN, and EXECUTE. Save the output to `.claude/.pipeline-states/{specName}.diff-{subproject}.md` (overwrite each phase). Generate one diff per subproject involved in the pipeline. For orchestrator-level decisions, run without `--subproject` for the global view.
 
 **Inject into every Task dispatch in this pipeline:**
-Prepend the following to EVERY subagent prompt dispatched during the pipeline:
+Prepend the subproject-specific diff (NOT the global diff) to EVERY subagent prompt dispatched during the pipeline:
 
 ```
 ## Current Git State
@@ -74,13 +74,22 @@ Classify based on ANALYZE output:
 | Signal | → Scope |
 |--------|---------|
 | 1-2 layers, ≤5 files, known pattern, no new entity | **Light** |
+| Entity in registry + modification (add field/column/endpoint/behavior) + ≤8 files, no new entity/table/enum | **Extended Light** |
 | 3+ layers, 5+ files, new entity/CRUD, new pattern | **Full** |
 
-Any **Full** signal → Full. All **Light** → Light.
-Record scope for PLAN phase branching.
+Any **Full** signal → Full. All **Light** or **Extended Light** → skip PLAN.
+Record scope (`light`, `extended-light`, or `full`) for PLAN phase branching.
 
-- Light scope CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when targets are known.
-- If >5 files surface during ANALYZE, RECLASSIFY to Full and restart ANALYZE with PLAN gate.
+**Extended Light** = same flow as Light (skip PLAN, inline EXECUTE):
+- Entity MUST exist in `entity-registry.json` (Grep confirms it)
+- Operation modifies existing entity (NOT creates new one)
+- Up to 8 files, up to 3 layers — pattern is known
+- No new database table, no new enum type, no new module
+- If ANY condition fails → reclassify as Full
+- Reclassify to Full if >8 files surface during ANALYZE
+
+- Light/Extended Light scope CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when targets are known.
+- If >5 files surface during ANALYZE on Light, RECLASSIFY to Extended Light (if entity in registry) or Full.
 
 #### Explore (conditional, budget-capped)
 
@@ -228,6 +237,12 @@ When user chooses "Approve and implement now":
 2. Update pipeline state: `status: "implementing"`, `phase: 3`
 3. Read `.claude/pipeline-config.md` for agent config. For `entity-registry.json`: Grep for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file. Extract recipe number + pattern refs
+4b. **Structured Recipe (if available):** Run `node .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If output is non-empty JSON, inject into agent prompt as `{recipe_context}`:
+    ```
+    ## RECIPE (follow this pattern — fill in specifics)
+    {recipe_output}
+    ```
+    This gives the agent a 90%-complete skeleton — it fills in concrete values instead of reasoning about architecture. If no recipe matches, `{recipe_context}` is empty (omit section).
 5. Identify relevant skills for `{recommended_skills}`: list skill names most relevant to the task (e.g., `api-endpoint-wiring, api-dto-validation`). Agents use these as hints — Claude natively decides which to load based on descriptions
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS spec marks task as `(parallel-safe)` — see `.claude/pipeline-config.md` Parallel Rules). Agent prompt includes `{recommended_skills}` as skill hints — agents read SKILL.md of relevant skills before implementing
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)

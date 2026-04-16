@@ -1,1 +1,4 @@
 {"ts":"2026-04-14T23:33:26.558Z","event":"rtk-rewrite","tokens_affected":11,"tokens_saved":66,"note":"rewritten via rtk","command_head":"cat /c/Atiz/Mustard/mustard.json 2>/dev/null","savings_rate":0.6}
+{"ts":"2026-04-16T11:31:25.015Z","event":"rtk-rewrite","tokens_affected":17,"tokens_saved":85,"note":"rewritten via rtk","command_head":"cd templates && grep -A3 \"debug-loop-guard\" settings.json | ","savings_rate":0.5}
+{"ts":"2026-04-16T11:43:50.502Z","event":"rtk-rewrite","tokens_affected":4,"tokens_saved":26,"note":"rewritten via rtk","command_head":"ls src/commands/","savings_rate":0.65}
+{"ts":"2026-04-16T11:49:34.177Z","event":"rtk-rewrite","tokens_affected":37,"tokens_saved":222,"note":"rewritten via rtk","command_head":"cat mustard.json 2>/dev/null | head -30 && echo \"---\" && rtk","savings_rate":0.6}

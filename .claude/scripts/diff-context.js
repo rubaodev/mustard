@@ -5,10 +5,10 @@
  * Outputs a formatted diff summary that can be injected into agent prompts.
  * Includes: staged changes, unstaged changes, and commits since branch divergence.
  *
- * Usage: node .claude/scripts/diff-context.js [--parent branch-name]
+ * Usage: node .claude/scripts/diff-context.js [--parent branch-name] [--subproject path]
  * Output: Formatted markdown summary to stdout (max 3000 chars)
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 const { execSync } = require('child_process');
@@ -33,6 +33,12 @@ function main() {
     const args = process.argv.slice(2);
     const parentIdx = args.indexOf('--parent');
     let parentBranch = parentIdx >= 0 && args[parentIdx + 1] ? args[parentIdx + 1] : null;
+    const subIdx = args.indexOf('--subproject');
+    const subPath = subIdx >= 0 && args[subIdx + 1] ? args[subIdx + 1] : null;
+
+    function scopeCmd(cmd) {
+      return subPath ? `${cmd} -- ${subPath}` : cmd;
+    }
 
     // Auto-detect parent branch if not specified
     if (!parentBranch) {
@@ -55,8 +61,8 @@ function main() {
     }
 
     // Staged changes
-    const stagedStat = run('git diff --cached --stat', cwd);
-    const stagedFiles = run('git diff --cached --name-only', cwd);
+    const stagedStat = run(scopeCmd('git diff --cached --stat'), cwd);
+    const stagedFiles = run(scopeCmd('git diff --cached --name-only'), cwd);
     if (stagedFiles) {
       parts.push('## Staged Changes');
       parts.push('```');
@@ -65,8 +71,8 @@ function main() {
     }
 
     // Unstaged changes
-    const unstagedStat = run('git diff --stat', cwd);
-    const unstagedFiles = run('git diff --name-only', cwd);
+    const unstagedStat = run(scopeCmd('git diff --stat'), cwd);
+    const unstagedFiles = run(scopeCmd('git diff --name-only'), cwd);
     if (unstagedFiles) {
       parts.push('## Unstaged Changes');
       parts.push('```');
@@ -75,7 +81,7 @@ function main() {
     }
 
     // Untracked files
-    const untracked = run('git ls-files --others --exclude-standard', cwd);
+    const untracked = run(scopeCmd('git ls-files --others --exclude-standard'), cwd);
     if (untracked) {
       const files = untracked.split('\n').filter(Boolean);
       if (files.length > 0 && files.length <= 20) {
@@ -92,7 +98,7 @@ function main() {
     if (parentBranch) {
       const mergeBase = run(`git merge-base ${parentBranch} HEAD`, cwd);
       if (mergeBase) {
-        const log = run(`git log --oneline ${mergeBase}..HEAD`, cwd);
+        const log = run(scopeCmd(`git log --oneline ${mergeBase}..HEAD`), cwd);
         if (log) {
           parts.push(`## Commits since ${parentBranch}`);
           const commits = log.split('\n').filter(Boolean);
@@ -105,7 +111,7 @@ function main() {
         }
 
         // Diff stat since divergence
-        const diffStat = run(`git diff --stat ${mergeBase}..HEAD`, cwd);
+        const diffStat = run(scopeCmd(`git diff --stat ${mergeBase}..HEAD`), cwd);
         if (diffStat) {
           parts.push('### Changed files since divergence');
           parts.push('```');

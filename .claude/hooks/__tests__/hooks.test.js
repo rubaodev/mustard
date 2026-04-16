@@ -900,6 +900,18 @@ describe("bash-native-redirect.js", () => {
     }
   });
 
+  it("should warn on piped commands with redirectable first segment", async () => {
+    const result = await runHook(hook, {
+      tool_name: "Bash",
+      tool_input: { command: "grep foo bar.txt | sort | uniq" },
+    });
+    assert.equal(result.code, 0);
+    const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+    assert.ok(ctx.includes("Grep"), "Should suggest Grep for piped grep command");
+    assert.ok(ctx.includes("Native Tool Redirect"), "Should include redirect warning");
+    assert.equal(result.parsed?.hookSpecificOutput?.permissionDecision, "allow", "Should allow, not deny");
+  });
+
   it("should allow rtk-prefixed commands", async () => {
     const result = await runHook(hook, {
       tool_name: "Bash",
@@ -1024,7 +1036,7 @@ describe("model-routing-gate.js", () => {
     });
   }
 
-  it("should allow when no model specified", async () => {
+  it("should allow when no model specified for non-explorer agents", async () => {
     const result = await runHook(hook, {
       hook_event_name: "PreToolUse",
       tool_name: "Task",
@@ -1036,7 +1048,65 @@ describe("model-routing-gate.js", () => {
     }
   });
 
-  it("should warn when Explore uses opus (default warn mode)", async () => {
+  it("should deny Explore dispatch without explicit model (strict mode)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-explore-nomodel-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "search code", prompt: "test" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.parsed?.permissionDecision, "deny",
+        "Explorer without model must be denied");
+      const reason = result.parsed?.permissionDecisionReason || "";
+      assert.ok(reason.includes("haiku"), "Denial reason must mention haiku");
+      assert.ok(reason.includes("Explorer"), "Denial reason must mention Explorer");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny explorer (case-insensitive) dispatch without explicit model", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-explorer-nomodel-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "file-explorer", description: "browse files", prompt: "test" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.parsed?.permissionDecision, "deny",
+        "Agent type containing 'explorer' without model must be denied");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should emit no-model-denied metric when Explore dispatched without model", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-explore-metric-"));
+    try {
+      await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "search", prompt: "test" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "model-routing-gate.jsonl");
+      assert.ok(fs.existsSync(metricsFile), "Metrics file should exist");
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
+      assert.equal(entry.note, "no-model-denied");
+      assert.equal(entry.actual, "inherited");
+      assert.equal(entry.expected, "haiku");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny when Explore uses opus (default strict mode)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-warn-"));
     try {
       const result = await runHook(hook, {
@@ -1046,9 +1116,7 @@ describe("model-routing-gate.js", () => {
         cwd: tmpDir,
       }, { cwd: tmpDir, projectDir: tmpDir });
 
-      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("Model Gate"), "Should include Model Gate warning");
-      assert.ok(ctx.includes("haiku"), "Should suggest haiku");
+      assert.equal(result.parsed?.permissionDecision, "deny", "Should deny opus for Explore in default strict mode");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1070,7 +1138,7 @@ describe("model-routing-gate.js", () => {
     }
   });
 
-  it("should warn for bugfix pipeline dispatching opus", async () => {
+  it("should allow opus for bugfix pipeline (deep diagnosis)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-bugfix-"));
     try {
       setupPipelineState(tmpDir, { type: "bugfix", scope: "light", phaseName: "EXECUTE" });
@@ -1081,8 +1149,28 @@ describe("model-routing-gate.js", () => {
         cwd: tmpDir,
       }, { cwd: tmpDir, projectDir: tmpDir });
 
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Opus is correct for bugfix");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should warn when model-gate in warn mode", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-warnmode-"));
+    try {
+      const result = await runHookEnv({
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Explore", description: "explore code", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { MUSTARD_MODEL_GATE_MODE: "warn" }, { cwd: tmpDir, projectDir: tmpDir });
+
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("sonnet"), "Should suggest sonnet for bugfix");
+      assert.ok(ctx.includes("Model Gate"), "Should include Model Gate warning in warn mode");
+      assert.ok(ctx.includes("haiku"), "Should suggest haiku");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1121,6 +1209,84 @@ describe("model-routing-gate.js", () => {
       assert.equal(result.code, 0);
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
       assert.ok(!ctx.includes("Model Gate"), "Should NOT warn on downgrade");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow sonnet for audit task (quality-first, no haiku for analysis)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-audit-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "audit dependencies", prompt: "test", model: "sonnet" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Sonnet is correct for audit tasks");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny sonnet for Plan agent (Plan needs opus)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-plan-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Plan", description: "plan implementation", prompt: "test", model: "sonnet" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      // sonnet is a downgrade from opus — allowed (saving money is fine)
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Downgrade from opus to sonnet is allowed");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow opus for Plan agent", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-plan2-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "Plan", description: "plan implementation", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Opus is correct for Plan");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow opus for feature pipeline (any scope)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-feat-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "light", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "implement login", prompt: "test", model: "opus" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny", "Opus is correct for any feature scope");
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1179,11 +1345,13 @@ describe("tool-use-counter.js", () => {
       assert.ok(fs.existsSync(f), "Counter file should exist");
       const counter = JSON.parse(fs.readFileSync(f, "utf8"));
       assert.equal(counter.type, "Explore");
-      assert.equal(counter.limit, 20);
+      assert.equal(counter.limit, 15);
+      assert.equal(counter.warnAt, 12);
       assert.equal(counter.count, 0);
 
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
       assert.ok(ctx.includes("Tool Budget"), "Should inject budget reminder");
+      assert.ok(ctx.includes("15"), "Should reference the 15-tool budget");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1212,7 +1380,7 @@ describe("tool-use-counter.js", () => {
     const stateDir = path.join(tmpDir, ".claude", ".agent-state");
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, "e.counter.json"),
-      JSON.stringify({ type: "Explore", limit: 20, warnAt: 15, count: 5, createdAt: new Date().toISOString() }));
+      JSON.stringify({ type: "Explore", limit: 15, warnAt: 12, count: 5, createdAt: new Date().toISOString() }));
     try {
       await runHook(hook, {
         hook_event_name: "PreToolUse",
@@ -1233,7 +1401,7 @@ describe("tool-use-counter.js", () => {
     const stateDir = path.join(tmpDir, ".claude", ".agent-state");
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(path.join(stateDir, "e.counter.json"),
-      JSON.stringify({ type: "Explore", limit: 20, warnAt: 15, count: 14, createdAt: new Date().toISOString() }));
+      JSON.stringify({ type: "Explore", limit: 15, warnAt: 12, count: 11, createdAt: new Date().toISOString() }));
     try {
       const result = await runHook(hook, {
         hook_event_name: "PreToolUse",
@@ -1243,18 +1411,19 @@ describe("tool-use-counter.js", () => {
       }, { cwd: tmpDir, projectDir: tmpDir });
 
       const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
-      assert.ok(ctx.includes("15/20"), "Should show count at threshold");
+      assert.ok(ctx.includes("12/15"), "Should show count at warn threshold");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("should deny when hard limit exceeded", async () => {
+  it("should deny when hard limit reached", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "counter-deny-"));
     const stateDir = path.join(tmpDir, ".claude", ".agent-state");
     fs.mkdirSync(stateDir, { recursive: true });
+    // count: 14 so that the increment inside PreToolUse brings it to 15, hitting the limit exactly
     fs.writeFileSync(path.join(stateDir, "e.counter.json"),
-      JSON.stringify({ type: "Explore", limit: 20, warnAt: 15, count: 20, createdAt: new Date().toISOString() }));
+      JSON.stringify({ type: "Explore", limit: 15, warnAt: 12, count: 14, createdAt: new Date().toISOString() }));
     try {
       const result = await runHook(hook, {
         hook_event_name: "PreToolUse",
@@ -1265,7 +1434,11 @@ describe("tool-use-counter.js", () => {
 
       assert.ok(
         result.parsed?.hookSpecificOutput?.permissionDecision === "deny",
-        "Should deny over hard limit"
+        "Should deny at hard limit (count >= limit)"
+      );
+      assert.ok(
+        result.parsed?.hookSpecificOutput?.permissionDecisionReason?.includes("15 tool uses (limit)"),
+        "Deny message should reference 15-use limit"
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1316,7 +1489,7 @@ describe("tool-use-counter.js", () => {
     fs.mkdirSync(stateDir, { recursive: true });
     const f = path.join(stateDir, "old.counter.json");
     fs.writeFileSync(f, JSON.stringify({
-      type: "Explore", limit: 20, warnAt: 15, count: 10,
+      type: "Explore", limit: 15, warnAt: 12, count: 10,
       createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
     }));
     try {
@@ -1342,6 +1515,164 @@ describe("tool-use-counter.js", () => {
         cwd: tmpDir,
       }, { cwd: tmpDir, projectDir: tmpDir });
       assert.equal(result.code, 0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── subagent-tracker.js (explorer dedup) ───────────────────────────────────
+
+describe("subagent-tracker.js explorer dedup", () => {
+  const hook = "subagent-tracker.js";
+
+  function makeStateDir(tmpDir) {
+    const stateDir = path.join(tmpDir, ".claude", ".agent-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    return stateDir;
+  }
+
+  function dispatchExplorer(tmpDir, subagentType) {
+    return runHook(hook, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: {
+        subagent_type: subagentType,
+        description: "explore the codebase",
+        prompt: "Find relevant files",
+      },
+      cwd: tmpDir,
+    }, { cwd: tmpDir, projectDir: tmpDir });
+  }
+
+  it("should allow the first Explore dispatch and record a dedup entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-first-"));
+    const stateDir = makeStateDir(tmpDir);
+    try {
+      const result = await dispatchExplorer(tmpDir, "Explore");
+      assert.equal(result.code, 0);
+      assert.notEqual(result.parsed?.permissionDecision, "deny",
+        "First dispatch must not be denied");
+      const dedupFile = path.join(stateDir, "explorer-dedup.json");
+      assert.ok(fs.existsSync(dedupFile), "explorer-dedup.json should be created");
+      const cache = JSON.parse(fs.readFileSync(dedupFile, "utf8"));
+      assert.ok(typeof cache["Explore"] === "number", "Timestamp should be stored for Explore");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny a duplicate Explore dispatch within 60s", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-deny-"));
+    const stateDir = makeStateDir(tmpDir);
+    const dedupFile = path.join(stateDir, "explorer-dedup.json");
+    fs.writeFileSync(dedupFile, JSON.stringify({ "Explore": Date.now() - 5000 }), "utf8");
+    try {
+      const result = await dispatchExplorer(tmpDir, "Explore");
+      assert.equal(result.code, 0);
+      assert.equal(result.parsed?.permissionDecision, "deny",
+        "Duplicate dispatch within 60s must be denied");
+      assert.ok(
+        result.parsed?.permissionDecisionReason?.includes("[Dedup]"),
+        "Deny reason must include [Dedup]"
+      );
+      assert.ok(
+        result.parsed?.permissionDecisionReason?.includes("Explore"),
+        "Deny reason must name the agent type"
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny a duplicate custom explorer type within 60s", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-custom-"));
+    const stateDir = makeStateDir(tmpDir);
+    const customType = "Sialia.Backend-explorer";
+    const dedupFile = path.join(stateDir, "explorer-dedup.json");
+    fs.writeFileSync(dedupFile, JSON.stringify({ [customType]: Date.now() - 10000 }), "utf8");
+    try {
+      const result = await dispatchExplorer(tmpDir, customType);
+      assert.equal(result.code, 0);
+      assert.equal(result.parsed?.permissionDecision, "deny",
+        "Duplicate custom explorer must be denied");
+      assert.ok(
+        result.parsed?.permissionDecisionReason?.includes(customType),
+        "Deny reason must name the custom agent type"
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should allow dispatch after the 60s deny window has elapsed", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-expired-"));
+    makeStateDir(tmpDir);
+    const dedupFile = path.join(tmpDir, ".claude", ".agent-state", "explorer-dedup.json");
+    fs.writeFileSync(dedupFile, JSON.stringify({ "Explore": Date.now() - 65000 }), "utf8");
+    try {
+      const result = await dispatchExplorer(tmpDir, "Explore");
+      assert.equal(result.code, 0);
+      assert.notEqual(result.parsed?.permissionDecision, "deny",
+        "Dispatch after 60s window must be allowed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should NOT apply dedup to non-explorer agents (general-purpose)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-skip-impl-"));
+    const stateDir = makeStateDir(tmpDir);
+    const dedupFile = path.join(stateDir, "explorer-dedup.json");
+    fs.writeFileSync(dedupFile, JSON.stringify({ "general-purpose": Date.now() - 1000 }), "utf8");
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "general-purpose",
+          description: "implement feature",
+          prompt: "Write the service",
+        },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+      assert.equal(result.code, 0);
+      assert.notEqual(result.parsed?.permissionDecision, "deny",
+        "general-purpose must never be denied by dedup");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should prune entries older than 120s when reading the cache", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-prune-"));
+    const stateDir = makeStateDir(tmpDir);
+    const dedupFile = path.join(stateDir, "explorer-dedup.json");
+    fs.writeFileSync(dedupFile, JSON.stringify({
+      "OldExplorer-explorer": Date.now() - 130000,
+      "Explore": Date.now() - 5000,
+    }), "utf8");
+    try {
+      const result = await dispatchExplorer(tmpDir, "Explore");
+      assert.equal(result.parsed?.permissionDecision, "deny", "Fresh entry should still deny");
+      const cacheAfter = JSON.parse(fs.readFileSync(dedupFile, "utf8"));
+      assert.ok(!("OldExplorer-explorer" in cacheAfter),
+        "Entry older than 120s must be pruned from cache");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should fail-open when dedup cache file is corrupt", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-corrupt-"));
+    const stateDir = makeStateDir(tmpDir);
+    const dedupFile = path.join(stateDir, "explorer-dedup.json");
+    fs.writeFileSync(dedupFile, "NOT VALID JSON", "utf8");
+    try {
+      const result = await dispatchExplorer(tmpDir, "Explore");
+      assert.equal(result.code, 0);
+      assert.notEqual(result.parsed?.permissionDecision, "deny",
+        "Corrupt cache must fail-open (allow dispatch)");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
