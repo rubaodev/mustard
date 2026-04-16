@@ -87,6 +87,26 @@ function run() {
     }
   }
 
+  // --- Validation 4: Extended Light scope requires entity in registry ---
+  const scopeMatch = content.match(/scope:\s*["']?(extended-light)["']?/i);
+  if (scopeMatch) {
+    const entityMatch = content.match(/entity:\s*["']?(\w+)["']?/i);
+    const entityName = entityMatch ? entityMatch[1] : null;
+    if (entityName) {
+      const registryPath = path.join(process.cwd(), '.claude', 'entity-registry.json');
+      try {
+        if (fs.existsSync(registryPath)) {
+          const registry = fs.readFileSync(registryPath, 'utf8');
+          if (!registry.toLowerCase().includes(entityName.toLowerCase())) {
+            issues.push({ severity: 'WARN', type: 'scope-mismatch', message: `Extended Light scope requires entity "${entityName}" in registry, but not found. Reclassify as Full.` });
+          }
+        } else {
+          issues.push({ severity: 'WARN', type: 'scope-mismatch', message: `Extended Light scope requires entity-registry.json, but file not found. Reclassify as Full.` });
+        }
+      } catch (_) { /* fail-open */ }
+    }
+  }
+
   console.log(JSON.stringify({ ok: issues.length === 0, issues }));
 }
 

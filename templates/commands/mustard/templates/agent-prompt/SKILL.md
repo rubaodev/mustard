@@ -34,10 +34,14 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 ## ROLE
 {role_block}
 
+## RECIPE
+{recipe_context}
+
 ## EFFICIENCY
 - Absolute paths, no cd
 - Read each file once
 - Max 3 build attempts, then STOP + report
+- Return cap: follow pipeline-config.md Max Return limits (impl 40, explore 30, review 60, plan 80 lines). Focus on: files changed + non-obvious decisions + blockers only.
 
 {retry_context}
 
