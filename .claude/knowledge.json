@@ -10,13 +10,14 @@
       "tags": [
         "retry",
         "pipeline",
-        "lesson"
+        "lesson",
+        "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 20,
+      "occurrences": 26,
       "createdAt": "2026-04-09T09:00:09.572Z",
-      "updatedAt": "2026-04-16T17:48:40.987Z",
-      "lastSeen": "2026-04-16T17:48:40.987Z"
+      "updatedAt": "2026-04-20T12:57:42.940Z",
+      "lastSeen": "2026-04-20T12:57:42.940Z"
     },
     {
       "id": "convention-1775740608559",
@@ -27,13 +28,14 @@
       "tags": [
         "retry",
         "pipeline",
-        "lesson"
+        "lesson",
+        "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 19,
+      "occurrences": 25,
       "createdAt": "2026-04-09T13:16:48.558Z",
-      "updatedAt": "2026-04-16T17:48:40.945Z",
-      "lastSeen": "2026-04-16T17:48:40.945Z"
+      "updatedAt": "2026-04-20T12:57:42.898Z",
+      "lastSeen": "2026-04-20T12:57:42.898Z"
     },
     {
       "id": "convention-1775724563724",
@@ -44,13 +46,14 @@
       "tags": [
         "retry",
         "pipeline",
-        "lesson"
+        "lesson",
+        "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 20,
+      "occurrences": 26,
       "createdAt": "2026-04-09T08:49:23.724Z",
-      "updatedAt": "2026-04-16T17:48:40.900Z",
-      "lastSeen": "2026-04-16T17:48:40.900Z"
+      "updatedAt": "2026-04-20T12:57:42.855Z",
+      "lastSeen": "2026-04-20T12:57:42.855Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -60,13 +63,14 @@
       "source": "session-knowledge",
       "tags": [
         "optimization",
-        "pipeline"
+        "pipeline",
+        "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 20,
+      "occurrences": 26,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-16T17:48:40.858Z",
-      "lastSeen": "2026-04-16T17:48:40.858Z"
+      "updatedAt": "2026-04-20T12:57:42.811Z",
+      "lastSeen": "2026-04-20T12:57:42.811Z"
     },
     {
       "id": "convention-1775737658433",
@@ -77,13 +81,14 @@
       "tags": [
         "retry",
         "pipeline",
-        "lesson"
+        "lesson",
+        "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 20,
+      "occurrences": 26,
       "createdAt": "2026-04-09T12:27:38.433Z",
-      "updatedAt": "2026-04-16T17:48:40.813Z",
-      "lastSeen": "2026-04-16T17:48:40.813Z"
+      "updatedAt": "2026-04-20T12:57:42.767Z",
+      "lastSeen": "2026-04-20T12:57:42.767Z"
     },
     {
       "id": "convention-1775842911884",

@@ -1,0 +1,22 @@
+{
+  "stacks": {
+    "dotnet":     { "lang": "csharp",     "label": ".NET",               "signals": { "exts": [".csproj", ".sln"], "files": [] } },
+    "typescript": { "lang": "typescript", "label": "TypeScript/Node.js", "signals": { "exts": [],                  "files": ["package.json", "tsconfig.json"] } },
+    "dart":       { "lang": "dart",       "label": "Flutter/Dart",       "signals": { "exts": [],                  "files": ["pubspec.yaml"] } },
+    "php":        { "lang": "php",        "label": "Laravel/PHP",        "signals": { "exts": [],                  "files": ["composer.json", "artisan"] } },
+    "python":     { "lang": "python",     "label": "Python",             "signals": { "exts": [],                  "files": ["pyproject.toml", "manage.py", "setup.py", "requirements.txt"] } },
+    "java":       { "lang": "java",       "label": "Spring/Java",        "signals": { "exts": [],                  "files": ["pom.xml", "build.gradle", "build.gradle.kts"] } },
+    "go":         { "lang": "go",         "label": "Go",                 "signals": { "exts": [],                  "files": ["go.mod"] } },
+    "rust":       { "lang": "rust",       "label": "Rust",               "signals": { "exts": [],                  "files": ["Cargo.toml"] } },
+    "kotlin":     { "lang": "kotlin",     "label": "Kotlin/JVM",         "signals": { "exts": [".kt"],             "files": ["build.gradle.kts"] } },
+    "elixir":     { "lang": "elixir",     "label": "Elixir/Phoenix",     "signals": { "exts": [".ex", ".exs"],     "files": ["mix.exs"] } }
+  },
+  "roles": {
+    "api":      "backend",
+    "ui":       "frontend",
+    "database": "database",
+    "mobile":   "mobile",
+    "library":  "backend",
+    "general":  "general"
+  }
+}

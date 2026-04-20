@@ -20,12 +20,19 @@ const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
+// Skill meta: stack/role mappers loaded from JSON (no hardcoded maps)
+// ---------------------------------------------------------------------------
+
+const SKILL_META = JSON.parse(fs.readFileSync(path.join(__dirname, '_skill-meta.json'), 'utf-8'));
+
+// ---------------------------------------------------------------------------
 // Paths (mirror sync-registry.js convention)
 // ---------------------------------------------------------------------------
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const REGISTRY_PATH = path.join(ROOT, '.claude', 'entity-registry.json');
 const DETECT_CACHE_PATH = path.join(ROOT, '.claude', '.detect-cache.json');
+const TPL_DIR = path.join(__dirname, '..', 'skill-templates');
 
 // ---------------------------------------------------------------------------
 // CLI flags
@@ -34,6 +41,7 @@ const DETECT_CACHE_PATH = path.join(ROOT, '.claude', '.detect-cache.json');
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const FORCE = args.includes('--force');
+const NO_CLEANUP = args.includes('--no-cleanup');
 const SUB_FILTER = (() => {
   const idx = args.indexOf('--subproject');
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
@@ -72,16 +80,118 @@ function isMustardGenerated(filePath) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Template engine (zero deps, {{var}} + {{#if key}}...{{/if}})
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a template with {{var}}, {{a.b.c}} and {{#if key}}...{{/if}}.
+ * @param {string} tmpl
+ * @param {Object} vars
+ * @returns {string}
+ */
+function render(tmpl, vars) {
+  // Block: {{#if key}}...{{/if}} (non-greedy, non-nested)
+  let out = tmpl.replace(/\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (_, key, body) => {
+    const val = vars[key];
+    return (val && (!Array.isArray(val) || val.length)) ? body : '';
+  });
+  // Variable: {{key}} or {{a.b.c}}
+  out = out.replace(/\{\{([\w.]+)\}\}/g, (_, dotPath) => {
+    const val = dotPath.split('.').reduce((o, k) => (o == null ? null : o[k]), vars);
+    return val == null ? '' : String(val);
+  });
+  return out;
+}
+
+/**
+ * Load a .md.tmpl file from TPL_DIR. Returns null if missing (fail-open).
+ * @param {string} name
+ * @returns {string|null}
+ */
+function loadTpl(name) {
+  try {
+    return fs.readFileSync(path.join(TPL_DIR, name), 'utf-8');
+  } catch {
+    process.stderr.write(`[skill-generator] Template not found: ${name}\n`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill validator
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a generated SKILL.md body. Returns { ok, errors[] }.
+ * @param {string} content
+ * @returns {{ ok: boolean, errors: string[] }}
+ */
+function validateSkill(content) {
+  const errors = [];
+  const fm = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fm) { errors.push('missing YAML frontmatter'); return { ok: false, errors }; }
+
+  const body = fm[1];
+  const nameMatch = body.match(/^name:\s*(.+)$/m);
+  const descMatch = body.match(/^description:\s*(?:"([\s\S]+?)"|([^\n]+(?:\n\s+[^\n]+)*))$/m);
+  const sourceMatch = body.match(/^source:\s*(scan|manual)$/m);
+
+  if (!nameMatch) {
+    errors.push('frontmatter: missing "name"');
+  } else if (!/^[a-z][a-z0-9-]+$/.test(nameMatch[1].trim())) {
+    errors.push(`name not kebab-case: ${nameMatch[1]}`);
+  }
+
+  if (!descMatch) {
+    errors.push('frontmatter: missing "description"');
+  } else {
+    const raw = (descMatch[1] || descMatch[2] || '').replace(/\s+/g, ' ').trim();
+    if (raw.length < 50) errors.push(`description too short (${raw.length} chars, min 50)`);
+    if (raw.length > 600) errors.push(`description too long (${raw.length} chars, max 600)`);
+    if (!/\b(use when|when the user|add|create|new|detect|check|write|even if)\b/i.test(raw)) {
+      errors.push('description lacks trigger words (use when / when / add / create / ...)');
+    }
+  }
+
+  if (!sourceMatch) errors.push('frontmatter: missing "source" (expected scan|manual)');
+
+  return { ok: errors.length === 0, errors };
+}
+
+// Dedup tracker: names already written in this run
+const _writtenNames = new Set();
+
 /**
  * Write a file, creating parent directories as needed.
  * In dry-run mode, just prints what would be written.
  * Skips files without mustard:generated header unless --force.
+ * Validates SKILL.md content before writing (unless --force).
  * @param {string} filePath
  * @param {string} content
  * @param {string[]} log - collector for summary lines
  */
 function writeFile(filePath, content, log) {
   const relPath = path.relative(ROOT, filePath).replace(/\\/g, '/');
+
+  // Validate SKILL.md files (unless --force bypasses)
+  if (filePath.endsWith('SKILL.md') && !FORCE) {
+    const validation = validateSkill(content);
+    if (!validation.ok) {
+      log.push(`  [invalid] ${relPath}: ${validation.errors.join(', ')}`);
+      return;
+    }
+    // Dedup by frontmatter name
+    const nameMatch = content.match(/^name:\s*(.+)$/m);
+    if (nameMatch) {
+      const skillName = nameMatch[1].trim();
+      if (_writtenNames.has(skillName)) {
+        log.push(`  [skip-dup] ${relPath}: name already written (${skillName})`);
+        return;
+      }
+      _writtenNames.add(skillName);
+    }
+  }
 
   if (DRY_RUN) {
     log.push(`  [dry-run] would write: ${relPath}`);
@@ -139,8 +249,7 @@ function first(...vals) {
  * @returns {string}
  */
 function roleToAgent(role) {
-  const map = { api: 'backend', ui: 'frontend', database: 'database', mobile: 'mobile', library: 'backend', general: 'general' };
-  return map[role] || 'general';
+  return SKILL_META.roles[role] || 'general';
 }
 
 /**
@@ -149,8 +258,7 @@ function roleToAgent(role) {
  * @returns {string}
  */
 function stackLang(stackId) {
-  const map = { dotnet: 'csharp', typescript: 'typescript', dart: 'dart', php: 'php', python: 'python', java: 'java', go: 'go', rust: 'rust' };
-  return map[stackId] || stackId;
+  return SKILL_META.stacks[stackId]?.lang || stackId;
 }
 
 /**
@@ -159,8 +267,7 @@ function stackLang(stackId) {
  * @returns {string}
  */
 function stackLabel(stackId) {
-  const map = { dotnet: '.NET', typescript: 'TypeScript/Node.js', dart: 'Flutter/Dart', php: 'Laravel/PHP', python: 'Python', java: 'Spring/Java', go: 'Go', rust: 'Rust' };
-  return map[stackId] || cap(stackId);
+  return SKILL_META.stacks[stackId]?.label || cap(stackId);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,37 +304,19 @@ function buildStackSubprojectMap() {
 
 /**
  * Detect stack ID from a subproject path using file-presence heuristics.
- * Mirrors scanner-loader.js STACK_SIGNALS.
+ * Uses SKILL_META.stacks signals — add new stacks to _skill-meta.json, not here.
  * @param {string} absPath
  * @returns {string|null}
  */
 function detectStackFromPath(absPath) {
-  const signals = [
-    { id: 'dotnet', exts: ['.csproj', '.sln'], files: [] },
-    { id: 'dart', exts: [], files: ['pubspec.yaml'] },
-    { id: 'typescript', exts: [], files: ['package.json', 'tsconfig.json'] },
-    { id: 'php', exts: [], files: ['composer.json', 'artisan'] },
-    { id: 'python', exts: [], files: ['pyproject.toml', 'manage.py', 'setup.py', 'requirements.txt'] },
-    { id: 'java', exts: [], files: ['pom.xml', 'build.gradle', 'build.gradle.kts'] },
-    { id: 'go', exts: [], files: ['go.mod'] },
-    { id: 'rust', exts: [], files: ['Cargo.toml'] },
-  ];
-
   try {
     const entries = fs.readdirSync(absPath);
-
-    for (const sig of signals) {
-      // Check extension-based patterns first
-      for (const ext of sig.exts) {
-        if (entries.some(e => e.endsWith(ext))) return sig.id;
-      }
-      // Check exact file names
-      for (const f of sig.files) {
-        if (entries.includes(f)) return sig.id;
-      }
+    for (const [id, cfg] of Object.entries(SKILL_META.stacks)) {
+      const { exts = [], files = [] } = cfg.signals || {};
+      if (exts.some(ext => entries.some(e => e.endsWith(ext)))) return id;
+      if (files.some(f => entries.includes(f))) return id;
     }
   } catch { /* fail-open */ }
-
   return null;
 }
 
@@ -293,7 +382,7 @@ function genEntityCreationSkill(sub, stackId, entityPattern, enumPattern, role, 
   const repName = rep?.name || 'Order';
   const repInfo = rep?.info || {};
 
-  // ---- SKILL.md ----
+  // ---- prepare vars ----
   const ifaceLine = ifaces.length ? `- Interfaces: \`${ifaces.join(', ')}\`` : '';
   const nsLine = nsPattern ? `- Namespace: \`${nsPattern}.{Entity}\`` : '';
   const baseClassLine = baseClass ? `- Base class: \`${baseClass}\`` : '';
@@ -301,78 +390,29 @@ function genEntityCreationSkill(sub, stackId, entityPattern, enumPattern, role, 
     ? `- NEVER place enums inside entity files — enums go in \`${enumPattern.folder || 'separate files'}\``
     : '';
 
-  // Build a minimal example class body
   const exampleClass = buildEntityExample(stackId, repName, repInfo, entityPattern);
+  const repRef = repInfo.file || `${folder}/${repName}${lang === 'csharp' ? '.cs' : lang === 'dart' ? '.dart' : '.ts'}`;
 
-  const skillMd = `---
-name: ${sub}-entity-creation
-description: "Pattern for creating new ${label} entities/models in this project.
-  Use when creating a new entity, model, domain object, adding a table,
-  or the user says 'new entity', 'add model', 'create table', 'new domain object'.
-  Even if the user just says 'I need a new X in the database'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
-
-# Entity Creation
-
-${label} entity/model pattern detected in this project.
-
-## Pattern
-
-- Folder: \`${folder}\`
-${baseClassLine ? baseClassLine + '\n' : ''}\
-${ifaceLine ? ifaceLine + '\n' : ''}\
-- Naming: ${naming}
-${nsLine ? nsLine + '\n' : ''}\
-
-## Rules
-
-- ALWAYS place entity files in \`${folder}\`
-${enumSeparate ? enumSeparate + '\n' : ''}\
-- Name entities in ${naming}
-- Follow the base class / interface contract detected in this project
-
-## Example
-
-\`\`\`${lang}
-${exampleClass}
-\`\`\`
-
-Ref: \`${repInfo.file || folder + '/' + repName + (lang === 'csharp' ? '.cs' : lang === 'dart' ? '.dart' : '.ts')}\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  // ---- references/examples.md ----
-  const secondEntity = pickRepresentativeEntity(registryEntities, []);
-  // Use a second entity if available
   const allKeys = Object.keys(registryEntities || {});
   const secondKey = allKeys.find(k => k !== repName) || repName;
   const secondInfo = registryEntities?.[secondKey] || repInfo;
 
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
+  // ---- render templates ----
+  const skillTpl = loadTpl('entity-creation.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, label, iso, role, folder, naming, lang,
+    baseClassLine, ifaceLine, nsLine, enumSeparate,
+    exampleClass, repRef,
+  }) : '';
 
-# Examples: ${sub}-entity-creation
-
-## Example 1 — Basic
-
-\`\`\`${lang}
-${buildEntityExample(stackId, repName, repInfo, entityPattern)}
-\`\`\`
-
-Ref: \`${repInfo.file || folder + '/' + repName}\`
-
-## Example 2 — With relationships
-
-\`\`\`${lang}
-${buildEntityExample(stackId, secondKey, secondInfo, entityPattern, true)}
-\`\`\`
-
-Ref: \`${secondInfo.file || folder + '/' + secondKey}\`
-`;
+  const examplesTpl = loadTpl('entity-creation.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang,
+    example1: buildEntityExample(stackId, repName, repInfo, entityPattern),
+    ref1: repInfo.file || `${folder}/${repName}`,
+    example2: buildEntityExample(stackId, secondKey, secondInfo, entityPattern, true),
+    ref2: secondInfo.file || `${folder}/${secondKey}`,
+  }) : '';
 
   return { skillMd, examplesMd };
 }
@@ -546,63 +586,27 @@ function genEnumPlacementSkill(sub, stackId, enumPattern, role, registryEnums) {
 
   const exampleCode = buildEnumExample(stackId, exampleEnum, exampleValues, valueConvention, decorators, nsPattern || undefined);
 
-  const skillMd = `---
-name: ${sub}-enum-placement
-description: "Pattern for enum/value type placement and conventions in this project.
-  Use when creating new enums, status types, adding enum values,
-  or the user says 'add enum', 'new status', 'add type'.
-  Even if the user just says 'I need a status field'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const nsLine = nsPattern ? `- Namespace: \`${nsPattern}.{EnumName}\`` : '';
+  const decoratorsLine = decorators.length ? `- Value decorators: ${decorators.map(d => `\`${d}\``).join(', ')}` : '';
 
-# Enum Conventions
-
-Enum placement and naming rules detected in this project.
-
-## Pattern
-
-- Folder: \`${folder}\`
-${nsPattern ? `- Namespace: \`${nsPattern}.{EnumName}\`\n` : ''}\
-- Value naming: ${valueConvention}
-${decorators.length ? `- Value decorators: ${decorators.map(d => `\`${d}\``).join(', ')}\n` : ''}\
-- ALWAYS create enums in separate files in \`${folder}\`
-- NEVER define enums inside entity/model files
-
-## Example
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  // Second enum for examples
   const secondEnumKey = enumKeys[1] || enumKeys[0] || 'Category';
   const secondEnumInfo = registryEnums?.[secondEnumKey] || { values: ['Alpha', 'Beta'] };
   const secondValues = Array.isArray(secondEnumInfo)
     ? secondEnumInfo.filter(v => !v.startsWith('...'))
     : (secondEnumInfo.values || []).filter(v => !v.startsWith('...'));
 
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
+  const skillTpl = loadTpl('enum-placement.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, lang, folder, valueConvention,
+    nsLine, decoratorsLine, exampleCode,
+  }) : '';
 
-# Examples: ${sub}-enum-placement
-
-## Example 1 — Basic enum
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## Example 2 — Second example
-
-\`\`\`${lang}
-${buildEnumExample(stackId, secondEnumKey, secondValues, valueConvention, decorators, nsPattern || undefined)}
-\`\`\`
-`;
+  const examplesTpl = loadTpl('enum-placement.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang,
+    example1: exampleCode,
+    example2: buildEnumExample(stackId, secondEnumKey, secondValues, valueConvention, decorators, nsPattern || undefined),
+  }) : '';
 
   return { skillMd, examplesMd };
 }
@@ -705,57 +709,22 @@ function genRouteConventionsSkill(sub, stackId, routesPattern, role, registryEnt
 
   const exampleCode = buildRouteExample(stackId, repName, repPrefix, routesPattern);
 
-  const skillMd = `---
-name: ${sub}-route-conventions
-description: "Pattern for route/endpoint naming and structure in this project.
-  Use when creating routes, endpoints, controllers, API actions,
-  or the user says 'new route', 'add API', 'create endpoint'.
-  Even if the user just says 'expose X via API'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const namingPatternLine = namingPattern ? `- Endpoint naming: \`${namingPattern}\`` : '';
+  const authPatternLine = authPattern ? `- Auth: \`${authPattern}\`` : '';
+  const repRef = repInfo.file || '(route file)';
 
-# Route Conventions
+  const skillTpl = loadTpl('route-conventions.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, lang, groupPrefix, versioningStrategy,
+    namingPatternLine, authPatternLine, exampleCode, repRef,
+  }) : '';
 
-Route/endpoint naming patterns detected in this project.
-
-## Pattern
-
-- Group prefix: \`${groupPrefix}\`
-${namingPattern ? `- Endpoint naming: \`${namingPattern}\`\n` : ''}\
-${authPattern ? `- Auth: \`${authPattern}\`\n` : ''}\
-- Versioning: ${versioningStrategy}
-- Standard CRUD: GET (list), GET /{id} (single), POST (create), PUT /{id} (update), DELETE /{id} (delete)
-
-## Example
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-Ref: \`${repInfo.file || '(route file)'}\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-route-conventions
-
-## Example 1 — CRUD routes for ${repName}
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## Example 2 — Route with auth
-
-\`\`\`${lang}
-${buildRouteExample(stackId, repName, repPrefix, routesPattern, true)}
-\`\`\`
-`;
+  const examplesTpl = loadTpl('route-conventions.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang, repName,
+    example1: exampleCode,
+    example2: buildRouteExample(stackId, repName, repPrefix, routesPattern, true),
+  }) : '';
 
   return { skillMd, examplesMd };
 }
@@ -886,60 +855,30 @@ function genServicePatternSkill(sub, stackId, servicePattern, role, registryEnti
   const repName = rep?.name || 'Contract';
   const exampleCode = buildServiceExample(stackId, repName, servicePattern);
 
-  const skillMd = `---
-name: ${sub}-service-pattern
-description: "Pattern for service classes and interfaces in this project.
-  Use when creating a new service, implementing business logic, adding use cases,
-  or the user says 'add service', 'new use case', 'implement business logic'.
-  Even if the user says 'I need logic for X'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const interfaceFirstLabel = interfaceFirst
+    ? 'YES — always define I{Entity}Service interface first'
+    : 'NO — concrete class only';
+  const interfaceFirstRule1 = interfaceFirst
+    ? 'ALWAYS create the interface before the implementation'
+    : 'Create the service class directly';
+  const interfaceFirstRule2 = interfaceFirst
+    ? 'Register both interface and implementation in DI container'
+    : 'Register service in DI container';
+  const baseInterfaceLine = baseInterface ? `- Base interface: \`${baseInterface}\`` : '';
 
-# Service Pattern
+  const skillTpl = loadTpl('service-pattern.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, lang, label,
+    interfaceFirstLabel, interfaceFirstRule1, interfaceFirstRule2,
+    baseInterfaceLine, exampleCode,
+  }) : '';
 
-${label} service pattern detected in this project.
-
-## Pattern
-
-- Interface-first: ${interfaceFirst ? 'YES — always define I{Entity}Service interface first' : 'NO — concrete class only'}
-${baseInterface ? `- Base interface: \`${baseInterface}\`\n` : ''}\
-- Naming: \`I{Entity}Service\` (interface), \`{Entity}Service\` (implementation)
-- Registration: injected via constructor (DI)
-
-## Rules
-
-- ${interfaceFirst ? 'ALWAYS create the interface before the implementation' : 'Create the service class directly'}
-- ${interfaceFirst ? 'Register both interface and implementation in DI container' : 'Register service in DI container'}
-- Service must NOT access the database directly — go through repositories
-
-## Example
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-service-pattern
-
-## Example 1 — Basic service
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## Example 2 — With dependency injection
-
-\`\`\`${lang}
-${buildServiceExample(stackId, repName, servicePattern, true)}
-\`\`\`
-`;
+  const examplesTpl = loadTpl('service-pattern.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang,
+    example1: exampleCode,
+    example2: buildServiceExample(stackId, repName, servicePattern, true),
+  }) : '';
 
   return { skillMd, examplesMd };
 }
@@ -1114,54 +1053,28 @@ function genRepositoryPatternSkill(sub, stackId, repoPattern, role, registryEnti
   const repName = rep?.name || 'Contract';
   const exampleCode = buildRepoExample(stackId, repName, repoPattern);
 
-  const skillMd = `---
-name: ${sub}-repository-pattern
-description: "Pattern for repository classes in this project.
-  Use when creating data access layer, adding a repository, wiring database access,
-  or the user says 'add repository', 'new data access', 'query the database'.
-  Even if the user just says 'store/fetch X from database'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const interfaceFirstLabel = interfaceFirst ? 'YES' : 'NO';
+  const interfaceFirstRule = interfaceFirst
+    ? 'ALWAYS define the interface before the implementation'
+    : 'Create the repository class directly';
+  const baseInterfaceLine = baseInterface ? `- Base interface: \`${baseInterface}\`` : '';
+  const baseClassLine = baseClass ? `- Base class: \`${baseClass}\`` : '';
+  const baseClassRule = baseClass
+    ? `Extend ${baseClass} for the base CRUD methods`
+    : 'Implement all CRUD methods explicitly';
 
-# Repository Pattern
+  const skillTpl = loadTpl('repository-pattern.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, lang, label,
+    interfaceFirstLabel, interfaceFirstRule,
+    baseInterfaceLine, baseClassLine, baseClassRule, exampleCode,
+  }) : '';
 
-${label} repository pattern detected in this project.
-
-## Pattern
-
-- Interface-first: ${interfaceFirst ? 'YES' : 'NO'}
-${baseInterface ? `- Base interface: \`${baseInterface}\`\n` : ''}\
-${baseClass ? `- Base class: \`${baseClass}\`\n` : ''}\
-- Naming: \`I{Entity}Repository\` (interface), \`{Entity}Repository\` (implementation)
-
-## Rules
-
-- ${interfaceFirst ? 'ALWAYS define the interface before the implementation' : 'Create the repository class directly'}
-- Repositories handle ONLY data persistence — no business logic
-- ${baseClass ? 'Extend ' + baseClass + ' for the base CRUD methods' : 'Implement all CRUD methods explicitly'}
-
-## Example
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-repository-pattern
-
-## Example 1 — Basic repository
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-`;
+  const examplesTpl = loadTpl('repository-pattern.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang,
+    example1: exampleCode,
+  }) : '';
 
   return { skillMd, examplesMd };
 }
@@ -1314,60 +1227,26 @@ function genDtoConventionsSkill(sub, stackId, dtoPattern, role, registryEntities
 
   const exampleCode = buildDtoExample(stackId, repName, dtoPattern);
 
-  const skillMd = `---
-name: ${sub}-dto-conventions
-description: "Pattern for DTOs, request/response objects and validation in this project.
-  Use when creating DTOs, request bodies, API payloads, response models,
-  or the user says 'add DTO', 'request model', 'response type', 'input validation'.
-  Even if the user just says 'what shape should the API body be'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const namingSuffixesLine = namingPatterns.length
+    ? `- Naming suffixes: ${namingPatterns.map(p => '`' + p + '`').join(', ')}`
+    : '';
+  const validationLine = validationPattern ? `- Validation: \`${validationPattern}\`` : '';
+  const validationRule = validationPattern
+    ? `Use ${validationPattern} for all input validation`
+    : 'Validate all input fields';
 
-# DTO Conventions
+  const skillTpl = loadTpl('dto-conventions.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, lang, label, folder,
+    namingSuffixesLine, validationLine, validationRule, exampleCode,
+  }) : '';
 
-${label} DTO/schema pattern detected in this project.
-
-## Pattern
-
-- Folder: \`${folder}\`
-${namingPatterns.length ? `- Naming suffixes: ${namingPatterns.map(p => '`' + p + '`').join(', ')}\n` : ''}\
-${validationPattern ? `- Validation: \`${validationPattern}\`\n` : ''}\
-- Standard types per entity: \`{Entity}UpSertDto\` (create/update), \`{Entity}ResponseDto\` (read)
-
-## Rules
-
-- Keep DTOs separate from entity classes
-- ${validationPattern ? 'Use ' + validationPattern + ' for all input validation' : 'Validate all input fields'}
-- Response DTOs omit sensitive fields (passwords, internal IDs where applicable)
-
-## Example
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-dto-conventions
-
-## Example 1 — Create/Update DTO
-
-\`\`\`${lang}
-${exampleCode}
-\`\`\`
-
-## Example 2 — Response DTO
-
-\`\`\`${lang}
-${buildDtoExample(stackId, repName, dtoPattern, 'response')}
-\`\`\`
-`;
+  const examplesTpl = loadTpl('dto-conventions.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang,
+    example1: exampleCode,
+    example2: buildDtoExample(stackId, repName, dtoPattern, 'response'),
+  }) : '';
 
   return { skillMd, examplesMd };
 }
@@ -1539,60 +1418,19 @@ function genModuleRegistrationSkill(sub, stackId, modulePattern, role) {
   const regMethod = modulePattern.registrationMethod || 'RegisterModule';
   const diPattern = modulePattern.diPattern || 'AddScoped';
 
-  const skillMd = `---
-name: ${sub}-module-registration
-description: "Pattern for module/DI registration in this project.
-  Use when creating a new domain module, wiring services, adding DI registrations,
-  or the user says 'add module', 'register service', 'wire dependency'.
-  Even if the user says 'I need a new feature module'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const skillTpl = loadTpl('module-registration.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, lang,
+    modulePattern: pattern, regMethod, diPattern,
+    exampleCode: buildModuleExample(stackId, 'Contract', modulePattern),
+  }) : '';
 
-# Module Registration
-
-Module pattern detected in this project.
-
-## Pattern
-
-- Module class: \`${pattern}\`
-- Registration method: \`${regMethod}\`
-- DI scope: \`${diPattern}\`
-
-## Rules
-
-- Every new domain module MUST implement IModule
-- Services registered via \`${regMethod}\` on the module class
-- Use \`${diPattern}\` for services; use \`AddSingleton\` only for stateless singletons
-
-## Example
-
-\`\`\`${lang}
-${buildModuleExample(stackId, 'Contract', modulePattern)}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-module-registration
-
-## Example 1 — Domain module
-
-\`\`\`${lang}
-${buildModuleExample(stackId, 'Contract', modulePattern)}
-\`\`\`
-
-## Example 2 — With additional services
-
-\`\`\`${lang}
-${buildModuleExample(stackId, 'Invoice', modulePattern)}
-\`\`\`
-`;
-
+  const examplesTpl = loadTpl('module-registration.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, lang,
+    example1: buildModuleExample(stackId, 'Contract', modulePattern),
+    example2: buildModuleExample(stackId, 'Invoice', modulePattern),
+  }) : '';
   return { skillMd, examplesMd };
 }
 
@@ -1651,54 +1489,19 @@ function genStateManagementSkill(sub, dartPatterns, role, registryEntities) {
   const repName = rep?.name || 'Contract';
   const lower = repName.charAt(0).toLowerCase() + repName.slice(1);
 
-  const skillMd = `---
-name: ${sub}-state-management
-description: "Pattern for state management in this Flutter project.
-  Use when adding state, creating providers/blocs, managing UI state,
-  or the user says 'add provider', 'new bloc', 'manage state', 'state for X'.
-  Even if the user just says 'I need state for the ${repName} screen'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const exampleCode = buildStateExample(framework, repName, lower);
 
-# State Management
+  const skillTpl = loadTpl('state-management.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, framework, repName,
+    smPattern: pattern, fileConvention, exampleCode,
+  }) : '';
 
-${framework} state management pattern detected in this project.
-
-## Pattern
-
-- Framework: ${framework}
-- Pattern: ${pattern}
-- File naming: \`${fileConvention}\`
-
-## Rules
-
-- ALWAYS use ${framework} for state — no setState outside of local ephemeral UI
-- One provider/notifier per feature/entity
-- Async operations return AsyncValue — handle loading/error states in UI
-
-## Example
-
-\`\`\`dart
-${buildStateExample(framework, repName, lower)}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-state-management
-
-## Example 1 — ${framework} provider for ${repName}
-
-\`\`\`dart
-${buildStateExample(framework, repName, lower)}
-\`\`\`
-`;
-
+  const examplesTpl = loadTpl('state-management.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, framework, repName,
+    example1: exampleCode,
+  }) : '';
   return { skillMd, examplesMd };
 }
 
@@ -1768,54 +1571,18 @@ function genNavigationPatternSkill(sub, dartPatterns, role) {
   const framework = nav.framework || 'GoRouter';
   const routeFileConvention = nav.fileConvention || 'router.dart';
 
-  const skillMd = `---
-name: ${sub}-navigation-pattern
-description: "Pattern for navigation/routing in this Flutter project.
-  Use when adding a new screen, route, deep link, navigation action,
-  or the user says 'add screen', 'new route', 'navigate to X'.
-  Even if the user just says 'I need a page for X'."
----
-<!-- mustard:generated at:${iso} role:${role} -->
+  const exampleCode = buildNavigationExample(framework);
 
-# Navigation Pattern
+  const skillTpl = loadTpl('navigation-pattern.skill.md.tmpl');
+  const skillMd = skillTpl ? render(skillTpl, {
+    sub, iso, role, framework, routeFileConvention, exampleCode,
+  }) : '';
 
-${framework} navigation pattern detected in this project.
-
-## Pattern
-
-- Framework: ${framework}
-- Router file: \`${routeFileConvention}\`
-- Route naming: lowercase-kebab-case paths
-
-## Rules
-
-- ALWAYS define routes in the central router file
-- Use named routes — never push raw MaterialPageRoute
-- Pass data via route params, not shared state
-
-## Example
-
-\`\`\`dart
-${buildNavigationExample(framework)}
-\`\`\`
-
-## References
-
-For full code examples with variants:
-> Read \`references/examples.md\`
-`;
-
-  const examplesMd = `<!-- mustard:generated at:${iso} role:${role} -->
-
-# Examples: ${sub}-navigation-pattern
-
-## Example 1 — Route definition
-
-\`\`\`dart
-${buildNavigationExample(framework)}
-\`\`\`
-`;
-
+  const examplesTpl = loadTpl('navigation-pattern.examples.md.tmpl');
+  const examplesMd = examplesTpl ? render(examplesTpl, {
+    sub, iso, role, framework,
+    example1: exampleCode,
+  }) : '';
   return { skillMd, examplesMd };
 }
 
@@ -1856,6 +1623,141 @@ class AppRouter extends \$AppRouter {
     default:
       return `// Navigation for ${framework} — see router.dart`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cluster skill generator (generic/agnostic discovery)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive structural stopwords from a project-wide folder frequency index.
+ * A segment is "structural" for THIS project if it appears in ≥60% of all folders.
+ * Purely data-driven — zero hardcoded vocabulary.
+ *
+ * @param {{totalFolders: number, segments: Object<string, number>}|null} folderFrequency
+ * @returns {Set<string>} lowercase stopwords
+ */
+function deriveStopwords(folderFrequency) {
+  const stopwords = new Set();
+  if (!folderFrequency || !folderFrequency.totalFolders || folderFrequency.totalFolders < 5) {
+    return stopwords; // too few folders to derive signal; return empty
+  }
+  const total = folderFrequency.totalFolders;
+  const segments = folderFrequency.segments || {};
+  for (const [seg, count] of Object.entries(segments)) {
+    if (count / total >= 0.6) stopwords.add(seg.toLowerCase());
+  }
+  return stopwords;
+}
+
+/**
+ * Extract distinctive folder-name keywords from a cluster's folders.
+ * Stopwords are derived dynamically from the project's folder frequency index —
+ * no hardcoded vocabulary. Assembly/namespace-style tokens (dot-separated) are
+ * always filtered as they don't help semantic matching.
+ *
+ * @param {string[]} folders
+ * @param {{totalFolders: number, segments: Object<string, number>}|null} [folderFrequency]
+ * @returns {string} comma-separated top-3 distinctive keywords (empty if none)
+ */
+function extractFolderKeywords(folders, folderFrequency = null) {
+  if (!folders || !folders.length) return '';
+  const STOPWORDS = deriveStopwords(folderFrequency);
+  const freq = new Map();
+  for (const folder of folders) {
+    if (typeof folder !== 'string') continue;
+    const parts = folder.split(/[\\/]/).filter(Boolean);
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      if (STOPWORDS.has(lower)) continue;
+      if (part.length < 3) continue;
+      // Skip assembly/namespace-style tokens (e.g. "Sialia.Backend") — not useful for matching
+      if (part.includes('.')) continue;
+      // Heuristic: prefer parts that appear across multiple folders (shared context)
+      freq.set(part, (freq.get(part) || 0) + 1);
+    }
+  }
+  // Prefer keywords that appear in multiple folders — these are the shared "concept",
+  // not per-module names. If only one folder exists, just rank by position/length.
+  return Array.from(freq.entries())
+    .filter(([, count]) => folders.length === 1 || count >= 2)
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
+    .slice(0, 3)
+    .map(([k]) => k)
+    .join(', ');
+}
+
+/**
+ * Generate a SKILL.md for a discovered structural cluster.
+ * The cluster was detected purely from filesystem structure — no technology name
+ * is hardcoded here; the suffix/label is derived from what was found on disk.
+ *
+ * @param {string} sub - subproject agent name (used as skill name prefix)
+ * @param {string} stackId
+ * @param {Object} cluster - cluster descriptor from discoverClusters()
+ * @param {string} role
+ * @param {{totalFolders: number, segments: Object<string, number>}|null} [folderFrequency]
+ * @returns {{ skillMd: string, slug: string }|null}
+ */
+function genClusterSkill(sub, stackId, cluster, role, folderFrequency = null) {
+  const tpl = loadTpl('cluster-pattern.skill.md.tmpl');
+  if (!tpl) return null;
+
+  const iso = isoNow();
+  const label = stackLabel(stackId);
+
+  // Derive human-readable suffix from cluster (priority: suffix → commonBaseClass → fallback)
+  const suffix = cluster.suffix || cluster.commonBaseClass || 'Pattern';
+
+  // slug: kebab-case of suffix, lowercase, alphanumeric+hyphen only
+  const slug = suffix
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'cluster';
+
+  const humanSuffix = suffix;
+  const folderPattern = cluster.folderPattern || cluster.folder || '(multiple)';
+  const folderCount = cluster.folders ? cluster.folders.length : 1;
+  const samples = cluster.samples || [];
+  const samplesList = samples.map(s => `- \`${s}\``).join('\n');
+
+  // Mitigation A: extract folder-name keywords to strengthen semantic matching.
+  // If folders contain words like "GraphQL" or "Handlers", those surface in the
+  // description and in orchestrator keyword matching — without Mustard hardcoding them.
+  // Stopwords are derived from the project-wide folder frequency when available.
+  const folderKeywords = extractFolderKeywords(
+    cluster.folders || (cluster.folder ? [cluster.folder] : []),
+    folderFrequency
+  );
+  const folderKeywordsHint = folderKeywords ? `, or when the task involves ${folderKeywords}` : '';
+  const folderKeywordsSection = folderKeywords
+    ? `- Context keywords (from folder paths): \`${folderKeywords}\`\n`
+    : '';
+
+  const vars = {
+    sub,
+    label,
+    slug,
+    suffix,
+    humanSuffix,
+    ext: cluster.ext || '',
+    fileCount: cluster.fileCount,
+    folderPattern,
+    folderCount,
+    commonBaseClass: cluster.commonBaseClass || '',
+    commonInterfaces: (cluster.commonInterfaces || []).join(', '),
+    samples: samples.length ? samples : null,
+    samplesList,
+    folderKeywords,
+    folderKeywordsHint,
+    folderKeywordsSection,
+    iso,
+    role,
+  };
+
+  const skillMd = render(tpl, vars);
+  return { skillMd, slug };
 }
 
 // ---------------------------------------------------------------------------
@@ -1988,6 +1890,44 @@ function generateSkillsForStack(stackId, stackPatterns, subprojects, registry) {
       files.push({ filePath: path.join(skillsDir, `${subName}-navigation-pattern`, 'SKILL.md'), content: skillMd });
       files.push({ filePath: path.join(skillsDir, `${subName}-navigation-pattern`, 'references', 'examples.md'), content: examplesMd });
     }
+
+    // ---- Generic/agnostic cluster skills (discovered by structure, not by tech name) ----
+    // Agnostic dedup: if the specific-template loop above already produced a skill
+    // with the same folder name (`${sub}-${slug}-pattern`), skip the cluster.
+    // No hardcoded suffix list — collisions resolve purely by the names already emitted.
+    const alreadyGeneratedSlugs = new Set(
+      files
+        .map(f => {
+          const folderName = path.basename(path.dirname(f.filePath));
+          const m = folderName.match(/^.+?-(.+)-pattern$/);
+          return m ? m[1] : null;
+        })
+        .filter(Boolean)
+    );
+    const clusterSlug = (suffix) => (suffix || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'cluster';
+
+    const discoveredClusters = stackPatterns.discovered || [];
+    const folderFrequency = stackPatterns.folderFrequency || null;
+    const topClusters = discoveredClusters
+      .filter(c => {
+        const slug = clusterSlug(c.suffix || c.commonBaseClass || '');
+        return slug && !alreadyGeneratedSlugs.has(slug);
+      })
+      .slice()
+      .sort((a, b) => (b.fileCount || 0) - (a.fileCount || 0))
+      .slice(0, 10);
+
+    for (const cluster of topClusters) {
+      const result = genClusterSkill(subName, stackId, cluster, role, folderFrequency);
+      if (!result) continue;
+      const { skillMd, slug } = result;
+      const skillPath = path.join(skillsDir, `${subName}-${slug}-pattern`, 'SKILL.md');
+      files.push({ filePath: skillPath, content: skillMd });
+    }
   }
 
   return files;
@@ -2028,6 +1968,9 @@ function main() {
   // 3. For each stack with patterns, generate skills
   const log = [];
   let totalSkills = 0;
+  // Track for cleanup: folder names this run expects + sub names actually processed
+  const expectedSkillFolders = new Set();
+  const subNamesProcessed = new Set();
 
   for (const stackId of patternStacks) {
     const stackPatterns = patterns[stackId];
@@ -2064,15 +2007,39 @@ function main() {
 
     console.log(`\nStack: ${stackId} → subproject(s): ${subs.map(s => s.name).join(', ')}`);
 
+    // Record sub names that this stack will actually emit
+    for (const s of subs) subNamesProcessed.add(s.name);
+
     const files = generateSkillsForStack(stackId, stackPatterns, subs, registry);
 
     for (const { filePath, content } of files) {
+      // Track the parent folder (skill dir name) for cleanup comparison.
+      // Paths look like `.../skills/{folderName}/SKILL.md` or
+      // `.../skills/{folderName}/references/examples.md`.
+      const rel = path.relative(path.join(ROOT, '.claude', 'skills'), filePath);
+      const folderName = rel.split(/[\\/]/)[0];
+      if (folderName && !folderName.startsWith('..')) expectedSkillFolders.add(folderName);
+
       writeFile(filePath, content, log);
       totalSkills++;
     }
   }
 
-  // 4. Report
+  // 4. Cleanup orphan skills — ensures skills/ reflects only the current scan
+  if (!NO_CLEANUP && subNamesProcessed.size > 0) {
+    const skillsRoot = path.join(ROOT, '.claude', 'skills');
+    const removed = cleanupOrphanSkills(
+      skillsRoot,
+      expectedSkillFolders,
+      Array.from(subNamesProcessed),
+      log
+    );
+    if (removed > 0) {
+      console.log(`\nCleanup: ${removed} orphan skill folder(s) ${DRY_RUN ? 'would be ' : ''}removed.`);
+    }
+  }
+
+  // 5. Report
   console.log('\n' + log.join('\n'));
   console.log(`\nDone: ${totalSkills} file(s) processed.`);
 
@@ -2081,10 +2048,79 @@ function main() {
   }
 }
 
-// Fail-open: never crash the calling process
-try {
-  main();
-} catch (err) {
-  process.stderr.write(`[skill-generator] Fatal error: ${err.message}\n${err.stack}\n`);
-  process.exit(0); // fail-open
+/**
+ * Remove orphan skills: folders under `.claude/skills/` that were generated by
+ * a previous run (have `source: scan` in frontmatter, match a processed-sub prefix)
+ * but are NOT in the current run's expected set. Ensures the skills directory
+ * reflects ONLY what the current scan produces — no stale patterns from deleted
+ * code.
+ *
+ * Safety rules (territorial enforcement, aligned with PR 3):
+ *   - Only touch folders whose SKILL.md has `source: scan` frontmatter.
+ *   - Only touch folders whose name starts with one of the processed sub names.
+ *   - Never touch `source: manual` skills or folders without the frontmatter marker.
+ *   - Never touch folders for sub names NOT processed in this run (e.g. when
+ *     `--subproject backend` is used, only `backend-*` is considered).
+ *
+ * @param {string} skillsRoot - absolute path to `.claude/skills/`
+ * @param {Set<string>} expectedFolders - set of folder names the current run will write
+ * @param {string[]} subNamesProcessed - sub names included in this run
+ * @param {string[]} log - mutable log array
+ * @returns {number} count of folders removed
+ */
+function cleanupOrphanSkills(skillsRoot, expectedFolders, subNamesProcessed, log) {
+  if (!fs.existsSync(skillsRoot)) return 0;
+  let entries;
+  try { entries = fs.readdirSync(skillsRoot); } catch { return 0; }
+
+  let removed = 0;
+  for (const entry of entries) {
+    const folderPath = path.join(skillsRoot, entry);
+    const skillPath = path.join(folderPath, 'SKILL.md');
+
+    // Territorial: only consider folders prefixed by a processed sub name
+    const belongsToProcessedSub = subNamesProcessed.some(sub => entry.startsWith(sub + '-'));
+    if (!belongsToProcessedSub) continue;
+
+    // Skip if not a skill folder
+    if (!fs.existsSync(skillPath)) continue;
+
+    // Read frontmatter; only touch source:scan
+    let content;
+    try { content = fs.readFileSync(skillPath, 'utf-8'); } catch { continue; }
+    const fm = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fm) continue;
+    if (!/^source:\s*scan\s*$/m.test(fm[1])) continue;
+
+    // Skip if expected in current run
+    if (expectedFolders.has(entry)) continue;
+
+    // Orphan — remove
+    if (DRY_RUN) {
+      log.push(`  [cleanup-dry] would remove orphan: ${entry}`);
+      removed++;
+    } else {
+      try {
+        fs.rmSync(folderPath, { recursive: true, force: true });
+        log.push(`  [cleanup] removed orphan: ${entry}`);
+        removed++;
+      } catch (err) {
+        log.push(`  [cleanup] FAILED to remove ${entry}: ${err.message}`);
+      }
+    }
+  }
+  return removed;
 }
+
+// Fail-open: never crash the calling process
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`[skill-generator] Fatal error: ${err.message}\n${err.stack}\n`);
+    process.exit(0); // fail-open
+  }
+}
+
+// Export for testing
+module.exports = { validateSkill, genClusterSkill, stackLabel, cleanupOrphanSkills };

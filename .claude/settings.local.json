@@ -7,7 +7,11 @@
       "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-command-authoring/references\")",
       "Bash(mkdir -p \"C:/Atiz/Mustard/templates/.claude/skills/templates-skill-authoring/references\")",
       "Read(//c/Atiz/Mustard/$APPDATA/Claude/**)",
-      "Read(//c/Atiz/Mustard/$HOME/.claude/**)"
+      "Read(//c/Atiz/Mustard/$HOME/.claude/**)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin dev:*)",
+      "Bash(git merge dev --ff-only:*)",
+      "Bash(git merge dev_rubens --ff-only:*)"
     ]
   }
 }

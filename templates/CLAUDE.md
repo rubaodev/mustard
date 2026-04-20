@@ -95,6 +95,7 @@ Three enforcement hooks reduce token waste across all projects:
 | `bash-native-redirect.js` | Bash | strict/warn/off | Blocks grep/ls/cat/head/tail/find → suggests Grep/Glob/Read tools. Warns on piped commands too. |
 | `model-routing-gate.js` | Task | strict/warn/off | Blocks model upgrades vs routing table. Advises when no model specified. |
 | `tool-use-counter.js` | .* + SubagentStart/Stop | hard | Caps Explore agents at 15 tool uses (warn at 12) |
+| `recommended-skills-audit.js` | Task | advisory | Conta skills listados no prompt; warn se >10; não bloqueia |
 
 **Environment overrides:**
 - `MUSTARD_BASH_REDIRECT_MODE=warn|strict|off` (default: strict)

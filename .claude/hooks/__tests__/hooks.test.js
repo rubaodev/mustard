@@ -1796,3 +1796,209 @@ describe("debug-loop-guard.js", () => {
     }
   });
 });
+
+// ─── knowledge-extract prescriptions ────────────────────────────────────────
+
+describe("knowledge-extract prescriptions", () => {
+  const { extractPatternsFromStates, derivePrescription } = require("../_lib/knowledge-extract.js");
+
+  it("should emit L0-violation prescription when Bash+Edit dominate over Agent with high retries", () => {
+    // Bash(9) + Edit(17) = 26; Agent(3)*3 = 9; 26 > 9. retries=4 > 2.
+    const states = [{
+      specName: "login-feature",
+      metrics: {
+        retries: 4,
+        apiCalls: 40,
+        toolBreakdown: { Bash: 9, Edit: 17, Agent: 3 },
+      },
+    }];
+
+    const patterns = extractPatternsFromStates(states);
+    // retries > 2 triggers the high-retry entry
+    const retryEntry = patterns.find(p => p.name === "high-retry-login-feature");
+    assert.ok(retryEntry, "Expected high-retry entry");
+    assert.ok(retryEntry.prescription, "Expected prescription field");
+    assert.ok(
+      /delegate investigation via Task\(general-purpose\)/.test(retryEntry.prescription),
+      "Prescription should instruct delegation via Task(general-purpose)"
+    );
+    assert.ok(retryEntry.tags.includes("prescriptive"), "Tags should include 'prescriptive'");
+    // Back-compat: original tags preserved
+    assert.ok(retryEntry.tags.includes("retry"));
+    assert.ok(retryEntry.tags.includes("pipeline"));
+    assert.ok(retryEntry.tags.includes("lesson"));
+    // Back-compat: description still present
+    assert.ok(retryEntry.description.includes("4 retries"));
+  });
+
+  it("should emit fragmentation prescription when apiCalls > 50 AND retries > 3", () => {
+    // apiCalls=81, retries=5, balanced tool usage (no L0-violation match)
+    const states = [{
+      specName: "big-refactor",
+      metrics: {
+        retries: 5,
+        apiCalls: 81,
+        toolBreakdown: { Bash: 10, Edit: 10, Agent: 8 },
+      },
+    }];
+
+    const patterns = extractPatternsFromStates(states);
+    // apiCalls > 50 triggers heavy-pipeline; retries > 2 also triggers high-retry.
+    const heavyEntry = patterns.find(p => p.name === "heavy-pipeline-big-refactor");
+    assert.ok(heavyEntry, "Expected heavy-pipeline entry");
+    assert.ok(heavyEntry.prescription, "Expected prescription field");
+    assert.ok(
+      /split into at least 2 smaller pipelines/.test(heavyEntry.prescription),
+      "Prescription should suggest splitting into smaller pipelines"
+    );
+    assert.ok(heavyEntry.tags.includes("prescriptive"));
+    assert.ok(heavyEntry.tags.includes("optimization"));
+    assert.ok(heavyEntry.tags.includes("pipeline"));
+    assert.ok(heavyEntry.description.includes("81 API calls"));
+  });
+
+  it("should emit reactive-iteration prescription when Edit > 15 and Write < 3", () => {
+    // Edit=20 > 15, Write=1 < 3, retries=3 to trigger the high-retry entry
+    // (needs retries > 2 OR apiCalls > 50 to produce any entry at all).
+    // Pick retries=3 and small Bash/Agent to avoid L0-violation heuristic dominance
+    // but note: the heuristic checks order — L0 fires first if bash+edit>3*agent AND retries>2.
+    // Use bash=0, edit=20, agent=10 so bash+edit=20 vs 3*agent=30 → 20 < 30 → L0 skipped.
+    const states = [{
+      specName: "tweak-hell",
+      metrics: {
+        retries: 3,
+        apiCalls: 40,
+        toolBreakdown: { Bash: 0, Edit: 20, Write: 1, Agent: 10 },
+      },
+    }];
+
+    const patterns = extractPatternsFromStates(states);
+    const retryEntry = patterns.find(p => p.name === "high-retry-tweak-hell");
+    assert.ok(retryEntry, "Expected high-retry entry");
+    assert.ok(retryEntry.prescription, "Expected prescription field");
+    assert.ok(
+      /investigate with Read\+Grep BEFORE editing/.test(retryEntry.prescription),
+      "Prescription should instruct Read+Grep investigation before editing"
+    );
+    assert.ok(retryEntry.tags.includes("prescriptive"));
+  });
+
+  it("should NOT add prescription or prescriptive tag when no heuristic matches", () => {
+    // retries=3 to trigger high-retry entry, but balanced tools so none of the
+    // heuristics fire (edit<=15, apiCalls<=50, bash+edit not >3*agent).
+    const states = [{
+      specName: "mild-case",
+      metrics: {
+        retries: 3,
+        apiCalls: 10,
+        toolBreakdown: { Bash: 2, Edit: 2, Agent: 5, Write: 1 },
+      },
+    }];
+
+    const patterns = extractPatternsFromStates(states);
+    const retryEntry = patterns.find(p => p.name === "high-retry-mild-case");
+    assert.ok(retryEntry, "Expected high-retry entry");
+    assert.equal(retryEntry.prescription, undefined, "No prescription when no heuristic matches");
+    assert.ok(!retryEntry.tags.includes("prescriptive"),
+      "'prescriptive' tag must NOT be added when no prescription");
+    // Original schema preserved
+    assert.ok(retryEntry.tags.includes("retry"));
+    assert.ok(retryEntry.description);
+    assert.equal(retryEntry.source, "session-knowledge");
+  });
+
+  it("derivePrescription should return null for empty / trivial metrics", () => {
+    assert.equal(derivePrescription({}), null);
+    assert.equal(derivePrescription({ retries: 1, apiCalls: 10, toolBreakdown: {} }), null);
+    assert.equal(derivePrescription(null), null);
+  });
+});
+
+// ─── user-prompt-hint.js ─────────────────────────────────────────────────────
+
+describe("user-prompt-hint.js", () => {
+  const hook = "user-prompt-hint.js";
+
+  function runHookWithEnv(hookFile, inputObj, extraEnv = {}) {
+    return new Promise((resolve, reject) => {
+      const { spawn } = require("node:child_process");
+      const child = spawn(process.execPath, [path.join(HOOKS_DIR, hookFile)], {
+        cwd: PROJECT_DIR,
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: PROJECT_DIR,
+          ...extraEnv,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("error", reject);
+      child.on("close", (code) => {
+        let parsed = null;
+        if (stdout.trim()) {
+          try { parsed = JSON.parse(stdout.trim()); } catch { /* not JSON */ }
+        }
+        resolve({ code, stdout: stdout.trim(), stderr: stderr.trim(), parsed });
+      });
+      child.stdin.write(JSON.stringify(inputObj));
+      child.stdin.end();
+    });
+  }
+
+  it("prompt with bugfix keyword 'erro' should suggest /mustard:bugfix", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "erro de null pointer no serviço" });
+    assert.equal(result.code, 0);
+    assert.ok(result.parsed, "Should output JSON");
+    const ctx = result.parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes("/mustard:bugfix"), `Expected /mustard:bugfix in: ${ctx}`);
+  });
+
+  it("prompt starting with slash command should produce no output", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "/mustard:feature add login" });
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "", "No output for slash-prefixed prompts");
+  });
+
+  it("prompt with analysis keyword 'analise' should suggest /mustard:task", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "analise esse código e me diga o que está errado" });
+    assert.equal(result.code, 0);
+    assert.ok(result.parsed, "Should output JSON");
+    const ctx = result.parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes("/mustard:task"), `Expected /mustard:task in: ${ctx}`);
+  });
+
+  it("prompt with feature keyword 'criar' should suggest /mustard:feature", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "criar um novo endpoint de login" });
+    assert.equal(result.code, 0);
+    assert.ok(result.parsed, "Should output JSON");
+    const ctx = result.parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes("/mustard:feature"), `Expected /mustard:feature in: ${ctx}`);
+  });
+
+  it("prompt with enhancement keyword 'melhorar' should suggest /mustard:feature", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "melhorar a performance da tela de usuários" });
+    assert.equal(result.code, 0);
+    assert.ok(result.parsed, "Should output JSON");
+    const ctx = result.parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes("/mustard:feature"), `Expected /mustard:feature in: ${ctx}`);
+  });
+
+  it("random prompt with no keywords should produce no output", async () => {
+    const result = await runHookWithEnv(hook, { prompt: "oi tudo bem como vai você" });
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "", "No output for unrelated prompts");
+  });
+
+  it("MUSTARD_DISABLED_HOOKS=user-prompt-hint should produce no output", async () => {
+    const result = await runHookWithEnv(
+      hook,
+      { prompt: "erro de null pointer" },
+      { MUSTARD_DISABLED_HOOKS: "user-prompt-hint" }
+    );
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "", "No output when hook is disabled");
+  });
+});

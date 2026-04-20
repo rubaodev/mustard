@@ -94,6 +94,10 @@ process.stdin.on('end', () => {
       line1.push(parts.join(''));
     }
 
+    // Mode indicator (Opus direct, no pipeline)
+    const modeIndicator = buildModeIndicator(data, projectDir, cwd);
+    if (modeIndicator) line1.push(modeIndicator);
+
     // Model
     const rawModel = data.model?.display_name || data.model?.id || 'Claude';
     const modelShort = rawModel.replace(/^Claude\s*/i, '').replace(/^claude-/i, '');
@@ -134,6 +138,38 @@ process.stdin.on('end', () => {
 });
 
 // ── Segment builders ──
+
+function hasPipelineActive(dir) {
+  try {
+    const statesDir = path.join(dir, '.claude', '.pipeline-states');
+    const legacyFile = path.join(dir, '.claude', '.pipeline-state.json');
+    if (fs.existsSync(statesDir)) {
+      const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json'));
+      for (const f of files) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8'));
+          if (!TERMINAL_STATUSES.has(raw.status)) return true;
+        } catch {}
+      }
+    }
+    if (fs.existsSync(legacyFile)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(legacyFile, 'utf8'));
+        if (!TERMINAL_STATUSES.has(raw.status)) return true;
+      } catch {}
+    }
+    return false;
+  } catch { return false; }
+}
+
+function buildModeIndicator(data, projectDir, cwd) {
+  try {
+    if (hasPipelineActive(projectDir || cwd)) return null;
+    const modelStr = (data.model?.display_name || data.model?.id || '').toLowerCase();
+    if (!modelStr.includes('opus')) return null;
+    return `${C.yellow}\u26A0 direct${C.reset}`;
+  } catch { return null; }
+}
 
 function buildModuleSegment(cwd, projectDir) {
   let moduleName = path.basename(cwd);

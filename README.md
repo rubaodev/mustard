@@ -220,7 +220,7 @@ mustard review --ci --pr 42
 | Command | Description |
 |---------|-------------|
 | `/stats` | Pipeline metrics, token savings, performance |
-| `/metrics` | Enforcement metrics report — hook hit rates, budget distributions, gate activity |
+| `/metrics` | Enforcement metrics report — hook hit rates, budget distributions, gate activity. Supports `--compare <from> <to>` (git tag or ISO date) to diff two windows |
 | `/knowledge notes [target]` | Manage project observations |
 | `/knowledge audit` | Audit memory for duplicates |
 | `/knowledge report daily\|weekly` | Progress reports from git data |
@@ -535,6 +535,9 @@ npm run build
 
 # Run hook tests
 node --test templates/hooks/__tests__/hooks.test.js
+
+# Run script tests (metrics-report, etc.)
+node --test templates/scripts/__tests__/
 
 # Test locally
 node bin/mustard.js init
