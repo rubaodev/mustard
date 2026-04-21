@@ -33,7 +33,7 @@ function main() {
   const statesDir = path.join(claudeDir, '.pipeline-states');
   const activeSpecDir = path.join(claudeDir, 'spec', 'active');
   if (fs.existsSync(statesDir)) {
-    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json'));
+    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
     const activeBuckets = [];
     const orphanedBuckets = [];
     for (const f of files) {
@@ -49,7 +49,7 @@ function main() {
         lines.push(`## ${isOrphaned ? 'Orphaned' : 'Active'}: ${name}`);
         lines.push(`- Duration: ${duration}`);
         lines.push(`- API calls: ${m.apiCalls || 0}`);
-        lines.push(`- Retries: ${m.retries || 0}`);
+        lines.push(`- Hook retries: ${m.retries || 0}`);
         if (m.toolBreakdown && Object.keys(m.toolBreakdown).length > 0) {
           lines.push('- Tool breakdown:');
           for (const [tool, count] of Object.entries(m.toolBreakdown).sort((a, b) => b[1] - a[1])) {
@@ -102,7 +102,7 @@ function main() {
           parts.push(`### ${name}`);
           parts.push(`- Duration: ${duration}`);
           parts.push(`- API calls: ${m.apiCalls || 0}`);
-          parts.push(`- Retries: ${m.retries || 0}`);
+          parts.push(`- Hook retries: ${m.retries || 0}`);
           if (m.rtkSavings) {
             parts.push(`- RTK savings: ${m.rtkSavings.pct}% (${Math.round((m.rtkSavings.saved || 0) / 1000)}k tokens)`);
           }
@@ -119,7 +119,7 @@ function main() {
         parts.push('## Averages (last ' + count + ' pipelines)');
         parts.push(`- Avg duration: ${formatMs(Math.round(totalDurationMs / count))}`);
         parts.push(`- Avg API calls: ${Math.round(totalCalls / count)}`);
-        parts.push(`- Avg retries: ${Math.round(totalRetries / count)}`);
+        parts.push(`- Avg hook retries: ${Math.round(totalRetries / count)}`);
         parts.push('');
       }
 
@@ -184,8 +184,9 @@ function main() {
         var pass1Pct = Math.round((pass1Count / totalPipelines) * 100);
         var avgRetries = (totalRetrySum / totalPipelines).toFixed(1);
         parts.push('## Pass@1 Metrics');
-        parts.push('- Pass@1: ' + pass1Pct + '% (' + pass1Count + '/' + totalPipelines + ' completed without retries)');
-        parts.push('- Avg retries per pipeline: ' + avgRetries);
+        parts.push('- Pass@1 (hook-level): ' + pass1Pct + '% (' + pass1Count + '/' + totalPipelines + ' completed with zero hook retries)');
+        parts.push('- Avg hook retries per pipeline: ' + avgRetries);
+        parts.push('- Note: counts hook/sandbox events, not agent redispatches. True agent-level Pass@1 not yet tracked.');
         parts.push('');
       }
     }

@@ -24,42 +24,61 @@ function main() {
   parts.push('# Pipeline Metrics');
   parts.push('');
 
-  // Active pipelines
+  // Active & Orphaned pipelines
+  //
+  // A pipeline-state file is "Active" iff its spec still lives in
+  // .claude/spec/active/{name}/. If the spec has moved to completed/ or no
+  // longer exists, the state file is an orphan — reported under a separate
+  // heading so users can reconcile it via /mustard:complete or /mustard:maint.
   const statesDir = path.join(claudeDir, '.pipeline-states');
+  const activeSpecDir = path.join(claudeDir, 'spec', 'active');
   if (fs.existsSync(statesDir)) {
-    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json'));
+    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    const activeBuckets = [];
+    const orphanedBuckets = [];
     for (const f of files) {
       try {
         const state = JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8'));
-        if (state.metrics) {
-          const name = f.replace('.json', '');
-          const m = state.metrics;
-          const duration = m.startedAt ? formatDuration(new Date(m.startedAt), new Date()) : 'unknown';
-          parts.push(`## Active: ${name}`);
-          parts.push(`- Duration: ${duration}`);
-          parts.push(`- API calls: ${m.apiCalls || 0}`);
-          parts.push(`- Retries: ${m.retries || 0}`);
-          if (m.toolBreakdown && Object.keys(m.toolBreakdown).length > 0) {
-            parts.push('- Tool breakdown:');
-            for (const [tool, count] of Object.entries(m.toolBreakdown).sort((a, b) => b[1] - a[1])) {
-              parts.push(`  - ${tool}: ${count}`);
-            }
+        if (!state.metrics) continue;
+        const name = f.replace('.json', '');
+        const specPath = path.join(activeSpecDir, name);
+        const isOrphaned = !fs.existsSync(specPath);
+        const m = state.metrics;
+        const duration = m.startedAt ? formatDuration(new Date(m.startedAt), new Date()) : 'unknown';
+        const lines = [];
+        lines.push(`## ${isOrphaned ? 'Orphaned' : 'Active'}: ${name}`);
+        lines.push(`- Duration: ${duration}`);
+        lines.push(`- API calls: ${m.apiCalls || 0}`);
+        lines.push(`- Hook retries: ${m.retries || 0}`);
+        if (m.toolBreakdown && Object.keys(m.toolBreakdown).length > 0) {
+          lines.push('- Tool breakdown:');
+          for (const [tool, count] of Object.entries(m.toolBreakdown).sort((a, b) => b[1] - a[1])) {
+            lines.push(`  - ${tool}: ${count}`);
           }
-          if (m.gate_saves !== undefined) parts.push(`- Gate saves: ${m.gate_saves}`);
-          if (m.wave_reentry !== undefined) parts.push(`- Wave reentries: ${m.wave_reentry}`);
-          if (m.skillHits && Object.keys(m.skillHits).length > 0) {
-            parts.push('- Skill hits:');
-            for (const [agent, hits] of Object.entries(m.skillHits).sort()) {
-              const pct = hits.loaded > 0 ? Math.round((hits.read / hits.loaded) * 100) + '%' : '\u2014';
-              parts.push(`  - ${agent}: ${hits.read}/${hits.loaded} (${pct})`);
-            }
-          }
-          parts.push('');
         }
+        if (m.gate_saves !== undefined) lines.push(`- Gate saves: ${m.gate_saves}`);
+        if (m.wave_reentry !== undefined) lines.push(`- Wave reentries: ${m.wave_reentry}`);
+        if (m.skillHits && Object.keys(m.skillHits).length > 0) {
+          lines.push('- Skill hits:');
+          for (const [agent, hits] of Object.entries(m.skillHits).sort()) {
+            const pct = hits.loaded > 0 ? Math.round((hits.read / hits.loaded) * 100) + '%' : '\u2014';
+            lines.push(`  - ${agent}: ${hits.read}/${hits.loaded} (${pct})`);
+          }
+        }
+        if (isOrphaned) {
+          lines.push('- Spec: not in spec/active/ (likely completed without /mustard:complete)');
+        }
+        lines.push('');
+        (isOrphaned ? orphanedBuckets : activeBuckets).push(lines);
       } catch {}
     }
+    for (const block of activeBuckets) for (const line of block) parts.push(line);
+    for (const block of orphanedBuckets) for (const line of block) parts.push(line);
+    if (orphanedBuckets.length > 0) {
+      parts.push(`> ${orphanedBuckets.length} orphaned pipeline state(s) detected. Run \`/mustard:complete {spec-name}\` or \`/mustard:maint\` to reconcile.`);
+      parts.push('');
+    }
   }
-
   // Completed pipelines (archived metrics)
   const metricsDir = path.join(claudeDir, 'metrics');
   if (fs.existsSync(metricsDir)) {
@@ -83,7 +102,7 @@ function main() {
           parts.push(`### ${name}`);
           parts.push(`- Duration: ${duration}`);
           parts.push(`- API calls: ${m.apiCalls || 0}`);
-          parts.push(`- Retries: ${m.retries || 0}`);
+          parts.push(`- Hook retries: ${m.retries || 0}`);
           if (m.rtkSavings) {
             parts.push(`- RTK savings: ${m.rtkSavings.pct}% (${Math.round((m.rtkSavings.saved || 0) / 1000)}k tokens)`);
           }
@@ -100,7 +119,7 @@ function main() {
         parts.push('## Averages (last ' + count + ' pipelines)');
         parts.push(`- Avg duration: ${formatMs(Math.round(totalDurationMs / count))}`);
         parts.push(`- Avg API calls: ${Math.round(totalCalls / count)}`);
-        parts.push(`- Avg retries: ${Math.round(totalRetries / count)}`);
+        parts.push(`- Avg hook retries: ${Math.round(totalRetries / count)}`);
         parts.push('');
       }
 
@@ -165,8 +184,9 @@ function main() {
         var pass1Pct = Math.round((pass1Count / totalPipelines) * 100);
         var avgRetries = (totalRetrySum / totalPipelines).toFixed(1);
         parts.push('## Pass@1 Metrics');
-        parts.push('- Pass@1: ' + pass1Pct + '% (' + pass1Count + '/' + totalPipelines + ' completed without retries)');
-        parts.push('- Avg retries per pipeline: ' + avgRetries);
+        parts.push('- Pass@1 (hook-level): ' + pass1Pct + '% (' + pass1Count + '/' + totalPipelines + ' completed with zero hook retries)');
+        parts.push('- Avg hook retries per pipeline: ' + avgRetries);
+        parts.push('- Note: counts hook/sandbox events, not agent redispatches. True agent-level Pass@1 not yet tracked.');
         parts.push('');
       }
     }

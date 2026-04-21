@@ -1814,21 +1814,19 @@ describe("knowledge-extract prescriptions", () => {
     }];
 
     const patterns = extractPatternsFromStates(states);
-    // retries > 2 triggers the high-retry entry
-    const retryEntry = patterns.find(p => p.name === "high-retry-login-feature");
-    assert.ok(retryEntry, "Expected high-retry entry");
+    // retries > 2 triggers the high-hook-retry entry
+    const retryEntry = patterns.find(p => p.name === "high-hook-retry-login-feature");
+    assert.ok(retryEntry, "Expected high-hook-retry entry");
     assert.ok(retryEntry.prescription, "Expected prescription field");
     assert.ok(
       /delegate investigation via Task\(general-purpose\)/.test(retryEntry.prescription),
       "Prescription should instruct delegation via Task(general-purpose)"
     );
     assert.ok(retryEntry.tags.includes("prescriptive"), "Tags should include 'prescriptive'");
-    // Back-compat: original tags preserved
-    assert.ok(retryEntry.tags.includes("retry"));
+    assert.ok(retryEntry.tags.includes("hook-retry"));
     assert.ok(retryEntry.tags.includes("pipeline"));
     assert.ok(retryEntry.tags.includes("lesson"));
-    // Back-compat: description still present
-    assert.ok(retryEntry.description.includes("4 retries"));
+    assert.ok(retryEntry.description.includes("4 hook-level retries"));
   });
 
   it("should emit fragmentation prescription when apiCalls > 50 AND retries > 3", () => {
@@ -1843,7 +1841,7 @@ describe("knowledge-extract prescriptions", () => {
     }];
 
     const patterns = extractPatternsFromStates(states);
-    // apiCalls > 50 triggers heavy-pipeline; retries > 2 also triggers high-retry.
+    // apiCalls > 50 triggers heavy-pipeline; retries > 2 also triggers high-hook-retry.
     const heavyEntry = patterns.find(p => p.name === "heavy-pipeline-big-refactor");
     assert.ok(heavyEntry, "Expected heavy-pipeline entry");
     assert.ok(heavyEntry.prescription, "Expected prescription field");
@@ -1858,7 +1856,7 @@ describe("knowledge-extract prescriptions", () => {
   });
 
   it("should emit reactive-iteration prescription when Edit > 15 and Write < 3", () => {
-    // Edit=20 > 15, Write=1 < 3, retries=3 to trigger the high-retry entry
+    // Edit=20 > 15, Write=1 < 3, retries=3 to trigger the high-hook-retry entry
     // (needs retries > 2 OR apiCalls > 50 to produce any entry at all).
     // Pick retries=3 and small Bash/Agent to avoid L0-violation heuristic dominance
     // but note: the heuristic checks order — L0 fires first if bash+edit>3*agent AND retries>2.
@@ -1873,8 +1871,8 @@ describe("knowledge-extract prescriptions", () => {
     }];
 
     const patterns = extractPatternsFromStates(states);
-    const retryEntry = patterns.find(p => p.name === "high-retry-tweak-hell");
-    assert.ok(retryEntry, "Expected high-retry entry");
+    const retryEntry = patterns.find(p => p.name === "high-hook-retry-tweak-hell");
+    assert.ok(retryEntry, "Expected high-hook-retry entry");
     assert.ok(retryEntry.prescription, "Expected prescription field");
     assert.ok(
       /investigate with Read\+Grep BEFORE editing/.test(retryEntry.prescription),
@@ -1884,7 +1882,7 @@ describe("knowledge-extract prescriptions", () => {
   });
 
   it("should NOT add prescription or prescriptive tag when no heuristic matches", () => {
-    // retries=3 to trigger high-retry entry, but balanced tools so none of the
+    // retries=3 to trigger high-hook-retry entry, but balanced tools so none of the
     // heuristics fire (edit<=15, apiCalls<=50, bash+edit not >3*agent).
     const states = [{
       specName: "mild-case",
@@ -1896,13 +1894,12 @@ describe("knowledge-extract prescriptions", () => {
     }];
 
     const patterns = extractPatternsFromStates(states);
-    const retryEntry = patterns.find(p => p.name === "high-retry-mild-case");
-    assert.ok(retryEntry, "Expected high-retry entry");
+    const retryEntry = patterns.find(p => p.name === "high-hook-retry-mild-case");
+    assert.ok(retryEntry, "Expected high-hook-retry entry");
     assert.equal(retryEntry.prescription, undefined, "No prescription when no heuristic matches");
     assert.ok(!retryEntry.tags.includes("prescriptive"),
       "'prescriptive' tag must NOT be added when no prescription");
-    // Original schema preserved
-    assert.ok(retryEntry.tags.includes("retry"));
+    assert.ok(retryEntry.tags.includes("hook-retry"));
     assert.ok(retryEntry.description);
     assert.equal(retryEntry.source, "session-knowledge");
   });

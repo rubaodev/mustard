@@ -82,15 +82,17 @@ function extractPatternsFromStates(stateObjects) {
     var label = state.specName || state._file || 'unknown';
     var prescription = derivePrescription(metrics);
 
-    // High retry count → lesson
+    // High hook-retry count → lesson. Counts hook/sandbox events, not agent
+    // redispatches — a clean Pass@1 pipeline can still accumulate dozens.
     if (metrics.retries && metrics.retries > 2) {
       var retryEntry = {
         type: 'convention',
-        name: 'high-retry-' + label,
-        description: 'Pipeline required ' + metrics.retries + ' retries. Tool breakdown: ' +
+        name: 'high-hook-retry-' + label,
+        description: 'Pipeline triggered ' + metrics.retries + ' hook-level retries ' +
+          '(sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: ' +
           JSON.stringify(metrics.toolBreakdown || {}),
         source: 'session-knowledge',
-        tags: ['retry', 'pipeline', 'lesson'],
+        tags: ['hook-retry', 'pipeline', 'lesson'],
       };
       if (prescription) {
         retryEntry.prescription = prescription;
