@@ -263,7 +263,7 @@ source: scan
 See `references/examples.md` for extracted code.
 ```
 
-**Important:** Do NOT include synthesized code blocks (no fake `class Order { ... }` or language-specific stubs). The `## Convention` section lists detected fields from the registry pattern directly. The `## Real examples` section lists actual file paths from `registry.e`. Real code is extracted into `references/examples.md` from actual source files.
+**Important:** The `## Convention` section lists detected fields from the registry pattern directly (folder, base class, naming, interfaces, etc.). The `## Real examples` section lists actual file paths from the registry. Concrete code — if any is needed at all — belongs only in `references/examples.md`, extracted from real source files (never handwritten).
 
 ### references/examples.md Format
 
@@ -313,6 +313,5 @@ For each generated skill, ALSO create in `{subproject}/.claude/skills/{skill-nam
 
 ### Skills Location
 
-All skills (conceptual + cluster) live in `{subproject}/.claude/skills/{skill-name}/`, named with the subproject-short prefix (e.g. `admin-auth-guard`, `api-endpoint-wiring`, `backend-service-pattern`). This keeps subproject-specific knowledge scoped and self-contained.
-
-There is no separate root-level pool and no mechanical generator — the agent is the single source of truth for all scan-emitted skills. After this step, `/scan` §4.7 only refreshes the registry and validates SKILL.md frontmatter.
+Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
+This keeps subproject-specific knowledge self-contained and avoids duplication.

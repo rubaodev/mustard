@@ -11,8 +11,8 @@
 - `--force` — descarta tudo o que é `<!-- mustard:generated -->` e regera do zero. Semântica:
   - Ignora o incremental skip do Step 1/C: **todos** os subprojetos são reprocessados, independente de hash match ou `gitDirty`.
   - Bypassa o fast-path de §2.6 (Bootstrap): sempre regenera `.claude/CLAUDE.md` e afins.
-  - Repassa "FORCE MODE" aos Task agents do Step 3 (eles apagam `{subproject}/.claude/skills/*/` com header `mustard:generated` antes de regerar, incluindo `references/` stale).
-  - Roda `sync-registry.js --force` (§4.7) sempre — mesmo com registry já v4.0. Skill generation é 100% responsabilidade dos agentes do Step 3.
+  - Repassa "FORCE MODE" aos Task agents do Step 3 (eles apagam `{subproject}/.claude/skills/*/` com header `mustard:generated` antes de regerar).
+  - Roda `sync-registry.js --force` (§4.7) sempre — mesmo com registry já v4.0.
   - Skills sem o header `mustard:generated` (user-authored) são **preservadas**.
 
 ## Execution Model
@@ -342,20 +342,15 @@ See `scan-format.md` §10 for decomposition rules, SKILL.md format, and descript
 Skills are generated ONLY in `{subproject}/.claude/skills/{skill-name}/` (NOT in root `.claude/skills/`).
 Mark all with `<!-- mustard:generated -->`. Overwrite on next scan.
 
-### 4.7. Refresh Registry & Validate Skills
+### 4.7. Refresh Registry
 
-After agent-generated skills (§4.6), refresh the registry so `_patterns.discovered[]` reflects the latest cluster data for **future** scans, then validate all emitted skills.
+Run the registry scanner so the agent-generated skills of step 3 have the latest `_patterns.discovered[]` clusters available for future scans:
 
 ```bash
 node .claude/scripts/sync-registry.js --force
-node .claude/scripts/skill-validate.js --quiet
 ```
 
-**Skill generation is 100% owned by the Step 3 agents** (see `scan-format.md` §10). There is no separate mechanical generator — the agent reads `_patterns[*].discovered[]` from the registry and emits cluster skills directly into `{subproject}/.claude/skills/`. One source of truth, no template, no duplication.
-
-**All skills live in `{subproject}/.claude/skills/`** — the previous root-level duplication has been removed. Shared agents (e.g. three `frontend` apps) will each have their own subproject copy, which is acceptable because the agent tailors content to the actual subproject.
-
-**Post-generation validation:** `skill-validate.js --quiet` walks every subproject's `.claude/skills/` (from `.detect-cache.json`) and validates SKILL.md frontmatter (`name`, `description`, `source: scan|manual`). A non-zero exit (2) surfaces failures without blocking the scan.
+Skill generation itself is **entirely the responsibility of the Step 3 agents** (see `scan-format.md` §10). There is no separate mechanical generator — the agent reads `_patterns[*].discovered[]` and emits cluster skills directly.
 
 ### 4. Update CLAUDE.md files
 

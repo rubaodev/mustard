@@ -13,3 +13,4 @@
 {"ts":"2026-04-14T19:07:59.760Z","event":"bash-native-redirect","tokens_affected":3,"tokens_saved":3,"note":"redirected","from":"cat","to":"Read","command_head":"cat file.txt"}
 {"ts":"2026-04-14T23:33:26.496Z","event":"bash-native-redirect","tokens_affected":8,"tokens_saved":8,"note":"redirected","from":"cat","to":"Read","command_head":"cat /c/Atiz/Mustard/mustard.json"}
 {"ts":"2026-04-16T11:43:50.380Z","event":"bash-native-redirect","tokens_affected":4,"tokens_saved":4,"note":"redirected","from":"ls","to":"Glob","command_head":"ls src/commands/"}
+{"ts":"2026-04-21T04:49:05.072Z","event":"bash-native-redirect","tokens_affected":27,"tokens_saved":27,"note":"redirected","from":"ls","to":"Glob","command_head":"ls \"C:/Atiz/Competi/projetos/sialia/.claude/spec/planned/2026-04-20-wave1-02-con"}
