@@ -12,6 +12,8 @@ Single unified template for all dispatches:
 
 ## Dispatch Template
 
+> **First-dispatch only.** When `{retry_context}` is non-empty (granular or fix-loop retry), use the **Minimal Retry Template** from `§ Retry Modes` instead — omit CONTEXT, REFERENCE, ENTITY, SKILLS, WEB VALIDATION, ROLE, and RECIPE blocks.
+
 ```
 ## CONTEXT
 1. Read `{subproject}/CLAUDE.md` — guards, stack, paths
@@ -44,6 +46,63 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 - Return cap: follow pipeline-config.md Max Return limits (impl 40, explore 30, review 60, plan 80 lines). Focus on: files changed + non-obvious decisions + blockers only.
 
 {retry_context}
+
+## TASK
+{task_steps}
+
+Guards carregados via CLAUDE.md acima — respeite sem exceção.
+```
+
+---
+
+## Retry Modes
+
+`{retry_context}` has 3 states:
+
+| Mode | When | `{retry_context}` content |
+|------|------|---------------------------|
+| `empty` | First dispatch | Empty string — full Dispatch Template above is used |
+| `granular` | A step failed (PARTIAL escalation) | Enriched retry header (see below) |
+| `fix-loop` | Review returned REJECTED | Enriched retry header with verbatim findings (see below) |
+
+`prior_summary` and `files_modified` come from the latest `.agent-memory/_index.json` entry matching `{agent_type, pipeline}`.
+
+### `granular` format
+
+```
+## RETRY CONTEXT
+**Mode:** granular
+**Prior dispatch:** {prior_summary}
+**Files modified previously:**
+{files_modified}
+**Previous error:** {error_message}
+**Resume from step:** {N+1}
+```
+
+### `fix-loop` format
+
+```
+## RETRY CONTEXT
+**Mode:** fix-loop ({K}/2)
+**Prior dispatch:** {prior_summary}
+**Files modified previously:**
+{files_modified}
+**Review findings (verbatim):**
+{findings_verbatim}
+```
+
+### Minimal Retry Template
+
+When `{retry_context}` is non-empty, the orchestrator renders this template instead of the full Dispatch Template. Omits CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE — prior context is still cached; DON'T re-Read CLAUDE.md/guards/registry unless a modified file changed on disk since last dispatch.
+
+```
+{retry_context}
+
+## EFFICIENCY
+- Absolute paths, no cd
+- Read each file once (prior context cached — skip CLAUDE.md/guards/registry re-reads unless file changed on disk)
+- Max 3 build attempts, then STOP + report
+- Return cap: follow pipeline-config.md Max Return limits. Focus on: files changed + non-obvious decisions + blockers only.
 
 ## TASK
 {task_steps}
