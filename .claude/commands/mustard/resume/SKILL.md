@@ -110,7 +110,7 @@ Run `node .claude/scripts/diff-context.js --subproject {subproject_path}` per su
       - `{entity_info}` → `_patterns` type, refs, subs from registry
       - `{role}`, `{boundary}`, `{return_sections}` → from Role Rules table in config
       - `{validate_command}`, `{build_command}` → from Agents table in config
-      - `{retry_context}` → empty on first dispatch (see Step 4 for retries)
+      - `{retry_context}` → empty on first dispatch. On retry, fill per `agent-prompt/SKILL.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
       - `{task_steps}` → checkboxed steps from spec
       - `{recommended_skills}` → from Skill Recommendations in `.claude/pipeline-config.md`:
         1. Glob `{subproject}/.claude/skills/` for generated pattern skills
@@ -152,8 +152,36 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
     - Checklist categories: **SOLID, Design System, Patterns, i18n, Integration, Build, Elegance**
     - Each issue classified: CRITICAL (blocks), WARNING (recommended), NOTE (suggestion)
     - APPROVED (zero CRITICAL) → CLOSE
-    - REJECTED (any CRITICAL) → dispatch fix agent with exact issues, then re-review (max 2 fix loops)
+    - REJECTED (any CRITICAL) → see Step 19b § Fix Loop Dispatch Protocol (max 2 loops)
     - **NEVER skip review** — not even for Light scope. Light scope gets same checklist, just fewer files to review
+
+### Step 19b: Fix Loop Dispatch Protocol
+
+When REVIEW returns REJECTED (any CRITICAL):
+
+1. Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
+2. Extract:
+   - `prior_summary` ← `entry.summary`
+   - `files_modified` ← `entry.details.files_modified` (list)
+3. Extract review findings VERBATIM:
+   - All CRITICAL findings (required)
+   - All WARNING findings (optional — include if fix is cheap)
+   - Copy the exact text returned by the review agent; do NOT paraphrase
+4. Compose `{retry_context}` using Mode=fix-loop format (see `agent-prompt/SKILL.md § Retry Modes`). Set K = current loop number (1 or 2; max 2 fix-loops):
+   ```
+   ## RETRY CONTEXT
+   **Mode:** fix-loop ({K}/2)
+   **Prior dispatch:** {prior_summary}
+   **Files modified previously:**
+   {files_modified}
+   **Review findings (verbatim):**
+   {findings_verbatim}
+   ```
+5. Render the **Minimal Retry Template** from `agent-prompt/SKILL.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE).
+6. Dispatch the same `subagent_type` + `model` as the original impl agent (do NOT change the role or model).
+7. On return, re-dispatch REVIEW agent (normal dispatch, not retry — review is read-only).
+8. If review still REJECTED after 2 fix-loops: STOP + report exhausted retries.
+
 20. **CLOSE:**
     - `node .claude/scripts/sync-registry.js`
     - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`
@@ -170,13 +198,21 @@ When an agent fails:
    - Build error → retry from build step (don't redo edits)
    - Edit error → retry from that edit step
    - Unknown → retry all remaining unchecked steps
-3. **Re-dispatch with retry context** — fill `{retry_context}` placeholder:
-   ```
-   ## RETRY CONTEXT
-   Steps 1-{N} completed. Resume from step {N+1}.
-   Previous error: {error_message}
-   ```
-   And set `{task_steps}` to only the remaining steps ({N+1} onwards).
+3. **Re-dispatch with retry context** — fill `{retry_context}` using Mode=granular format:
+   - Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
+   - Extract `entry.summary` → `prior_summary`; `entry.details.files_modified` → `files_modified` (list)
+   - Fill:
+     ```
+     ## RETRY CONTEXT
+     **Mode:** granular
+     **Prior dispatch:** {prior_summary}
+     **Files modified previously:**
+     {files_modified}
+     **Previous error:** {error_message}
+     **Resume from step:** {N+1}
+     ```
+   - Set `{task_steps}` to only the remaining steps ({N+1} onwards)
+   - Use the **Minimal Retry Template** from `agent-prompt/SKILL.md § Retry Modes` (skips CONTEXT/REFERENCE/ENTITY/SKILLS/WEB VALIDATION/ROLE/RECIPE blocks)
 4. **Spec checkboxes:** steps 1-{N} already `[x]`, remaining continue `[ ]`
 5. **Max 2 retries per agent** — exhausted → STOP + report
 

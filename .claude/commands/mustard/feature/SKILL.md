@@ -266,7 +266,7 @@ After each agent returns, check the return value for an escalation status before
 
 If two or more agents in the same wave return `CONCERN`, surface all concerns together before starting the next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
-9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → fix + re-review (max 2 loops).
+9. **REVIEW** — dispatch review agent for each affected subproject (reads guards + relevant skills, runs 7-category checklist: SOLID, Design System, Patterns, i18n, Integration, Build, Elegance). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops).
 
    Re-reviews always dispatch with `model: "sonnet"` (see `review/SKILL.md § Model Selection`).
 10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
