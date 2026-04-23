@@ -13,11 +13,11 @@
         "lesson",
         "prescriptive"
       ],
-      "confidence": 0.9000000000000001,
-      "occurrences": 6,
+      "confidence": 1,
+      "occurrences": 9,
       "createdAt": "2026-04-21T10:45:37.650Z",
-      "updatedAt": "2026-04-22T19:27:29.576Z",
-      "lastSeen": "2026-04-22T19:27:29.576Z"
+      "updatedAt": "2026-04-23T19:02:10.841Z",
+      "lastSeen": "2026-04-23T19:02:10.841Z"
     },
     {
       "id": "convention-1776768337604",
@@ -31,11 +31,11 @@
         "lesson",
         "prescriptive"
       ],
-      "confidence": 0.9000000000000001,
-      "occurrences": 6,
+      "confidence": 1,
+      "occurrences": 9,
       "createdAt": "2026-04-21T10:45:37.604Z",
-      "updatedAt": "2026-04-22T19:27:29.530Z",
-      "lastSeen": "2026-04-22T19:27:29.530Z"
+      "updatedAt": "2026-04-23T19:02:10.803Z",
+      "lastSeen": "2026-04-23T19:02:10.803Z"
     },
     {
       "id": "convention-1776768337561",
@@ -49,11 +49,11 @@
         "lesson",
         "prescriptive"
       ],
-      "confidence": 0.9000000000000001,
-      "occurrences": 6,
+      "confidence": 1,
+      "occurrences": 9,
       "createdAt": "2026-04-21T10:45:37.561Z",
-      "updatedAt": "2026-04-22T19:27:29.489Z",
-      "lastSeen": "2026-04-22T19:27:29.489Z"
+      "updatedAt": "2026-04-23T19:02:10.762Z",
+      "lastSeen": "2026-04-23T19:02:10.762Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -67,10 +67,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 39,
+      "occurrences": 42,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-04-22T19:27:29.446Z",
-      "lastSeen": "2026-04-22T19:27:29.446Z"
+      "updatedAt": "2026-04-23T19:02:10.724Z",
+      "lastSeen": "2026-04-23T19:02:10.724Z"
     },
     {
       "id": "convention-1776768337467",
@@ -84,11 +84,11 @@
         "lesson",
         "prescriptive"
       ],
-      "confidence": 0.9000000000000001,
-      "occurrences": 6,
+      "confidence": 1,
+      "occurrences": 9,
       "createdAt": "2026-04-21T10:45:37.467Z",
-      "updatedAt": "2026-04-22T19:27:29.404Z",
-      "lastSeen": "2026-04-22T19:27:29.404Z"
+      "updatedAt": "2026-04-23T19:02:10.683Z",
+      "lastSeen": "2026-04-23T19:02:10.683Z"
     },
     {
       "id": "convention-1776771818988",
@@ -102,11 +102,11 @@
         "lesson",
         "prescriptive"
       ],
-      "confidence": 0.5,
-      "occurrences": 2,
+      "confidence": 0.6000000000000001,
+      "occurrences": 3,
       "createdAt": "2026-04-21T11:43:38.988Z",
-      "updatedAt": "2026-04-22T11:52:04.164Z",
-      "lastSeen": "2026-04-22T11:52:04.164Z"
+      "updatedAt": "2026-04-23T16:22:51.807Z",
+      "lastSeen": "2026-04-23T16:22:51.807Z"
     }
   ]
 }

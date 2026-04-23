@@ -184,6 +184,11 @@ interface MustardConfig {
     provider: string;
     submodules: boolean;
   };
+  /** Optional: commands used by close-gate.js (Wave 9 strict gates). Absence = skip that stage. */
+  testCommand?: string;
+  buildCommand?: string;
+  lintCommand?: string;
+  typeCheckCommand?: string;
 }
 
 export async function generateMustardJson(projectPath: string, options: { yes?: boolean }): Promise<void> {
@@ -266,7 +271,12 @@ export async function generateMustardJson(projectPath: string, options: { yes?: 
         flow,
         provider: 'github',
         submodules: hasSubmodules
-      }
+      },
+      // Wave 9 strict gates: populate with sensible defaults (all optional — absence = skip stage)
+      testCommand: 'npm test',
+      buildCommand: 'npm run build',
+      lintCommand: 'npm run lint',
+      typeCheckCommand: 'tsc --noEmit',
     };
   } else {
     // Interactive setup — pre-fill from existing config when reconfiguring
@@ -307,7 +317,12 @@ export async function generateMustardJson(projectPath: string, options: { yes?: 
         flow,
         provider: answers.provider || 'github',
         submodules: hasSubmodules
-      }
+      },
+      // Wave 9 strict gates: populate with sensible defaults (all optional — absence = skip stage)
+      testCommand: 'npm test',
+      buildCommand: 'npm run build',
+      lintCommand: 'npm run lint',
+      typeCheckCommand: 'tsc --noEmit',
     };
   }
 

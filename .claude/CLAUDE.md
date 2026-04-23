@@ -18,12 +18,19 @@ Any change that touches production code (schema, API, UI) → Pipeline Feature.
 Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
 
 ## Pipeline Phases
-ANALYZE → PLAN → EXECUTE → CLOSE
-- Light scope: skip PLAN (ANALYZE → EXECUTE → CLOSE)
+ANALYZE → PLAN → EXECUTE → QA → CLOSE (Wave 10)
+- Light scope: skip PLAN (ANALYZE → EXECUTE → QA → CLOSE)
   - ANALYZE: Grep/Glob direct preferred; ≤1 Task(Explore) with ≤10 tool uses allowed
   - Reclassify to Full if >5 files surface
   - All dispatched agents cap returns at ≤50 lines
-- Full scope: ANALYZE → PLAN → /approve → EXECUTE → CLOSE
+- Full scope: ANALYZE → PLAN → /approve → EXECUTE → QA → CLOSE
+
+### QA Phase (Wave 10)
+After EXECUTE completes, run QA before CLOSE:
+1. Spec PLAN must define `## Acceptance Criteria` (3-8 AC, each with a runnable command)
+2. QA agent reads spec, executes each AC, reports pass/fail
+3. close-gate blocks CLOSE unless `qa.result` with `overall=pass` exists in events log
+4. Control: `MUSTARD_QA_GATE_MODE=strict (default) | warn | off`
 
 ## Context Loading
 Agents auto-load skills from `{subproject}/.claude/skills/` based on task description.

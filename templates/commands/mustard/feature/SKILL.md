@@ -113,6 +113,28 @@ After ANALYZE completes, if the analysis required heavy exploration (>8 file rea
 - Suggest to user: _"Analysis complete. Context is heavy — consider `/compact` before we proceed to implementation, then `/resume`."_
 - This is advisory only — proceed immediately if user declines or ignores.
 
+### Decomposition Rule (Wave 7)
+
+When ANALYZE surfaces ANY of:
+- >5 files in scope, OR
+- >3 architectural layers (e.g., UI + API + service + DB), OR
+- Multiple independent sub-behaviors
+
+STOP, decompose into child specs:
+1. Define root spec name (epic) — captures the user intent.
+2. Identify 2–5 child specs — each covers 1 coherent sub-behavior, ≤5 files, ≤2 layers.
+3. Link children to root:
+   ```bash
+   node .claude/scripts/spec-link.js --parent <epic> --child <sub1> --reason "<why split>"
+   node .claude/scripts/spec-link.js --parent <epic> --child <sub2> --reason "<why split>"
+   ```
+4. Start pipeline on children in order (parallel where independent).
+5. Parent spec stays in `phase: COORDINATE` until all children reach `CLOSE` → then parent transitions to `CLOSE`.
+
+Do NOT put all implementation in one spec when the rule triggers.
+
+**COORDINATE phase (parent specs):** A spec with `children_specs.length > 0` may enter `COORDINATE`. In this phase the orchestrator tracks children progress — it does NOT implement. Update `.claude/.pipeline-states/{epic}.json` to `phase: "COORDINATE"` after linking. When all children = CLOSE, update parent to `phase: "CLOSE"`.
+
 ### End of ANALYZE — Validation
 
 Run: `rtk node .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
@@ -225,6 +247,17 @@ Before writing the single spec in Full scope, check whether the work should be d
    - If a frontend task has NO dependency on new backend endpoints or types, mark it as `(parallel-safe)` in the spec header:
      `### Frontend Agent (Wave 1, parallel-safe)`
      This allows the orchestrator to dispatch it alongside backend in Wave 1.
+   - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) with 3-8 binary, executable AC items:
+     ```markdown
+     ## Acceptance Criteria
+
+     Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
+
+     - [ ] AC-1: {description} — Command: `{exact command to verify}`
+     - [ ] AC-2: {description} — Command: `{exact command to verify}`
+     ```
+     Rules for AC: exit 0 = pass, non-zero = fail. Commands must be runnable from project root.
+     Focus on observable behavior: build succeeds, endpoint returns expected, test passes.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
 3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
@@ -251,7 +284,13 @@ Before writing the single spec in Full scope, check whether the work should be d
 
    ## Files (~{N})
    - `path/to/file.ext` (create|modify)
+
+   ## Acceptance Criteria
+
+   - [ ] AC-1: {description} — Command: `{exact command}`
+   - [ ] AC-2: {description} — Command: `{exact command}`
    ```
+   Light scope: minimum 1-3 AC items. At least AC-1 must verify the feature works.
 2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
 3. **Present full spec to user before asking for approval:**
    - Read the spec file just written and print its ENTIRE contents verbatim inside a fenced markdown block. Do NOT summarize — Light scope specs are already compact, so the full print is cheap and the user asked to read the complete plan before approving.
@@ -377,9 +416,27 @@ Before retrying, classify the failure with 3 questions:
 
 Retry cap applies to Transient + Resolvable only. Structural failures reset the attempt after spec correction.
 
+### QA Phase (Wave 10)
+
+After all EXECUTE tasks complete:
+
+1. Update pipeline state: `phaseName: "QA"`
+2. Run: `node .claude/scripts/qa-run.js --spec {specName}`
+3. If `overall=pass`: proceed to CLOSE
+4. If `overall=fail`: return failing AC list to the implementation agent for that specific criterion, re-run QA
+5. If `overall=skip` (no AC section): warn user, allow CLOSE (advisory)
+6. Maximum 3 QA iterations — after that, `AskUserQuestion`:
+   > "QA has failed 3 times for spec {specName}. Choose: (a) Fix manually and retry, (b) Relax the AC in the spec, (c) Abort pipeline."
+
+Update spec `## Acceptance Criteria` checkboxes:
+- `[x]` for each AC that passed
+- `[ ]` remains for failed AC (to be fixed)
+
+Visual update: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
+
 ## Visual Output
 
-Progress: `[v] ANALYZE  [>] PLAN  [ ] EXECUTE  [ ] CLOSE`
+Progress: `[v] ANALYZE  [>] PLAN  [ ] EXECUTE  [ ] QA  [ ] CLOSE`
 Scope tag: `[LIGHT]` or `[FULL]` after progress line.
 
 ## Rules

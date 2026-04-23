@@ -58,6 +58,11 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 2. If multiple → ask which one; if 1 → use automatically
 3. **Read entire spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
 4. If `.claude/.pipeline-states/{spec-name}.json` exists → read for current wave + scope + `explorationSummary` + `decisions`
+4b. **Harness view (Wave 3 bonus — fail-open):** Optionally enrich pipeline state with the event-log view:
+    ```bash
+    node .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}
+    ```
+    If the command succeeds, merge its `phase`, `decisions`, and `lessons` into the Handoff Summary below. If it fails or is absent, proceed with `.pipeline-states/{spec-name}.json` alone — never block on this.
 5. **Validate pipeline state integrity:**
    - Missing or unparseable JSON → rebuild from spec (phase from header, tasks from `[x]`/`[ ]` checkboxes, status inferred)
    - Phase mismatch between spec header and JSON → trust spec header (it's the source of truth)
@@ -201,7 +206,7 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
 
 When REVIEW returns REJECTED (any CRITICAL):
 
-1. Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
+1. **Try harness view first (Wave 3):** `node .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — if it returns `decisions` or `lessons`, prefer those. Otherwise fall back to reading `.claude/.agent-memory/_index.json`, finding the last entry where `agent_type == {review_target_agent_type}` and `pipeline == {spec-name}`. If absent (shouldn't happen but be defensive): fall back to first-dispatch template.
 2. Extract:
    - `prior_summary` ← `entry.summary`
    - `files_modified` ← `entry.details.files_modified` (list)
@@ -276,7 +281,7 @@ When an agent fails:
    - Edit error → retry from that edit step
    - Unknown → retry all remaining unchecked steps
 3. **Re-dispatch with retry context** — fill `{retry_context}` using Mode=granular format:
-   - Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
+   - **Try harness view first:** `node .claude/scripts/harness-views.js --view pipeline-state --spec {spec-name}` — use decisions/lessons if available. Fallback: Read `.claude/.agent-memory/_index.json`, find last entry where `agent_type == {failed_agent_type}` and `pipeline == {spec-name}`
    - Extract `entry.summary` → `prior_summary`; `entry.details.files_modified` → `files_modified` (list)
    - Fill:
      ```

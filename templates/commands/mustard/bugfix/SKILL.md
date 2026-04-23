@@ -89,7 +89,15 @@ For Fast Path (no spec yet), keep the cache in-memory only — it lives for the 
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
 
 **Fast Path:** Go directly to EXECUTE. No spec, no approval gate (Zero Context-Switch Protocol). If you want to review the fix plan before EXECUTE, force Full Path by listing >5 files in the ANALYZE return.
-**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`, then **present the full spec to the user before stopping**:
+**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`. The spec MUST include (Wave 10):
+   ```markdown
+   ## Acceptance Criteria
+
+   - [ ] AC-1: Bug is no longer reproducible — Command: `{command that previously triggered the bug}`
+   - [ ] AC-2: {additional verification if applicable} — Command: `{cmd}`
+   ```
+   Minimum 1 AC: the reproduction command for the bug (exits non-zero before fix, exits 0 after fix).
+   Then **present the full spec to the user before stopping**:
    - Read the spec file just written and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize — the user asked to read the complete plan before approving.
    - After the fenced block, instruct: _"Run `/approve` (or `/approve --resume` to chain inline) to proceed to EXECUTE."_
 
@@ -165,10 +173,21 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 - User explicitly overrides (rare) → invalidate
 - After 2 retries exhausted, the cache is naturally flushed when the pipeline aborts or advances
 
+### QA Phase (Wave 10)
+
+After EXECUTE (fix + validate) completes:
+
+1. Update pipeline state: `phaseName: "QA"`
+2. Run: `node .claude/scripts/qa-run.js --spec {specName}` (Full Path only)
+   - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness
+3. If `overall=pass`: proceed to CLOSE
+4. If `overall=fail`: the bug reproduction AC still fails — return to EXECUTE for targeted fix, max 3 QA iterations
+5. Maximum 3 QA iterations — after that, escalate to user
+
 ### CLOSE
 
 - `node .claude/scripts/sync-registry.js` (if entities changed)
-- Output bugfix report (diagnosis, fix, validation)
+- Output bugfix report (diagnosis, fix, validation, QA result)
 
 ## Zero Context-Switch Protocol
 
