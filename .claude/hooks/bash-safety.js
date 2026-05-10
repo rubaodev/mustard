@@ -16,7 +16,7 @@ const { shouldRun } = require('./_lib/hook-env.js');
 
 const DANGEROUS = [
   { re: /\brm\s+(-\w*r\w*f|--no-preserve-root|-rf|-fr)\b/i, msg: 'Recursive force delete blocked' },
-  { re: /\bgit\s+push\s+(-\w*f|--force)\b/i, msg: 'Force push blocked' },
+  { re: /\bgit\s+push\s+(-\w*f\b|--force(?!-with-lease))\b/i, msg: 'Force push blocked (use --force-with-lease for safer overwrite)' },
   { re: /\bgit\s+reset\s+--hard\b/i, msg: 'git reset --hard blocked' },
   { re: /\bgit\s+clean\s+-f/i, msg: 'git clean -f blocked' },
   { re: /\bgit\s+checkout\s+--\s*\.\s*$/i, msg: 'git checkout -- . blocked' },
