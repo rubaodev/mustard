@@ -1,0 +1,14 @@
+{
+  "git": {
+    "flow": {
+      "*": "dev",
+      "dev": "main"
+    },
+    "provider": "github",
+    "submodules": false
+  },
+  "testCommand": "npm test",
+  "buildCommand": "npm run build",
+  "lintCommand": "npm run lint",
+  "typeCheckCommand": "tsc --noEmit"
+}
