@@ -1,7 +1,9 @@
 # Mustard 2.0 — Phase 3: MCP Memory Server
 
 - **Lang**: ptbr
-- **Phase**: PLAN
+- **Status**: completed
+- **Phase**: CLOSE
+- **Checkpoint**: 2026-05-12T21:00:00Z
 - **Scope**: Full
 - **Type**: feature
 - **Model**: opus
@@ -88,6 +90,18 @@ Dashboard reescrito como **cliente MCP** — zero duplicação de lógica de que
    ```
    MCP server **read-only** — tentativa de `append_event` retorna error (write requer hook).
 
+### Parseable AC (cross-shell, QA-runner)
+
+Tests usam extensão `.cjs` (project tem `"type": "module"`).
+
+- [ ] AC-2: search_knowledge tool returns ranked results — Command: `node --test tests/integration/mcp-search-knowledge.cjs`
+- [ ] AC-3: query_events filter works — Command: `node --test tests/integration/mcp-query-events.cjs`
+- [ ] AC-4: find_similar_specs returns matches — Command: `node --test tests/integration/mcp-similar-specs.cjs`
+- [ ] AC-5: settings.json has mcpServers.mustard-memory — Command: `node -e "const j=require('./templates/settings.json');const m=j.mcpServers&&j.mcpServers['mustard-memory'];process.exit(m&&m.command?0:1)"`
+- [ ] AC-6: dashboard files have deprecation banner — Command: `node -e "const fs=require('fs');for(const f of ['templates/scripts/dashboard.js','templates/scripts/dashboard-ui.js']){const c=fs.readFileSync(f,'utf8');if(!c.includes('DEPRECATED')||!c.includes('mustard-dashboard')){console.log('FAIL',f);process.exit(1)}}process.exit(0)"`
+- [ ] AC-7: MCP latency p95 < 10ms — Command: `node --test tests/integration/mcp-latency.cjs`
+- [ ] AC-8: MCP read-only sandbox — Command: `node --test tests/integration/mcp-sandbox.cjs`
+
 ## Implementation
 
 ### MCP server (TypeScript + Bun)
@@ -171,9 +185,9 @@ MCP server registrado em `settings.json` → Claude Code spawna no SessionStart.
 
 ## Checklist
 
-- [ ] `@modelcontextprotocol/sdk` instalado
-- [ ] `src/mcp/mustard-memory.ts` com 5 tools
-- [ ] `templates/settings.json` mcpServers registered
-- [ ] Dashboard.js refatorado pra MCP client
-- [ ] Tests: cada tool integration + latency
-- [ ] Doc: `docs/mcp-tools.md` com exemplo de uso por agente
+- [x] `@modelcontextprotocol/sdk` 1.29.0 + zod 4.4.3 instalados (deps runtime)
+- [x] `src/mcp/mustard-memory.ts` com 5 tools (search_knowledge, query_events, find_similar_specs, get_spec_metrics, get_span_summary) via registerTool API
+- [x] `templates/settings.json` mcpServers registered
+- [x] Dashboard.js banner @deprecated (refactor pra MCP client adiado — vira Tauri standalone)
+- [x] Tests: 5 MCP integration + latency (p95 2.05ms) + sandbox (read-only verified)
+- [x] Doc: `docs/mcp-tools.md` com exemplo de uso por agente

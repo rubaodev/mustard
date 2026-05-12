@@ -15,6 +15,14 @@
     "MUSTARD_CHECKLIST_GATE_MODE": "strict"
   },
 
+  "mcpServers": {
+    "mustard-memory": {
+      "command": "bun",
+      "args": ["dist/mcp/mustard-memory.js"],
+      "env": { "MUSTARD_DB_PATH": ".claude/.harness/mustard.db" }
+    }
+  },
+
   "permissions": {
     "allow": [
       "Read",
