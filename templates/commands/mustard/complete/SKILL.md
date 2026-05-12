@@ -105,7 +105,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
        "retries": "{from metrics}",
        "pass1": "{true if metrics.retries === 0, otherwise false}",
        "toolBreakdown": "{from metrics}",
-       "agentAttempts": "{from metrics, if present}",
+       "dispatchFailuresByPhase": "{from metrics, if present}",
        "gate_saves": "{from metrics, if present}",
        "wave_reentry": "{from metrics, if present}",
        "skillHits": "{from metrics, if present}",
@@ -113,7 +113,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
      }
      ```
    - Set `"pass1": true` if `metrics.retries === 0`, otherwise `"pass1": false`
-   - Omit `agentAttempts`, `gate_saves`, `wave_reentry`, `skillHits` if not present in state metrics
+   - Omit `dispatchFailuresByPhase`, `gate_saves`, `wave_reentry`, `skillHits` if not present in state metrics
    - If no metrics in state file, skip silently
 7. **Output — visual feedback:**
 

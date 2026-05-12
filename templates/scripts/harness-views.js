@@ -161,7 +161,7 @@ function buildPipelineState(events, opts) {
 
   // Retries are real dispatch failures (is_error=true with API/infra keyword),
   // not heuristic keyword hits on tool_input. Group by phase so worstPhase
-  // remains meaningful post-Wave 4 (replaces dead agentAttempts metric).
+  // remains meaningful.
   metrics.retries = dispatchFailures.length;
   metrics.dispatchFailuresByPhase = {};
   for (const ev of dispatchFailures) {

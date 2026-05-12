@@ -1,7 +1,9 @@
 # Mustard 2.0 — Phase 1: Event Store SQLite + Projeções
 
 - **Lang**: ptbr
-- **Phase**: PLAN
+- **Status**: completed
+- **Phase**: CLOSE
+- **Checkpoint**: 2026-05-12T19:15:00Z
 - **Scope**: Full
 - **Type**: feature
 - **Model**: opus
@@ -49,9 +51,9 @@ Hoje cada hook re-implementa parse de `events.jsonl` (`O(n)` scan). FTS5 dá `O(
 
 3. **Migration idempotente do events.jsonl real do sialia**
    ```bash
-   cp -r 'C:/Atiz/Competi/projetos/sialia/.claude/.harness' /tmp/sialia-harness && node dist/migrate/jsonl-to-sqlite.js /tmp/sialia-harness && node dist/migrate/jsonl-to-sqlite.js /tmp/sialia-harness && node -e "const s=require('./dist/runtime/event-store.js');const e=new s.EventStore('/tmp/sialia-harness/mustard.db');e.init();const c=e.eventCount();process.exit(c===1348?0:1)"
+   bun -e "const fs=require('fs');const path=require('path');const os=require('os');const tmp=path.join(os.tmpdir(),'sialia-harness-qa');fs.rmSync(tmp,{recursive:true,force:true});fs.mkdirSync(tmp,{recursive:true});fs.cpSync('C:/Atiz/Competi/projetos/sialia/.claude/.harness',tmp,{recursive:true});const lines=fs.readFileSync(path.join(tmp,'events.jsonl'),'utf8').split('\n').filter(l=>l.trim());const seen=new Set();for(const l of lines){try{const e=JSON.parse(l);seen.add(e.ts+'|'+(e.sessionId||'')+'|'+e.event+'|'+(e.actor&&e.actor.id||''))}catch(_){}}const expected=seen.size;const {execSync}=require('child_process');execSync('bun dist/migrate/jsonl-to-sqlite.js '+JSON.stringify(tmp),{stdio:'pipe'});execSync('bun dist/migrate/jsonl-to-sqlite.js '+JSON.stringify(tmp),{stdio:'pipe'});const s=require('./dist/runtime/event-store.js');const e=new s.EventStore(path.join(tmp,'mustard.db'));e.init();const c=e.eventCount();console.log('expected:',expected,'actual:',c);process.exit(c===expected?0:1)"
    ```
-   Rodar 2x deve produzir exatamente 1348 events (idempotent).
+   Rodar 2x produz exatamente o mesmo count que linhas únicas (chave composta `ts|sessionId|event|actor.id`) em events.jsonl. Conta dinâmica — events.jsonl cresce a cada sessão. Executado sob Bun (EventStore requer `bun:sqlite`).
 
 4. **Query por spec retorna mesmos números que buildPipelineState**
    ```bash
@@ -59,11 +61,11 @@ Hoje cada hook re-implementa parse de `events.jsonl` (`O(n)` scan). FTS5 dá `O(
    ```
    Compara `EventStore.query({spec}).aggregate()` com `buildPipelineState(events,{spec})` pros 3 specs recuperáveis. Deve ser idêntico.
 
-5. **FTS5 search <1ms em 1348 events**
+5. **FTS5 search <5ms em ~1444 events**
    ```bash
-   node -e "const{performance}=require('perf_hooks');const s=require('./dist/runtime/event-store.js');const e=new s.EventStore('/tmp/sialia-harness/mustard.db');e.init();const t=performance.now();const r=e.search('telegram');const d=performance.now()-t;console.log('search took',d.toFixed(2),'ms, results:',r.length);process.exit(d<5?0:1)"
+   bun -e "const{performance}=require('perf_hooks');const path=require('path');const os=require('os');const s=require('./dist/runtime/event-store.js');const e=new s.EventStore(path.join(os.tmpdir(),'sialia-harness-qa','mustard.db'));e.init();const t=performance.now();const r=e.search('telegram');const d=performance.now()-t;console.log('search took',d.toFixed(2),'ms, results:',r.length);process.exit(d<5?0:1)"
    ```
-   <5ms (margem 5x sobre target 1ms).
+   <5ms (margem 5x sobre target 1ms). Reusa o DB criado em AC #3 (depende de AC #3 ter rodado antes). Executado sob Bun.
 
 6. **Hooks consomem via EventStore**
    ```bash
@@ -82,6 +84,13 @@ Hoje cada hook re-implementa parse de `events.jsonl` (`O(n)` scan). FTS5 dá `O(
    cd 'C:/Atiz/Competi/projetos/sialia' && node .claude/scripts/dashboard.js --check
    ```
    Dashboard inicializa, lê DB, retorna `pipelineHealth` consistente com migração.
+
+### Parseable AC (cross-shell, QA-runner)
+
+Comandos cross-shell (cmd.exe + bash) usados pelo `qa-run.js`. Os blocos numerados acima são a versão humana/original.
+
+- [ ] AC-3: migration idempotente do sialia events.jsonl (count dinâmico de unique composite keys) — Command: `bun -e "const fs=require('fs');const path=require('path');const os=require('os');const tmp=path.join(os.tmpdir(),'sialia-harness-qa');fs.rmSync(tmp,{recursive:true,force:true});fs.mkdirSync(tmp,{recursive:true});fs.cpSync('C:/Atiz/Competi/projetos/sialia/.claude/.harness',tmp,{recursive:true});const lines=fs.readFileSync(path.join(tmp,'events.jsonl'),'utf8').split('\n').filter(l=>l.trim());const seen=new Set();for(const l of lines){try{const e=JSON.parse(l);seen.add(e.ts+'|'+(e.sessionId||'')+'|'+e.event+'|'+(e.actor&&e.actor.id||''))}catch(_){}}const expected=seen.size;const {execSync}=require('child_process');execSync('bun dist/migrate/jsonl-to-sqlite.js '+JSON.stringify(tmp),{stdio:'pipe'});execSync('bun dist/migrate/jsonl-to-sqlite.js '+JSON.stringify(tmp),{stdio:'pipe'});const s=require('./dist/runtime/event-store.js');const e=new s.EventStore(path.join(tmp,'mustard.db'));e.init();const c=e.eventCount();process.exit(c===expected?0:1)"`
+- [ ] AC-5: FTS5 search 'telegram' under 5ms — Command: `bun -e "const{performance}=require('perf_hooks');const path=require('path');const os=require('os');const s=require('./dist/runtime/event-store.js');const e=new s.EventStore(path.join(os.tmpdir(),'sialia-harness-qa','mustard.db'));e.init();const t=performance.now();const r=e.search('telegram');const d=performance.now()-t;process.exit(d<5?0:1)"`
 
 ## Implementation
 
@@ -229,14 +238,18 @@ Por 1 release: hooks emitem em `events.jsonl` **E** chamam `EventStore.append()`
 - MCP server (Phase 3)
 - Embeddings / semantic search (futuro, se chegar a 1000+ docs)
 
+## Concerns
+
+- **knowledge_fts external content mismatch (Wave 1 finding)**: `CREATE VIRTUAL TABLE knowledge_fts USING fts5(name, description, content='knowledge', content_rowid='id')` aceita criação mas `knowledge.id` é TEXT enquanto FTS5 external-content exige INTEGER rowid. Wave 2 (migration) precisa: (a) adicionar `knowledge.row_id INTEGER PRIMARY KEY` separado de `id TEXT UNIQUE`, (b) popular knowledge_fts manualmente sem auto-sync, ou (c) tirar `content='knowledge'` e ter knowledge_fts standalone.
+
 ## Checklist
 
-- [ ] `src/runtime/event-store.ts` implementado + tipos
-- [ ] Schema SQL em `src/runtime/schema.sql`
-- [ ] `src/migrate/jsonl-to-sqlite.ts` idempotent
-- [ ] Build pipeline: `.ts` → `dist/` consumível por hooks JS
-- [ ] Hooks migrados: session-memory, subagent-tracker, metrics-tracker, session-knowledge
-- [ ] Dashboard lê via EventStore (não filesystem)
-- [ ] Migration testada em sialia (não-destrutiva)
-- [ ] Schemas mortos removidos
-- [ ] Tests integration: EventStore = buildPipelineState
+- [x] `src/runtime/event-store.ts` implementado + tipos
+- [x] Schema SQL em `src/runtime/schema.sql`
+- [x] `src/migrate/jsonl-to-sqlite.ts` idempotent
+- [x] Build pipeline: `.ts` → `dist/` consumível por hooks JS (CJS wrapper `templates/hooks/_lib/event-store.js` + re-export em `scripts/_lib/`)
+- [x] Hooks migrados: close-gate (read via EventStore), subagent-tracker (write removido); demais hooks já passavam por harness-views (não leem jsonl direto)
+- [x] Dashboard lê via EventStore (`templates/scripts/dashboard.js` com fallback legacy)
+- [x] Migration testada em sialia (1444 events importados, dashboard --check exit 0)
+- [x] Schemas mortos removidos (agentAttempts em scripts + hooks, .subagent-registry write)
+- [x] Tests integration: EventStore = buildPipelineState (Wave 5 alignment: 3/3 specs match)

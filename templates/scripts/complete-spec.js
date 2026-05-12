@@ -216,8 +216,6 @@ function archiveMetricsFromState(cwd, specName, state) {
       toolBreakdown: m.toolBreakdown || {},
       agentCount: m.agentCount || undefined,
       dispatchFailuresByPhase: m.dispatchFailuresByPhase || undefined,
-      // agentAttempts kept only for legacy reads — no hook writes it post-Wave 4
-      agentAttempts: m.agentAttempts || undefined,
       source: derived ? 'harness-events' : 'legacy-state',
     };
     fs.writeFileSync(path.join(metricsDir, `${specName}.json`), JSON.stringify(out, null, 2) + '\n', 'utf8');

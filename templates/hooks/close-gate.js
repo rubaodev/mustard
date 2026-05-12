@@ -107,32 +107,57 @@ function extractPhase(content) {
 }
 
 /**
- * Read the harness events.jsonl and find the last qa.result event for a spec.
+ * Find the last qa.result event for a spec.
+ *
+ * Read path: EventStore (SQLite projection of events.jsonl). Falls back to a
+ * direct events.jsonl scan when the store is unavailable — keeps the gate
+ * functional in projects that haven't run the migration yet.
+ *
  * Returns { found: bool, overall: 'pass'|'fail'|'skip'|null, failedCount: number }
  */
 function findLastQAResult(cwd, spec) {
-  const eventsFile = path.join(cwd, '.claude', '.harness', 'events.jsonl');
-  if (!fs.existsSync(eventsFile)) {
-    return { found: false, overall: null, failedCount: 0 };
-  }
   let lastQAResult = null;
+
+  // Preferred path: EventStore.query() — O(log n) indexed lookup.
   try {
-    const lines = fs.readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean);
-    for (const line of lines) {
-      try {
-        const ev = JSON.parse(line);
-        if (ev.event !== 'qa.result') continue;
-        if (!ev.payload) continue;
-        // If spec is provided, filter by spec; otherwise accept any qa.result
-        if (spec && ev.payload.spec && ev.payload.spec !== spec) continue;
-        lastQAResult = ev;
-      } catch (_) {}
+    const { getStore } = require('./_lib/event-store.js');
+    const store = getStore(path.join(cwd, '.claude'));
+    if (store) {
+      const filter = spec ? { event: 'qa.result', spec } : { event: 'qa.result' };
+      const events = store.query(filter);
+      if (Array.isArray(events) && events.length > 0) {
+        // EventStore.query returns chronological order; last entry wins.
+        lastQAResult = events[events.length - 1];
+      }
     }
-  } catch (_) {
+  } catch (_) {} // fail-open: fall through to jsonl read
+
+  // Fallback: read events.jsonl directly. Required when EventStore is missing
+  // (legacy installs, runtime without SQLite driver, or pre-migration projects).
+  if (!lastQAResult) {
+    const eventsFile = path.join(cwd, '.claude', '.harness', 'events.jsonl');
+    if (!fs.existsSync(eventsFile)) {
+      return { found: false, overall: null, failedCount: 0 };
+    }
+    try {
+      const lines = fs.readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.event !== 'qa.result') continue;
+          if (!ev.payload) continue;
+          if (spec && ev.payload.spec && ev.payload.spec !== spec) continue;
+          lastQAResult = ev;
+        } catch (_) {}
+      }
+    } catch (_) {
+      return { found: false, overall: null, failedCount: 0 };
+    }
+  }
+
+  if (!lastQAResult || !lastQAResult.payload) {
     return { found: false, overall: null, failedCount: 0 };
   }
-  if (!lastQAResult) return { found: false, overall: null, failedCount: 0 };
-
   const overall = lastQAResult.payload.overall || null;
   const criteria = Array.isArray(lastQAResult.payload.criteria) ? lastQAResult.payload.criteria : [];
   const failedCount = criteria.filter(c => c.status === 'fail').length;
