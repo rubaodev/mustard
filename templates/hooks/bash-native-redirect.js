@@ -107,10 +107,10 @@ process.stdin.on('end', () => {
         const segInfo = REDIRECT_MAP[segToken.toLowerCase()];
         if (segInfo) {
           emitMetric('bash-native-redirect', {
-            tokensAffected: Math.round(cmd.length / 4),
+            tokensAffected: 0,
             tokensSaved: 0,
             note: 'piped-warn',
-            extras: { from: segToken.toLowerCase(), to: segInfo.tool, command_head: cmd.slice(0, 80) },
+            extras: { from: segToken.toLowerCase(), to: segInfo.tool, command_head: cmd.slice(0, 80), category: 'redirection' },
           });
           console.log(JSON.stringify({
             hookSpecificOutput: {
@@ -160,13 +160,14 @@ function emitAndDeny(firstTok, redirectInfo, cmd, mode) {
   const { tool, tip } = redirectInfo;
 
   emitMetric('bash-native-redirect', {
-    tokensAffected: Math.round(cmd.length / 4),
-    tokensSaved: Math.round(cmd.length / 4),
+    tokensAffected: 0,
+    tokensSaved: 0,
     note: 'redirected',
     extras: {
       from: firstTok,
       to: tool,
       command_head: cmd.slice(0, 80),
+      category: 'redirection',
     },
   });
 

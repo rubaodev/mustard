@@ -214,6 +214,7 @@ button, input, select, textarea { font-family: inherit; }
 .kpi:hover { border-color: var(--border-2); }
 .kpi .label { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
 .kpi .val { font-family: 'Geist Mono', monospace; font-size: 28px; font-weight: 500; color: var(--ink); letter-spacing: -0.02em; line-height: 1.1; word-break: break-all; }
+.kpi .val .unit { font-family: 'Geist', sans-serif; font-size: 13px; color: var(--ink-dim); font-weight: 500; letter-spacing: 0; vertical-align: baseline; }
 .kpi .delta { font-size: 12px; color: var(--ink-mute); display: flex; align-items: center; gap: 6px; }
 .kpi .delta .dot { width: 6px; height: 6px; border-radius: 50%; }
 .kpi .delta.ok .dot { background: var(--success); }
@@ -239,6 +240,11 @@ button, input, select, textarea { font-family: inherit; }
 .tag.ph-execute { background: var(--info-soft); color: var(--info); border-color: transparent; }
 .tag.ph-qa { background: var(--success-soft); color: var(--success); border-color: transparent; }
 .tag.ph-close { background: var(--surface-2); color: var(--ink-mute); border-color: transparent; }
+
+/* Specs grouped by phase */
+.phase-group { margin-bottom: 14px; }
+.phase-group-head { display: flex; align-items: center; gap: 10px; padding: 8px 0 6px; }
+.phase-group-head .ct { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
 
 /* Live indicator */
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); position: relative; flex: 0 0 auto; }
@@ -269,12 +275,12 @@ button, input, select, textarea { font-family: inherit; }
 .spec-card .ttl { font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; flex: 1; min-width: 0; }
 .spec-card .nm { font-size: 12px; color: var(--ink-dim); font-family: 'Geist Mono', monospace; word-break: break-all; }
 .spec-card .summary { font-size: 13.5px; color: var(--ink-mute); line-height: 1.65; width: 100%; }
-.spec-card .progress { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
-.spec-card .progress .pct { font-family: 'Geist Mono', monospace; font-size: 12px; font-weight: 500; color: var(--ink); }
-.spec-card .progress .frac { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
-.spec-card .progress .track { height: 6px; background: var(--surface-2); border-radius: 3px; position: relative; overflow: hidden; }
-.spec-card .progress .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brand); transition: width 600ms cubic-bezier(0.2,0.8,0.2,1); border-radius: 3px; }
-.spec-card.live .progress .fill { background: var(--success); }
+.spec-card .progress { display: grid; grid-template-columns: 56px 1fr 70px; gap: 12px; align-items: center; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 4px 0; }
+.spec-card .progress .pct { font-family: 'Geist Mono', monospace; font-size: 14px; font-weight: 600; color: var(--ink); }
+.spec-card .progress .frac { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); text-align: right; }
+.spec-card .progress .track { height: 10px; background: var(--surface-3); border-radius: 5px; position: relative; overflow: hidden; border: 1px solid var(--border); }
+.spec-card .progress .fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--brand) 0%, var(--brand-2, var(--brand)) 100%); transition: width 600ms cubic-bezier(0.2,0.8,0.2,1); border-radius: 4px; box-shadow: 0 0 6px rgba(226, 169, 59, 0.35); }
+.spec-card.live .progress .fill { background: var(--success); box-shadow: 0 0 6px rgba(34, 197, 94, 0.35); }
 .spec-card .meta-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-dim); font-family: 'Geist Mono', monospace; }
 .spec-card .meta-row b { color: var(--ink-mute); font-weight: 500; }
 .spec-card .actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -295,8 +301,8 @@ button, input, select, textarea { font-family: inherit; }
 .wave-row .ix { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); text-align: center; }
 .wave-row .name { font-size: 13px; font-weight: 500; color: var(--ink); display: flex; align-items: center; gap: 8px; min-width: 0; }
 .wave-row .name .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wave-row .progress-mini { width: 110px; height: 4px; background: var(--surface-3); border-radius: 2px; position: relative; overflow: hidden; }
-.wave-row .progress-mini .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brand); transition: width 600ms; border-radius: 2px; }
+.wave-row .progress-mini { width: 110px; height: 8px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 4px; position: relative; overflow: hidden; }
+.wave-row .progress-mini .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brand); transition: width 600ms; border-radius: 3px; }
 .wave-row.live .progress-mini .fill { background: var(--success); }
 .wave-row .frac { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); min-width: 42px; text-align: right; }
 .wave-row .stamp { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--ink-dim); min-width: 70px; text-align: right; }
@@ -317,6 +323,8 @@ button, input, select, textarea { font-family: inherit; }
 .idx-row .nm { font-family: 'Geist Mono', monospace; color: var(--ink); font-size: 12.5px; }
 .idx-row .meta { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
 .idx-row .stat { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); }
+.idx-row .nm .ev-spec { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 4px; background: var(--brand-soft); color: var(--brand); font-size: 11px; font-weight: 500; cursor: pointer; }
+.idx-row .nm .ev-spec:hover { background: var(--brand); color: white; }
 
 /* Buttons */
 .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--ink); padding: 6px 11px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 120ms ease; }
@@ -337,11 +345,43 @@ button, input, select, textarea { font-family: inherit; }
 .tbl td.muted { color: var(--ink-mute); }
 .tbl td.num { text-align: right; }
 .tbl td.help { font-family: 'Geist', sans-serif; font-size: 12px; color: var(--ink-mute); line-height: 1.5; }
+.tbl thead th .th-unit { display: block; font-size: 9px; font-weight: 400; color: var(--ink-dim); text-transform: lowercase; letter-spacing: 0.04em; margin-top: 1px; }
+
+/* Telemetry intro card — explica os 3 conceitos centrais antes do usuário ver os números */
+.tm-intro { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 16px; }
+.tm-intro-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); margin-bottom: 10px; }
+.tm-intro-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.tm-intro-item { font-size: 12.5px; line-height: 1.55; color: var(--ink-mute); }
+.tm-intro-item b { display: block; color: var(--brand); font-size: 12.5px; font-weight: 600; margin-bottom: 2px; font-family: 'Geist Mono', monospace; }
+@media (max-width: 720px) { .tm-intro-grid { grid-template-columns: 1fr; } }
+
+/* Hooks por categoria */
+.hk-cat { margin-bottom: 18px; }
+.hk-cat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.hk-cat-name { font-size: 14px; font-weight: 600; color: var(--ink); }
+.hk-cat-stat { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
+.hk-cat-desc { font-size: 12px; color: var(--ink-mute); margin-bottom: 8px; line-height: 1.55; }
+.tbl-hooks tbody td { vertical-align: top; padding: 12px 14px; }
+.hk-name { font-family: 'Geist Mono', monospace; color: var(--brand); font-weight: 500; font-size: 12.5px; }
+.hk-what { color: var(--ink); margin-bottom: 5px; line-height: 1.5; }
+.hk-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 3px; line-height: 1.5; }
+.hk-row > span:last-child { flex: 1; color: var(--ink-mute); font-size: 11.5px; }
+.hk-tag { display: inline-block; flex-shrink: 0; padding: 1px 7px; border-radius: 3px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; background: var(--surface-2); color: var(--ink-mute); font-family: 'Geist Mono', monospace; line-height: 1.5; }
+.hk-tag.warn { background: var(--warning-soft); color: var(--warning); }
+.tbl-hooks tr.hk-idle td { opacity: 0.62; }
+.tbl-hooks tr.hk-idle td.help { opacity: 0.85; }
+.hk-status-tag { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 3px; background: var(--surface-3); color: var(--ink-dim); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; font-family: 'Geist Mono', monospace; }
+.tbl-hooks tr td.num.hk-saved { color: var(--success); font-weight: 600; }
+.tbl-hooks th .th-hint { display: block; font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink-dim); margin-top: 1px; }
+.hk-total { display: flex; gap: 18px; flex-wrap: wrap; padding: 12px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-top: 10px; font-size: 12px; color: var(--ink-mute); font-family: 'Geist Mono', monospace; }
+.hk-total b { color: var(--ink); font-weight: 600; }
+.hk-total small { display: block; font-family: 'Geist', sans-serif; font-size: 10.5px; color: var(--ink-dim); font-weight: 400; margin-top: 2px; }
+.hk-total .ok b { color: var(--success); }
+.hk-total > span { min-width: 200px; }
 
 /* Telemetry chart */
 .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 18px 20px 14px; margin-top: 12px; position: relative; }
-.chart-wrap .chart { width: 100%; height: 240px; display: block; }
-.chart-wrap svg { width: 100%; height: 100%; overflow: visible; }
+.chart-wrap .chart { display: block; width: 100%; max-width: 1280px; height: auto; aspect-ratio: 1100 / 240; margin: 0 auto; overflow: visible; }
 .chart-wrap .grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 4; }
 .chart-wrap .axis { stroke: var(--border-2); stroke-width: 1; }
 .chart-wrap .area { fill: url(#chart-gradient); }
@@ -555,6 +595,37 @@ body.resizing-panel.panel-pinned .app { transition: none !important; }
 .lm-stats .one { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
 .lm-stats .one .lk { font-size: 10px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
 .lm-stats .one .lv { font-family: 'Geist Mono', monospace; font-size: 18px; font-weight: 500; color: var(--ink); margin-top: 4px; line-height: 1.1; }
+
+/* Pipeline phase progress (live monitor) */
+.pipeline-progress { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 14px; }
+.pp-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 12px; flex-wrap: wrap; }
+.pp-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); }
+.pp-hint { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); }
+.pp-hint b { color: var(--ink); font-weight: 600; }
+.pp-hint .ok { color: var(--success); font-weight: 600; }
+.pp-bar { display: grid; grid-template-columns: auto 1fr auto 1fr auto 1fr auto 1fr auto; align-items: center; gap: 0; }
+.pp-step { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 56px; }
+.pp-dot { width: 18px; height: 18px; border-radius: 50%; background: var(--surface-3); border: 2px solid var(--border-2); position: relative; }
+.pp-step.done .pp-dot { background: var(--success); border-color: var(--success); }
+.pp-step.done .pp-dot::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: 700; }
+.pp-step.current .pp-dot { background: var(--brand); border-color: var(--brand); animation: pp-pulse 1.6s ease-out infinite; }
+@keyframes pp-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(226, 169, 59, 0.55); } 50% { box-shadow: 0 0 0 6px rgba(226, 169, 59, 0); } }
+.pp-label { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--ink-dim); letter-spacing: 0.05em; }
+.pp-step.done .pp-label, .pp-step.current .pp-label { color: var(--ink); font-weight: 600; }
+.pp-link { height: 2px; background: var(--border-2); margin: 0 4px; align-self: center; }
+.pp-link.done { background: var(--success); }
+
+/* Big checklist progress in live panel */
+.lm-progress { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
+.lm-progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; font-family: 'Geist Mono', monospace; }
+.lm-progress-head .pct { font-size: 22px; font-weight: 600; color: var(--ink); }
+.lm-progress-head .frac { font-size: 12px; color: var(--ink-mute); }
+.lm-progress-track { height: 12px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 6px; position: relative; overflow: hidden; }
+.lm-progress-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--brand) 0%, #f5c862 100%); border-radius: 5px; box-shadow: 0 0 8px rgba(226, 169, 59, 0.4); transition: width 600ms cubic-bezier(0.2,0.8,0.2,1); }
+@media (max-width: 720px) {
+  .pp-bar { grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .pp-link { display: none; }
+}
 .event-stream { font-family: 'Geist Mono', monospace; font-size: 12px; max-height: 380px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 0; }
 .event-stream .ev { display: grid; grid-template-columns: 80px 160px 1fr; gap: 10px; padding: 6px 14px; border-bottom: 1px dashed var(--border); align-items: baseline; }
 .event-stream .ev:last-child { border-bottom: none; }
@@ -563,6 +634,67 @@ body.resizing-panel.panel-pinned .app { transition: none !important; }
 .event-stream .ev .ev-name { color: var(--brand); font-weight: 600; }
 .event-stream .ev .pl { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .empty-stream { padding: 32px 0; text-align: center; color: var(--ink-dim); font-size: 13px; font-family: 'Geist', sans-serif; }
+.now-block { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
+.now-block.empty { color: var(--ink-dim); font-size: 13px; font-family: 'Geist', sans-serif; }
+.now-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.now-body { font-family: 'Geist Mono', monospace; font-size: 13px; }
+.now-event { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 4px; }
+.now-evname { color: var(--brand); font-weight: 600; }
+.now-who { color: var(--ink-dim); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); }
+.now-what { color: var(--ink); }
+.now-detail { color: var(--ink-mute); font-size: 12px; line-height: 1.5; word-break: break-word; }
+.now-prev { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.now-prev-row { display: grid; grid-template-columns: 70px 130px 1fr; gap: 10px; font-size: 11.5px; padding: 3px 0; align-items: baseline; }
+.now-prev-row .ts { color: var(--ink-dim); }
+.now-prev-row .ev-name { color: var(--brand); font-weight: 500; }
+.now-prev-row .pl { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-wave { margin-bottom: 12px; }
+.tl-wave-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin-bottom: 6px; padding-left: 4px; }
+
+/* Now block — quebra por wave (side panel) */
+.now-wave { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.now-wave:last-child { border-bottom: none; padding-bottom: 0; }
+.now-wave:first-child { padding-top: 0; }
+.now-wave-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.now-wave-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); }
+.now-wave-when { font-size: 11px; color: var(--ink-dim); font-family: 'Geist Mono', monospace; margin-left: auto; }
+.now-metric-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.now-metric-key { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; margin-right: 2px; }
+.now-metric-pill { font-family: 'Geist Mono', monospace; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--surface-3); color: var(--ink-mute); }
+
+/* Em execução agora — cards compactos no Overview */
+.live-now-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.live-now-card { background: var(--surface); border: 1px solid var(--success); box-shadow: 0 0 0 3px var(--success-soft-2); border-radius: var(--radius-md); padding: 12px 14px; cursor: pointer; transition: transform 120ms ease, box-shadow 120ms ease; }
+.live-now-card:hover { transform: translateY(-1px); box-shadow: 0 0 0 3px var(--success-soft); }
+.live-now-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.live-now-ttl { font-size: 14px; font-weight: 600; color: var(--ink); flex: 1; min-width: 0; letter-spacing: -0.01em; }
+.live-now-when { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
+.live-now-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-family: 'Geist Mono', monospace; font-size: 12.5px; }
+.live-now-line .live-evname { color: var(--brand); font-weight: 600; }
+.live-now-line .live-actor { color: var(--ink-dim); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); }
+.live-now-line .live-what { color: var(--ink-mute); }
+
+/* Atividade recente agrupada por spec → wave/agente */
+.group-spec { padding: 10px 12px; margin-bottom: 10px; }
+.group-spec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
+.group-spec-ttl { font-size: 14px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.group-spec-ct { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); margin-left: auto; }
+.group-spec-head .btn.small { padding: 4px 10px; font-size: 11.5px; }
+.group-bucket { margin-bottom: 8px; }
+.group-bucket:last-child { margin-bottom: 0; }
+.group-bucket-head { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin-bottom: 4px; padding-left: 2px; }
+.group-ev-row { display: grid; grid-template-columns: 70px 110px 110px 1fr auto; gap: 10px; font-size: 11.5px; font-family: 'Geist Mono', monospace; padding: 3px 4px; align-items: baseline; border-radius: 4px; }
+.group-ev-row:hover { background: var(--surface-2); }
+.group-ev-row .ts { color: var(--ink-dim); }
+.group-ev-row .ev-name { color: var(--brand); font-weight: 500; }
+.group-ev-row .actor { color: var(--ink-dim); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-ev-row .actor.empty { background: transparent; }
+.group-ev-row .what { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-ev-row .when { color: var(--ink-dim); text-align: right; }
+@media (max-width: 900px) {
+  .group-ev-row { grid-template-columns: 60px 100px 1fr auto; }
+  .group-ev-row .actor { display: none; }
+}
 
 /* Skeletons / empty / err */
 .skel { background: linear-gradient(90deg, var(--surface), var(--surface-2), var(--surface)); background-size: 200% 100%; animation: shimmer 1.4s infinite; height: 14px; border-radius: 4px; }
@@ -924,7 +1056,10 @@ const CLIENT_JS = `
     var savedSum = (m.hookEvents || []).reduce(function(a,h){ return a + (h.tokensSaved||0); }, 0) + rtkTokens;
     var todayStr = today();
     var todayCount = (m.last7Days || []).filter(function(d){ return d.day === todayStr; }).reduce(function(a,d){ return a + d.events; }, 0);
-    var liveCount = (ex.activeNow || []).length;
+    var liveItems = (ex.activeNow || []).slice().sort(function(a,b){
+      return (Date.parse(b.lastActivity)||0) - (Date.parse(a.lastActivity)||0);
+    });
+    var liveCount = liveItems.length;
 
     var kpis = '<div class="kpi-grid">'
       + kpi('Specs ativas', actives.length, liveCount ? liveCount + ' processando agora' : (actives[0] ? actives[0].phase || 'sem fase' : 'nenhuma'), liveCount ? 'ok' : 'dim')
@@ -933,33 +1068,226 @@ const CLIENT_JS = `
       + kpi('Eventos hoje', fmtNum(todayCount), 'de ' + fmtNum(hookEvents) + ' totais', 'dim')
       + '</div>';
 
-    var feature = actives[0];
     var html = kpis;
-    html += '<div class="h-section">Em produção</div>';
-    if (feature) html += renderSpecCard(feature);
-    else html += '<div class="empty">Nenhuma spec ativa.</div>';
 
+    // ── Em execução agora ───────────────────────────────────────────
+    // Lista TODAS as specs/waves vivas (lastActivity <5min). Se nada vivo,
+    // mostra a mais recente como fallback "Mais recente".
+    if (liveCount) {
+      html += '<div class="h-section"><span class="live-dot"></span> Em execução agora · ' + liveCount + '</div>';
+      html += '<div class="live-now-grid">' + liveItems.map(function(li){
+        return renderLiveNowCard(li, specs, evs);
+      }).join('') + '</div>';
+    } else {
+      var feature = pickFeatureSpec(actives, ex);
+      html += '<div class="h-section">Mais recente</div>';
+      if (feature) html += renderSpecCard(feature);
+      else html += '<div class="empty">Nenhuma spec ativa.</div>';
+    }
+
+    // ── Atividade recente — agrupada por spec → wave/agente ─────────
     html += '<div class="h-section">Atividade recente</div>';
-    if (evs.length) html += renderEventsList(evs.slice(-12).reverse());
+    var groups = groupEventsBySpec(evs, specs);
+    if (groups.length) html += renderGroupedActivity(groups);
     else html += '<div class="empty">Sem eventos no harness log.</div>';
 
     $('#panel-overview .mount').innerHTML = html;
   }
-  function kpi(label, val, delta, kind){
+
+  // Renderiza um cartão compacto para um item de "Em execução agora".
+  // li = { spec, wave, lastActivity }. Procura o último evento conhecido
+  // para essa spec/wave em STATE.events e descreve o que está sendo feito.
+  function renderLiveNowCard(li, specs, events){
+    var specObj = (specs || []).find(function(s){ return s.name === li.spec; }) || {};
+    var fullName = li.wave ? (li.spec + '/' + li.wave) : li.spec;
+    var ttl = displayTitle(li.spec);
+    var phase = (specObj.phase || '').toUpperCase();
+    // Achar último evento associado a essa spec/wave
+    var matched = (events || []).filter(function(e){
+      var pl = e.payload || {};
+      var sn = e.spec || pl.spec || '';
+      var wn = (e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : ''));
+      if (!sn) return false;
+      if (li.wave) {
+        if (sn === li.wave || sn === fullName) return true;
+        if (sn === li.spec && wn === String(li.wave)) return true;
+        return false;
+      }
+      return sn === li.spec || sn === fullName;
+    });
+    matched.sort(function(a,b){ return (Date.parse(b.ts||b.timestamp)||0) - (Date.parse(a.ts||a.timestamp)||0); });
+    var last = matched[0];
+    var nowLine = '';
+    if (last) {
+      var d = describeEvent(last);
+      nowLine = '<div class="live-now-line">'
+        + '<span class="live-evname">' + esc(last.event || '—') + '</span>'
+        + (d.who ? '<span class="live-actor">' + esc(d.who) + '</span>' : '')
+        + '<span class="live-what">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+        + '</div>';
+    } else {
+      nowLine = '<div class="live-now-line"><span class="live-what" style="color:var(--ink-dim)">aguardando evento do harness…</span></div>';
+    }
+    var waveTag = li.wave ? '<span class="tag brand">' + esc(li.wave) + '</span>' : '';
+    var phaseTag = phase ? '<span class="tag ' + phaseClassFor(phase) + '">' + esc(phase) + '</span>' : '';
+    return '<div class="live-now-card" data-live="' + esc(fullName) + '" title="Abrir live monitor de ' + esc(ttl) + '">'
+      + '<div class="live-now-head">'
+        + '<span class="live-pill"><span class="live-dot"></span>ao vivo</span>'
+        + phaseTag + waveTag
+        + '<div class="live-now-ttl">' + esc(ttl) + '</div>'
+        + '<span class="live-now-when">' + esc(timeAgo(li.lastActivity)) + '</span>'
+      + '</div>'
+      + nowLine
+      + '</div>';
+  }
+
+  // Agrupa eventos por spec; retorna lista ordenada por evento mais recente.
+  function groupEventsBySpec(events, specs){
+    if (!events || !events.length) return [];
+    var bySpec = {};
+    events.forEach(function(e){
+      var pl = e.payload || {};
+      var sn = e.spec || pl.spec || (pl.target && pl.target.spec) || '';
+      if (!sn) return;
+      if (!bySpec[sn]) bySpec[sn] = [];
+      bySpec[sn].push(e);
+    });
+    var specByName = {};
+    (specs || []).forEach(function(s){ specByName[s.name] = s; });
+    return Object.keys(bySpec).map(function(sn){
+      var evs = bySpec[sn].slice().sort(function(a,b){
+        return (Date.parse(b.ts||b.timestamp)||0) - (Date.parse(a.ts||a.timestamp)||0);
+      });
+      var so = specByName[sn] || null;
+      return { specName: sn, specTitle: displayTitle(sn), phase: so ? (so.phase||'') : '', isLive: so ? isLiveTs(so.lastActivity) : false, events: evs };
+    }).sort(function(a,b){
+      var aT = a.events[0] ? (Date.parse(a.events[0].ts||a.events[0].timestamp)||0) : 0;
+      var bT = b.events[0] ? (Date.parse(b.events[0].ts||b.events[0].timestamp)||0) : 0;
+      return bT - aT;
+    });
+  }
+
+  // Render: para cada spec, header (título + phase + count) e dentro
+  // sub-blocos por wave (quando há ev.wave), até N eventos por wave.
+  function renderGroupedActivity(groups){
+    return groups.slice(0, 6).map(function(g){
+      var head = '<div class="group-spec-head">'
+        + (g.isLive ? '<span class="live-dot"></span>' : '')
+        + '<span class="group-spec-ttl">' + esc(g.specTitle) + '</span>'
+        + (g.phase ? '<span class="tag ' + phaseClassFor(g.phase) + '">' + esc(g.phase) + '</span>' : '')
+        + '<span class="group-spec-ct">' + g.events.length + ' evento' + (g.events.length>1?'s':'') + '</span>'
+        + '<button class="btn ghost small" data-live="' + esc(g.specName) + '">Acompanhar</button>'
+        + '</div>';
+
+      // Agrupa eventos por wave (ou agente quando wave ausente)
+      var byBucket = {};
+      var bucketOrder = [];
+      g.events.forEach(function(e){
+        var pl = e.payload || {};
+        var w = e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : '');
+        var bk = w ? ('Wave ' + w) : ((e.actor && (e.actor.id || e.actor.kind)) || 'eventos');
+        if (!byBucket[bk]) { byBucket[bk] = []; bucketOrder.push(bk); }
+        byBucket[bk].push(e);
+      });
+      bucketOrder.sort(function(a, b){
+        var aT = Math.max.apply(null, byBucket[a].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+        var bT = Math.max.apply(null, byBucket[b].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+        return bT - aT;
+      });
+
+      var inner = bucketOrder.map(function(bk){
+        var rows = byBucket[bk].slice(0, 4).map(function(e){
+          var d = describeEvent(e);
+          return '<div class="group-ev-row">'
+            + '<span class="ts">' + esc((e.ts||e.timestamp||'').slice(11,19)) + '</span>'
+            + '<span class="ev-name">' + esc(e.event || '—') + '</span>'
+            + (d.who ? '<span class="actor">' + esc(d.who) + '</span>' : '<span class="actor empty"></span>')
+            + '<span class="what">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+            + '<span class="when">' + esc(timeAgo(e.ts||e.timestamp)) + '</span>'
+            + '</div>';
+        }).join('');
+        return '<div class="group-bucket">'
+          + '<div class="group-bucket-head">' + esc(bk) + ' · ' + byBucket[bk].length + '</div>'
+          + rows
+          + '</div>';
+      }).join('');
+
+      return '<div class="group-spec card">' + head + inner + '</div>';
+    }).join('');
+  }
+
+  function pickFeatureSpec(actives, ex){
+    if (!actives.length) return null;
+    var liveNames = {};
+    (ex && ex.activeNow || []).forEach(function(a){ liveNames[a.spec] = a.lastActivity; });
+    var sorted = actives.slice().sort(function(a, b){
+      var aLive = liveNames[a.name] ? Date.parse(liveNames[a.name]) : 0;
+      var bLive = liveNames[b.name] ? Date.parse(liveNames[b.name]) : 0;
+      if (aLive !== bLive) return bLive - aLive;
+      var aT = a.lastActivity ? Date.parse(a.lastActivity) : 0;
+      var bT = b.lastActivity ? Date.parse(b.lastActivity) : 0;
+      if (aT !== bT) return bT - aT;
+      return String(b.name).localeCompare(String(a.name));
+    });
+    return sorted[0];
+  }
+
+  function enrichEvents(events, specs){
+    if (!events || !events.length) return [];
+    var specByName = {};
+    (specs || []).forEach(function(s){ specByName[s.name] = s; });
+    return events.map(function(e){
+      var pl = e.payload || {};
+      var specName = e.spec || pl.spec || (pl.target && pl.target.spec) || '';
+      // Heurística: se não tem spec no evento, mas o repo só tem 1 spec ativa recente, atribui.
+      var actor = (e.actor && (e.actor.id || e.actor.kind)) || '';
+      var label = '';
+      if (e.event === 'finding') {
+        var k = pl.kind || 'insight';
+        var c = String(pl.content || '').replace(/\s+/g, ' ').slice(0, 90);
+        label = k + ': ' + c;
+      } else if (e.event === 'agent.stop') {
+        var dur = pl.durationMs ? Math.round(pl.durationMs / 1000) + 's' : '';
+        var tc = pl.toolCount != null ? pl.toolCount + ' tools' : '';
+        label = [actor, dur, tc].filter(Boolean).join(' · ');
+      } else if (e.event === 'session.start') {
+        label = (pl.cwd ? pl.cwd.split(/[\\\/]/).pop() : '') + (pl.source ? ' · ' + pl.source : '');
+      } else if (pl.command) {
+        label = String(pl.command).slice(0, 90);
+      } else if (pl.event) {
+        label = String(pl.event);
+      } else if (pl.message) {
+        label = String(pl.message).slice(0, 90);
+      } else if (typeof pl === 'string') {
+        label = pl.slice(0, 90);
+      }
+      return {
+        ts: e.ts || e.timestamp,
+        event: e.event || e.type || '—',
+        actor: actor,
+        spec: specName,
+        specTitle: specName && specByName[specName] ? displayTitle(specName) : (specName ? displayTitle(specName) : ''),
+        label: label,
+      };
+    });
+  }
+  function kpi(label, val, delta, kind, unit){
+    var unitHtml = unit ? ' <span class="unit">' + esc(unit) + '</span>' : '';
     return '<div class="kpi">'
       + '<div class="label">' + esc(label) + '</div>'
-      + '<div class="val">' + esc(val) + '</div>'
+      + '<div class="val">' + esc(val) + unitHtml + '</div>'
       + '<div class="delta ' + (kind || '') + '"><span class="dot"></span>' + esc(delta || '') + '</div>'
       + '</div>';
   }
   function renderEventsList(events){
     return '<div class="card">' + events.map(function(e){
-      var when = timeAgo(e.ts || e.timestamp);
-      var ev = e.event || e.type || '—';
-      var label = (e.payload && (e.payload.spec || e.payload.event || e.payload.command)) || '';
+      var when = timeAgo(e.ts);
+      var specChip = e.specTitle
+        ? '<span class="ev-spec" data-live="' + esc(e.spec) + '" title="Acompanhar ' + esc(e.specTitle) + '">' + esc(e.specTitle) + '</span>'
+        : '';
       return '<div class="idx-row">'
-        + '<div class="nm">' + esc(ev) + '</div>'
-        + '<div class="meta">' + esc(String(label).slice(0, 80)) + '</div>'
+        + '<div class="nm">' + esc(e.event) + specChip + '</div>'
+        + '<div class="meta">' + esc(e.label || '—') + '</div>'
         + '<div class="stat">' + esc(when) + '</div>'
         + '</div>';
     }).join('') + '</div>';
@@ -977,6 +1305,21 @@ const CLIENT_JS = `
     var actives = specs.filter(function(s){ return s.state === 'active'; });
     var completed = filterByPeriod(specs.filter(function(s){ return s.state === 'completed'; }), STATE.specsPeriod);
 
+    // Live = atividade <5min OU alguma sub-wave live (epic). Idle = resto.
+    function specIsLive(s){
+      if (isLiveTs(s.lastActivity)) return true;
+      if (s.isEpic && s.waves) return s.waves.some(function(w){ return isLiveTs(w.lastActivity); });
+      return false;
+    }
+    function byActivityDesc(a, b){
+      var aT = a.lastActivity ? Date.parse(a.lastActivity) : 0;
+      var bT = b.lastActivity ? Date.parse(b.lastActivity) : 0;
+      if (aT !== bT) return bT - aT;
+      return String(b.name).localeCompare(String(a.name));
+    }
+    var liveActives = actives.filter(specIsLive).sort(byActivityDesc);
+    var idleActives = actives.filter(function(s){ return !specIsLive(s); }).sort(byActivityDesc);
+
     var filterBar = '<div class="filter-bar">'
       + '<span class="label">Concluídas no período:</span>'
       + ['7','15','30','60','90','all'].map(function(p){
@@ -986,9 +1329,38 @@ const CLIENT_JS = `
       + '</div>';
 
     var html = '';
-    html += '<div class="h-section">Active · ' + actives.length + '</div>';
-    if (!actives.length) html += '<div class="empty">Nenhuma spec ativa.</div>';
-    else html += actives.map(renderSpecCard).join('');
+    if (liveActives.length) {
+      html += '<div class="h-section"><span class="live-dot"></span> Em execução · ' + liveActives.length + '</div>';
+      html += liveActives.map(renderSpecCard).join('');
+    }
+
+    if (!idleActives.length && !liveActives.length) {
+      html += '<div class="h-section">Em andamento · 0</div>';
+      html += '<div class="empty">Nenhuma spec ativa.</div>';
+    } else if (!idleActives.length) {
+      html += '<div class="h-section">Em andamento · 0</div>';
+      html += '<div class="empty">Todas as specs ativas estão executando agora.</div>';
+    } else {
+      // Agrupa idle por fase: EXECUTE → PLAN → ANALYZE → QA → CLOSE → outras.
+      var phaseOrder = ['EXECUTE', 'PLAN', 'ANALYZE', 'QA', 'CLOSE'];
+      var byPhase = {};
+      idleActives.forEach(function(s){
+        var ph = (s.phase || '').toUpperCase() || 'OUTRAS';
+        if (!byPhase[ph]) byPhase[ph] = [];
+        byPhase[ph].push(s);
+      });
+      var ordered = phaseOrder.filter(function(p){ return byPhase[p]; });
+      var rest = Object.keys(byPhase).filter(function(p){ return phaseOrder.indexOf(p) < 0; });
+      var allKeys = ordered.concat(rest);
+      html += '<div class="h-section">Em andamento · ' + idleActives.length + '</div>';
+      allKeys.forEach(function(ph){
+        var rows = byPhase[ph];
+        html += '<div class="phase-group">'
+          + '<div class="phase-group-head"><span class="tag ' + phaseClassFor(ph) + '">' + esc(ph) + '</span><span class="ct">' + rows.length + ' spec' + (rows.length > 1 ? 's' : '') + '</span></div>'
+          + rows.map(renderSpecCard).join('')
+          + '</div>';
+      });
+    }
 
     html += '<div class="h-section">Completed · ' + completed.length + '</div>';
     html += filterBar;
@@ -1037,7 +1409,8 @@ const CLIENT_JS = `
       + (s.checkpoint ? '<span>Checkpoint: <b>' + esc(s.checkpoint) + '</b></span>' : '')
       + '</div>';
     var actions = '<div class="actions">'
-      + (s.state === 'active' ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar</button>' : '')
+      + (s.state === 'active' && live ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar</button>' : '')
+      + (s.state === 'active' && !live ? '<button class="btn ghost" data-live="' + esc(s.name) + '">Ver detalhes</button>' : '')
       + (c.items && c.items.length ? '<button class="btn ghost" data-toggle="' + clId + '">Checklist (' + c.total + ')</button>' : '')
       + '<button class="btn ghost" data-open="' + esc(s.path) + '">Ver spec.md</button>'
       + '</div>';
@@ -1076,7 +1449,8 @@ const CLIENT_JS = `
       + '<span>Checkpoint: <b>' + esc(s.checkpoint || '—') + '</b></span>'
       + '</div>';
     var actions = '<div class="actions">'
-      + (anyLive ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar epic</button>' : '')
+      + (anyLive ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar epic</button>'
+                 : '<button class="btn ghost" data-live="' + esc(s.name) + '">Ver detalhes</button>')
       + '<button class="btn ghost" data-open="' + esc(s.path) + '">Ver wave-plan.md</button>'
       + '</div>';
     var head = '<div class="head">'
@@ -1161,6 +1535,8 @@ const CLIENT_JS = `
     $('#side-overlay').classList.remove('open');
     document.body.classList.remove('panel-pinned');
     if (STATE.panelTimer) { clearInterval(STATE.panelTimer); STATE.panelTimer = null; }
+    STATE.currentSpecPath = null;
+    STATE.currentLiveSpec = null;
   }
   function togglePin(){
     STATE.panelPinned = !STATE.panelPinned;
@@ -1233,20 +1609,27 @@ const CLIENT_JS = `
 
   // Spec markdown viewer (uses side panel)
   function openSpec(specPath){
+    STATE.currentSpecPath = specPath;
+    STATE.currentLiveSpec = null;
     openPanel({ title: 'Spec', subtitle: specPath, body: '<div class="skel" style="width:60%;height:24px"></div><div class="skel" style="width:100%;height:14px;margin-top:14px"></div>' });
+    refreshOpenSpec();
+  }
+  function refreshOpenSpec(){
+    var specPath = STATE.currentSpecPath; if (!specPath) return;
     fetchJson('/api/spec?path=' + encodeURIComponent(specPath))
       .then(function(r){
         var name = specPath.split('/').slice(-2).join('/');
-        $('#sp-title').textContent = displayTitle(name);
-        $('#sp-name').textContent = specPath;
-        $('#sp-body').innerHTML = renderMarkdown(r.body.markdown || '');
-        applyGlossary('#sp-body');
+        var t = $('#sp-title'); if (t) t.textContent = displayTitle(name);
+        var n = $('#sp-name'); if (n) n.textContent = specPath;
+        var b = $('#sp-body'); if (b) { b.innerHTML = renderMarkdown(r.body.markdown || ''); applyGlossary('#sp-body'); }
       })
-      .catch(function(e){ $('#sp-body').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
+      .catch(function(e){ var b = $('#sp-body'); if (b) b.innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
   }
 
   // Live monitor (uses side panel, polls 3s)
   function openLiveMonitor(specName){
+    STATE.currentLiveSpec = specName;
+    STATE.currentSpecPath = null;
     openPanel({
       title: displayTitle(specName), subtitle: specName,
       body: '<div class="skel" style="height:60px;border-radius:8px"></div><div class="skel" style="height:200px;border-radius:8px;margin-top:14px"></div>',
@@ -1261,24 +1644,41 @@ const CLIENT_JS = `
   function renderLive(specName, data){
     var liveTag = data.isLive ? '<span class="live-pill"><span class="live-dot"></span>ao vivo · poll 3s</span>' : '<span class="tag">inativa</span>';
     var phaseTag = data.phase ? '<span class="tag ' + phaseClassFor(data.phase) + '">' + esc(data.phase) + '</span>' : '';
+    var statusTag = data.status ? '<span class="tag">status: ' + esc(data.status) + '</span>' : '';
+    var scopeTag = data.scope ? '<span class="tag">scope: ' + esc(data.scope) + '</span>' : '';
+    var waveTag = data.wave ? '<span class="tag brand">wave ' + esc(data.wave) + '</span>' : '';
     var html = '';
-    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' + liveTag + phaseTag + '</div>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' + liveTag + phaseTag + statusTag + scopeTag + waveTag + '</div>';
+
+    // Andamento da pipeline: barra com 5 fases ANALYZE → PLAN → EXECUTE → QA → CLOSE
+    html += renderPipelineProgress(data);
+
+    // Bloco "Agora": último evento em destaque + 5 anteriores compactos.
+    html += renderNowBlock(data);
 
     if (data.summary) {
-      html += '<p class="summary" style="margin-top:0;font-size:14px;color:var(--ink-mute);line-height:1.65;">' + esc(data.summary).slice(0, 600) + (data.summary.length > 600 ? '…' : '') + '</p>';
+      html += '<p class="summary" style="margin-top:14px;font-size:14px;color:var(--ink-mute);line-height:1.65;">' + esc(data.summary).slice(0, 600) + (data.summary.length > 600 ? '…' : '') + '</p>';
     }
 
     html += '<div class="lm-stats">'
       + statBox('Última atividade', timeAgo(data.lastActivity))
-      + statBox('Fase atual', data.phase || '—')
-      + statBox('API calls', data.apiCalls != null ? fmtNum(data.apiCalls) : '—')
-      + statBox('Retries', data.retries != null ? fmtNum(data.retries) : '—')
+      + statBox('API calls', data.apiCalls != null ? fmtNum(data.apiCalls) + ' chamadas' : '—')
+      + statBox('Retries', data.retries != null ? fmtNum(data.retries) + ' reexecuções' : '—')
+      + statBox('Checkpoint', data.checkpoint || '—')
       + '</div>';
 
     if (data.checklist && data.checklist.items && data.checklist.items.length) {
-      html += '<div class="h-section" style="margin-top:14px;">Checklist · ' + data.checklist.done + '/' + data.checklist.total + ' (' + data.checklist.percent + '%)</div>';
-      html += '<div class="checklist" style="display:block">'
-        + data.checklist.items.map(function(it){
+      var ck = data.checklist;
+      html += '<div class="h-section" style="margin-top:14px;">Checklist da spec</div>'
+        + '<div class="lm-progress">'
+          + '<div class="lm-progress-head">'
+            + '<span class="pct">' + ck.percent + '%</span>'
+            + '<span class="frac">' + ck.done + ' de ' + ck.total + ' itens</span>'
+          + '</div>'
+          + '<div class="lm-progress-track"><div class="lm-progress-fill" style="width:' + ck.percent + '%"></div></div>'
+        + '</div>';
+      html += '<div class="checklist" style="display:block;margin-top:10px">'
+        + ck.items.map(function(it){
             var t = it.text || ''; var pfx = '';
             var pm = t.match(/^\\[([^\\]]+)\\]\\s*(.*)/);
             if (pm) { pfx = '<span class="pfx">' + esc(pm[1]) + '</span>'; t = pm[2]; }
@@ -1296,23 +1696,11 @@ const CLIENT_JS = `
       html += '<div class="lm-stats">' + Object.keys(data.toolBreakdown).map(function(k){ return statBox(k, fmtNum(data.toolBreakdown[k])); }).join('') + '</div>';
     }
 
-    html += '<div class="h-section" style="margin-top:14px;">Stream de eventos · ' + (data.events ? data.events.length : 0) + '</div>';
+    html += '<div class="h-section" style="margin-top:14px;">Timeline · ' + (data.events ? data.events.length : 0) + ' eventos</div>';
     if (!data.events || !data.events.length) {
       html += '<div class="empty-stream">Sem eventos registrados para esta spec ainda. Os eventos aparecem quando algum agente despacha tool calls vinculados a este nome.</div>';
     } else {
-      html += '<div class="event-stream">' + data.events.slice().reverse().map(function(ev){
-        var ts = (ev.ts || ev.timestamp || '').slice(11, 19);
-        var name = ev.event || ev.type || '—';
-        var pl = '';
-        if (ev.payload) {
-          if (typeof ev.payload === 'string') pl = ev.payload;
-          else if (ev.payload.command) pl = ev.payload.command;
-          else if (ev.payload.event) pl = ev.payload.event;
-          else if (ev.payload.message) pl = ev.payload.message;
-          else pl = JSON.stringify(ev.payload).slice(0, 200);
-        }
-        return '<div class="ev"><span class="ts">' + esc(ts) + '</span><span class="ev-name">' + esc(name) + '</span><span class="pl">' + esc(pl) + '</span></div>';
-      }).join('') + '</div>';
+      html += renderTimelineByWave(data.events);
     }
 
     if (data.specPath) {
@@ -1326,25 +1714,307 @@ const CLIENT_JS = `
   }
   function statBox(k, v){ return '<div class="one"><div class="lk">' + esc(k) + '</div><div class="lv">' + esc(v) + '</div></div>'; }
 
+  function renderPipelineProgress(data){
+    // Barra de fases ANALYZE → PLAN → EXECUTE → QA → CLOSE com a fase atual destacada.
+    var phases = ['ANALYZE', 'PLAN', 'EXECUTE', 'QA', 'CLOSE'];
+    var current = (data.phase || '').toUpperCase();
+    var status = (data.status || '').toLowerCase();
+    var idx = phases.indexOf(current);
+    if (idx < 0) idx = -1;
+    // Se status indica concluído, marca tudo como done.
+    var allDone = status === 'completed' || status === 'closed' || current === 'CLOSE';
+    var html = '<div class="pipeline-progress">'
+      + '<div class="pp-head">'
+        + '<span class="pp-title">Andamento da pipeline</span>'
+        + '<span class="pp-hint">' + (current ? 'fase atual: <b>' + esc(current) + '</b>' : 'sem fase registrada') + (allDone ? ' · <span class="ok">concluída</span>' : '') + '</span>'
+      + '</div>'
+      + '<div class="pp-bar">';
+    phases.forEach(function(p, i){
+      var state = 'todo';
+      if (allDone) state = 'done';
+      else if (i < idx) state = 'done';
+      else if (i === idx) state = 'current';
+      html += '<div class="pp-step ' + state + '" data-phase="' + p + '">'
+        + '<div class="pp-dot"></div>'
+        + '<div class="pp-label">' + p + '</div>'
+        + '</div>';
+      if (i < phases.length - 1) html += '<div class="pp-link ' + (allDone || i < idx ? 'done' : '') + '"></div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  function describeEvent(ev){
+    var pl = ev.payload || {};
+    var actor = (ev.actor && (ev.actor.id || ev.actor.kind)) || '';
+    if (ev.event === 'finding') {
+      var k = pl.kind || 'insight';
+      var c = String(pl.content || '').replace(/\s+/g, ' ').slice(0, 200);
+      return { who: actor, what: k, detail: c };
+    }
+    if (ev.event === 'agent.stop') {
+      var dur = pl.durationMs ? Math.round(pl.durationMs / 1000) + 's' : '';
+      var tc = pl.toolCount != null ? pl.toolCount + ' tools' : '';
+      var sum = pl.summary && pl.summary !== '{}' ? String(pl.summary).slice(0, 200) : '';
+      return { who: actor, what: 'agente parou', detail: [dur, tc, sum].filter(Boolean).join(' · ') };
+    }
+    if (ev.event === 'session.start') {
+      return { who: actor, what: 'sessão iniciada', detail: (pl.cwd || '') + (pl.source ? ' · ' + pl.source : '') };
+    }
+    if (pl.command) return { who: actor, what: 'comando', detail: String(pl.command).slice(0, 200) };
+    if (pl.event) return { who: actor, what: String(pl.event), detail: '' };
+    if (pl.message) return { who: actor, what: 'mensagem', detail: String(pl.message).slice(0, 200) };
+    if (typeof pl === 'string') return { who: actor, what: ev.event || '—', detail: pl.slice(0, 200) };
+    return { who: actor, what: ev.event || '—', detail: '' };
+  }
+
+  function renderNowBlock(data){
+    var evs = data.events || [];
+    if (!evs.length) return renderNowFromMetrics(data);
+
+    // Agrupa eventos por wave (string). Sem wave → bucket '—'.
+    var byWave = {};
+    var waveOrder = [];
+    evs.forEach(function(e){
+      var pl = e.payload || {};
+      var w = e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : '');
+      if (!w) w = '—';
+      if (!byWave[w]) { byWave[w] = []; waveOrder.push(w); }
+      byWave[w].push(e);
+    });
+    waveOrder.sort(function(a, b){
+      var aT = Math.max.apply(null, byWave[a].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+      var bT = Math.max.apply(null, byWave[b].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+      return bT - aT;
+    });
+
+    var fresh = data.isLive ? '<span class="live-dot"></span> ' : '';
+    var head = '<div class="now-head">' + fresh + 'Agora · ' + (waveOrder.length > 1 ? waveOrder.length + ' waves ativas' : esc(timeAgo(data.lastActivity))) + '</div>';
+    var sections = waveOrder.map(function(w){
+      var bucket = byWave[w].slice().sort(function(a, b){
+        return (Date.parse(b.ts||b.timestamp)||0) - (Date.parse(a.ts||a.timestamp)||0);
+      });
+      var last = bucket[0];
+      var d = describeEvent(last);
+      var waveLabel = w === '—' ? 'Sem wave' : 'Wave ' + esc(w);
+      var primary = '<div class="now-event">'
+        + '<span class="now-evname">' + esc(last.event || '—') + '</span>'
+        + (d.who ? '<span class="now-who">' + esc(d.who) + '</span>' : '')
+        + '<span class="now-what">' + esc(d.what) + '</span>'
+        + '</div>'
+        + (d.detail ? '<div class="now-detail">' + esc(d.detail) + '</div>' : '');
+      var prev = bucket.slice(1, 4);
+      var prevHtml = '';
+      if (prev.length) {
+        prevHtml = '<div class="now-prev">' + prev.map(function(ev){
+          var pd = describeEvent(ev);
+          var pts = (ev.ts || ev.timestamp || '').slice(11, 19);
+          return '<div class="now-prev-row"><span class="ts">' + esc(pts) + '</span>'
+            + '<span class="ev-name">' + esc(ev.event || '—') + '</span>'
+            + '<span class="pl">' + esc(pd.what + (pd.detail ? ' · ' + pd.detail : '')) + '</span></div>';
+        }).join('') + '</div>';
+      }
+      return '<div class="now-wave">'
+        + '<div class="now-wave-head"><span class="now-wave-label">' + waveLabel + '</span>'
+        + '<span class="now-wave-when">' + esc(timeAgo(last.ts || last.timestamp)) + '</span></div>'
+        + primary + prevHtml
+        + '</div>';
+    }).join('');
+    return '<div class="now-block">' + head + '<div class="now-body">' + sections + '</div></div>';
+  }
+
+  // Fallback quando não há eventos no harness: usa pipeline-state metrics
+  // (agentAttempts, toolBreakdown, fase, lastActivity) para descrever o
+  // que está/esteve sendo executado, mesmo sem eventos finos.
+  function renderNowFromMetrics(data){
+    var phase = data.phase || '—';
+    var attempts = data.agentAttempts || {};
+    var tools = data.toolBreakdown || {};
+    var attemptsKeys = Object.keys(attempts);
+    var toolsKeys = Object.keys(tools);
+    var fresh = data.isLive ? '<span class="live-dot"></span> ' : '';
+    var head = '<div class="now-head">' + fresh + 'Agora · ' + esc(timeAgo(data.lastActivity)) + '</div>';
+    var body = '<div class="now-event">'
+      + '<span class="now-evname">fase</span>'
+      + '<span class="now-what">' + esc(phase) + '</span>'
+      + (data.status ? '<span class="now-who">' + esc(data.status) + '</span>' : '')
+      + '</div>';
+    if (attemptsKeys.length) {
+      body += '<div class="now-metric-line"><span class="now-metric-key">tentativas</span>'
+        + attemptsKeys.map(function(k){ return '<span class="now-metric-pill">' + esc(k) + ' · ' + esc(attempts[k]) + '</span>'; }).join('')
+        + '</div>';
+    }
+    if (toolsKeys.length) {
+      var top = toolsKeys.slice().sort(function(a,b){ return tools[b] - tools[a]; }).slice(0, 6);
+      body += '<div class="now-metric-line"><span class="now-metric-key">tools</span>'
+        + top.map(function(k){ return '<span class="now-metric-pill">' + esc(k) + ' · ' + esc(tools[k]) + '</span>'; }).join('')
+        + '</div>';
+    }
+    if (!attemptsKeys.length && !toolsKeys.length) {
+      body += '<div class="now-detail" style="color:var(--ink-dim)">Sem eventos no harness e sem pipeline-state ainda. A spec aparece aqui quando algum agente despacha tools vinculados a este nome.</div>';
+    } else {
+      body += '<div class="now-detail" style="color:var(--ink-dim);font-size:11px">Sem eventos no harness; derivado de pipeline-state.</div>';
+    }
+    return '<div class="now-block">' + head + '<div class="now-body">' + body + '</div></div>';
+  }
+
+  function renderTimelineByWave(events){
+    // Agrupa por wave (ev.wave) → fase (ev.phase ou inferida do evento), ordem cronológica.
+    var byWave = {};
+    var waveOrder = [];
+    events.forEach(function(ev){
+      var w = ev.wave != null ? String(ev.wave) : '—';
+      if (!byWave[w]) { byWave[w] = []; waveOrder.push(w); }
+      byWave[w].push(ev);
+    });
+    waveOrder.sort(function(a, b){
+      if (a === '—') return 1;
+      if (b === '—') return -1;
+      return parseInt(b, 10) - parseInt(a, 10);
+    });
+    var out = '';
+    waveOrder.forEach(function(w){
+      var bucket = byWave[w].slice().sort(function(a, b){
+        var aT = Date.parse(a.ts || a.timestamp || '') || 0;
+        var bT = Date.parse(b.ts || b.timestamp || '') || 0;
+        return bT - aT;
+      });
+      var head = w === '—' ? 'Sem wave' : 'Wave ' + esc(w);
+      out += '<div class="tl-wave"><div class="tl-wave-head">' + head + ' · ' + bucket.length + '</div>'
+        + '<div class="event-stream">' + bucket.map(function(ev){
+          var d = describeEvent(ev);
+          var ts = (ev.ts || ev.timestamp || '').slice(11, 19);
+          return '<div class="ev">'
+            + '<span class="ts">' + esc(ts) + '</span>'
+            + '<span class="ev-name">' + esc(ev.event || '—') + '</span>'
+            + '<span class="pl">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+            + '</div>';
+        }).join('') + '</div></div>';
+    });
+    return out;
+  }
+
   // ── Telemetry ───────────────────────────────────────────────────
+  // Cada hook tem 3 frases pra ser entendido por quem nunca leu o código:
+  //  - what: ação concreta que o hook faz
+  //  - why:  problema real que ele evita
+  //  - off:  consequência se você desligar
+  var HOOK_CATS = ['tokens', 'qualidade', 'pipeline', 'housekeeping'];
+  var HOOK_CAT_NAMES = {
+    tokens: 'Economia de tokens',
+    qualidade: 'Qualidade do código',
+    pipeline: 'Disciplina do pipeline',
+    housekeeping: 'Memória e manutenção',
+  };
+  var HOOK_CAT_DESC = {
+    tokens: 'Hooks que reduzem custo da Anthropic API: bloqueiam upgrades de modelo, comprimem saídas de CLI, limitam tool uses.',
+    qualidade: 'Hooks que evitam código ruim entrando: comandos shell errados, specs gigantes, duplicação, naming fora de padrão.',
+    pipeline: 'Hooks que travam transições inválidas no pipeline (commit com secret, CLOSE sem QA, etc).',
+    housekeeping: 'Hooks que mantêm memória/formato/checklist em dia automaticamente.',
+  };
   var HOOK_LEGEND = {
-    'bash-native-redirect': 'Redireciona comandos Bash genéricos (grep/cat/find/etc) para tools nativas (Grep/Read/Glob), economizando tokens.',
-    'budget-check': 'Mede o tamanho do prompt de uma Task antes de despachar e bloqueia se exceder o budget configurado para o role.',
-    'model-routing-gate': 'Bloqueia upgrades involuntários de modelo (sonnet→opus). Downgrades passam para economia opt-in.',
-    'rtk-gain': 'Marca uma agregação periódica do RTK (Rust Token Killer) — mede tokens economizados em CLI rewrites.',
-    'rtk-rewrite': 'Conta cada comando Bash que foi reescrito via RTK (transparente, sem mudar comportamento).',
-    'tool-use-counter': 'Conta tool uses por agente. Bloqueia Explore agents acima do limite (warn em 12, block em 15-20).',
-    'spec-size-gate': 'Avisa quando spec.md ultrapassa 500 linhas (modo strict bloqueia).',
-    'skill-size-gate': 'Avisa quando SKILL.md está acima do body limit recomendado pela Anthropic.',
-    'duplication-check': 'Detecta blocos duplicados em arquivos editados.',
-    'convention-check': 'Verifica naming/estrutura segundo convenções do projeto.',
-    'review-gate': 'Avisa sobre secrets staged ou build broken antes de git commit.',
-    'close-gate': 'Bloqueia transição para CLOSE se build/lint/test/QA falham ou checklist incompleto.',
-    'checklist-auto-mark': 'Auto-marca itens da checklist quando o arquivo correspondente é editado.',
-    'auto-format': 'Formata arquivo automaticamente após Edit/Write (Prettier/Black/etc por extensão).',
-    'memory-auto-extract': 'Extrai decisões não-óbvias de specs ativas para memória de longo prazo.',
-    'session-knowledge': 'Extrai padrões da pipeline-states/* para a knowledge base do projeto.',
-    'session-memory': 'Injeta knowledge.json + cross-session timeline no início de cada sessão.',
+    'rtk-rewrite': {
+      cat: 'tokens',
+      what: 'Reescreve cada comando Bash para passar via rtk (ex: "git status" vira "rtk git status").',
+      why: 'O wrapper RTK comprime saídas de CLI em 60–90%. Transparente, não muda o comportamento do comando.',
+      off: 'Você gasta tokens lendo logs/diffs cheios de ruído.',
+    },
+    'rtk-gain': {
+      cat: 'tokens',
+      what: 'Agrega periodicamente as economias do RTK e grava em métricas.',
+      why: 'É o que permite mostrar "Tokens cortados" aqui no dashboard.',
+      off: 'Você perde a visibilidade da economia (mas a economia continua).',
+    },
+    'model-routing-gate': {
+      cat: 'tokens',
+      what: 'Bloqueia troca involuntária de modelo (ex: Sonnet → Opus) quando a tabela de routing diz "use Sonnet aqui".',
+      why: 'Opus custa ~5× mais por token que Sonnet. Sem isso, um agente pode escalar o pipeline inteiro pra Opus sem você pedir.',
+      off: 'Custo do pipeline pode disparar silenciosamente.',
+    },
+    'tool-use-counter': {
+      cat: 'tokens',
+      what: 'Conta tool calls por agente. Avisa em 12 e bloqueia agentes Explore em 15–20 chamadas.',
+      why: 'Explore (que só lê código) raramente precisa de mais de 10 calls. Sem freio, ele varre o repo inteiro inflando contexto.',
+      off: 'Agentes Explore podem entrar em loop e gastar 5–10× mais tokens.',
+    },
+    'budget-check': {
+      cat: 'tokens',
+      what: 'Mede o tamanho do prompt da Task antes de despachar. Bloqueia se passar do budget do role.',
+      why: 'Cada role tem teto de chars (Explore 10K, review 12K, general 30K). Prompt inflado = janela cheia + custo desnecessário.',
+      off: 'Tasks podem ser despachadas com prompts gigantes.',
+    },
+    'bash-native-redirect': {
+      cat: 'qualidade',
+      what: 'Bloqueia comandos Bash genéricos (grep/cat/find/ls/head/tail) e força tools nativas (Grep/Read/Glob).',
+      why: 'Tools nativas são mais rápidas, cross-platform (Win/Linux) e mais baratas em tokens que parsing de saída shell.',
+      off: 'Pipelines em Windows quebram com sintaxe POSIX e gastam tokens em find/grep desnecessários.',
+    },
+    'spec-size-gate': {
+      cat: 'qualidade',
+      what: 'Avisa quando spec.md ultrapassa 500 linhas. Em modo strict, bloqueia o write.',
+      why: 'Specs gigantes viram wishlists sem foco. Limite obriga a quebrar em waves.',
+      off: 'Specs podem crescer sem freio e ficam impossíveis de revisar.',
+    },
+    'skill-size-gate': {
+      cat: 'qualidade',
+      what: 'Avisa quando SKILL.md está acima do body limit recomendado pela Anthropic.',
+      why: 'Skills muito longas perdem efetividade quando carregadas pelo agent.',
+      off: 'Skills incham e viram documentação morta.',
+    },
+    'duplication-check': {
+      cat: 'qualidade',
+      what: 'Detecta blocos duplicados em arquivos editados.',
+      why: 'Duplicação aumenta superfície de bug — uma correção em um lugar não pega o outro.',
+      off: 'Código duplicado entra silenciosamente.',
+    },
+    'convention-check': {
+      cat: 'qualidade',
+      what: 'Verifica se naming/estrutura segue as convenções detectadas no projeto.',
+      why: 'Sem isso, o agent inventa convenção própria e o repo fica inconsistente.',
+      off: 'Código novo destoa do estilo existente.',
+    },
+    'review-gate': {
+      cat: 'pipeline',
+      what: 'Antes de "git commit", avisa sobre secrets staged ou build broken.',
+      why: 'Evita commit acidental de .env/credenciais e commit que não compila.',
+      off: 'Secrets podem vazar pra história do git.',
+    },
+    'close-gate': {
+      cat: 'pipeline',
+      what: 'Bloqueia transição para fase CLOSE se build/lint/test/QA falham ou checklist está incompleto.',
+      why: 'Garante que "concluído" significa de fato concluído.',
+      off: 'Specs marcadas como completed mesmo com testes/AC falhando.',
+    },
+    'checklist-auto-mark': {
+      cat: 'pipeline',
+      what: 'Após Edit/Write, detecta se o arquivo cumpre item da checklist da spec ativa e marca [x] sozinho.',
+      why: 'Reduz fricção: você não precisa marcar manualmente o que claramente foi feito.',
+      off: 'Checklist desatualizado, dificulta saber progresso real.',
+    },
+    'auto-format': {
+      cat: 'housekeeping',
+      what: 'Após Edit/Write, formata o arquivo conforme a extensão (Prettier pra .ts, Black pra .py, etc).',
+      why: 'Mantém estilo consistente sem gastar prompt do agent dizendo "rode prettier".',
+      off: 'Diff fica poluído com whitespace e estilo inconsistente.',
+    },
+    'memory-auto-extract': {
+      cat: 'housekeeping',
+      what: 'Ao final da sessão, extrai "Decisões não-óbvias" das specs ativas e salva em memory/decisions.json.',
+      why: 'Captura o "porquê" de escolhas pra reaproveitar em sessões futuras.',
+      off: 'Decisões se perdem entre sessões.',
+    },
+    'session-knowledge': {
+      cat: 'housekeeping',
+      what: 'Ao final da sessão, extrai padrões/lições dos pipeline-states e adiciona em knowledge.json.',
+      why: 'A IA aprende com cada pipeline (não só com o scan inicial do projeto).',
+      off: 'Você re-explica os mesmos padrões a cada sessão nova.',
+    },
+    'session-memory': {
+      cat: 'housekeeping',
+      what: 'No SessionStart, injeta knowledge.json + timeline cross-session no contexto inicial.',
+      why: 'Faz o agente começar já sabendo o que foi aprendido nas sessões anteriores.',
+      off: 'Cada sessão começa do zero, sem memória.',
+    },
   };
 
   function loadMetrics(){
@@ -1372,25 +2042,34 @@ const CLIENT_JS = `
 
     var html = '';
 
+    // Intro pedagógica — explica os 3 conceitos centrais antes do usuário ver números.
+    html += '<div class="tm-intro">'
+      + '<div class="tm-intro-title">Como ler esta página</div>'
+      + '<div class="tm-intro-grid">'
+        + '<div class="tm-intro-item"><b>Disparos</b><span>quantas vezes um hook rodou — cada vez que o agent fez algo que o hook observa.</span></div>'
+        + '<div class="tm-intro-item"><b>Tokens vistos</b><span>volume total de conteúdo que passou pelo hook (tudo que ele inspecionou, mesmo sem agir).</span></div>'
+        + '<div class="tm-intro-item"><b>Tokens cortados</b><span>quanto deixou de ser gasto pela LLM porque o hook bloqueou ou comprimiu algo.</span></div>'
+      + '</div></div>';
+
     // Tier 1: tokens
-    html += '<div class="h-section">Tokens</div>';
-    html += '<div class="help-line">Soma de tokens economizados pelo Mustard via RTK + hooks. RTK reescreve comandos CLI; hooks bloqueiam upgrades de modelo desnecessários e tool uses excessivos.</div>';
+    html += '<div class="h-section">Economia de tokens</div>';
+    html += '<div class="help-line">Soma de tokens economizados pelo Mustard via RTK (compressão de saídas CLI) + hooks (bloqueio de upgrades de modelo, freio de tool uses excessivos).</div>';
     html += '<div class="kpi-grid">'
-      + kpi('Total poupado', fmtTokens(totalSaved + (rtk.tokens || 0)), 'RTK + hooks somados', 'ok')
-      + kpi('RTK · taxa', (rtk.rate || 0) + '%', fmtNum(rtk.commands || 0) + ' comandos reescritos', 'ok')
-      + kpi('Tokens afetados', fmtTokens(totalAffected), 'inspecionados pelos hooks', 'dim')
-      + kpi('Eventos de hook', fmtNum(totalCount), 'desde início do log', 'dim')
+      + kpi('Total cortado', fmtTokens(totalSaved + (rtk.tokens || 0)), 'RTK + hooks somados', 'ok', 'tokens')
+      + kpi('RTK · economia', (rtk.rate || 0) + '%', fmtNum(rtk.commands || 0) + ' comandos reescritos', 'ok', 'do output cortado')
+      + kpi('Tokens vistos', fmtTokens(totalAffected), 'volume inspecionado', 'dim', 'tokens')
+      + kpi('Disparos', fmtNum(totalCount), 'desde o início do log', 'dim', 'vezes')
       + '</div>';
 
     // Tier 2: pipelines
     html += '<div class="h-section">Pipelines</div>';
-    html += '<div class="help-line">Estatísticas agregadas de todos os pipelines (specs ativas + concluídas) lidas de <code class="mono">.claude/.pipeline-states/*.metrics.json</code>.</div>';
+    html += '<div class="help-line">Estatísticas agregadas de todos os pipelines (specs ativas + concluídas) lidas de <code class="mono">.claude/.pipeline-states/*.metrics.json</code>. Pass@1 = % de runs que terminaram sem precisar de retry.</div>';
     var pass1Pct = pa.runs ? Math.round((pa.pass1 / pa.runs) * 100) : 0;
     html += '<div class="kpi-grid">'
-      + kpi('Total de runs', fmtNum(pa.runs || 0), 'pipelines registrados', 'dim')
-      + kpi('Pass@1', pass1Pct + '%', fmtNum(pa.pass1 || 0) + ' sem retry', pass1Pct >= 70 ? 'ok' : 'warn')
-      + kpi('API calls (acum.)', fmtNum(pa.totalApiCalls || 0), 'soma de todos os runs', 'dim')
-      + kpi('Retries (acum.)', fmtNum(pa.totalRetries || 0), 'reexecuções totais', pa.totalRetries > 50 ? 'warn' : 'dim')
+      + kpi('Total de runs', fmtNum(pa.runs || 0), 'pipelines registrados', 'dim', 'runs')
+      + kpi('Pass@1', pass1Pct + '%', fmtNum(pa.pass1 || 0) + ' sem retry', pass1Pct >= 70 ? 'ok' : 'warn', 'dos runs')
+      + kpi('API calls (acum.)', fmtNum(pa.totalApiCalls || 0), 'soma de todos os runs', 'dim', 'chamadas')
+      + kpi('Retries (acum.)', fmtNum(pa.totalRetries || 0), 'reexecuções totais', pa.totalRetries > 50 ? 'warn' : 'dim', 'reexecuções')
       + '</div>';
 
     // Phase distribution (active specs)
@@ -1413,54 +2092,119 @@ const CLIENT_JS = `
     html += '<div class="h-section">Specs ativas · idade</div>';
     html += '<div class="help-line">Specs paradas por muitos dias geralmente indicam trabalho abandonado. Idealmente nada deveria ficar > 30d em "active".</div>';
     html += '<div class="kpi-grid cols-3">'
-      + kpi('< 7 dias', fmtNum(aging.lt7d || 0), 'recentes ou em curso', 'ok')
-      + kpi('7–30 dias', fmtNum(aging.d7_30 || 0), 'precisa de atenção', (aging.d7_30 || 0) > 0 ? 'warn' : 'dim')
-      + kpi('> 30 dias', fmtNum(aging.gt30d || 0), 'considerar arquivar', (aging.gt30d || 0) > 0 ? 'warn' : 'dim')
+      + kpi('< 7 dias', fmtNum(aging.lt7d || 0), 'recentes ou em curso', 'ok', 'specs')
+      + kpi('7–30 dias', fmtNum(aging.d7_30 || 0), 'precisa de atenção', (aging.d7_30 || 0) > 0 ? 'warn' : 'dim', 'specs')
+      + kpi('> 30 dias', fmtNum(aging.gt30d || 0), 'considerar arquivar', (aging.gt30d || 0) > 0 ? 'warn' : 'dim', 'specs')
       + '</div>';
 
-    // Hooks table
+    // Hooks por categoria — 3 frases didáticas por hook (o quê / por quê / se off)
     html += '<div class="h-section">Hooks · o que rodou em segundo plano</div>';
-    html += '<div class="help-line">Cada linha é um hook que rodou. A coluna "Por que existe" explica em uma frase qual fricção ele reduz. <b>Tokens poupados</b> só aparecem para hooks que medem economia (RTK, model-routing, tool-use-counter).</div>';
-    html += '<div class="card" style="padding:0;overflow:hidden;">'
-      + '<table class="tbl"><thead><tr><th>Hook</th><th class="num">Disparou</th><th>Por que existe</th><th class="num">Tokens afetados</th><th class="num">Tokens poupados</th></tr></thead><tbody>'
-      + hooks.map(function(h){
-          return '<tr>'
-            + '<td>' + esc(h.event) + '</td>'
-            + '<td class="num muted">' + fmtNum(h.count) + '</td>'
-            + '<td class="help">' + esc(HOOK_LEGEND[h.event] || '—') + '</td>'
-            + '<td class="num muted">' + (h.tokensAffected ? fmtNum(h.tokensAffected) : '—') + '</td>'
-            + '<td class="num">' + (h.tokensSaved ? fmtNum(h.tokensSaved) : '—') + '</td>'
-            + '</tr>';
-        }).join('')
-      + '<tr style="border-top:2px solid var(--border-2);"><td><b>Total</b></td><td class="num"><b>' + fmtNum(totalCount) + '</b></td><td class="muted help">soma de todos os disparos</td><td class="num muted">' + fmtNum(totalAffected) + '</td><td class="num"><b>' + fmtNum(totalSaved) + '</b></td></tr>'
-      + '</tbody></table></div>';
+    html += '<div class="help-line">Cada hook tem 3 partes: <b>O quê</b> (ação concreta), <b>Por quê</b> (problema que evita) e <b>Se off</b> (consequência se você desligar). Hooks estão agrupados por <b>categoria</b> pra facilitar leitura. Tokens cortados só aparecem em hooks que medem economia.</div>';
+    html += renderHooksByCategory(hooks, totalCount, totalSaved, totalAffected);
 
     // Tool breakdown
     if (pa.toolBreakdown && Object.keys(pa.toolBreakdown).length) {
       html += '<div class="h-section">Tools mais usadas (acumulado)</div>';
       html += '<div class="help-line">Quais ferramentas (Edit, Bash, Write, Agent…) os agentes mais chamaram em todos os runs. Picos em Bash + low Edit indicam exploração; picos em Edit indicam implementação.</div>';
       var keys = Object.keys(pa.toolBreakdown).sort(function(a,b){ return pa.toolBreakdown[b] - pa.toolBreakdown[a]; });
-      html += '<div class="card" style="padding:0;overflow:hidden;"><table class="tbl"><thead><tr><th>Tool</th><th class="num">Chamadas</th></tr></thead><tbody>'
+      html += '<div class="card" style="padding:0;overflow:hidden;"><table class="tbl"><thead><tr><th>Tool</th><th class="num">Chamadas (vezes)</th></tr></thead><tbody>'
         + keys.map(function(k){ return '<tr><td>' + esc(k) + '</td><td class="num">' + fmtNum(pa.toolBreakdown[k]) + '</td></tr>'; }).join('')
         + '</tbody></table></div>';
     }
 
     // 7-day chart
     html += '<div class="h-section">Eventos por dia · últimos 7 dias</div>';
-    html += '<div class="help-line">Cada ponto agrega <b>todos os events</b> escritos em <code class="mono">.claude/.metrics/*.jsonl</code> nesse dia. Picos = sessão ativa; vales = sem trabalho ou hooks desligados.</div>';
+    html += '<div class="help-line">Cada ponto agrega <b>todos os eventos</b> escritos em <code class="mono">.claude/.metrics/*.jsonl</code> nesse dia. Picos = sessão ativa; vales = sem trabalho ou hooks desligados.</div>';
     html += '<div class="chart-wrap">' + renderLineChart(days) + '</div>';
 
     // Storage + knowledge
     html += '<div class="h-section">Storage e knowledge</div>';
     html += '<div class="help-line">Espaço em disco usado pelo Mustard em diretórios principais e tamanho da knowledge base.</div>';
     html += '<div class="kpi-grid">'
-      + kpi('Knowledge entries', fmtNum(ex.knowledgeEntries || 0), 'em knowledge.json', 'dim')
-      + kpi('Specs (tudo)', fmtBytes(storage.spec || 0), 'pasta spec/', 'dim')
-      + kpi('Pipeline states', fmtBytes(storage.pipelineStates || 0), '.pipeline-states/', 'dim')
-      + kpi('Harness log', fmtBytes(storage.harness || 0), '.harness/', 'dim')
+      + kpi('Knowledge entries', fmtNum(ex.knowledgeEntries || 0), 'em knowledge.json', 'dim', 'entradas')
+      + kpi('Specs (tudo)', fmtBytes(storage.spec || 0), 'pasta spec/', 'dim', '')
+      + kpi('Pipeline states', fmtBytes(storage.pipelineStates || 0), '.pipeline-states/', 'dim', '')
+      + kpi('Harness log', fmtBytes(storage.harness || 0), '.harness/', 'dim', '')
       + '</div>';
 
     $('#panel-telemetry .mount').innerHTML = html;
+  }
+
+  function renderHooksByCategory(hooks, totalCount, totalSaved, totalAffected){
+    // Combina hooks que dispararam (do log) com hooks instalados que ainda não dispararam (do catálogo).
+    var byEvent = {};
+    hooks.forEach(function(h){ byEvent[h.event] = h; });
+    var allEvents = Object.keys(HOOK_LEGEND).concat(
+      hooks.map(function(h){ return h.event; }).filter(function(e){ return !HOOK_LEGEND[e]; })
+    );
+    var seenEvents = {};
+    var allRows = [];
+    allEvents.forEach(function(e){
+      if (seenEvents[e]) return; seenEvents[e] = true;
+      var data = byEvent[e] || { event: e, count: 0, tokensAffected: 0, tokensSaved: 0 };
+      data.fired = !!byEvent[e];
+      allRows.push(data);
+    });
+
+    // Agrupa por HOOK_LEGEND[name].cat (default: housekeeping).
+    var byCat = {};
+    HOOK_CATS.forEach(function(c){ byCat[c] = []; });
+    allRows.forEach(function(h){
+      var legend = HOOK_LEGEND[h.event];
+      var cat = (legend && legend.cat) || 'housekeeping';
+      if (!byCat[cat]) byCat[cat] = [];
+      byCat[cat].push(h);
+    });
+
+    var out = '';
+    HOOK_CATS.forEach(function(cat){
+      var rows = byCat[cat];
+      if (!rows || !rows.length) return;
+      var fired = rows.filter(function(h){ return h.fired; });
+      var idle = rows.filter(function(h){ return !h.fired; });
+      var catSaved = rows.reduce(function(a,h){ return a + (h.tokensSaved || 0); }, 0);
+      var catCount = rows.reduce(function(a,h){ return a + (h.count || 0); }, 0);
+      out += '<div class="hk-cat">'
+        + '<div class="hk-cat-head">'
+          + '<span class="hk-cat-name">' + esc(HOOK_CAT_NAMES[cat] || cat) + '</span>'
+          + '<span class="hk-cat-stat">' + fmtNum(catCount) + ' disparos · ' + fmtNum(catSaved) + ' tokens cortados · ' + fired.length + '/' + rows.length + ' ativos</span>'
+        + '</div>'
+        + '<div class="hk-cat-desc">' + esc(HOOK_CAT_DESC[cat] || '') + '</div>';
+      out += '<div class="card" style="padding:0;overflow:hidden;">'
+        + '<table class="tbl tbl-hooks"><thead><tr>'
+          + '<th>Hook</th>'
+          + '<th class="num">Disparos<span class="th-unit">vezes</span></th>'
+          + '<th>O que ele faz <span class="th-hint">(o quê / por quê / se desligar)</span></th>'
+          + '<th class="num" title="Volume de conteúdo (tokens) que passou pelo hook, mesmo sem ele agir">Tokens vistos</th>'
+          + '<th class="num" title="Tokens que o hook impediu de gastar bloqueando ou comprimindo">Tokens cortados</th>'
+        + '</tr></thead><tbody>';
+      // Hooks ativos primeiro
+      fired.concat(idle).forEach(function(h){
+        var l = HOOK_LEGEND[h.event] || { what: '—', why: '', off: '' };
+        var rowCls = h.fired ? '' : 'hk-idle';
+        var status = h.fired ? '' : '<span class="hk-status-tag" title="Instalado mas ainda não disparou nesta janela de log">silencioso</span>';
+        out += '<tr class="' + rowCls + '">'
+          + '<td><span class="hk-name">' + esc(h.event) + '</span> ' + status + '</td>'
+          + '<td class="num muted">' + (h.fired ? fmtNum(h.count) : '0') + '</td>'
+          + '<td class="help">'
+            + '<div class="hk-what">' + esc(l.what || '—') + '</div>'
+            + (l.why ? '<div class="hk-row"><span class="hk-tag">por quê</span><span>' + esc(l.why) + '</span></div>' : '')
+            + (l.off ? '<div class="hk-row"><span class="hk-tag warn">se desligar</span><span>' + esc(l.off) + '</span></div>' : '')
+          + '</td>'
+          + '<td class="num muted">' + (h.tokensAffected ? fmtNum(h.tokensAffected) : '—') + '</td>'
+          + '<td class="num' + (h.tokensSaved ? ' hk-saved' : '') + '">' + (h.tokensSaved ? fmtNum(h.tokensSaved) : '—') + '</td>'
+          + '</tr>';
+      });
+      out += '</tbody></table></div></div>';
+    });
+
+    // Total geral com explicação inline.
+    out += '<div class="hk-total">'
+      + '<span><b>' + fmtNum(totalCount) + '</b> disparos no total <small>(soma de quantas vezes cada hook rodou)</small></span>'
+      + '<span><b>' + fmtNum(totalAffected) + '</b> tokens vistos <small>(volume inspecionado)</small></span>'
+      + '<span class="ok"><b>' + fmtNum(totalSaved) + '</b> tokens cortados <small>(impedidos de virar custo)</small></span>'
+      + '</div>';
+    return out;
   }
 
   function renderLineChart(days){
@@ -1499,7 +2243,7 @@ const CLIENT_JS = `
     }).join('');
     var totalEvents = days.reduce(function(a,d){ return a + d.events; }, 0);
     var avg = (totalEvents / n).toFixed(1);
-    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">'
+    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '">'
       + '<defs><linearGradient id="chart-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.35"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0"/></linearGradient></defs>'
       + yLines + '<path class="area" d="' + area + '"/><path class="line" d="' + line + '"/>'
       + dots + valueLabels + yLabels + xLabels
@@ -1942,14 +2686,52 @@ const CLIENT_JS = `
     var so = $('#side-overlay'); if (so) so.addEventListener('click', function(){ closePanel(false); });
     var sp = $('#sp-pin'); if (sp) sp.addEventListener('click', togglePin);
   }
-  function start(){ initTheme(); restorePanelWidth(); bindGlobalClicks(); bindPanelResize(); setTab('overview'); startLiveBgPoll(); }
+  // ── Realtime: SSE on /api/specs/stream ─────────────────────────
+  function applySpecsStreamChange(data){
+    var names = (data && data.specNames) || [];
+    if (STATE.tab === 'overview') { loadOverview(); }
+    else if (STATE.tab === 'specs') { STATE.specs = null; loadSpecs(); }
+    var openSpecPath = STATE.currentSpecPath;
+    if (openSpecPath) {
+      var openName = openSpecPath.split('/').slice(-2)[0] || '';
+      if (!names.length || names.indexOf(openName) !== -1) refreshOpenSpec();
+    }
+    var liveSpec = STATE.currentLiveSpec;
+    if (liveSpec && (!names.length || names.indexOf(liveSpec) !== -1)) {
+      pollLive(liveSpec);
+    }
+    checkLiveBanner();
+  }
+  function initSpecsStream(){
+    if (typeof EventSource === 'undefined') return;
+    try {
+      var es = new EventSource('/api/specs/stream');
+      var pending = null;
+      function schedule(fn){ if (pending) clearTimeout(pending); pending = setTimeout(fn, 150); }
+      es.addEventListener('change', function(ev){
+        var data; try { data = JSON.parse(ev.data); } catch(_) { data = { specNames: [], paths: [] }; }
+        schedule(function(){ applySpecsStreamChange(data); });
+      });
+      es.addEventListener('error', function(){ /* native auto-reconnect */ });
+      window.__specsStream = es;
+    } catch(_) {}
+  }
+
+  function start(){ initTheme(); restorePanelWidth(); bindGlobalClicks(); bindPanelResize(); setTab('overview'); startLiveBgPoll(); initSpecsStream(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
 `;
 
-function renderHtml(branch) {
+function renderHtml(branch, root, port) {
   const safeBranch = escapeHtml(branch);
+  // Show last 2 path segments so user can disambiguate (e.g. "Atiz/sialia").
+  const rootStr = String(root || '');
+  const parts = rootStr.split(/[\\/]/).filter(Boolean);
+  const rootShort = parts.length >= 2 ? parts.slice(-2).join('/') : (parts[0] || rootStr);
+  const safeRoot = escapeHtml(rootShort);
+  const safeRootFull = escapeHtml(rootStr);
+  const safePort = escapeHtml(String(port || ''));
   const head = ''
     + '<!doctype html>'
     + '<html lang="pt-BR">'
@@ -1972,7 +2754,7 @@ function renderHtml(branch) {
     +     '<div class="brand-row">'
     +       '<div class="logo">M</div>'
     +       '<div class="brand-name">Mustard</div>'
-    +       '<div class="brand-meta">' + safeBranch + '</div>'
+    +       '<div class="brand-meta" title="' + safeRootFull + '">' + safeRoot + ' · ' + safeBranch + ' · :' + safePort + '</div>'
     +     '</div>'
     +     '<div>'
     +       '<div class="nav-section-label">Workspace</div>'

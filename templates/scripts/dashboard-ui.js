@@ -107,11 +107,15 @@ button, input, select, textarea { font-family: inherit; }
 .rail .logo {
   width: 28px; height: 28px; border-radius: 7px;
   background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
-  display: grid; place-items: center;
+  display: grid; place-items: center; flex: 0 0 auto;
   font-weight: 600; color: #1a1208; font-size: 15px; letter-spacing: -0.02em;
 }
-.rail .brand-name { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
-.rail .brand-meta { font-size: 11px; color: var(--ink-dim); margin-left: auto; font-family: 'Geist Mono', monospace; }
+.rail .brand-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rail .brand-name { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; line-height: 1.15; }
+.rail .brand-meta {
+  font-size: 10.5px; color: var(--ink-dim); font-family: 'Geist Mono', monospace;
+  line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .rail .nav-section-label {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--ink-dim); padding: 0 8px; margin-bottom: 6px; font-weight: 500;
@@ -214,6 +218,7 @@ button, input, select, textarea { font-family: inherit; }
 .kpi:hover { border-color: var(--border-2); }
 .kpi .label { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
 .kpi .val { font-family: 'Geist Mono', monospace; font-size: 28px; font-weight: 500; color: var(--ink); letter-spacing: -0.02em; line-height: 1.1; word-break: break-all; }
+.kpi .val .unit { font-family: 'Geist', sans-serif; font-size: 13px; color: var(--ink-dim); font-weight: 500; letter-spacing: 0; vertical-align: baseline; }
 .kpi .delta { font-size: 12px; color: var(--ink-mute); display: flex; align-items: center; gap: 6px; }
 .kpi .delta .dot { width: 6px; height: 6px; border-radius: 50%; }
 .kpi .delta.ok .dot { background: var(--success); }
@@ -239,6 +244,11 @@ button, input, select, textarea { font-family: inherit; }
 .tag.ph-execute { background: var(--info-soft); color: var(--info); border-color: transparent; }
 .tag.ph-qa { background: var(--success-soft); color: var(--success); border-color: transparent; }
 .tag.ph-close { background: var(--surface-2); color: var(--ink-mute); border-color: transparent; }
+
+/* Specs grouped by phase */
+.phase-group { margin-bottom: 14px; }
+.phase-group-head { display: flex; align-items: center; gap: 10px; padding: 8px 0 6px; }
+.phase-group-head .ct { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
 
 /* Live indicator */
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); position: relative; flex: 0 0 auto; }
@@ -269,12 +279,12 @@ button, input, select, textarea { font-family: inherit; }
 .spec-card .ttl { font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; flex: 1; min-width: 0; }
 .spec-card .nm { font-size: 12px; color: var(--ink-dim); font-family: 'Geist Mono', monospace; word-break: break-all; }
 .spec-card .summary { font-size: 13.5px; color: var(--ink-mute); line-height: 1.65; width: 100%; }
-.spec-card .progress { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
-.spec-card .progress .pct { font-family: 'Geist Mono', monospace; font-size: 12px; font-weight: 500; color: var(--ink); }
-.spec-card .progress .frac { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
-.spec-card .progress .track { height: 6px; background: var(--surface-2); border-radius: 3px; position: relative; overflow: hidden; }
-.spec-card .progress .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brand); transition: width 600ms cubic-bezier(0.2,0.8,0.2,1); border-radius: 3px; }
-.spec-card.live .progress .fill { background: var(--success); }
+.spec-card .progress { display: grid; grid-template-columns: 56px 1fr 70px; gap: 12px; align-items: center; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 4px 0; }
+.spec-card .progress .pct { font-family: 'Geist Mono', monospace; font-size: 14px; font-weight: 600; color: var(--ink); }
+.spec-card .progress .frac { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); text-align: right; }
+.spec-card .progress .track { height: 10px; background: var(--surface-3); border-radius: 5px; position: relative; overflow: hidden; border: 1px solid var(--border); }
+.spec-card .progress .fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--brand) 0%, var(--brand-2, var(--brand)) 100%); transition: width 600ms cubic-bezier(0.2,0.8,0.2,1); border-radius: 4px; box-shadow: 0 0 6px rgba(226, 169, 59, 0.35); }
+.spec-card.live .progress .fill { background: var(--success); box-shadow: 0 0 6px rgba(34, 197, 94, 0.35); }
 .spec-card .meta-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-dim); font-family: 'Geist Mono', monospace; }
 .spec-card .meta-row b { color: var(--ink-mute); font-weight: 500; }
 .spec-card .actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -295,11 +305,27 @@ button, input, select, textarea { font-family: inherit; }
 .wave-row .ix { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); text-align: center; }
 .wave-row .name { font-size: 13px; font-weight: 500; color: var(--ink); display: flex; align-items: center; gap: 8px; min-width: 0; }
 .wave-row .name .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wave-row .progress-mini { width: 110px; height: 4px; background: var(--surface-3); border-radius: 2px; position: relative; overflow: hidden; }
-.wave-row .progress-mini .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brand); transition: width 600ms; border-radius: 2px; }
+.wave-row .progress-mini { width: 110px; height: 8px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 4px; position: relative; overflow: hidden; }
+.wave-row .progress-mini .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brand); transition: width 600ms; border-radius: 3px; }
 .wave-row.live .progress-mini .fill { background: var(--success); }
 .wave-row .frac { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); min-width: 42px; text-align: right; }
 .wave-row .stamp { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--ink-dim); min-width: 70px; text-align: right; }
+.wave-row .wave-meta { font-family: 'Geist Mono', monospace; font-size: 10.5px; color: var(--ink-dim); margin-left: 4px; }
+.wave-row .wave-mark { display: inline-block; width: 12px; text-align: center; font-family: 'Geist Mono', monospace; font-size: 10px; margin-right: 4px; }
+.wave-row .wave-mark.done { color: var(--success); }
+.wave-row .wave-mark.cur  { color: var(--brand); }
+.wave-row .wave-mark.fail { color: var(--danger, #e54); }
+.wave-row .wave-mark.pend { color: var(--ink-dim); }
+.wave-row.s-completed { opacity: 0.78; }
+.wave-row.s-pending   { opacity: 0.85; }
+.wave-row.s-failed    { border-color: var(--danger, #e54); }
+.wave-row .wave-diverge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10.5px; font-weight: 600; margin-left: 6px; cursor: help; background: rgba(220, 150, 0, 0.18); color: #c08400; border: 1px solid rgba(220, 150, 0, 0.35); }
+.wave-row .wave-diverge.behind { background: rgba(220, 80, 80, 0.18); color: #b04848; border-color: rgba(220, 80, 80, 0.35); }
+.wave-row.diverge { box-shadow: inset 3px 0 0 0 rgba(220, 150, 0, 0.5); }
+.wave-diverge-banner { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; margin-bottom: 12px; border-radius: var(--radius-sm); background: rgba(220, 150, 0, 0.10); border: 1px solid rgba(220, 150, 0, 0.30); color: #8a6300; font-size: 12.5px; line-height: 1.5; }
+.wave-diverge-banner.behind { background: rgba(220, 80, 80, 0.10); border-color: rgba(220, 80, 80, 0.30); color: #a13030; }
+.wave-diverge-banner .wave-diverge-ico { font-size: 14px; line-height: 1; padding-top: 1px; }
+.wave-diverge-banner .wave-diverge-msg { flex: 1; }
 
 /* Checklist */
 .checklist { margin-top: 10px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
@@ -317,6 +343,8 @@ button, input, select, textarea { font-family: inherit; }
 .idx-row .nm { font-family: 'Geist Mono', monospace; color: var(--ink); font-size: 12.5px; }
 .idx-row .meta { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
 .idx-row .stat { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); }
+.idx-row .nm .ev-spec { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 4px; background: var(--brand-soft); color: var(--brand); font-size: 11px; font-weight: 500; cursor: pointer; }
+.idx-row .nm .ev-spec:hover { background: var(--brand); color: white; }
 
 /* Buttons */
 .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--ink); padding: 6px 11px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 120ms ease; }
@@ -337,11 +365,43 @@ button, input, select, textarea { font-family: inherit; }
 .tbl td.muted { color: var(--ink-mute); }
 .tbl td.num { text-align: right; }
 .tbl td.help { font-family: 'Geist', sans-serif; font-size: 12px; color: var(--ink-mute); line-height: 1.5; }
+.tbl thead th .th-unit { display: block; font-size: 9px; font-weight: 400; color: var(--ink-dim); text-transform: lowercase; letter-spacing: 0.04em; margin-top: 1px; }
+
+/* Telemetry intro card — explica os 3 conceitos centrais antes do usuário ver os números */
+.tm-intro { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 16px; }
+.tm-intro-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); margin-bottom: 10px; }
+.tm-intro-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.tm-intro-item { font-size: 12.5px; line-height: 1.55; color: var(--ink-mute); }
+.tm-intro-item b { display: block; color: var(--brand); font-size: 12.5px; font-weight: 600; margin-bottom: 2px; font-family: 'Geist Mono', monospace; }
+@media (max-width: 720px) { .tm-intro-grid { grid-template-columns: 1fr; } }
+
+/* Hooks por categoria */
+.hk-cat { margin-bottom: 18px; }
+.hk-cat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.hk-cat-name { font-size: 14px; font-weight: 600; color: var(--ink); }
+.hk-cat-stat { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
+.hk-cat-desc { font-size: 12px; color: var(--ink-mute); margin-bottom: 8px; line-height: 1.55; }
+.tbl-hooks tbody td { vertical-align: top; padding: 12px 14px; }
+.hk-name { font-family: 'Geist Mono', monospace; color: var(--brand); font-weight: 500; font-size: 12.5px; }
+.hk-what { color: var(--ink); margin-bottom: 5px; line-height: 1.5; }
+.hk-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 3px; line-height: 1.5; }
+.hk-row > span:last-child { flex: 1; color: var(--ink-mute); font-size: 11.5px; }
+.hk-tag { display: inline-block; flex-shrink: 0; padding: 1px 7px; border-radius: 3px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; background: var(--surface-2); color: var(--ink-mute); font-family: 'Geist Mono', monospace; line-height: 1.5; }
+.hk-tag.warn { background: var(--warning-soft); color: var(--warning); }
+.tbl-hooks tr.hk-idle td { opacity: 0.62; }
+.tbl-hooks tr.hk-idle td.help { opacity: 0.85; }
+.hk-status-tag { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 3px; background: var(--surface-3); color: var(--ink-dim); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; font-family: 'Geist Mono', monospace; }
+.tbl-hooks tr td.num.hk-saved { color: var(--success); font-weight: 600; }
+.tbl-hooks th .th-hint { display: block; font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink-dim); margin-top: 1px; }
+.hk-total { display: flex; gap: 18px; flex-wrap: wrap; padding: 12px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-top: 10px; font-size: 12px; color: var(--ink-mute); font-family: 'Geist Mono', monospace; }
+.hk-total b { color: var(--ink); font-weight: 600; }
+.hk-total small { display: block; font-family: 'Geist', sans-serif; font-size: 10.5px; color: var(--ink-dim); font-weight: 400; margin-top: 2px; }
+.hk-total .ok b { color: var(--success); }
+.hk-total > span { min-width: 200px; }
 
 /* Telemetry chart */
 .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 18px 20px 14px; margin-top: 12px; position: relative; }
-.chart-wrap .chart { width: 100%; height: 240px; display: block; }
-.chart-wrap svg { width: 100%; height: 100%; overflow: visible; }
+.chart-wrap .chart { display: block; width: 100%; max-width: 1280px; height: auto; aspect-ratio: 1100 / 240; margin: 0 auto; overflow: visible; }
 .chart-wrap .grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 4; }
 .chart-wrap .axis { stroke: var(--border-2); stroke-width: 1; }
 .chart-wrap .area { fill: url(#chart-gradient); }
@@ -555,6 +615,37 @@ body.resizing-panel.panel-pinned .app { transition: none !important; }
 .lm-stats .one { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
 .lm-stats .one .lk { font-size: 10px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
 .lm-stats .one .lv { font-family: 'Geist Mono', monospace; font-size: 18px; font-weight: 500; color: var(--ink); margin-top: 4px; line-height: 1.1; }
+
+/* Pipeline phase progress (live monitor) */
+.pipeline-progress { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 14px; }
+.pp-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 12px; flex-wrap: wrap; }
+.pp-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); }
+.pp-hint { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); }
+.pp-hint b { color: var(--ink); font-weight: 600; }
+.pp-hint .ok { color: var(--success); font-weight: 600; }
+.pp-bar { display: grid; grid-template-columns: auto 1fr auto 1fr auto 1fr auto 1fr auto; align-items: center; gap: 0; }
+.pp-step { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 56px; }
+.pp-dot { width: 18px; height: 18px; border-radius: 50%; background: var(--surface-3); border: 2px solid var(--border-2); position: relative; }
+.pp-step.done .pp-dot { background: var(--success); border-color: var(--success); }
+.pp-step.done .pp-dot::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: 700; }
+.pp-step.current .pp-dot { background: var(--brand); border-color: var(--brand); animation: pp-pulse 1.6s ease-out infinite; }
+@keyframes pp-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(226, 169, 59, 0.55); } 50% { box-shadow: 0 0 0 6px rgba(226, 169, 59, 0); } }
+.pp-label { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--ink-dim); letter-spacing: 0.05em; }
+.pp-step.done .pp-label, .pp-step.current .pp-label { color: var(--ink); font-weight: 600; }
+.pp-link { height: 2px; background: var(--border-2); margin: 0 4px; align-self: center; }
+.pp-link.done { background: var(--success); }
+
+/* Big checklist progress in live panel */
+.lm-progress { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
+.lm-progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; font-family: 'Geist Mono', monospace; }
+.lm-progress-head .pct { font-size: 22px; font-weight: 600; color: var(--ink); }
+.lm-progress-head .frac { font-size: 12px; color: var(--ink-mute); }
+.lm-progress-track { height: 12px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 6px; position: relative; overflow: hidden; }
+.lm-progress-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--brand) 0%, #f5c862 100%); border-radius: 5px; box-shadow: 0 0 8px rgba(226, 169, 59, 0.4); transition: width 600ms cubic-bezier(0.2,0.8,0.2,1); }
+@media (max-width: 720px) {
+  .pp-bar { grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .pp-link { display: none; }
+}
 .event-stream { font-family: 'Geist Mono', monospace; font-size: 12px; max-height: 380px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 0; }
 .event-stream .ev { display: grid; grid-template-columns: 80px 160px 1fr; gap: 10px; padding: 6px 14px; border-bottom: 1px dashed var(--border); align-items: baseline; }
 .event-stream .ev:last-child { border-bottom: none; }
@@ -563,6 +654,108 @@ body.resizing-panel.panel-pinned .app { transition: none !important; }
 .event-stream .ev .ev-name { color: var(--brand); font-weight: 600; }
 .event-stream .ev .pl { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .empty-stream { padding: 32px 0; text-align: center; color: var(--ink-dim); font-size: 13px; font-family: 'Geist', sans-serif; }
+.now-block { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
+.now-block.empty { color: var(--ink-dim); font-size: 13px; font-family: 'Geist', sans-serif; }
+.now-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.now-body { font-family: 'Geist Mono', monospace; font-size: 13px; }
+.now-event { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 4px; }
+.now-evname { color: var(--brand); font-weight: 600; }
+.now-who { color: var(--ink-dim); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); }
+.now-what { color: var(--ink); }
+.now-detail { color: var(--ink-mute); font-size: 12px; line-height: 1.5; word-break: break-word; }
+.now-prev { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.now-prev-row { display: grid; grid-template-columns: 70px 130px 1fr; gap: 10px; font-size: 11.5px; padding: 3px 0; align-items: baseline; }
+.now-prev-row .ts { color: var(--ink-dim); }
+.now-prev-row .ev-name { color: var(--brand); font-weight: 500; }
+.now-prev-row .pl { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-wave { margin-bottom: 12px; }
+.tl-wave-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin-bottom: 6px; padding-left: 4px; }
+
+/* Now block — quebra por wave (side panel) */
+.now-wave { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.now-wave:last-child { border-bottom: none; padding-bottom: 0; }
+.now-wave:first-child { padding-top: 0; }
+.now-wave-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.now-wave-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); }
+.now-wave-when { font-size: 11px; color: var(--ink-dim); font-family: 'Geist Mono', monospace; margin-left: auto; }
+.now-metric-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.now-metric-key { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.06em; margin-right: 2px; }
+.now-metric-pill { font-family: 'Geist Mono', monospace; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--surface-3); color: var(--ink-mute); }
+
+/* Em execução agora — cards compactos no Overview */
+.live-now-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.live-now-card { background: var(--surface); border: 1px solid var(--success); box-shadow: 0 0 0 3px var(--success-soft-2); border-radius: var(--radius-md); padding: 12px 14px; cursor: pointer; transition: transform 120ms ease, box-shadow 120ms ease; }
+.live-now-card:hover { transform: translateY(-1px); box-shadow: 0 0 0 3px var(--success-soft); }
+.live-now-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.live-now-ttl { font-size: 14px; font-weight: 600; color: var(--ink); flex: 1; min-width: 0; letter-spacing: -0.01em; }
+.live-now-when { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); }
+.live-now-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-family: 'Geist Mono', monospace; font-size: 12.5px; }
+.live-now-line .live-evname { color: var(--brand); font-weight: 600; }
+.live-now-line .live-actor { color: var(--ink-dim); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); }
+.live-now-line .live-what { color: var(--ink-mute); }
+
+/* Overview widgets (3-col grid below live cards) */
+.ov-widgets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0 18px; }
+@media (max-width: 900px) { .ov-widgets { grid-template-columns: 1fr; } }
+.ov-widget { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; min-height: 130px; display: flex; flex-direction: column; }
+.ov-widget-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin-bottom: 10px; }
+.ov-widget .empty { font-size: 12px; color: var(--ink-dim); padding: 6px 0; }
+/* Phase bars */
+.phbar-row { display: grid; grid-template-columns: 80px 1fr 28px; gap: 8px; align-items: center; padding: 3px 0; }
+.phbar-label { justify-self: start; font-size: 10.5px; }
+.phbar-track { height: 8px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.phbar-fill { height: 100%; background: var(--brand); border-radius: 3px; transition: width 400ms; }
+.phbar-count { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-mute); text-align: right; }
+/* Sparkline */
+.spark { display: flex; align-items: flex-end; gap: 4px; height: 36px; padding: 2px 0; }
+.spark-bar { flex: 1; min-width: 6px; background: var(--brand); border-radius: 2px 2px 0 0; transition: height 400ms; }
+.spark-labels { display: flex; justify-content: space-between; gap: 4px; margin-top: 4px; font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--ink-dim); }
+.spark-labels span { flex: 1; text-align: center; }
+.spark-foot { font-size: 11px; color: var(--ink-mute); margin-top: 8px; }
+/* Economia Mustard widget */
+.econ-widget .econ-total { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 10px; }
+.econ-widget .econ-total-num { font-family: 'Geist Mono', monospace; font-size: 26px; font-weight: 700; color: var(--ink); letter-spacing: -0.02em; line-height: 1.1; }
+.econ-widget .econ-total-lbl { font-size: 11px; color: var(--ink-dim); }
+.econ-widget .econ-mech-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin: 4px 0 4px; }
+.econ-widget .econ-foot { font-size: 11px; color: var(--ink-mute); margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+/* Top hooks */
+.hook-row { display: grid; grid-template-columns: 1fr 60px 40px 50px; gap: 8px; align-items: center; padding: 4px 0; font-size: 11.5px; }
+.hook-row .hook-name { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'Geist Mono', monospace; }
+.hook-row .hook-track { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.hook-row .hook-fill { height: 100%; background: var(--brand); border-radius: 3px; transition: width 400ms; }
+.hook-row .hook-count { font-family: 'Geist Mono', monospace; font-size: 10.5px; color: var(--ink-dim); text-align: right; }
+.hook-row .hook-saved { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--brand); font-weight: 600; text-align: right; }
+.info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 6px 0; font-size: 12.5px; border-bottom: 1px dashed var(--surface-2); }
+.info-row:last-child { border-bottom: none; }
+.info-row .info-label { color: var(--ink-mute); flex: 1; min-width: 0; }
+.info-row .info-value { color: var(--ink); font-weight: 600; white-space: nowrap; text-align: right; }
+.info-row .info-value .info-detail { color: var(--ink-dim); font-weight: 400; font-size: 11px; margin-left: 4px; }
+.info-row .info-help { color: var(--ink-dim); font-size: 10.5px; margin-top: 1px; }
+.info-block { padding: 4px 0; }
+.info-block .info-title { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+
+/* Atividade recente agrupada por spec → wave/agente */
+.group-spec { padding: 10px 12px; margin-bottom: 10px; }
+.group-spec.live { border-color: var(--success); box-shadow: 0 0 0 2px var(--success-soft-2); }
+.group-spec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
+.group-spec-ttl { font-size: 14px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.group-spec-ct { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--ink-dim); margin-left: auto; }
+.group-spec-head .btn.small { padding: 4px 10px; font-size: 11.5px; }
+.group-bucket { margin-bottom: 8px; }
+.group-bucket:last-child { margin-bottom: 0; }
+.group-bucket-head { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin-bottom: 4px; padding-left: 2px; }
+.group-ev-row { display: grid; grid-template-columns: 70px 110px 110px 1fr auto; gap: 10px; font-size: 11.5px; font-family: 'Geist Mono', monospace; padding: 3px 4px; align-items: baseline; border-radius: 4px; }
+.group-ev-row:hover { background: var(--surface-2); }
+.group-ev-row .ts { color: var(--ink-dim); }
+.group-ev-row .ev-name { color: var(--brand); font-weight: 500; }
+.group-ev-row .actor { color: var(--ink-dim); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-ev-row .actor.empty { background: transparent; }
+.group-ev-row .what { color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-ev-row .when { color: var(--ink-dim); text-align: right; }
+@media (max-width: 900px) {
+  .group-ev-row { grid-template-columns: 60px 100px 1fr auto; }
+  .group-ev-row .actor { display: none; }
+}
 
 /* Skeletons / empty / err */
 .skel { background: linear-gradient(90deg, var(--surface), var(--surface-2), var(--surface)); background-size: 200% 100%; animation: shimmer 1.4s infinite; height: 14px; border-radius: 4px; }
@@ -846,15 +1039,15 @@ const CLIENT_JS = `
   function closeRail(){ $('.rail').classList.remove('open'); $('#rail-overlay').classList.remove('open'); }
 
   // ── Tabs ────────────────────────────────────────────────────────
-  var TAB_TITLES = { overview:'Overview', specs:'Specs', telemetry:'Telemetry', compose:'Compose PRD', settings:'Settings', glossary:'Glossário', commands:'Comandos' };
+  var TAB_TITLES = { overview:'Visão geral', specs:'Especificações', telemetry:'Métricas', compose:'Criar PRD', settings:'Configurações', glossary:'Glossário', commands:'Comandos' };
   var TAB_CRUMBS = {
-    overview: 'Visão geral · poll <b>12s</b>',
-    specs: 'Active &amp; completed',
-    telemetry: 'Hooks · pipelines · storage',
+    overview: 'Visão geral · atualiza a cada <b>12s</b>',
+    specs: 'Ativas e concluídas',
+    telemetry: 'Automações · pipelines · armazenamento',
     compose: 'Gerador de PRD · padrão Mustard',
-    settings: 'Mustard env · grava em <code>.claude/settings.json</code>',
-    glossary: 'Termos e siglas usadas no Mustard',
-    commands: 'Todos os <code>/mustard:*</code> com explicação leiga e técnica',
+    settings: 'Configurações do Mustard · grava em <code>.claude/settings.json</code>',
+    glossary: 'Termos usados no Mustard',
+    commands: 'Todos os <code>/mustard:*</code> com explicação simples e técnica',
   };
   function setTab(name){
     STATE.tab = name;
@@ -924,42 +1117,615 @@ const CLIENT_JS = `
     var savedSum = (m.hookEvents || []).reduce(function(a,h){ return a + (h.tokensSaved||0); }, 0) + rtkTokens;
     var todayStr = today();
     var todayCount = (m.last7Days || []).filter(function(d){ return d.day === todayStr; }).reduce(function(a,d){ return a + d.events; }, 0);
-    var liveCount = (ex.activeNow || []).length;
+    var liveItems = (ex.activeNow || []).slice().sort(function(a,b){
+      return (Date.parse(b.lastActivity)||0) - (Date.parse(a.lastActivity)||0);
+    });
+    var liveCount = liveItems.length;
 
     var kpis = '<div class="kpi-grid">'
       + kpi('Specs ativas', actives.length, liveCount ? liveCount + ' processando agora' : (actives[0] ? actives[0].phase || 'sem fase' : 'nenhuma'), liveCount ? 'ok' : 'dim')
       + kpi('Concluídas', completed.length, 'no histórico', 'ok')
-      + kpi('Tokens poupados', fmtTokens(savedSum), 'RTK + hooks', 'ok')
+      + kpi('Tokens economizados', fmtTokens(savedSum), 'compressão de saídas + memória', 'ok')
       + kpi('Eventos hoje', fmtNum(todayCount), 'de ' + fmtNum(hookEvents) + ' totais', 'dim')
       + '</div>';
 
-    var feature = actives[0];
     var html = kpis;
-    html += '<div class="h-section">Em produção</div>';
-    if (feature) html += renderSpecCard(feature);
-    else html += '<div class="empty">Nenhuma spec ativa.</div>';
 
-    html += '<div class="h-section">Atividade recente</div>';
-    if (evs.length) html += renderEventsList(evs.slice(-12).reverse());
-    else html += '<div class="empty">Sem eventos no harness log.</div>';
+    // ── Widgets: Fases · Eventos 7d · Pipeline Health · Knowledge · Economia ─
+    html += '<div class="ov-widgets">'
+      + widgetPhases(ex.phaseDistribution || {})
+      + widgetEvents7d(m.last7Days || [])
+      + widgetPipelineHealth(m.pipelineHealth || null)
+      + widgetKnowledgeGrowth(m.knowledgeGrowth || null, (m.hookEvents || []).find(function(h){ return h.event === 'delegation'; }) || null)
+      + widgetMustardEconomy(m.hookEvents || [], rtkTokens)
+      + '</div>';
+
+    // ── Em execução agora ───────────────────────────────────────────
+    // Lista TODAS as specs/waves vivas (lastActivity <5min). Quando nada está
+    // vivo, simplesmente omite a seção. Auto-fit faz o card ocupar a linha
+    // inteira quando há só uma spec ativa.
+    if (liveCount) {
+      html += '<div class="h-section"><span class="live-dot"></span> Em execução agora · ' + liveCount + '</div>';
+      html += '<div class="live-now-grid">' + liveItems.map(function(li){
+        return renderLiveNowCard(li, specs, evs);
+      }).join('') + '</div>';
+    }
+
+    // Log em execução — somente specs com status=implementing E atividade recente.
+    // Eventos sem campo spec sao atribuidos a unica spec implementing (heuristica).
+    var defaultSpec = inferDefaultSpec(specs);
+    var specByName = {};
+    specs.forEach(function(s){ specByName[s.name] = s; });
+    var liveGroups = groupEventsBySpec(evs, specs, { defaultSpec: defaultSpec }).filter(function(g){
+      if (!g.isLive) return false;
+      var so = specByName[g.specName];
+      return so && so.status === 'implementing';
+    });
+    if (liveGroups.length) {
+      html += '<div class="h-section"><span class="live-dot"></span> Log · ao vivo</div>';
+      html += renderLiveLog(liveGroups);
+    }
 
     $('#panel-overview .mount').innerHTML = html;
   }
-  function kpi(label, val, delta, kind){
+
+  // Log realtime — para cada spec viva, mostra todos os buckets (waves/atores)
+  // com mais eventos por bucket que o renderGroupedActivity histórico.
+  function renderLiveLog(groups){
+    return groups.map(function(g){
+      var head = '<div class="group-spec-head">'
+        + '<span class="live-dot"></span>'
+        + '<span class="group-spec-ttl">' + esc(g.specTitle) + '</span>'
+        + (g.phase ? '<span class="tag ' + phaseClassFor(g.phase) + '">' + esc(g.phase) + '</span>' : '')
+        + '<span class="group-spec-ct">' + g.events.length + ' evento' + (g.events.length>1?'s':'') + '</span>'
+        + '<button class="btn ghost small" data-live="' + esc(g.specName) + '">Acompanhar</button>'
+        + '</div>';
+      var byBucket = {};
+      var bucketOrder = [];
+      g.events.forEach(function(e){
+        var pl = e.payload || {};
+        var w = e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : '');
+        var bk = w ? ('Wave ' + w) : ((e.actor && (e.actor.id || e.actor.kind)) || 'eventos');
+        if (!byBucket[bk]) { byBucket[bk] = []; bucketOrder.push(bk); }
+        byBucket[bk].push(e);
+      });
+      bucketOrder.sort(function(a, b){
+        var aT = Math.max.apply(null, byBucket[a].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+        var bT = Math.max.apply(null, byBucket[b].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+        return bT - aT;
+      });
+      var inner = bucketOrder.map(function(bk){
+        var rows = byBucket[bk].slice(0, 12).map(function(e){
+          var d = describeEvent(e);
+          return '<div class="group-ev-row">'
+            + '<span class="ts">' + esc((e.ts||e.timestamp||'').slice(11,19)) + '</span>'
+            + '<span class="ev-name">' + esc(e.event || '—') + '</span>'
+            + (d.who ? '<span class="actor">' + esc(d.who) + '</span>' : '<span class="actor empty"></span>')
+            + '<span class="what">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+            + '<span class="when">' + esc(timeAgo(e.ts||e.timestamp)) + '</span>'
+            + '</div>';
+        }).join('');
+        return '<div class="group-bucket">'
+          + '<div class="group-bucket-head">' + esc(bk) + ' · ' + byBucket[bk].length + '</div>'
+          + rows
+          + '</div>';
+      }).join('');
+      return '<div class="group-spec card live">' + head + inner + '</div>';
+    }).join('');
+  }
+
+  // ── Overview widgets ─────────────────────────────────────────────
+  var PHASE_ORDER = ['ANALYZE','PLAN','EXECUTE','QA','CLOSE','UNKNOWN'];
+  function widgetPhases(dist){
+    var entries = Object.keys(dist).map(function(k){ return { phase:k, count:dist[k]||0 }; });
+    if (!entries.length) return '<div class="ov-widget"><div class="ov-widget-head">Fases</div><div class="empty">sem specs ativas</div></div>';
+    entries.sort(function(a,b){
+      var ia = PHASE_ORDER.indexOf(a.phase); var ib = PHASE_ORDER.indexOf(b.phase);
+      if (ia < 0) ia = 99; if (ib < 0) ib = 99;
+      return ia - ib;
+    });
+    var max = entries.reduce(function(m,e){ return Math.max(m, e.count); }, 1);
+    var rows = entries.map(function(e){
+      var pct = Math.round((e.count / max) * 100);
+      return '<div class="phbar-row">'
+        + '<span class="phbar-label tag ' + phaseClassFor(e.phase) + '">' + esc(e.phase) + '</span>'
+        + '<div class="phbar-track"><div class="phbar-fill" style="width:' + pct + '%"></div></div>'
+        + '<span class="phbar-count">' + e.count + '</span>'
+        + '</div>';
+    }).join('');
+    return '<div class="ov-widget"><div class="ov-widget-head">Fases · specs ativas</div>' + rows + '</div>';
+  }
+
+  function widgetEvents7d(days){
+    if (!days || !days.length) return '<div class="ov-widget"><div class="ov-widget-head">Eventos · 7 dias</div><div class="empty">sem dados</div></div>';
+    var sorted = days.slice().sort(function(a,b){ return a.day.localeCompare(b.day); });
+    var counts = sorted.map(function(d){ return d.events || 0; });
+    var max = Math.max.apply(null, counts.concat([1]));
+    var total = counts.reduce(function(a,b){ return a+b; }, 0);
+    var peak = sorted.reduce(function(p,d){ return (d.events||0) > (p.events||0) ? d : p; }, sorted[0]);
+    var bars = sparkBars(counts, max);
+    var labels = sorted.map(function(d){ return weekdayShort(d.day); });
+    return '<div class="ov-widget"><div class="ov-widget-head">Eventos · 7 dias</div>'
+      + '<div class="spark">' + bars + '</div>'
+      + '<div class="spark-labels">' + labels.map(function(l){ return '<span>' + esc(l) + '</span>'; }).join('') + '</div>'
+      + '<div class="spark-foot">total <b>' + fmtNum(total) + '</b> · pico <b>' + fmtNum(peak.events||0) + '</b> ' + esc(weekdayShort(peak.day)) + '</div>'
+      + '</div>';
+  }
+
+  // Rótulos amigáveis das automações (hooks). Descrevem o resultado para o
+  // user, não o mecanismo interno. Tooltip (why) explica em uma frase.
+  var HOOK_LABELS = {
+    'budget-check':         { label: 'Pedido encurtado',         why: 'O pedido para a IA passou do tamanho máximo e foi cortado antes de gastar tokens à toa.' },
+    'bash-native-redirect': { label: 'Comando trocado',          why: 'Comando de terminal (grep, ls, cat) substituído por busca direta — mais rápido e mais barato.' },
+    'tool-use-counter':     { label: 'Busca encerrada cedo',     why: 'A IA atingiu o limite de tentativas na busca de código — evita ficar girando sem achar.' },
+    'model-routing-gate':   { label: 'IA mais barata escolhida', why: 'Bloqueou usar uma IA cara quando uma mais barata bastava para a tarefa.' },
+    'spec-size-gate':       { label: 'Documento compacto',       why: 'O documento de especificação ficou maior que o limite — sinal de que está virando livro em vez de checklist.' },
+    'close-gate':           { label: 'Entrega bloqueada',        why: 'A entrega não foi liberada: build, testes ou QA falharam.' },
+    'enforce-registry':     { label: 'Catálogo conferido',       why: 'O recurso só prosseguiu depois de conferir o catálogo de entidades do projeto.' },
+    'bash-safety':          { label: 'Comando perigoso barrado', why: 'Comandos destrutivos (apagar tudo, formatar disco, ler senhas) foram bloqueados.' },
+    'auto-format':          { label: 'Código formatado',         why: 'Formatador automático rodou depois que o arquivo foi salvo — você nem precisa pedir.' },
+    'checklist-auto-mark':  { label: 'Tarefa marcada sozinha',   why: 'Item da lista de tarefas foi marcado como pronto automaticamente quando o arquivo mudou.' },
+    'spec-hygiene-move':    { label: 'Documento antigo arquivado', why: 'Especificação parada há muito tempo foi movida para a pasta de arquivados.' },
+    'rtk-rewrite':          { label: 'Saída de comando enxuta',  why: 'A saída de comandos de terminal foi comprimida (60-90% mais curta), economizando tokens.' },
+    'output-budget':        { label: 'Resposta longa demais',    why: 'A IA devolveu mais texto do que o limite permitia para essa etapa.' },
+    'recommended-skills':   { label: 'Habilidades conferidas',   why: 'Conferiu se a IA recebeu as habilidades certas antes de começar a tarefa.' },
+    'file-guard':           { label: 'Arquivo sigiloso protegido', why: 'Tentativa de ler arquivo de senhas, chaves ou .env foi barrada.' },
+    'guard-verify':         { label: 'Regra de arquitetura',     why: 'Violação grave de arquitetura barrada (ex: tentar acessar banco fora da camada certa).' },
+    'duplication-check':    { label: 'Possível duplicata',       why: 'Nome do que está sendo criado parece igual a algo que já existe no projeto.' },
+    'convention-check':     { label: 'Pasta errada apontada',    why: 'Arquivo foi salvo fora da pasta onde costuma viver — pode ser engano.' },
+    'review-gate':          { label: 'Commit revisado',          why: 'Antes do commit: senhas vazadas, build quebrado ou mudança gigante foram detectados.' },
+    'skill-size-gate':      { label: 'Habilidade compacta',      why: 'Arquivo de habilidade ficou acima do tamanho recomendado.' },
+    'skill-validate-gate':  { label: 'Habilidade validada',      why: 'Estrutura da habilidade conferida — sem isso, ela não funcionaria direito.' },
+    'memory-auto-extract':  { label: 'Decisões salvas',          why: 'Decisões importantes da especificação foram gravadas para a próxima sessão lembrar.' },
+    'pre-compact':          { label: 'Memória preservada',       why: 'Antes da conversa ser comprimida, o estado foi salvo para conseguir retomar depois.' },
+    'followup-cancel-gate': { label: 'Pendência arquivada',      why: 'Spec de follow-up foi arquivada ao começar um novo trabalho.' },
+    'session-memory':       { label: 'Memória injetada',         why: 'Knowledge + decisões + lições foram pré-carregadas no início da sessão.' },
+    'delegation':           { label: 'Trabalho delegado',        why: 'Prompt isolado em sub-contexto via Task. Parent context fica enxuto.' },
+  };
+
+  // Map nomes técnicos de fase pro português falado
+  var PHASE_LABEL_PT = {
+    ANALYZE: 'Análise',
+    PLAN: 'Planejamento',
+    EXECUTE: 'Execução',
+    QA: 'Verificação',
+    CLOSE: 'Fechamento',
+    COORDINATE: 'Coordenação',
+  };
+  function phasePT(name){
+    if (!name) return '—';
+    var key = String(name).toUpperCase();
+    return PHASE_LABEL_PT[key] || (name.charAt(0).toUpperCase() + name.slice(1).toLowerCase());
+  }
+  function infoRow(label, value, help){
+    var helpHtml = help ? '<div class="info-help">' + esc(help) + '</div>' : '';
+    return '<div class="info-row" title="' + esc(help || '') + '">'
+      + '<div class="info-label">' + esc(label) + helpHtml + '</div>'
+      + '<div class="info-value">' + value + '</div>'
+      + '</div>';
+  }
+
+  function widgetPipelineHealth(h){
+    if (!h || !h.totalSpecs) {
+      return '<div class="ov-widget"><div class="ov-widget-head">Saúde dos trabalhos</div><div class="empty">nenhum trabalho rastreado ainda</div></div>';
+    }
+    var pass1 = h.pass1Pct || 0;
+    var pass1Color = pass1 >= 80 ? '#2d8f4e' : pass1 >= 50 ? '#c4881e' : '#b8472b';
+    var rows = [];
+    rows.push(infoRow(
+      'Trabalhos no total',
+      fmtNum(h.totalSpecs) + ' <span class="info-detail">' + h.activeCount + ' em curso · ' + h.archivedCount + ' concluídos</span>',
+      'Quantas atividades a IA já organizou neste projeto.'
+    ));
+    rows.push(infoRow(
+      'Acertou de primeira',
+      '<span style="color:' + pass1Color + '">' + pass1 + '%</span> <span class="info-detail">' + h.pass1Count + ' de ' + h.totalSpecs + '</span>',
+      'Quantos trabalhos terminaram sem precisar de tentativa extra. Quanto maior, melhor.'
+    ));
+    if (h.avgDuration) rows.push(infoRow(
+      'Tempo médio',
+      esc(h.avgDuration),
+      'Tempo médio que cada trabalho leva do começo ao fim.'
+    ));
+    if (h.avgApiCalls) rows.push(infoRow(
+      'Conversas com a IA por trabalho',
+      fmtNum(h.avgApiCalls),
+      'Quantas vezes a IA pensou e respondeu em cada trabalho.'
+    ));
+    if (typeof h.avgRetries === 'number') rows.push(infoRow(
+      'Reinícios por trabalho',
+      h.avgRetries.toFixed(1),
+      'Quantas vezes em média a IA precisou tentar de novo dentro de um trabalho.'
+    ));
+    if (h.worstPhase) rows.push(infoRow(
+      'Etapa que mais trava',
+      esc(phasePT(h.worstPhase.phase)) + ' <span class="info-detail">' + h.worstPhase.totalRetries + ' tentativas extras</span>',
+      'Em qual fase a IA mais precisa repetir o trabalho.'
+    ));
+    if (typeof h.l0Pct === 'number' && (h.l0Direct + h.l0Delegated) > 0) {
+      var l0 = h.l0Pct;
+      var l0Color = l0 >= 50 ? '#2d8f4e' : l0 >= 25 ? '#c4881e' : '#b8472b';
+      rows.push(infoRow(
+        'Trabalho delegado',
+        '<span style="color:' + l0Color + '">' + l0 + '%</span> <span class="info-detail">' + h.l0Delegated + ' de ' + (h.l0Direct + h.l0Delegated) + ' ações</span>',
+        'Quantas ações de código a IA delegou para sub-tarefas isoladas. Quando cai abaixo de 50%, o contexto principal vai entupir e gerar muitos reinícios.'
+      ));
+    }
+    return '<div class="ov-widget"><div class="ov-widget-head">Saúde dos trabalhos</div>' + rows.join('') + '</div>';
+  }
+
+  function widgetKnowledgeGrowth(k, delegationEvent){
+    var hasK = k && (k.entries || k.decisions || k.lessons);
+    var delegBytes = delegationEvent ? (delegationEvent.tokensAffected || 0) * 4 : 0;
+    var delegCount = delegationEvent ? (delegationEvent.count || 0) : 0;
+    if (!hasK && !delegCount) {
+      return '<div class="ov-widget"><div class="ov-widget-head">O que o Mustard aprendeu</div><div class="empty">ainda sem aprendizados acumulados</div></div>';
+    }
+    var rows = [];
+    if (k && k.entries) rows.push(infoRow(
+      'Aprendizados guardados',
+      fmtNum(k.entries) + (k.avgConfidence ? ' <span class="info-detail">qualidade ' + Math.round(k.avgConfidence * 100) + '%</span>' : ''),
+      'Padrões e convenções que a IA já capturou neste projeto.'
+    ));
+    if (k && k.decisions) rows.push(infoRow(
+      'Decisões salvas',
+      fmtNum(k.decisions),
+      'Escolhas técnicas registradas para a IA lembrar em sessões futuras.'
+    ));
+    if (k && k.lessons) rows.push(infoRow(
+      'Lições registradas',
+      fmtNum(k.lessons),
+      'Coisas que deram errado antes e a IA já anotou para não repetir.'
+    ));
+    if (delegCount) rows.push(infoRow(
+      'Trabalhos enviados para sub-IA',
+      fmtNum(delegCount) + ' <span class="info-detail">~' + fmtTokens(Math.round(delegBytes / 4)) + ' isolados</span>',
+      'Quando a IA delega uma tarefa para uma instância separada, mantendo o contexto principal enxuto.'
+    ));
+    return '<div class="ov-widget"><div class="ov-widget-head">O que o Mustard aprendeu</div>' + rows.join('') + '</div>';
+  }
+
+  // Categorias com tokens REAIS medidos. Outras categorias entram em "contadores".
+  var MEASURED_CATEGORIES = { rtk: 1, extraction: 1, prevention: 1 };
+  function categoryOf(h){
+    return h && h.category ? h.category : 'other';
+  }
+  function widgetMustardEconomy(hookEvents, rtkTokens){
+    var all = (hookEvents || []).slice()
+      .filter(function(h){ return (h.count||0) > 0 && h.event !== 'rtk-rewrite'; });
+
+    // Tokens medidos: só categorias com bytes/lines reais.
+    var measured = all.filter(function(h){
+      return (h.tokensSaved||0) > 0 && MEASURED_CATEGORIES[categoryOf(h)];
+    }).sort(function(a,b){ return (b.tokensSaved||0) - (a.tokensSaved||0); });
+    var prevention = all.filter(function(h){ return categoryOf(h) === 'prevention'; })
+      .sort(function(a,b){ return (b.count||0) - (a.count||0); });
+    var workflow   = all.filter(function(h){ return categoryOf(h) === 'workflow'; })
+      .sort(function(a,b){ return (b.count||0) - (a.count||0); });
+    var routing    = all.filter(function(h){
+      var c = categoryOf(h); return c === 'routing' || c === 'routing-advisory' || c === 'redirection';
+    }).sort(function(a,b){ return (b.count||0) - (a.count||0); });
+
+    if (!all.length && !(rtkTokens > 0)) {
+      return '<div class="ov-widget"><div class="ov-widget-head">Economia Mustard</div><div class="empty">sem mecanismos disparados ainda</div></div>';
+    }
+
+    var mustardMeasured = measured.reduce(function(s,h){ return s + (h.tokensSaved||0); }, 0);
+    var maxSaved = measured.reduce(function(m,h){ return Math.max(m, h.tokensSaved||0); }, 1);
+    var maxPrevent  = prevention.reduce(function(m,h){ return Math.max(m, h.count||0); }, 1);
+    var maxWorkflow = workflow.reduce(function(m,h){ return Math.max(m, h.count||0); }, 1);
+
+    function rowSaved(h){
+      var meta = HOOK_LABELS[h.event] || { label: h.event };
+      var saved = h.tokensSaved || 0;
+      var pct = maxSaved > 0 ? Math.round((saved / maxSaved) * 100) : 0;
+      return '<div class="hook-row" title="' + esc(meta.why || '') + '">'
+        + '<span class="hook-name">' + esc(meta.label) + '</span>'
+        + '<div class="hook-track"><div class="hook-fill" style="width:' + pct + '%"></div></div>'
+        + '<span class="hook-count">' + fmtNum(h.count) + 'x</span>'
+        + '<span class="hook-saved">' + fmtTokens(saved) + '</span>'
+        + '</div>';
+    }
+    function rowCount(h, maxC){
+      var meta = HOOK_LABELS[h.event] || { label: h.event };
+      var pct = maxC > 0 ? Math.round(((h.count||0) / maxC) * 100) : 0;
+      return '<div class="hook-row" title="' + esc(meta.why || '') + '" style="opacity:.78">'
+        + '<span class="hook-name">' + esc(meta.label) + '</span>'
+        + '<div class="hook-track"><div class="hook-fill" style="width:' + pct + '%;opacity:.55"></div></div>'
+        + '<span class="hook-count">' + fmtNum(h.count) + 'x</span>'
+        + '<span class="hook-saved">&mdash;</span>'
+        + '</div>';
+    }
+
+    // Painel 1: Token Economy MEDIDA (RTK + extraction + prevention com bytes reais).
+    var rtkRow = rtkTokens > 0
+      ? '<div class="hook-row" title="Compressão das saídas de comandos (ex: git, ls) feita pela ferramenta RTK."><span class="hook-name">Saídas de comando comprimidas</span>'
+        + '<div class="hook-track"><div class="hook-fill" style="width:100%"></div></div>'
+        + '<span class="hook-count">&mdash;</span>'
+        + '<span class="hook-saved">' + fmtTokens(rtkTokens) + '</span></div>'
+      : '';
+    var measuredBars = measured.map(rowSaved).join('');
+    var measuredTotal = (rtkTokens || 0) + mustardMeasured;
+    var totalLine = '<div class="econ-total">'
+      + '<span class="econ-total-num">' + fmtTokens(measuredTotal) + '</span>'
+      + '<span class="econ-total-lbl">economizados de verdade</span>'
+      + '</div>';
+    var noteLine = mustardMeasured > 0
+      ? '<div class="econ-foot">Memória do Mustard: <b>' + fmtTokens(mustardMeasured) + '</b> · Compressão de saídas: <b>' + fmtTokens(rtkTokens || 0) + '</b></div>'
+      : '<div class="econ-foot">Quase toda a economia vem da compressão de saídas de comandos. Os outros mecanismos abaixo (bloqueios, formatações automáticas, redirecionamentos) não economizam tokens diretamente — eles previnem erros, automatizam tarefas e organizam o trabalho.</div>';
+
+    var measuredHead = '<div class="econ-mech-head">Onde economizou (' + (measured.length + (rtkTokens > 0 ? 1 : 0)) + ')</div>';
+    var measuredSection = (rtkRow || measuredBars)
+      ? measuredHead + rtkRow + measuredBars
+      : '';
+
+    // Painel 2: Bloqueios (count, não tokens).
+    var preventionSection = prevention.length
+      ? '<div class="econ-mech-head" style="margin-top:10px">Erros barrados a tempo (' + prevention.length + ')</div>'
+        + prevention.map(function(h){ return rowCount(h, maxPrevent); }).join('')
+      : '';
+
+    // Painel 3: Automações de workflow (count).
+    var workflowSection = workflow.length
+      ? '<div class="econ-mech-head" style="margin-top:10px">Tarefas automáticas (' + workflow.length + ')</div>'
+        + workflow.map(function(h){ return rowCount(h, maxWorkflow); }).join('')
+      : '';
+
+    // Painel 4: Routing / Redirection (count).
+    var routingSection = routing.length
+      ? '<div class="econ-mech-head" style="margin-top:10px;opacity:.85">Decisões de rota (' + routing.length + ')</div>'
+        + routing.map(function(h){ return rowCount(h, routing.reduce(function(m,x){ return Math.max(m, x.count||0); }, 1)); }).join('')
+      : '';
+
+    var headLabel = 'Economia Mustard &middot; ' + fmtNum(all.length) + ' automaç' + (all.length === 1 ? 'ão' : 'ões');
+    return '<div class="ov-widget econ-widget">'
+      + '<div class="ov-widget-head">' + headLabel + '</div>'
+      + totalLine
+      + noteLine
+      + measuredSection
+      + preventionSection
+      + workflowSection
+      + routingSection
+      + '</div>';
+  }
+
+  function sparkBars(values, max){
+    return values.map(function(v){
+      var h = max > 0 ? Math.max(2, Math.round((v / max) * 32)) : 2;
+      return '<span class="spark-bar" style="height:' + h + 'px" title="' + v + '"></span>';
+    }).join('');
+  }
+
+  var WEEKDAYS = ['dom','seg','ter','qua','qui','sex','sáb'];
+  function weekdayShort(yyyymmdd){
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(yyyymmdd)) return yyyymmdd;
+    var d = new Date(yyyymmdd + 'T12:00:00');
+    return WEEKDAYS[d.getDay()] + ' ' + yyyymmdd.slice(8);
+  }
+
+  // Renderiza um cartão compacto para um item de "Em execução agora".
+  // li = { spec, wave, lastActivity }. Procura o último evento conhecido
+  // para essa spec/wave em STATE.events e descreve o que está sendo feito.
+  function renderLiveNowCard(li, specs, events){
+    var specObj = (specs || []).find(function(s){ return s.name === li.spec; }) || {};
+    var fullName = li.wave ? (li.spec + '/' + li.wave) : li.spec;
+    var ttl = displayTitle(li.spec);
+    var phase = (specObj.phase || '').toUpperCase();
+    // Achar último evento associado a essa spec/wave
+    var matched = (events || []).filter(function(e){
+      var pl = e.payload || {};
+      var sn = e.spec || pl.spec || '';
+      var wn = (e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : ''));
+      if (!sn) return false;
+      if (li.wave) {
+        if (sn === li.wave || sn === fullName) return true;
+        if (sn === li.spec && wn === String(li.wave)) return true;
+        return false;
+      }
+      return sn === li.spec || sn === fullName;
+    });
+    matched.sort(function(a,b){ return (Date.parse(b.ts||b.timestamp)||0) - (Date.parse(a.ts||a.timestamp)||0); });
+    var last = matched[0];
+    var nowLine = '';
+    if (last) {
+      var d = describeEvent(last);
+      nowLine = '<div class="live-now-line">'
+        + '<span class="live-evname">' + esc(last.event || '—') + '</span>'
+        + (d.who ? '<span class="live-actor">' + esc(d.who) + '</span>' : '')
+        + '<span class="live-what">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+        + '</div>';
+    } else {
+      nowLine = '<div class="live-now-line"><span class="live-what" style="color:var(--ink-dim)">aguardando evento do harness…</span></div>';
+    }
+    var waveTag = li.wave ? '<span class="tag brand">' + esc(li.wave) + '</span>' : '';
+    var phaseTag = phase ? '<span class="tag ' + phaseClassFor(phase) + '">' + esc(phase) + '</span>' : '';
+    return '<div class="live-now-card" data-live="' + esc(fullName) + '" title="Abrir live monitor de ' + esc(ttl) + '">'
+      + '<div class="live-now-head">'
+        + '<span class="live-pill"><span class="live-dot"></span>ao vivo</span>'
+        + phaseTag + waveTag
+        + '<div class="live-now-ttl">' + esc(ttl) + '</div>'
+        + '<span class="live-now-when">' + esc(timeAgo(li.lastActivity)) + '</span>'
+      + '</div>'
+      + nowLine
+      + '</div>';
+  }
+
+  // Agrupa eventos por spec; retorna lista ordenada por evento mais recente.
+  // Eventos do harness log frequentemente nao tem campo spec (o hook
+  // metrics-tracker emite sem ele). Inferimos a spec ativa pela mais
+  // recente em status=implementing por checkpoint. Empate dentro de 2h
+  // bloqueia inferencia (multi-spec real rodando em paralelo).
+  function inferDefaultSpec(specs){
+    var impl = (specs || []).filter(function(s){ return s.status === 'implementing'; });
+    if (!impl.length) return null;
+    if (impl.length === 1) return impl[0].name;
+    var sorted = impl.slice().sort(function(a, b){
+      var aT = Date.parse(a.checkpoint || '') || 0;
+      var bT = Date.parse(b.checkpoint || '') || 0;
+      return bT - aT;
+    });
+    var topT = Date.parse(sorted[0].checkpoint || '') || 0;
+    var nextT = Date.parse(sorted[1].checkpoint || '') || 0;
+    if (topT - nextT < 2 * 60 * 60 * 1000) return null;
+    return sorted[0].name;
+  }
+  function groupEventsBySpec(events, specs, opts){
+    opts = opts || {};
+    var defaultSpec = opts.defaultSpec || null;
+    if (!events || !events.length) return [];
+    var bySpec = {};
+    events.forEach(function(e){
+      var pl = e.payload || {};
+      var sn = e.spec || pl.spec || (pl.target && pl.target.spec) || defaultSpec || '';
+      if (!sn) return;
+      if (!bySpec[sn]) bySpec[sn] = [];
+      bySpec[sn].push(e);
+    });
+    var specByName = {};
+    (specs || []).forEach(function(s){ specByName[s.name] = s; });
+    return Object.keys(bySpec).map(function(sn){
+      var evs = bySpec[sn].slice().sort(function(a,b){
+        return (Date.parse(b.ts||b.timestamp)||0) - (Date.parse(a.ts||a.timestamp)||0);
+      });
+      var so = specByName[sn] || null;
+      var topTs = evs[0] ? (evs[0].ts || evs[0].timestamp) : null;
+      var fromMetrics = so ? isLiveTs(so.lastActivity) : false;
+      var fromEvents = topTs ? isLiveTs(topTs) : false;
+      return {
+        specName: sn,
+        specTitle: displayTitle(sn),
+        phase: so ? (so.phase||'') : '',
+        isLive: fromMetrics || fromEvents,
+        events: evs,
+      };
+    }).sort(function(a,b){
+      var aT = a.events[0] ? (Date.parse(a.events[0].ts||a.events[0].timestamp)||0) : 0;
+      var bT = b.events[0] ? (Date.parse(b.events[0].ts||b.events[0].timestamp)||0) : 0;
+      return bT - aT;
+    });
+  }
+
+  // Render: para cada spec, header (título + phase + count) e dentro
+  // sub-blocos por wave (quando há ev.wave), até N eventos por wave.
+  function renderGroupedActivity(groups){
+    return groups.slice(0, 6).map(function(g){
+      var head = '<div class="group-spec-head">'
+        + (g.isLive ? '<span class="live-dot"></span>' : '')
+        + '<span class="group-spec-ttl">' + esc(g.specTitle) + '</span>'
+        + (g.phase ? '<span class="tag ' + phaseClassFor(g.phase) + '">' + esc(g.phase) + '</span>' : '')
+        + '<span class="group-spec-ct">' + g.events.length + ' evento' + (g.events.length>1?'s':'') + '</span>'
+        + '<button class="btn ghost small" data-live="' + esc(g.specName) + '">Acompanhar</button>'
+        + '</div>';
+
+      // Agrupa eventos por wave (ou agente quando wave ausente)
+      var byBucket = {};
+      var bucketOrder = [];
+      g.events.forEach(function(e){
+        var pl = e.payload || {};
+        var w = e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : '');
+        var bk = w ? ('Wave ' + w) : ((e.actor && (e.actor.id || e.actor.kind)) || 'eventos');
+        if (!byBucket[bk]) { byBucket[bk] = []; bucketOrder.push(bk); }
+        byBucket[bk].push(e);
+      });
+      bucketOrder.sort(function(a, b){
+        var aT = Math.max.apply(null, byBucket[a].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+        var bT = Math.max.apply(null, byBucket[b].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+        return bT - aT;
+      });
+
+      var inner = bucketOrder.map(function(bk){
+        var rows = byBucket[bk].slice(0, 4).map(function(e){
+          var d = describeEvent(e);
+          return '<div class="group-ev-row">'
+            + '<span class="ts">' + esc((e.ts||e.timestamp||'').slice(11,19)) + '</span>'
+            + '<span class="ev-name">' + esc(e.event || '—') + '</span>'
+            + (d.who ? '<span class="actor">' + esc(d.who) + '</span>' : '<span class="actor empty"></span>')
+            + '<span class="what">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+            + '<span class="when">' + esc(timeAgo(e.ts||e.timestamp)) + '</span>'
+            + '</div>';
+        }).join('');
+        return '<div class="group-bucket">'
+          + '<div class="group-bucket-head">' + esc(bk) + ' · ' + byBucket[bk].length + '</div>'
+          + rows
+          + '</div>';
+      }).join('');
+
+      return '<div class="group-spec card">' + head + inner + '</div>';
+    }).join('');
+  }
+
+  function pickFeatureSpec(actives, ex){
+    if (!actives.length) return null;
+    var liveNames = {};
+    (ex && ex.activeNow || []).forEach(function(a){ liveNames[a.spec] = a.lastActivity; });
+    var sorted = actives.slice().sort(function(a, b){
+      var aLive = liveNames[a.name] ? Date.parse(liveNames[a.name]) : 0;
+      var bLive = liveNames[b.name] ? Date.parse(liveNames[b.name]) : 0;
+      if (aLive !== bLive) return bLive - aLive;
+      var aT = a.lastActivity ? Date.parse(a.lastActivity) : 0;
+      var bT = b.lastActivity ? Date.parse(b.lastActivity) : 0;
+      if (aT !== bT) return bT - aT;
+      return String(b.name).localeCompare(String(a.name));
+    });
+    return sorted[0];
+  }
+
+  function enrichEvents(events, specs){
+    if (!events || !events.length) return [];
+    var specByName = {};
+    (specs || []).forEach(function(s){ specByName[s.name] = s; });
+    return events.map(function(e){
+      var pl = e.payload || {};
+      var specName = e.spec || pl.spec || (pl.target && pl.target.spec) || '';
+      // Heurística: se não tem spec no evento, mas o repo só tem 1 spec ativa recente, atribui.
+      var actor = (e.actor && (e.actor.id || e.actor.kind)) || '';
+      var label = '';
+      if (e.event === 'finding') {
+        var k = pl.kind || 'insight';
+        var c = String(pl.content || '').replace(/\s+/g, ' ').slice(0, 90);
+        label = k + ': ' + c;
+      } else if (e.event === 'agent.stop') {
+        var dur = pl.durationMs ? Math.round(pl.durationMs / 1000) + 's' : '';
+        var tc = pl.toolCount != null ? pl.toolCount + ' tools' : '';
+        label = [actor, dur, tc].filter(Boolean).join(' · ');
+      } else if (e.event === 'session.start') {
+        label = (pl.cwd ? pl.cwd.split(/[\\\/]/).pop() : '') + (pl.source ? ' · ' + pl.source : '');
+      } else if (pl.command) {
+        label = String(pl.command).slice(0, 90);
+      } else if (pl.event) {
+        label = String(pl.event);
+      } else if (pl.message) {
+        label = String(pl.message).slice(0, 90);
+      } else if (typeof pl === 'string') {
+        label = pl.slice(0, 90);
+      }
+      return {
+        ts: e.ts || e.timestamp,
+        event: e.event || e.type || '—',
+        actor: actor,
+        spec: specName,
+        specTitle: specName && specByName[specName] ? displayTitle(specName) : (specName ? displayTitle(specName) : ''),
+        label: label,
+      };
+    });
+  }
+  function kpi(label, val, delta, kind, unit){
+    var unitHtml = unit ? ' <span class="unit">' + esc(unit) + '</span>' : '';
     return '<div class="kpi">'
       + '<div class="label">' + esc(label) + '</div>'
-      + '<div class="val">' + esc(val) + '</div>'
+      + '<div class="val">' + esc(val) + unitHtml + '</div>'
       + '<div class="delta ' + (kind || '') + '"><span class="dot"></span>' + esc(delta || '') + '</div>'
       + '</div>';
   }
   function renderEventsList(events){
     return '<div class="card">' + events.map(function(e){
-      var when = timeAgo(e.ts || e.timestamp);
-      var ev = e.event || e.type || '—';
-      var label = (e.payload && (e.payload.spec || e.payload.event || e.payload.command)) || '';
+      var when = timeAgo(e.ts);
+      var specChip = e.specTitle
+        ? '<span class="ev-spec" data-live="' + esc(e.spec) + '" title="Acompanhar ' + esc(e.specTitle) + '">' + esc(e.specTitle) + '</span>'
+        : '';
       return '<div class="idx-row">'
-        + '<div class="nm">' + esc(ev) + '</div>'
-        + '<div class="meta">' + esc(String(label).slice(0, 80)) + '</div>'
+        + '<div class="nm">' + esc(e.event) + specChip + '</div>'
+        + '<div class="meta">' + esc(e.label || '—') + '</div>'
         + '<div class="stat">' + esc(when) + '</div>'
         + '</div>';
     }).join('') + '</div>';
@@ -977,6 +1743,21 @@ const CLIENT_JS = `
     var actives = specs.filter(function(s){ return s.state === 'active'; });
     var completed = filterByPeriod(specs.filter(function(s){ return s.state === 'completed'; }), STATE.specsPeriod);
 
+    // Live = atividade <5min OU alguma sub-wave live (epic). Idle = resto.
+    function specIsLive(s){
+      if (isLiveTs(s.lastActivity)) return true;
+      if (s.isEpic && s.waves) return s.waves.some(function(w){ return isLiveTs(w.lastActivity); });
+      return false;
+    }
+    function byActivityDesc(a, b){
+      var aT = a.lastActivity ? Date.parse(a.lastActivity) : 0;
+      var bT = b.lastActivity ? Date.parse(b.lastActivity) : 0;
+      if (aT !== bT) return bT - aT;
+      return String(b.name).localeCompare(String(a.name));
+    }
+    var liveActives = actives.filter(specIsLive).sort(byActivityDesc);
+    var idleActives = actives.filter(function(s){ return !specIsLive(s); }).sort(byActivityDesc);
+
     var filterBar = '<div class="filter-bar">'
       + '<span class="label">Concluídas no período:</span>'
       + ['7','15','30','60','90','all'].map(function(p){
@@ -986,9 +1767,38 @@ const CLIENT_JS = `
       + '</div>';
 
     var html = '';
-    html += '<div class="h-section">Active · ' + actives.length + '</div>';
-    if (!actives.length) html += '<div class="empty">Nenhuma spec ativa.</div>';
-    else html += actives.map(renderSpecCard).join('');
+    if (liveActives.length) {
+      html += '<div class="h-section"><span class="live-dot"></span> Em execução · ' + liveActives.length + '</div>';
+      html += liveActives.map(renderSpecCard).join('');
+    }
+
+    if (!idleActives.length && !liveActives.length) {
+      html += '<div class="h-section">Em andamento · 0</div>';
+      html += '<div class="empty">Nenhuma spec ativa.</div>';
+    } else if (!idleActives.length) {
+      html += '<div class="h-section">Em andamento · 0</div>';
+      html += '<div class="empty">Todas as specs ativas estão executando agora.</div>';
+    } else {
+      // Agrupa idle por fase: EXECUTE → PLAN → ANALYZE → QA → CLOSE → outras.
+      var phaseOrder = ['EXECUTE', 'PLAN', 'ANALYZE', 'QA', 'CLOSE'];
+      var byPhase = {};
+      idleActives.forEach(function(s){
+        var ph = (s.phase || '').toUpperCase() || 'OUTRAS';
+        if (!byPhase[ph]) byPhase[ph] = [];
+        byPhase[ph].push(s);
+      });
+      var ordered = phaseOrder.filter(function(p){ return byPhase[p]; });
+      var rest = Object.keys(byPhase).filter(function(p){ return phaseOrder.indexOf(p) < 0; });
+      var allKeys = ordered.concat(rest);
+      html += '<div class="h-section">Em andamento · ' + idleActives.length + '</div>';
+      allKeys.forEach(function(ph){
+        var rows = byPhase[ph];
+        html += '<div class="phase-group">'
+          + '<div class="phase-group-head"><span class="tag ' + phaseClassFor(ph) + '">' + esc(ph) + '</span><span class="ct">' + rows.length + ' spec' + (rows.length > 1 ? 's' : '') + '</span></div>'
+          + rows.map(renderSpecCard).join('')
+          + '</div>';
+      });
+    }
 
     html += '<div class="h-section">Completed · ' + completed.length + '</div>';
     html += filterBar;
@@ -1013,8 +1823,30 @@ const CLIENT_JS = `
   }
 
   function renderSpecCard(s){
-    if (s.isEpic && s.waves && s.waves.length) return renderEpicCard(s);
+    if ((s.isEpic || s.isWavePlan) && s.waves && s.waves.length) return renderEpicCard(s);
     return renderSingleCard(s);
+  }
+  function waveMark(status){
+    if (status === 'completed') return '<span class="wave-mark done" title="completa">✓</span>';
+    if (status === 'failed') return '<span class="wave-mark fail" title="falhou">✗</span>';
+    if (status === 'current') return '<span class="wave-mark cur" title="atual">▶</span>';
+    return '<span class="wave-mark pend" title="pendente">⋯</span>';
+  }
+  // Compara status da wave (pipeline-state) com checklist (spec.md).
+  // Retorna { kind, label, tip } ou null se sem divergência.
+  function waveDivergence(w){
+    var c = w.checklist || { total: 0, percent: 0 };
+    if (c.total === 0) return null;
+    if (w.status === 'pending' && c.percent === 100) {
+      return { kind: 'ahead', label: '⚠', tip: 'Checklist diz 100% mas pipeline-state ainda marca wave como pendente. Provavel que items foram marcados sem /complete formal da wave.' };
+    }
+    if (w.status === 'current' && c.percent === 100) {
+      return { kind: 'ahead', label: '⚠', tip: 'Checklist 100% nesta wave atual — falta /complete ou avanco para proxima wave.' };
+    }
+    if (w.status === 'completed' && c.percent < 100) {
+      return { kind: 'behind', label: '⚠', tip: 'Pipeline-state marca wave como completa mas restam items abertos no checklist.' };
+    }
+    return null;
   }
   function specStamps(s){
     var phaseTag = s.phase ? '<span class="tag ' + phaseClassFor(s.phase) + '">' + esc(s.phase) + '</span>' : '';
@@ -1037,7 +1869,8 @@ const CLIENT_JS = `
       + (s.checkpoint ? '<span>Checkpoint: <b>' + esc(s.checkpoint) + '</b></span>' : '')
       + '</div>';
     var actions = '<div class="actions">'
-      + (s.state === 'active' ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar</button>' : '')
+      + (s.state === 'active' && live ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar</button>' : '')
+      + (s.state === 'active' && !live ? '<button class="btn ghost" data-live="' + esc(s.name) + '">Ver detalhes</button>' : '')
       + (c.items && c.items.length ? '<button class="btn ghost" data-toggle="' + clId + '">Checklist (' + c.total + ')</button>' : '')
       + '<button class="btn ghost" data-open="' + esc(s.path) + '">Ver spec.md</button>'
       + '</div>';
@@ -1075,17 +1908,21 @@ const CLIENT_JS = `
       + (s.retries != null ? '<span>Retries: <b>' + fmtNum(s.retries) + '</b></span>' : '')
       + '<span>Checkpoint: <b>' + esc(s.checkpoint || '—') + '</b></span>'
       + '</div>';
+    var openLabel = s.isEpic ? 'Ver wave-plan.md' : 'Ver spec.md';
     var actions = '<div class="actions">'
-      + (anyLive ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar epic</button>' : '')
-      + '<button class="btn ghost" data-open="' + esc(s.path) + '">Ver wave-plan.md</button>'
+      + (anyLive ? '<button class="btn live" data-live="' + esc(s.name) + '"><span class="live-dot" style="margin-right:2px"></span>Acompanhar</button>'
+                 : '<button class="btn ghost" data-live="' + esc(s.name) + '">Ver detalhes</button>')
+      + '<button class="btn ghost" data-open="' + esc(s.path) + '">' + openLabel + '</button>'
       + '</div>';
+    var kindLabel = s.isEpic ? 'epic' : 'wave plan';
     var head = '<div class="head">'
       + (anyLive ? '<span class="live-pill"><span class="live-dot"></span>ao vivo</span>' : '')
       + specStamps(s)
-      + '<span class="tag info">epic · ' + s.waves.length + ' waves</span>'
+      + '<span class="tag info">' + kindLabel + ' · ' + s.waves.length + ' waves</span>'
       + '<div class="ttl">' + esc(ttl) + '</div>'
       + '</div>';
-    var wavesHtml = (s.waves || []).map(function(w, i){ return renderWaveRow(w, i+1, s.name); }).join('');
+    var inline = !s.isEpic && s.isWavePlan;
+    var wavesHtml = (s.waves || []).map(function(w, i){ return renderWaveRow(w, i+1, s.name, inline); }).join('');
     return '<div class="spec-card epic-card' + (anyLive ? ' live' : '') + '">'
       + head
       + '<div class="nm">' + esc(s.name) + '</div>'
@@ -1102,19 +1939,29 @@ const CLIENT_JS = `
       + '<div class="waves-list">' + wavesHtml + '</div>'
       + '</div>';
   }
-  function renderWaveRow(w, idx, parentName){
+  function renderWaveRow(w, idx, parentName, inline){
     var c = w.checklist || { total:0, done:0, percent:0 };
-    var live = isLiveTs(w.lastActivity);
+    var live = isLiveTs(w.lastActivity) || (inline && w.status === 'current');
     var phaseTag = w.phase ? '<span class="tag ' + phaseClassFor(w.phase) + '">' + esc(w.phase) + '</span>' : '';
     var liveTag = live ? '<span class="live-pill"><span class="live-dot"></span>live</span>' : '';
-    var fullPath = parentName + '/' + w.name;
-    return '<div class="wave-row' + (live ? ' live' : '') + '" data-live="' + esc(fullPath) + '">'
-      + '<div class="ix">' + pad2(idx) + '</div>'
-      + '<div class="name">' + liveTag + phaseTag + '<span class="lbl">' + esc(w.name) + '</span></div>'
+    var mark = w.status ? waveMark(w.status) : '';
+    var dataLive = inline ? (parentName + '|wave-' + w.id) : (parentName + '/' + w.name);
+    var extra = [];
+    if (w.files != null) extra.push(w.files + ' files');
+    if (w.entities != null) extra.push(w.entities + ' ent');
+    var extraHtml = extra.length ? '<span class="wave-meta">' + esc(extra.join(' · ')) + '</span>' : '';
+    var stamp = inline
+      ? (w.status === 'completed' ? 'done' : w.status === 'failed' ? 'failed' : w.status === 'current' ? esc(timeAgo(w.lastActivity)) : '')
+      : esc(timeAgo(w.lastActivity));
+    var diverge = waveDivergence(w);
+    var divergeTag = diverge ? '<span class="wave-diverge ' + diverge.kind + '" title="' + esc(diverge.tip) + '">' + diverge.label + '</span>' : '';
+    return '<div class="wave-row' + (live ? ' live' : '') + (w.status ? ' s-' + w.status : '') + (diverge ? ' diverge' : '') + '" data-live="' + esc(dataLive) + '">'
+      + '<div class="ix">' + mark + pad2(idx) + '</div>'
+      + '<div class="name">' + liveTag + phaseTag + '<span class="lbl">' + esc(w.name) + '</span>' + extraHtml + divergeTag + '</div>'
       + '<div class="frac">' + (c.percent||0) + '%</div>'
       + '<div class="progress-mini"><div class="fill" style="width:' + (c.percent||0) + '%"></div></div>'
       + '<div class="frac">' + c.done + '/' + c.total + '</div>'
-      + '<div class="stamp">' + esc(timeAgo(w.lastActivity)) + '</div>'
+      + '<div class="stamp">' + stamp + '</div>'
       + '</div>';
   }
   function renderCompletedIndex(items){
@@ -1161,6 +2008,8 @@ const CLIENT_JS = `
     $('#side-overlay').classList.remove('open');
     document.body.classList.remove('panel-pinned');
     if (STATE.panelTimer) { clearInterval(STATE.panelTimer); STATE.panelTimer = null; }
+    STATE.currentSpecPath = null;
+    STATE.currentLiveSpec = null;
   }
   function togglePin(){
     STATE.panelPinned = !STATE.panelPinned;
@@ -1233,52 +2082,107 @@ const CLIENT_JS = `
 
   // Spec markdown viewer (uses side panel)
   function openSpec(specPath){
+    STATE.currentSpecPath = specPath;
+    STATE.currentLiveSpec = null;
     openPanel({ title: 'Spec', subtitle: specPath, body: '<div class="skel" style="width:60%;height:24px"></div><div class="skel" style="width:100%;height:14px;margin-top:14px"></div>' });
+    refreshOpenSpec();
+  }
+  function refreshOpenSpec(){
+    var specPath = STATE.currentSpecPath; if (!specPath) return;
     fetchJson('/api/spec?path=' + encodeURIComponent(specPath))
       .then(function(r){
         var name = specPath.split('/').slice(-2).join('/');
-        $('#sp-title').textContent = displayTitle(name);
-        $('#sp-name').textContent = specPath;
-        $('#sp-body').innerHTML = renderMarkdown(r.body.markdown || '');
-        applyGlossary('#sp-body');
+        var t = $('#sp-title'); if (t) t.textContent = displayTitle(name);
+        var n = $('#sp-name'); if (n) n.textContent = specPath;
+        var b = $('#sp-body'); if (b) { b.innerHTML = renderMarkdown(r.body.markdown || ''); applyGlossary('#sp-body'); }
       })
-      .catch(function(e){ $('#sp-body').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
+      .catch(function(e){ var b = $('#sp-body'); if (b) b.innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
   }
 
-  // Live monitor (uses side panel, polls 3s)
-  function openLiveMonitor(specName){
+  // Live monitor (uses side panel, polls 3s). Supports "<spec>|wave-<id>" to
+  // filter the panel to a single wave's events/checklist.
+  function parseLiveTarget(raw){
+    var idx = String(raw).indexOf('|wave-');
+    if (idx < 0) return { spec: String(raw), wave: null };
+    return { spec: String(raw).slice(0, idx), wave: Number(String(raw).slice(idx + 6)) };
+  }
+  function openLiveMonitor(rawName){
+    var t = parseLiveTarget(rawName);
+    STATE.currentLiveSpec = t.spec;
+    STATE.currentLiveWave = t.wave;
+    STATE.currentSpecPath = null;
+    var sub = t.wave != null ? t.spec + ' · wave ' + t.wave : t.spec;
     openPanel({
-      title: displayTitle(specName), subtitle: specName,
+      title: displayTitle(t.spec) + (t.wave != null ? ' · wave ' + t.wave : ''),
+      subtitle: sub,
       body: '<div class="skel" style="height:60px;border-radius:8px"></div><div class="skel" style="height:200px;border-radius:8px;margin-top:14px"></div>',
-      poll: function(){ pollLive(specName); },
+      poll: function(){ pollLive(t.spec, t.wave); },
     });
   }
-  function pollLive(specName){
-    fetchJson('/api/spec/live?spec=' + encodeURIComponent(specName))
+  function pollLive(specName, waveId){
+    var qs = '/api/spec/live?spec=' + encodeURIComponent(specName);
+    if (waveId != null && !isNaN(waveId)) qs += '&wave=' + encodeURIComponent(waveId);
+    fetchJson(qs)
       .then(function(r){ renderLive(specName, r.body); })
       .catch(function(e){ $('#sp-body').innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
   }
   function renderLive(specName, data){
     var liveTag = data.isLive ? '<span class="live-pill"><span class="live-dot"></span>ao vivo · poll 3s</span>' : '<span class="tag">inativa</span>';
     var phaseTag = data.phase ? '<span class="tag ' + phaseClassFor(data.phase) + '">' + esc(data.phase) + '</span>' : '';
+    var statusTag = data.status ? '<span class="tag">status: ' + esc(data.status) + '</span>' : '';
+    var scopeTag = data.scope ? '<span class="tag">scope: ' + esc(data.scope) + '</span>' : '';
+    var waveTag = '';
+    if (data.waveContext) {
+      waveTag = '<span class="tag brand">wave ' + data.waveContext.id + ' · ' + esc(data.waveContext.name) + '</span>';
+      var extra = [];
+      if (data.waveContext.files != null) extra.push(data.waveContext.files + ' files');
+      if (data.waveContext.entities != null) extra.push(data.waveContext.entities + ' entities');
+      if (extra.length) waveTag += '<span class="tag">' + esc(extra.join(' · ')) + '</span>';
+    } else if (data.wave) {
+      waveTag = '<span class="tag brand">wave ' + esc(data.wave) + '</span>';
+    }
     var html = '';
-    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' + liveTag + phaseTag + '</div>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">' + liveTag + phaseTag + statusTag + scopeTag + waveTag + '</div>';
+    if (data.waveContext && data.checklist) {
+      var wcDiv = waveDivergence({ status: data.waveContext.status, checklist: data.checklist });
+      if (wcDiv) {
+        html += '<div class="wave-diverge-banner ' + wcDiv.kind + '">'
+          + '<span class="wave-diverge-ico">⚠</span>'
+          + '<span class="wave-diverge-msg">' + esc(wcDiv.tip) + '</span>'
+          + '</div>';
+      }
+    }
+
+    // Andamento da pipeline: barra com 5 fases ANALYZE → PLAN → EXECUTE → QA → CLOSE
+    html += renderPipelineProgress(data);
+
+    // Bloco "Agora": último evento em destaque + 5 anteriores compactos.
+    html += renderNowBlock(data);
 
     if (data.summary) {
-      html += '<p class="summary" style="margin-top:0;font-size:14px;color:var(--ink-mute);line-height:1.65;">' + esc(data.summary).slice(0, 600) + (data.summary.length > 600 ? '…' : '') + '</p>';
+      html += '<p class="summary" style="margin-top:14px;font-size:14px;color:var(--ink-mute);line-height:1.65;">' + esc(data.summary).slice(0, 600) + (data.summary.length > 600 ? '…' : '') + '</p>';
     }
 
     html += '<div class="lm-stats">'
       + statBox('Última atividade', timeAgo(data.lastActivity))
-      + statBox('Fase atual', data.phase || '—')
-      + statBox('API calls', data.apiCalls != null ? fmtNum(data.apiCalls) : '—')
-      + statBox('Retries', data.retries != null ? fmtNum(data.retries) : '—')
+      + statBox('API calls', data.apiCalls != null ? fmtNum(data.apiCalls) + ' chamadas' : '—')
+      + statBox('Retries', data.retries != null ? fmtNum(data.retries) + ' reexecuções' : '—')
+      + statBox('Checkpoint', data.checkpoint || '—')
       + '</div>';
 
     if (data.checklist && data.checklist.items && data.checklist.items.length) {
-      html += '<div class="h-section" style="margin-top:14px;">Checklist · ' + data.checklist.done + '/' + data.checklist.total + ' (' + data.checklist.percent + '%)</div>';
-      html += '<div class="checklist" style="display:block">'
-        + data.checklist.items.map(function(it){
+      var ck = data.checklist;
+      var ckLabel = data.waveContext ? 'Checklist da wave ' + data.waveContext.id : 'Checklist da spec';
+      html += '<div class="h-section" style="margin-top:14px;">' + ckLabel + '</div>'
+        + '<div class="lm-progress">'
+          + '<div class="lm-progress-head">'
+            + '<span class="pct">' + ck.percent + '%</span>'
+            + '<span class="frac">' + ck.done + ' de ' + ck.total + ' itens</span>'
+          + '</div>'
+          + '<div class="lm-progress-track"><div class="lm-progress-fill" style="width:' + ck.percent + '%"></div></div>'
+        + '</div>';
+      html += '<div class="checklist" style="display:block;margin-top:10px">'
+        + ck.items.map(function(it){
             var t = it.text || ''; var pfx = '';
             var pm = t.match(/^\\[([^\\]]+)\\]\\s*(.*)/);
             if (pm) { pfx = '<span class="pfx">' + esc(pm[1]) + '</span>'; t = pm[2]; }
@@ -1296,23 +2200,11 @@ const CLIENT_JS = `
       html += '<div class="lm-stats">' + Object.keys(data.toolBreakdown).map(function(k){ return statBox(k, fmtNum(data.toolBreakdown[k])); }).join('') + '</div>';
     }
 
-    html += '<div class="h-section" style="margin-top:14px;">Stream de eventos · ' + (data.events ? data.events.length : 0) + '</div>';
+    html += '<div class="h-section" style="margin-top:14px;">Timeline · ' + (data.events ? data.events.length : 0) + ' eventos</div>';
     if (!data.events || !data.events.length) {
       html += '<div class="empty-stream">Sem eventos registrados para esta spec ainda. Os eventos aparecem quando algum agente despacha tool calls vinculados a este nome.</div>';
     } else {
-      html += '<div class="event-stream">' + data.events.slice().reverse().map(function(ev){
-        var ts = (ev.ts || ev.timestamp || '').slice(11, 19);
-        var name = ev.event || ev.type || '—';
-        var pl = '';
-        if (ev.payload) {
-          if (typeof ev.payload === 'string') pl = ev.payload;
-          else if (ev.payload.command) pl = ev.payload.command;
-          else if (ev.payload.event) pl = ev.payload.event;
-          else if (ev.payload.message) pl = ev.payload.message;
-          else pl = JSON.stringify(ev.payload).slice(0, 200);
-        }
-        return '<div class="ev"><span class="ts">' + esc(ts) + '</span><span class="ev-name">' + esc(name) + '</span><span class="pl">' + esc(pl) + '</span></div>';
-      }).join('') + '</div>';
+      html += renderTimelineByWave(data.events);
     }
 
     if (data.specPath) {
@@ -1326,25 +2218,335 @@ const CLIENT_JS = `
   }
   function statBox(k, v){ return '<div class="one"><div class="lk">' + esc(k) + '</div><div class="lv">' + esc(v) + '</div></div>'; }
 
+  function renderPipelineProgress(data){
+    // Barra de fases ANALYZE → PLAN → EXECUTE → QA → CLOSE com a fase atual destacada.
+    var phases = ['ANALYZE', 'PLAN', 'EXECUTE', 'QA', 'CLOSE'];
+    var current = (data.phase || '').toUpperCase();
+    var status = (data.status || '').toLowerCase();
+    var idx = phases.indexOf(current);
+    if (idx < 0) idx = -1;
+    // Se status indica concluído, marca tudo como done.
+    var allDone = status === 'completed' || status === 'closed' || current === 'CLOSE';
+    var html = '<div class="pipeline-progress">'
+      + '<div class="pp-head">'
+        + '<span class="pp-title">Andamento da pipeline</span>'
+        + '<span class="pp-hint">' + (current ? 'fase atual: <b>' + esc(current) + '</b>' : 'sem fase registrada') + (allDone ? ' · <span class="ok">concluída</span>' : '') + '</span>'
+      + '</div>'
+      + '<div class="pp-bar">';
+    phases.forEach(function(p, i){
+      var state = 'todo';
+      if (allDone) state = 'done';
+      else if (i < idx) state = 'done';
+      else if (i === idx) state = 'current';
+      html += '<div class="pp-step ' + state + '" data-phase="' + p + '">'
+        + '<div class="pp-dot"></div>'
+        + '<div class="pp-label">' + p + '</div>'
+        + '</div>';
+      if (i < phases.length - 1) html += '<div class="pp-link ' + (allDone || i < idx ? 'done' : '') + '"></div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  function describeEvent(ev){
+    var pl = ev.payload || {};
+    var actor = (ev.actor && (ev.actor.id || ev.actor.kind)) || '';
+    if (ev.event === 'tool.use') {
+      var tgt = pl.target || {};
+      var what = pl.tool || 'tool';
+      var bits = [];
+      if (tgt.file) bits.push(tgt.file);
+      if (tgt.command) bits.push(tgt.command);
+      if (tgt.pattern) bits.push('"' + tgt.pattern + '"');
+      if (tgt.subagent) bits.push('agent=' + tgt.subagent);
+      if (tgt.description) bits.push(tgt.description);
+      if (tgt.url) bits.push(tgt.url);
+      if (pl.retry) bits.push('retry');
+      return { who: actor, what: what, detail: bits.join(' · ') };
+    }
+    if (ev.event === 'finding') {
+      var k = pl.kind || 'insight';
+      var c = String(pl.content || '').replace(/\s+/g, ' ').slice(0, 200);
+      return { who: actor, what: k, detail: c };
+    }
+    if (ev.event === 'agent.stop') {
+      var dur = pl.durationMs ? Math.round(pl.durationMs / 1000) + 's' : '';
+      var tc = pl.toolCount != null ? pl.toolCount + ' tools' : '';
+      var sum = pl.summary && pl.summary !== '{}' ? String(pl.summary).slice(0, 200) : '';
+      return { who: actor, what: 'agente parou', detail: [dur, tc, sum].filter(Boolean).join(' · ') };
+    }
+    if (ev.event === 'pipeline.phase') {
+      var from = pl.from || '?';
+      var to = pl.to || '?';
+      return { who: actor, what: 'fase', detail: from + ' → ' + to };
+    }
+    if (ev.event === 'commit-gate.check') {
+      var bits2 = [];
+      if (pl.mode) bits2.push('mode=' + pl.mode);
+      if (pl.warnings != null) bits2.push(pl.warnings + ' warnings');
+      if (Array.isArray(pl.blockingFindings) && pl.blockingFindings.length) bits2.push(pl.blockingFindings.length + ' blocking');
+      if (pl.hasSensitive) bits2.push('sensitive!');
+      if (pl.buildOk === false) bits2.push('build FAIL');
+      else if (pl.buildOk === true) bits2.push('build ok');
+      return { who: actor, what: 'commit-gate', detail: bits2.join(' · ') };
+    }
+    if (ev.event === 'session.start') {
+      return { who: actor, what: 'sessão iniciada', detail: (pl.cwd || '') + (pl.source ? ' · ' + pl.source : '') };
+    }
+    if (pl.command) return { who: actor, what: 'comando', detail: String(pl.command).slice(0, 200) };
+    if (pl.event) return { who: actor, what: String(pl.event), detail: '' };
+    if (pl.message) return { who: actor, what: 'mensagem', detail: String(pl.message).slice(0, 200) };
+    if (typeof pl === 'string') return { who: actor, what: ev.event || '—', detail: pl.slice(0, 200) };
+    return { who: actor, what: ev.event || '—', detail: '' };
+  }
+
+  function renderNowBlock(data){
+    var evs = data.events || [];
+    if (!evs.length) return renderNowFromMetrics(data);
+
+    // Agrupa eventos por wave (string). Sem wave → bucket '—'.
+    var byWave = {};
+    var waveOrder = [];
+    evs.forEach(function(e){
+      var pl = e.payload || {};
+      var w = e.wave != null ? String(e.wave) : (pl.wave != null ? String(pl.wave) : '');
+      if (!w) w = '—';
+      if (!byWave[w]) { byWave[w] = []; waveOrder.push(w); }
+      byWave[w].push(e);
+    });
+    waveOrder.sort(function(a, b){
+      var aT = Math.max.apply(null, byWave[a].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+      var bT = Math.max.apply(null, byWave[b].map(function(e){ return Date.parse(e.ts||e.timestamp)||0; }));
+      return bT - aT;
+    });
+
+    var fresh = data.isLive ? '<span class="live-dot"></span> ' : '';
+    var head = '<div class="now-head">' + fresh + 'Agora · ' + (waveOrder.length > 1 ? waveOrder.length + ' waves ativas' : esc(timeAgo(data.lastActivity))) + '</div>';
+    var sections = waveOrder.map(function(w){
+      var bucket = byWave[w].slice().sort(function(a, b){
+        return (Date.parse(b.ts||b.timestamp)||0) - (Date.parse(a.ts||a.timestamp)||0);
+      });
+      var last = bucket[0];
+      var d = describeEvent(last);
+      var waveLabel = w === '—' ? 'Sem wave' : 'Wave ' + esc(w);
+      var primary = '<div class="now-event">'
+        + '<span class="now-evname">' + esc(last.event || '—') + '</span>'
+        + (d.who ? '<span class="now-who">' + esc(d.who) + '</span>' : '')
+        + '<span class="now-what">' + esc(d.what) + '</span>'
+        + '</div>'
+        + (d.detail ? '<div class="now-detail">' + esc(d.detail) + '</div>' : '');
+      var prev = bucket.slice(1, 4);
+      var prevHtml = '';
+      if (prev.length) {
+        prevHtml = '<div class="now-prev">' + prev.map(function(ev){
+          var pd = describeEvent(ev);
+          var pts = (ev.ts || ev.timestamp || '').slice(11, 19);
+          return '<div class="now-prev-row"><span class="ts">' + esc(pts) + '</span>'
+            + '<span class="ev-name">' + esc(ev.event || '—') + '</span>'
+            + '<span class="pl">' + esc(pd.what + (pd.detail ? ' · ' + pd.detail : '')) + '</span></div>';
+        }).join('') + '</div>';
+      }
+      return '<div class="now-wave">'
+        + '<div class="now-wave-head"><span class="now-wave-label">' + waveLabel + '</span>'
+        + '<span class="now-wave-when">' + esc(timeAgo(last.ts || last.timestamp)) + '</span></div>'
+        + primary + prevHtml
+        + '</div>';
+    }).join('');
+    return '<div class="now-block">' + head + '<div class="now-body">' + sections + '</div></div>';
+  }
+
+  // Fallback quando não há eventos no harness: usa pipeline-state metrics
+  // (agentAttempts, toolBreakdown, fase, lastActivity) para descrever o
+  // que está/esteve sendo executado, mesmo sem eventos finos.
+  function renderNowFromMetrics(data){
+    var phase = data.phase || '—';
+    var attempts = data.agentAttempts || {};
+    var tools = data.toolBreakdown || {};
+    var attemptsKeys = Object.keys(attempts);
+    var toolsKeys = Object.keys(tools);
+    var fresh = data.isLive ? '<span class="live-dot"></span> ' : '';
+    var head = '<div class="now-head">' + fresh + 'Agora · ' + esc(timeAgo(data.lastActivity)) + '</div>';
+    var body = '<div class="now-event">'
+      + '<span class="now-evname">fase</span>'
+      + '<span class="now-what">' + esc(phase) + '</span>'
+      + (data.status ? '<span class="now-who">' + esc(data.status) + '</span>' : '')
+      + '</div>';
+    if (attemptsKeys.length) {
+      body += '<div class="now-metric-line"><span class="now-metric-key">tentativas</span>'
+        + attemptsKeys.map(function(k){ return '<span class="now-metric-pill">' + esc(k) + ' · ' + esc(attempts[k]) + '</span>'; }).join('')
+        + '</div>';
+    }
+    if (toolsKeys.length) {
+      var top = toolsKeys.slice().sort(function(a,b){ return tools[b] - tools[a]; }).slice(0, 6);
+      body += '<div class="now-metric-line"><span class="now-metric-key">tools</span>'
+        + top.map(function(k){ return '<span class="now-metric-pill">' + esc(k) + ' · ' + esc(tools[k]) + '</span>'; }).join('')
+        + '</div>';
+    }
+    if (!attemptsKeys.length && !toolsKeys.length) {
+      body += '<div class="now-detail" style="color:var(--ink-dim)">Sem eventos no harness e sem pipeline-state ainda. A spec aparece aqui quando algum agente despacha tools vinculados a este nome.</div>';
+    } else {
+      body += '<div class="now-detail" style="color:var(--ink-dim);font-size:11px">Sem eventos no harness; derivado de pipeline-state.</div>';
+    }
+    return '<div class="now-block">' + head + '<div class="now-body">' + body + '</div></div>';
+  }
+
+  function renderTimelineByWave(events){
+    // Agrupa por wave (ev.wave) → fase (ev.phase ou inferida do evento), ordem cronológica.
+    var byWave = {};
+    var waveOrder = [];
+    events.forEach(function(ev){
+      var w = ev.wave != null ? String(ev.wave) : '—';
+      if (!byWave[w]) { byWave[w] = []; waveOrder.push(w); }
+      byWave[w].push(ev);
+    });
+    waveOrder.sort(function(a, b){
+      if (a === '—') return 1;
+      if (b === '—') return -1;
+      return parseInt(b, 10) - parseInt(a, 10);
+    });
+    var out = '';
+    waveOrder.forEach(function(w){
+      var bucket = byWave[w].slice().sort(function(a, b){
+        var aT = Date.parse(a.ts || a.timestamp || '') || 0;
+        var bT = Date.parse(b.ts || b.timestamp || '') || 0;
+        return bT - aT;
+      });
+      var head = w === '—' ? 'Sem wave' : 'Wave ' + esc(w);
+      out += '<div class="tl-wave"><div class="tl-wave-head">' + head + ' · ' + bucket.length + '</div>'
+        + '<div class="event-stream">' + bucket.map(function(ev){
+          var d = describeEvent(ev);
+          var ts = (ev.ts || ev.timestamp || '').slice(11, 19);
+          return '<div class="ev">'
+            + '<span class="ts">' + esc(ts) + '</span>'
+            + '<span class="ev-name">' + esc(ev.event || '—') + '</span>'
+            + '<span class="pl">' + esc(d.what + (d.detail ? ' · ' + d.detail : '')) + '</span>'
+            + '</div>';
+        }).join('') + '</div></div>';
+    });
+    return out;
+  }
+
   // ── Telemetry ───────────────────────────────────────────────────
+  // Cada hook tem 3 frases pra ser entendido por quem nunca leu o código:
+  //  - what: ação concreta que o hook faz
+  //  - why:  problema real que ele evita
+  //  - off:  consequência se você desligar
+  var HOOK_CATS = ['tokens', 'qualidade', 'pipeline', 'housekeeping'];
+  var HOOK_CAT_NAMES = {
+    tokens: 'Economia de tokens',
+    qualidade: 'Qualidade do código',
+    pipeline: 'Disciplina do pipeline',
+    housekeeping: 'Memória e manutenção',
+  };
+  var HOOK_CAT_DESC = {
+    tokens: 'Automações que reduzem o custo da IA: evitam usar modelos caros sem precisar, comprimem saídas de comandos, limitam quantas tentativas a busca pode fazer.',
+    qualidade: 'Automações que evitam código ruim entrando: comandos errados de terminal, documentos gigantes, código duplicado, arquivos em pastas erradas.',
+    pipeline: 'Automações que travam passos inválidos no fluxo (commit com senha vazada, entregar sem testes passarem, etc).',
+    housekeeping: 'Automações que cuidam de memória, formatação e checklist sozinhas — sem você precisar lembrar.',
+  };
   var HOOK_LEGEND = {
-    'bash-native-redirect': 'Redireciona comandos Bash genéricos (grep/cat/find/etc) para tools nativas (Grep/Read/Glob), economizando tokens.',
-    'budget-check': 'Mede o tamanho do prompt de uma Task antes de despachar e bloqueia se exceder o budget configurado para o role.',
-    'model-routing-gate': 'Bloqueia upgrades involuntários de modelo (sonnet→opus). Downgrades passam para economia opt-in.',
-    'rtk-gain': 'Marca uma agregação periódica do RTK (Rust Token Killer) — mede tokens economizados em CLI rewrites.',
-    'rtk-rewrite': 'Conta cada comando Bash que foi reescrito via RTK (transparente, sem mudar comportamento).',
-    'tool-use-counter': 'Conta tool uses por agente. Bloqueia Explore agents acima do limite (warn em 12, block em 15-20).',
-    'spec-size-gate': 'Avisa quando spec.md ultrapassa 500 linhas (modo strict bloqueia).',
-    'skill-size-gate': 'Avisa quando SKILL.md está acima do body limit recomendado pela Anthropic.',
-    'duplication-check': 'Detecta blocos duplicados em arquivos editados.',
-    'convention-check': 'Verifica naming/estrutura segundo convenções do projeto.',
-    'review-gate': 'Avisa sobre secrets staged ou build broken antes de git commit.',
-    'close-gate': 'Bloqueia transição para CLOSE se build/lint/test/QA falham ou checklist incompleto.',
-    'checklist-auto-mark': 'Auto-marca itens da checklist quando o arquivo correspondente é editado.',
-    'auto-format': 'Formata arquivo automaticamente após Edit/Write (Prettier/Black/etc por extensão).',
-    'memory-auto-extract': 'Extrai decisões não-óbvias de specs ativas para memória de longo prazo.',
-    'session-knowledge': 'Extrai padrões da pipeline-states/* para a knowledge base do projeto.',
-    'session-memory': 'Injeta knowledge.json + cross-session timeline no início de cada sessão.',
+    'rtk-rewrite': {
+      cat: 'tokens',
+      what: 'Reescreve cada comando Bash para passar via rtk (ex: "git status" vira "rtk git status").',
+      why: 'O wrapper RTK comprime saídas de CLI em 60–90%. Transparente, não muda o comportamento do comando.',
+      off: 'Você gasta tokens lendo logs/diffs cheios de ruído.',
+    },
+    'rtk-gain': {
+      cat: 'tokens',
+      what: 'Agrega periodicamente as economias do RTK e grava em métricas.',
+      why: 'É o que permite mostrar "Tokens cortados" aqui no dashboard.',
+      off: 'Você perde a visibilidade da economia (mas a economia continua).',
+    },
+    'model-routing-gate': {
+      cat: 'tokens',
+      what: 'Bloqueia troca involuntária de modelo (ex: Sonnet → Opus) quando a tabela de routing diz "use Sonnet aqui".',
+      why: 'Opus custa ~5× mais por token que Sonnet. Sem isso, um agente pode escalar o pipeline inteiro pra Opus sem você pedir.',
+      off: 'Custo do pipeline pode disparar silenciosamente.',
+    },
+    'tool-use-counter': {
+      cat: 'tokens',
+      what: 'Conta tool calls por agente. Avisa em 12 e bloqueia agentes Explore em 15–20 chamadas.',
+      why: 'Explore (que só lê código) raramente precisa de mais de 10 calls. Sem freio, ele varre o repo inteiro inflando contexto.',
+      off: 'Agentes Explore podem entrar em loop e gastar 5–10× mais tokens.',
+    },
+    'budget-check': {
+      cat: 'tokens',
+      what: 'Mede o tamanho do prompt da Task antes de despachar. Bloqueia se passar do budget do role.',
+      why: 'Cada role tem teto de chars (Explore 10K, review 12K, general 30K). Prompt inflado = janela cheia + custo desnecessário.',
+      off: 'Tasks podem ser despachadas com prompts gigantes.',
+    },
+    'bash-native-redirect': {
+      cat: 'qualidade',
+      what: 'Bloqueia comandos Bash genéricos (grep/cat/find/ls/head/tail) e força tools nativas (Grep/Read/Glob).',
+      why: 'Tools nativas são mais rápidas, cross-platform (Win/Linux) e mais baratas em tokens que parsing de saída shell.',
+      off: 'Pipelines em Windows quebram com sintaxe POSIX e gastam tokens em find/grep desnecessários.',
+    },
+    'spec-size-gate': {
+      cat: 'qualidade',
+      what: 'Avisa quando spec.md ultrapassa 500 linhas. Em modo strict, bloqueia o write.',
+      why: 'Specs gigantes viram wishlists sem foco. Limite obriga a quebrar em waves.',
+      off: 'Specs podem crescer sem freio e ficam impossíveis de revisar.',
+    },
+    'skill-size-gate': {
+      cat: 'qualidade',
+      what: 'Avisa quando SKILL.md está acima do body limit recomendado pela Anthropic.',
+      why: 'Skills muito longas perdem efetividade quando carregadas pelo agent.',
+      off: 'Skills incham e viram documentação morta.',
+    },
+    'duplication-check': {
+      cat: 'qualidade',
+      what: 'Detecta blocos duplicados em arquivos editados.',
+      why: 'Duplicação aumenta superfície de bug — uma correção em um lugar não pega o outro.',
+      off: 'Código duplicado entra silenciosamente.',
+    },
+    'convention-check': {
+      cat: 'qualidade',
+      what: 'Verifica se naming/estrutura segue as convenções detectadas no projeto.',
+      why: 'Sem isso, o agent inventa convenção própria e o repo fica inconsistente.',
+      off: 'Código novo destoa do estilo existente.',
+    },
+    'review-gate': {
+      cat: 'pipeline',
+      what: 'Antes de "git commit", avisa sobre secrets staged ou build broken.',
+      why: 'Evita commit acidental de .env/credenciais e commit que não compila.',
+      off: 'Secrets podem vazar pra história do git.',
+    },
+    'close-gate': {
+      cat: 'pipeline',
+      what: 'Bloqueia transição para fase CLOSE se build/lint/test/QA falham ou checklist está incompleto.',
+      why: 'Garante que "concluído" significa de fato concluído.',
+      off: 'Specs marcadas como completed mesmo com testes/AC falhando.',
+    },
+    'checklist-auto-mark': {
+      cat: 'pipeline',
+      what: 'Após Edit/Write, detecta se o arquivo cumpre item da checklist da spec ativa e marca [x] sozinho.',
+      why: 'Reduz fricção: você não precisa marcar manualmente o que claramente foi feito.',
+      off: 'Checklist desatualizado, dificulta saber progresso real.',
+    },
+    'auto-format': {
+      cat: 'housekeeping',
+      what: 'Após Edit/Write, formata o arquivo conforme a extensão (Prettier pra .ts, Black pra .py, etc).',
+      why: 'Mantém estilo consistente sem gastar prompt do agent dizendo "rode prettier".',
+      off: 'Diff fica poluído com whitespace e estilo inconsistente.',
+    },
+    'memory-auto-extract': {
+      cat: 'housekeeping',
+      what: 'Ao final da sessão, extrai "Decisões não-óbvias" das specs ativas e salva em memory/decisions.json.',
+      why: 'Captura o "porquê" de escolhas pra reaproveitar em sessões futuras.',
+      off: 'Decisões se perdem entre sessões.',
+    },
+    'session-knowledge': {
+      cat: 'housekeeping',
+      what: 'Ao final da sessão, extrai padrões/lições dos pipeline-states e adiciona em knowledge.json.',
+      why: 'A IA aprende com cada pipeline (não só com o scan inicial do projeto).',
+      off: 'Você re-explica os mesmos padrões a cada sessão nova.',
+    },
+    'session-memory': {
+      cat: 'housekeeping',
+      what: 'No SessionStart, injeta knowledge.json + timeline cross-session no contexto inicial.',
+      why: 'Faz o agente começar já sabendo o que foi aprendido nas sessões anteriores.',
+      off: 'Cada sessão começa do zero, sem memória.',
+    },
   };
 
   function loadMetrics(){
@@ -1372,25 +2574,34 @@ const CLIENT_JS = `
 
     var html = '';
 
+    // Intro pedagógica — explica os 3 conceitos centrais antes do usuário ver números.
+    html += '<div class="tm-intro">'
+      + '<div class="tm-intro-title">Como ler esta página</div>'
+      + '<div class="tm-intro-grid">'
+        + '<div class="tm-intro-item"><b>Disparos</b><span>quantas vezes um hook rodou — cada vez que o agent fez algo que o hook observa.</span></div>'
+        + '<div class="tm-intro-item"><b>Tokens vistos</b><span>volume total de conteúdo que passou pelo hook (tudo que ele inspecionou, mesmo sem agir).</span></div>'
+        + '<div class="tm-intro-item"><b>Tokens cortados</b><span>quanto deixou de ser gasto pela LLM porque o hook bloqueou ou comprimiu algo.</span></div>'
+      + '</div></div>';
+
     // Tier 1: tokens
-    html += '<div class="h-section">Tokens</div>';
-    html += '<div class="help-line">Soma de tokens economizados pelo Mustard via RTK + hooks. RTK reescreve comandos CLI; hooks bloqueiam upgrades de modelo desnecessários e tool uses excessivos.</div>';
+    html += '<div class="h-section">Economia de tokens</div>';
+    html += '<div class="help-line">Soma de tokens economizados pelo Mustard via RTK (compressão de saídas CLI) + hooks (bloqueio de upgrades de modelo, freio de tool uses excessivos).</div>';
     html += '<div class="kpi-grid">'
-      + kpi('Total poupado', fmtTokens(totalSaved + (rtk.tokens || 0)), 'RTK + hooks somados', 'ok')
-      + kpi('RTK · taxa', (rtk.rate || 0) + '%', fmtNum(rtk.commands || 0) + ' comandos reescritos', 'ok')
-      + kpi('Tokens afetados', fmtTokens(totalAffected), 'inspecionados pelos hooks', 'dim')
-      + kpi('Eventos de hook', fmtNum(totalCount), 'desde início do log', 'dim')
+      + kpi('Total cortado', fmtTokens(totalSaved + (rtk.tokens || 0)), 'RTK + hooks somados', 'ok', 'tokens')
+      + kpi('RTK · economia', (rtk.rate || 0) + '%', fmtNum(rtk.commands || 0) + ' comandos reescritos', 'ok', 'do output cortado')
+      + kpi('Tokens vistos', fmtTokens(totalAffected), 'volume inspecionado', 'dim', 'tokens')
+      + kpi('Disparos', fmtNum(totalCount), 'desde o início do log', 'dim', 'vezes')
       + '</div>';
 
     // Tier 2: pipelines
     html += '<div class="h-section">Pipelines</div>';
-    html += '<div class="help-line">Estatísticas agregadas de todos os pipelines (specs ativas + concluídas) lidas de <code class="mono">.claude/.pipeline-states/*.metrics.json</code>.</div>';
+    html += '<div class="help-line">Estatísticas agregadas de todos os pipelines (specs ativas + concluídas) lidas de <code class="mono">.claude/.pipeline-states/*.metrics.json</code>. Pass@1 = % de runs que terminaram sem precisar de retry.</div>';
     var pass1Pct = pa.runs ? Math.round((pa.pass1 / pa.runs) * 100) : 0;
     html += '<div class="kpi-grid">'
-      + kpi('Total de runs', fmtNum(pa.runs || 0), 'pipelines registrados', 'dim')
-      + kpi('Pass@1', pass1Pct + '%', fmtNum(pa.pass1 || 0) + ' sem retry', pass1Pct >= 70 ? 'ok' : 'warn')
-      + kpi('API calls (acum.)', fmtNum(pa.totalApiCalls || 0), 'soma de todos os runs', 'dim')
-      + kpi('Retries (acum.)', fmtNum(pa.totalRetries || 0), 'reexecuções totais', pa.totalRetries > 50 ? 'warn' : 'dim')
+      + kpi('Total de runs', fmtNum(pa.runs || 0), 'pipelines registrados', 'dim', 'runs')
+      + kpi('Pass@1', pass1Pct + '%', fmtNum(pa.pass1 || 0) + ' sem retry', pass1Pct >= 70 ? 'ok' : 'warn', 'dos runs')
+      + kpi('API calls (acum.)', fmtNum(pa.totalApiCalls || 0), 'soma de todos os runs', 'dim', 'chamadas')
+      + kpi('Retries (acum.)', fmtNum(pa.totalRetries || 0), 'reexecuções totais', pa.totalRetries > 50 ? 'warn' : 'dim', 'reexecuções')
       + '</div>';
 
     // Phase distribution (active specs)
@@ -1413,54 +2624,119 @@ const CLIENT_JS = `
     html += '<div class="h-section">Specs ativas · idade</div>';
     html += '<div class="help-line">Specs paradas por muitos dias geralmente indicam trabalho abandonado. Idealmente nada deveria ficar > 30d em "active".</div>';
     html += '<div class="kpi-grid cols-3">'
-      + kpi('< 7 dias', fmtNum(aging.lt7d || 0), 'recentes ou em curso', 'ok')
-      + kpi('7–30 dias', fmtNum(aging.d7_30 || 0), 'precisa de atenção', (aging.d7_30 || 0) > 0 ? 'warn' : 'dim')
-      + kpi('> 30 dias', fmtNum(aging.gt30d || 0), 'considerar arquivar', (aging.gt30d || 0) > 0 ? 'warn' : 'dim')
+      + kpi('< 7 dias', fmtNum(aging.lt7d || 0), 'recentes ou em curso', 'ok', 'specs')
+      + kpi('7–30 dias', fmtNum(aging.d7_30 || 0), 'precisa de atenção', (aging.d7_30 || 0) > 0 ? 'warn' : 'dim', 'specs')
+      + kpi('> 30 dias', fmtNum(aging.gt30d || 0), 'considerar arquivar', (aging.gt30d || 0) > 0 ? 'warn' : 'dim', 'specs')
       + '</div>';
 
-    // Hooks table
-    html += '<div class="h-section">Hooks · o que rodou em segundo plano</div>';
-    html += '<div class="help-line">Cada linha é um hook que rodou. A coluna "Por que existe" explica em uma frase qual fricção ele reduz. <b>Tokens poupados</b> só aparecem para hooks que medem economia (RTK, model-routing, tool-use-counter).</div>';
-    html += '<div class="card" style="padding:0;overflow:hidden;">'
-      + '<table class="tbl"><thead><tr><th>Hook</th><th class="num">Disparou</th><th>Por que existe</th><th class="num">Tokens afetados</th><th class="num">Tokens poupados</th></tr></thead><tbody>'
-      + hooks.map(function(h){
-          return '<tr>'
-            + '<td>' + esc(h.event) + '</td>'
-            + '<td class="num muted">' + fmtNum(h.count) + '</td>'
-            + '<td class="help">' + esc(HOOK_LEGEND[h.event] || '—') + '</td>'
-            + '<td class="num muted">' + (h.tokensAffected ? fmtNum(h.tokensAffected) : '—') + '</td>'
-            + '<td class="num">' + (h.tokensSaved ? fmtNum(h.tokensSaved) : '—') + '</td>'
-            + '</tr>';
-        }).join('')
-      + '<tr style="border-top:2px solid var(--border-2);"><td><b>Total</b></td><td class="num"><b>' + fmtNum(totalCount) + '</b></td><td class="muted help">soma de todos os disparos</td><td class="num muted">' + fmtNum(totalAffected) + '</td><td class="num"><b>' + fmtNum(totalSaved) + '</b></td></tr>'
-      + '</tbody></table></div>';
+    // Hooks por categoria — 3 frases didáticas por hook (o quê / por quê / se off)
+    html += '<div class="h-section">Automações · o que rodou em segundo plano</div>';
+    html += '<div class="help-line">Cada automação tem 3 partes: <b>O quê</b> (ação concreta), <b>Por quê</b> (problema que evita) e <b>Se off</b> (o que acontece se você desligar). Estão agrupadas por <b>categoria</b> pra facilitar leitura. A coluna de tokens só aparece em automações que medem economia.</div>';
+    html += renderHooksByCategory(hooks, totalCount, totalSaved, totalAffected);
 
     // Tool breakdown
     if (pa.toolBreakdown && Object.keys(pa.toolBreakdown).length) {
-      html += '<div class="h-section">Tools mais usadas (acumulado)</div>';
-      html += '<div class="help-line">Quais ferramentas (Edit, Bash, Write, Agent…) os agentes mais chamaram em todos os runs. Picos em Bash + low Edit indicam exploração; picos em Edit indicam implementação.</div>';
+      html += '<div class="h-section">Ferramentas mais usadas (acumulado)</div>';
+      html += '<div class="help-line">Quais ferramentas (Edit, Bash, Write, Agent…) a IA mais chamou em todos os trabalhos. Muito Bash + pouco Edit indica exploração; muito Edit indica implementação.</div>';
       var keys = Object.keys(pa.toolBreakdown).sort(function(a,b){ return pa.toolBreakdown[b] - pa.toolBreakdown[a]; });
-      html += '<div class="card" style="padding:0;overflow:hidden;"><table class="tbl"><thead><tr><th>Tool</th><th class="num">Chamadas</th></tr></thead><tbody>'
+      html += '<div class="card" style="padding:0;overflow:hidden;"><table class="tbl"><thead><tr><th>Ferramenta</th><th class="num">Chamadas (vezes)</th></tr></thead><tbody>'
         + keys.map(function(k){ return '<tr><td>' + esc(k) + '</td><td class="num">' + fmtNum(pa.toolBreakdown[k]) + '</td></tr>'; }).join('')
         + '</tbody></table></div>';
     }
 
     // 7-day chart
     html += '<div class="h-section">Eventos por dia · últimos 7 dias</div>';
-    html += '<div class="help-line">Cada ponto agrega <b>todos os events</b> escritos em <code class="mono">.claude/.metrics/*.jsonl</code> nesse dia. Picos = sessão ativa; vales = sem trabalho ou hooks desligados.</div>';
+    html += '<div class="help-line">Cada ponto agrega <b>todos os eventos</b> escritos em <code class="mono">.claude/.metrics/*.jsonl</code> nesse dia. Picos = sessão ativa; vales = sem trabalho ou hooks desligados.</div>';
     html += '<div class="chart-wrap">' + renderLineChart(days) + '</div>';
 
     // Storage + knowledge
-    html += '<div class="h-section">Storage e knowledge</div>';
-    html += '<div class="help-line">Espaço em disco usado pelo Mustard em diretórios principais e tamanho da knowledge base.</div>';
+    html += '<div class="h-section">Armazenamento e conhecimento</div>';
+    html += '<div class="help-line">Espaço em disco usado pelo Mustard nas pastas principais e quantos aprendizados estão registrados.</div>';
     html += '<div class="kpi-grid">'
-      + kpi('Knowledge entries', fmtNum(ex.knowledgeEntries || 0), 'em knowledge.json', 'dim')
-      + kpi('Specs (tudo)', fmtBytes(storage.spec || 0), 'pasta spec/', 'dim')
-      + kpi('Pipeline states', fmtBytes(storage.pipelineStates || 0), '.pipeline-states/', 'dim')
-      + kpi('Harness log', fmtBytes(storage.harness || 0), '.harness/', 'dim')
+      + kpi('Aprendizados', fmtNum(ex.knowledgeEntries || 0), 'padrões registrados', 'dim', 'entradas')
+      + kpi('Especificações', fmtBytes(storage.spec || 0), 'pasta spec/', 'dim', '')
+      + kpi('Estado dos pipelines', fmtBytes(storage.pipelineStates || 0), '.pipeline-states/', 'dim', '')
+      + kpi('Log de eventos', fmtBytes(storage.harness || 0), '.harness/', 'dim', '')
       + '</div>';
 
     $('#panel-telemetry .mount').innerHTML = html;
+  }
+
+  function renderHooksByCategory(hooks, totalCount, totalSaved, totalAffected){
+    // Combina hooks que dispararam (do log) com hooks instalados que ainda não dispararam (do catálogo).
+    var byEvent = {};
+    hooks.forEach(function(h){ byEvent[h.event] = h; });
+    var allEvents = Object.keys(HOOK_LEGEND).concat(
+      hooks.map(function(h){ return h.event; }).filter(function(e){ return !HOOK_LEGEND[e]; })
+    );
+    var seenEvents = {};
+    var allRows = [];
+    allEvents.forEach(function(e){
+      if (seenEvents[e]) return; seenEvents[e] = true;
+      var data = byEvent[e] || { event: e, count: 0, tokensAffected: 0, tokensSaved: 0 };
+      data.fired = !!byEvent[e];
+      allRows.push(data);
+    });
+
+    // Agrupa por HOOK_LEGEND[name].cat (default: housekeeping).
+    var byCat = {};
+    HOOK_CATS.forEach(function(c){ byCat[c] = []; });
+    allRows.forEach(function(h){
+      var legend = HOOK_LEGEND[h.event];
+      var cat = (legend && legend.cat) || 'housekeeping';
+      if (!byCat[cat]) byCat[cat] = [];
+      byCat[cat].push(h);
+    });
+
+    var out = '';
+    HOOK_CATS.forEach(function(cat){
+      var rows = byCat[cat];
+      if (!rows || !rows.length) return;
+      var fired = rows.filter(function(h){ return h.fired; });
+      var idle = rows.filter(function(h){ return !h.fired; });
+      var catSaved = rows.reduce(function(a,h){ return a + (h.tokensSaved || 0); }, 0);
+      var catCount = rows.reduce(function(a,h){ return a + (h.count || 0); }, 0);
+      out += '<div class="hk-cat">'
+        + '<div class="hk-cat-head">'
+          + '<span class="hk-cat-name">' + esc(HOOK_CAT_NAMES[cat] || cat) + '</span>'
+          + '<span class="hk-cat-stat">' + fmtNum(catCount) + ' disparos · ' + fmtNum(catSaved) + ' tokens cortados · ' + fired.length + '/' + rows.length + ' ativos</span>'
+        + '</div>'
+        + '<div class="hk-cat-desc">' + esc(HOOK_CAT_DESC[cat] || '') + '</div>';
+      out += '<div class="card" style="padding:0;overflow:hidden;">'
+        + '<table class="tbl tbl-hooks"><thead><tr>'
+          + '<th>Hook</th>'
+          + '<th class="num">Disparos<span class="th-unit">vezes</span></th>'
+          + '<th>O que ele faz <span class="th-hint">(o quê / por quê / se desligar)</span></th>'
+          + '<th class="num" title="Volume de conteúdo (tokens) que passou pelo hook, mesmo sem ele agir">Tokens vistos</th>'
+          + '<th class="num" title="Tokens que o hook impediu de gastar bloqueando ou comprimindo">Tokens cortados</th>'
+        + '</tr></thead><tbody>';
+      // Hooks ativos primeiro
+      fired.concat(idle).forEach(function(h){
+        var l = HOOK_LEGEND[h.event] || { what: '—', why: '', off: '' };
+        var rowCls = h.fired ? '' : 'hk-idle';
+        var status = h.fired ? '' : '<span class="hk-status-tag" title="Instalado mas ainda não disparou nesta janela de log">silencioso</span>';
+        out += '<tr class="' + rowCls + '">'
+          + '<td><span class="hk-name">' + esc(h.event) + '</span> ' + status + '</td>'
+          + '<td class="num muted">' + (h.fired ? fmtNum(h.count) : '0') + '</td>'
+          + '<td class="help">'
+            + '<div class="hk-what">' + esc(l.what || '—') + '</div>'
+            + (l.why ? '<div class="hk-row"><span class="hk-tag">por quê</span><span>' + esc(l.why) + '</span></div>' : '')
+            + (l.off ? '<div class="hk-row"><span class="hk-tag warn">se desligar</span><span>' + esc(l.off) + '</span></div>' : '')
+          + '</td>'
+          + '<td class="num muted">' + (h.tokensAffected ? fmtNum(h.tokensAffected) : '—') + '</td>'
+          + '<td class="num' + (h.tokensSaved ? ' hk-saved' : '') + '">' + (h.tokensSaved ? fmtNum(h.tokensSaved) : '—') + '</td>'
+          + '</tr>';
+      });
+      out += '</tbody></table></div></div>';
+    });
+
+    // Total geral com explicação inline.
+    out += '<div class="hk-total">'
+      + '<span><b>' + fmtNum(totalCount) + '</b> disparos no total <small>(soma de quantas vezes cada hook rodou)</small></span>'
+      + '<span><b>' + fmtNum(totalAffected) + '</b> tokens vistos <small>(volume inspecionado)</small></span>'
+      + '<span class="ok"><b>' + fmtNum(totalSaved) + '</b> tokens cortados <small>(impedidos de virar custo)</small></span>'
+      + '</div>';
+    return out;
   }
 
   function renderLineChart(days){
@@ -1499,7 +2775,7 @@ const CLIENT_JS = `
     }).join('');
     var totalEvents = days.reduce(function(a,d){ return a + d.events; }, 0);
     var avg = (totalEvents / n).toFixed(1);
-    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">'
+    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '">'
       + '<defs><linearGradient id="chart-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.35"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0"/></linearGradient></defs>'
       + yLines + '<path class="area" d="' + area + '"/><path class="line" d="' + line + '"/>'
       + dots + valueLabels + yLabels + xLabels
@@ -1942,14 +3218,52 @@ const CLIENT_JS = `
     var so = $('#side-overlay'); if (so) so.addEventListener('click', function(){ closePanel(false); });
     var sp = $('#sp-pin'); if (sp) sp.addEventListener('click', togglePin);
   }
-  function start(){ initTheme(); restorePanelWidth(); bindGlobalClicks(); bindPanelResize(); setTab('overview'); startLiveBgPoll(); }
+  // ── Realtime: SSE on /api/specs/stream ─────────────────────────
+  function applySpecsStreamChange(data){
+    var names = (data && data.specNames) || [];
+    if (STATE.tab === 'overview') { loadOverview(); }
+    else if (STATE.tab === 'specs') { STATE.specs = null; loadSpecs(); }
+    var openSpecPath = STATE.currentSpecPath;
+    if (openSpecPath) {
+      var openName = openSpecPath.split('/').slice(-2)[0] || '';
+      if (!names.length || names.indexOf(openName) !== -1) refreshOpenSpec();
+    }
+    var liveSpec = STATE.currentLiveSpec;
+    if (liveSpec && (!names.length || names.indexOf(liveSpec) !== -1)) {
+      pollLive(liveSpec);
+    }
+    checkLiveBanner();
+  }
+  function initSpecsStream(){
+    if (typeof EventSource === 'undefined') return;
+    try {
+      var es = new EventSource('/api/specs/stream');
+      var pending = null;
+      function schedule(fn){ if (pending) clearTimeout(pending); pending = setTimeout(fn, 150); }
+      es.addEventListener('change', function(ev){
+        var data; try { data = JSON.parse(ev.data); } catch(_) { data = { specNames: [], paths: [] }; }
+        schedule(function(){ applySpecsStreamChange(data); });
+      });
+      es.addEventListener('error', function(){ /* native auto-reconnect */ });
+      window.__specsStream = es;
+    } catch(_) {}
+  }
+
+  function start(){ initTheme(); restorePanelWidth(); bindGlobalClicks(); bindPanelResize(); setTab('overview'); startLiveBgPoll(); initSpecsStream(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
 `;
 
-function renderHtml(branch) {
+function renderHtml(branch, root, port) {
   const safeBranch = escapeHtml(branch);
+  // Show last 2 path segments so user can disambiguate (e.g. "Atiz/sialia").
+  const rootStr = String(root || '');
+  const parts = rootStr.split(/[\\/]/).filter(Boolean);
+  const rootShort = parts.length >= 2 ? parts.slice(-2).join('/') : (parts[0] || rootStr);
+  const safeRoot = escapeHtml(rootShort);
+  const safeRootFull = escapeHtml(rootStr);
+  const safePort = escapeHtml(String(port || ''));
   const head = ''
     + '<!doctype html>'
     + '<html lang="pt-BR">'
@@ -1971,23 +3285,25 @@ function renderHtml(branch) {
     +   '<aside class="rail">'
     +     '<div class="brand-row">'
     +       '<div class="logo">M</div>'
-    +       '<div class="brand-name">Mustard</div>'
-    +       '<div class="brand-meta">' + safeBranch + '</div>'
+    +       '<div class="brand-text">'
+    +         '<div class="brand-name">Mustard</div>'
+    +         '<div class="brand-meta" title="' + safeRootFull + '">' + safeRoot + ' · ' + safeBranch + ' · :' + safePort + '</div>'
+    +       '</div>'
     +     '</div>'
     +     '<div>'
-    +       '<div class="nav-section-label">Workspace</div>'
+    +       '<div class="nav-section-label">Painel</div>'
     +       '<nav>'
-    +         '<a data-tab="overview" class="on"><span class="ic">' + ICONS.home + '</span><span class="label">Overview</span></a>'
-    +         '<a data-tab="specs"><span class="ic">' + ICONS.doc + '</span><span class="label">Specs</span></a>'
-    +         '<a data-tab="telemetry"><span class="ic">' + ICONS.chart + '</span><span class="label">Telemetry</span></a>'
+    +         '<a data-tab="overview" class="on"><span class="ic">' + ICONS.home + '</span><span class="label">Visão geral</span></a>'
+    +         '<a data-tab="specs"><span class="ic">' + ICONS.doc + '</span><span class="label">Especificações</span></a>'
+    +         '<a data-tab="telemetry"><span class="ic">' + ICONS.chart + '</span><span class="label">Métricas</span></a>'
     +       '</nav>'
     +     '</div>'
     +     '<div>'
-    +       '<div class="nav-section-label">Tools</div>'
+    +       '<div class="nav-section-label">Ferramentas</div>'
     +       '<nav>'
-    +         '<a data-tab="compose"><span class="ic">' + ICONS.plus + '</span><span class="label">Compose PRD</span></a>'
+    +         '<a data-tab="compose"><span class="ic">' + ICONS.plus + '</span><span class="label">Criar PRD</span></a>'
     +         '<a data-tab="commands"><span class="ic">' + ICONS.terminal + '</span><span class="label">Comandos</span></a>'
-    +         '<a data-tab="settings"><span class="ic">' + ICONS.cog + '</span><span class="label">Settings</span></a>'
+    +         '<a data-tab="settings"><span class="ic">' + ICONS.cog + '</span><span class="label">Configurações</span></a>'
     +         '<a data-tab="glossary"><span class="ic">' + ICONS.book + '</span><span class="label">Glossário</span></a>'
     +       '</nav>'
     +     '</div>'

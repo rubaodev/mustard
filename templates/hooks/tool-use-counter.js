@@ -167,12 +167,13 @@ function handlePreToolUse(data, stateDir) {
     if (count >= limit) {
       emitMetric('tool-use-counter', {
         tokensAffected: 0,
-        tokensSaved: limit * 50,
+        tokensSaved: 0,
         note: 'hard-limit',
         extras: {
           agent_type: counter.type,
           count: counter.count,
           limit: counter.limit,
+          category: 'prevention',
         },
       });
       denyOutput = {
@@ -197,6 +198,7 @@ function handlePreToolUse(data, stateDir) {
           agent_type: counter.type,
           count: counter.count,
           limit: counter.limit,
+          category: 'routing-advisory',
         },
       });
       // Only set warnOutput once (first counter to hit threshold wins)

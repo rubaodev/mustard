@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const { shouldRun, isSelfDelegation } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 // ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
 let harnessEmit = null;
@@ -156,6 +157,27 @@ function handlePreToolUse(data, stateDir) {
       spec: currentSpec,
       actor: { kind: 'agent', id: subagentType, type: subagentType },
     });
+
+    // Descriptive metric: bytes of work isolated into a sub-context via Task.
+    // This is NOT savings — it reports how much prompt was delegated rather
+    // than running in the parent context. Aggregated as "isolation" so the
+    // dashboard can show throughput without inflating the token-saved total.
+    try {
+      const promptBytes = Buffer.byteLength(toolInput.prompt || '', 'utf8');
+      if (promptBytes > 0) {
+        emitMetric('delegation', {
+          tokensAffected: Math.round(promptBytes / 4),
+          tokensSaved: 0,
+          note: 'task-dispatched',
+          extras: {
+            subagent_type: subagentType,
+            model: model || 'inherited',
+            category: 'isolation',
+          },
+          cwd: projectDir,
+        });
+      }
+    } catch (_) { /* fail-silent */ }
   } catch (_) {} // fail-open
 
   // ── skill_hit_rate: parse recommended_skills from Task prompt ─────────────
@@ -247,60 +269,116 @@ function parseRecommendedSkills(prompt) {
 }
 
 /**
- * PostToolUse(Task): Detect API overload / dispatch failures in tool_response
- * and flag the active pipeline state with `lastDispatchFailure` so /resume can
- * auto-recover.
- *
- * We write to pipeline-state ONLY when a failure is detected — happy-path
- * dispatches never touch the state file from here.
+ * PostToolUse(Task): This is where the Task tool actually returns. We do three things:
+ *   1. Emit `agent.stop` with the real tool_response (SubagentStop carries no body)
+ *   2. Detect dispatch failures (API overload, HTTP 5xx) and emit `dispatch.failure`
+ *      so retries are measured from real signals instead of keyword guesses
+ *   3. Flag pipeline-state with `lastDispatchFailure` so /resume can auto-recover
  */
 function handlePostToolUse(data, stateDir) {
   try {
     if (isSelfDelegation(data)) { return; }
 
+    const toolInput = data.tool_input || {};
     const toolResponse = data.tool_response || {};
-    const responseText = JSON.stringify(toolResponse).toLowerCase();
-    // Detect dispatch failures conservatively: require is_error=true (Claude
-    // Code sets this on Task tool failures) AND at least one failure keyword.
-    // Covers:
-    //   - API overload / rate limiting (429, 529, throttle, too many requests)
-    //   - Infrastructure errors (tool result missing, HTTP 5xx, service unavailable)
-    // The regex avoids false positives on agents that merely *document* error
-    // handling in their returned content (see "unrelated error" test below).
+    const subagentType = toolInput.subagent_type || 'unknown';
+    const projectDir = path.resolve(stateDir, '..', '..');
+
+    // Resolve spec/phase from newest pipeline-state for event tagging
+    let currentSpec = null, currentPhase = null;
+    try {
+      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+      if (fs.existsSync(statesDir)) {
+        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+        let newestMtime = 0, newestState = null;
+        for (const f of stateFiles) {
+          try {
+            const fp = path.join(statesDir, f);
+            const stat = fs.statSync(fp);
+            if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
+          } catch {}
+        }
+        if (newestState && (Date.now() - newestMtime) < 10 * 60 * 1000) {
+          const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
+          currentSpec = st.specName || st.spec || st.name || null;
+          currentPhase = st.phaseName || st.phase || null;
+        }
+      }
+    } catch {}
+
+    // (1) Emit agent.stop with real summary. tool_response shape varies — most
+    // commonly an array of content blocks; serialize defensively and cap size.
+    try {
+      const responseStr = typeof toolResponse === 'string'
+        ? toolResponse
+        : JSON.stringify(toolResponse);
+      const summary = (responseStr || '').slice(0, 800);
+      const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+      const wave = harnessGetWave ? harnessGetWave(data) : 0;
+      emitEvent('agent.stop', {
+        summary,
+        confidence: null,
+        durationMs: null,
+        toolCount: null,
+        isError: toolResponse.is_error === true || undefined,
+      }, {
+        cwd: projectDir,
+        sessionId,
+        wave,
+        spec: currentSpec,
+        actor: { kind: 'agent', id: subagentType, type: subagentType },
+      });
+    } catch (_) {}
+
+    // (2)(3) Dispatch failure detection — require is_error=true AND a failure
+    // keyword so we don't false-positive on agents merely documenting errors.
+    const responseTextLower = (typeof toolResponse === 'string'
+      ? toolResponse
+      : JSON.stringify(toolResponse)).toLowerCase();
     const isDispatchFailure =
       toolResponse.is_error === true &&
-      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests|tool result missing|\b50[0-4]\b|service unavailable/.test(responseText);
+      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests|tool result missing|\b50[0-4]\b|service unavailable/.test(responseTextLower);
 
     if (!isDispatchFailure) return;
 
-    const projectDir = path.resolve(stateDir, '..', '..');
+    // Emit dispatch.failure event — this is the real retry signal that replaces
+    // the old keyword-based `retry:true` flag on tool.use events.
+    try {
+      const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+      const wave = harnessGetWave ? harnessGetWave(data) : 0;
+      emitEvent('dispatch.failure', {
+        agentType: subagentType,
+        description: (toolInput.description || '').slice(0, 200),
+        phase: currentPhase,
+      }, {
+        cwd: projectDir,
+        sessionId,
+        wave,
+        spec: currentSpec,
+        actor: { kind: 'hook', id: 'subagent-tracker' },
+      });
+    } catch (_) {}
+
+    // Flag pipeline-state for /resume auto-recovery
     const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
     if (!fs.existsSync(statesDir)) return;
-
-    const files = fs.readdirSync(statesDir)
-      .filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
     if (files.length === 0) return;
-
-    let newest = null;
-    let newestMtime = 0;
+    let newest = null, newestMtime = 0;
     for (const f of files) {
       try {
         const fp = path.join(statesDir, f);
         const stat = fs.statSync(fp);
-        if (stat.mtimeMs > newestMtime) {
-          newestMtime = stat.mtimeMs;
-          newest = fp;
-        }
+        if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newest = fp; }
       } catch {}
     }
     if (!newest) return;
 
-    const toolInput = data.tool_input || {};
     const state = JSON.parse(fs.readFileSync(newest, 'utf8'));
     state.lastDispatchFailure = {
       at: new Date().toISOString(),
       reason: 'dispatch_failure',
-      agentType: toolInput.subagent_type || 'unknown',
+      agentType: subagentType,
       description: toolInput.description || '',
       prompt: (toolInput.prompt || '').slice(0, 2000),
     };
@@ -402,57 +480,11 @@ function handleStart(data, stateDir) {
   console.log(JSON.stringify(response));
 }
 
-function handleStop(data, stateDir) {
-  const agentId = data.agent_id || '';
-  const agentType = data.agent_type || 'unknown';
-  const projectDir = path.resolve(stateDir, '..', '..');
-
-  // ── Emit agent.stop event to harness log ─────────────────────────────────
-  try {
-    const toolResponse = data.tool_response || {};
-    const responseText = typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
-    const fullSummary = (responseText || '').slice(0, 800);
-
-    const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
-    const wave = harnessGetWave ? harnessGetWave(data) : 0;
-
-    // Attempt to read spec from active pipeline state
-    let currentSpec = null;
-    try {
-      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
-      if (fs.existsSync(statesDir)) {
-        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
-        if (stateFiles.length > 0) {
-          let newestMtime = 0; let newestState = null;
-          for (const f of stateFiles) {
-            try {
-              const fp = path.join(statesDir, f);
-              const stat = fs.statSync(fp);
-              if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
-            } catch {}
-          }
-          if (newestState) {
-            const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
-            currentSpec = st.spec || st.name || null;
-          }
-        }
-      }
-    } catch {}
-
-    emitEvent('agent.stop', {
-      summary: fullSummary,
-      confidence: null,
-      durationMs: null,
-      toolCount: null,
-    }, {
-      cwd: projectDir,
-      sessionId,
-      wave,
-      spec: currentSpec,
-      actor: { kind: 'agent', id: agentId || agentType, type: agentType },
-    });
-  } catch (_) {} // fail-open
-}
+// SubagentStop carries no tool_response body — `agent.stop` is now emitted from
+// `handlePostToolUse` (PostToolUse Task) where the real response lives. This
+// handler is kept as a no-op to preserve the hook wiring; future enhancements
+// (e.g. session-level cleanup) can hook in here.
+function handleStop(_data, _stateDir) {}
 
 function handleSessionStart(data, stateDir) {
   // Clean up stale counter files left by tool-use-counter.js from previous sessions.

@@ -52,50 +52,80 @@ process.stdin.on('end', () => {
     const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
     if (files.length === 0) { process.exit(0); }
 
-    // Update the most recently modified pipeline state
-    let newest = null;
-    let newestMtime = 0;
+    // ── Scope-aware attribution (Onda 2.2) ───────────────────────────────────
+    // - Active specs:        use the most recently modified one as before.
+    // - closed-followup specs: only attribute when the tool_input.file_path is
+    //                         in spec.affectedFiles. This lets post-feature
+    //                         fixes (no command) still link metrics to the
+    //                         spec that owns those files.
+    const toolInput = data.tool_input || {};
+    const touchedPath = String(toolInput.file_path || toolInput.path || toolInput.notebook_path || '');
+    const normalizedTouched = touchedPath ? touchedPath.replace(/\\/g, '/') : '';
+
+    let activeNewest = null, activeMtime = 0;
+    let followupNewest = null, followupMtime = 0;
+
     for (const f of files) {
       try {
         const fp = path.join(statesDir, f);
         const stat = fs.statSync(fp);
-        if (stat.mtimeMs > newestMtime) {
-          newestMtime = stat.mtimeMs;
-          newest = fp;
+        const parsed = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        const status = String(parsed.status || '').toLowerCase();
+        if (status === 'closed-followup') {
+          const affected = Array.isArray(parsed.affectedFiles) ? parsed.affectedFiles : [];
+          if (!normalizedTouched || affected.length === 0) continue;
+          const hit = affected.some(rel => {
+            if (!rel) return false;
+            const normRel = String(rel).replace(/\\/g, '/');
+            return normalizedTouched === normRel || normalizedTouched.endsWith('/' + normRel);
+          });
+          if (!hit) continue;
+          if (stat.mtimeMs > followupMtime) { followupMtime = stat.mtimeMs; followupNewest = { fp, parsed }; }
+        } else {
+          if (stat.mtimeMs > activeMtime) { activeMtime = stat.mtimeMs; activeNewest = { fp, parsed }; }
         }
       } catch {}
     }
 
-    if (!newest) { process.exit(0); }
+    const chosen = activeNewest || followupNewest;
+    if (!chosen) { process.exit(0); }
 
-    // Read pipeline-state.json to derive currentPhase, status, startedAt.
-    let pipelineState = {};
-    try {
-      pipelineState = JSON.parse(fs.readFileSync(newest, 'utf8'));
-    } catch {}
+    const pipelineState = chosen.parsed || {};
 
     const currentPhase = pipelineState.phaseName || pipelineState.phase || '';
 
-    // Detect retry patterns (included as payload in tool.use event)
-    const toolInput = data.tool_input || {};
-    const content = JSON.stringify(toolInput).toLowerCase();
-    const isRetry = /\b(retry|fix|error|failed|again)\b/.test(content);
+    // Retry detection moved to subagent-tracker → emits `dispatch.failure` based
+    // on `tool_response.is_error === true`. Keyword scans on tool_input were
+    // 80% false positives (any "fix typo" Edit counted as a retry).
 
     // ── Wave 4: emit tool.use heartbeat to harness log (no sidecar written) ─
     // All metrics are now derived from the log by buildPipelineState().
     // tool.use events carry enough signal: tool name, phase, retry flag,
     // spec (from pipelineState), so consumers can aggregate from the log.
+    const wave = typeof pipelineState.currentWave === 'number'
+      ? pipelineState.currentWave
+      : (harnessGetWave ? harnessGetWave(data) : 0);
+
+    // Capture salient fields from tool_input so the dashboard can show *what*
+    // is being done, not just *which tool*. Sizes capped to keep events lean.
+    const target = {};
+    if (toolInput.file_path) target.file = String(toolInput.file_path).slice(-80);
+    if (toolInput.command) target.command = String(toolInput.command).slice(0, 120);
+    if (toolInput.pattern) target.pattern = String(toolInput.pattern).slice(0, 80);
+    if (toolInput.description) target.description = String(toolInput.description).slice(0, 100);
+    if (toolInput.subagent_type) target.subagent = String(toolInput.subagent_type);
+    if (toolInput.notebook_path) target.file = String(toolInput.notebook_path).slice(-80);
+    if (toolInput.url) target.url = String(toolInput.url).slice(0, 120);
+
     emitEvent('tool.use', {
       tool: toolName,
       phase: currentPhase || null,
-      retry: isRetry || undefined,
-      bytesIn: null,
-      bytesOut: null,
+      target: Object.keys(target).length ? target : undefined,
     }, {
       cwd,
       sessionId: harnessGetSessionId ? harnessGetSessionId(data) : null,
-      wave: harnessGetWave ? harnessGetWave(data) : 0,
-      spec: pipelineState.spec || pipelineState.name || null,
+      wave,
+      spec: pipelineState.specName || pipelineState.spec || pipelineState.name || null,
       actor: { kind: 'hook', id: 'metrics-tracker' },
     });
 

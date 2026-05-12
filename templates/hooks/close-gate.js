@@ -25,6 +25,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { emit } = require('./_lib/harness-event.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 const TRUNCATE_CHARS = 500;
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per command
@@ -276,6 +277,12 @@ process.stdin.on('end', () => {
           try {
             emit('close-gate.check', { result: 'deny-checklist-unmarked', mode, checklistMode, spec: specName, unmarkedCount: cl.unmarked.length }, { cwd, hookInput: data });
           } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-checklist',
+            extras: { reason: 'checklist-unmarked', specName, unmarkedCount: cl.unmarked.length, category: 'prevention' },
+          });
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -306,6 +313,12 @@ process.stdin.on('end', () => {
           try {
             emit('close-gate.check', { result: 'deny-qa-missing', mode, qaMode, spec: specName }, { cwd, hookInput: data });
           } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-qa-missing',
+            extras: { reason: 'qa-missing', specName, category: 'prevention' },
+          });
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -329,6 +342,12 @@ process.stdin.on('end', () => {
           try {
             emit('close-gate.check', { result: 'deny-qa-fail', mode, qaMode, spec: specName, qaOverall: qaResult.overall }, { cwd, hookInput: data });
           } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-qa-fail',
+            extras: { reason: 'qa-fail', specName, qaOverall: qaResult.overall, failedCount: qaResult.failedCount, category: 'prevention' },
+          });
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -402,11 +421,23 @@ process.stdin.on('end', () => {
 
       if (mode === 'warn') {
         process.stderr.write(`[close-gate] WARN: ${reason}\n`);
+        emitMetric('close-gate', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'warned-' + firstFailure.stage,
+          extras: { reason: firstFailure.stage, specName, mode },
+        });
         // allow
         process.exit(0);
       }
 
       // mode === 'strict'
+      emitMetric('close-gate', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: 'blocked-' + firstFailure.stage,
+        extras: { reason: firstFailure.stage, specName, category: 'prevention' },
+      });
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -418,6 +449,12 @@ process.stdin.on('end', () => {
     }
 
     // All passed
+    emitMetric('close-gate', {
+      tokensAffected: 0,
+      tokensSaved: 0,
+      note: 'passed',
+      extras: { specName, stages: stageResults.map(s => s.stage + ':' + s.result).join(',') },
+    });
     process.exit(0);
 
   } catch (err) {

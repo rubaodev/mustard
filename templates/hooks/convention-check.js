@@ -29,6 +29,9 @@ try { emit = require('./_lib/harness-event.js').emit; } catch (_) { emit = () =>
 let shouldRun;
 try { shouldRun = require('./_lib/hook-env.js').shouldRun; } catch (_) { shouldRun = () => true; }
 
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
+
 const HOOK_NAME = 'convention-check';
 const CONFIDENCE_THRESHOLD = 0.8;
 
@@ -200,6 +203,16 @@ process.stdin.on('end', () => {
         file: filePath,
         violations: violations.map(v => ({ keyword: v.rule.keyword, expectedDir: v.rule.dir })),
       }, { cwd, hookInput: data });
+    } catch (_) {}
+
+    try {
+      emitMetric('convention-check', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: mode === 'strict' ? 'blocked' : 'warned',
+        extras: { violations: violations.length, file: path.basename(filePath) },
+        cwd,
+      });
     } catch (_) {}
 
     if (mode === 'strict') {

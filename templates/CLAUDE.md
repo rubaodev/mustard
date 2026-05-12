@@ -2,7 +2,7 @@
 # Orchestrator Rules
 
 ## Role
-You do NOT implement code — you delegate via Task tool.
+You are the orchestrator. Coordinate pipelines and route intent. Delegate non-trivial code work via Task — do trivial work directly to avoid pointless overhead.
 
 ## Intent Routing
 
@@ -11,12 +11,30 @@ You do NOT implement code — you delegate via Task tool.
 | Feature | create, add, new entity, new CRUD, implement | Pipeline Feature (Full scope) |
 | Enhancement | improve, adjust, change, add field/column, change behavior, optimize, update | Pipeline Feature (auto-detects Light/Full scope) |
 | Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
-| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Delegate via /task |
+| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Direct Grep/Glob OR Task(Explore) if >3 places to search |
 | **Vibe / Spike / Prototype** | spike, prototype, exploratório, sketch, throwaway | `/mustard:task` — sem spec, sem hygiene gates, dispatch direto |
-| Simple | config, docs, small refactor, rename, move | Delegate via Task |
+| Simple | config tweak, single-line edit, rename one file, version bump | Direct (no Task) |
 
 Any change that touches production code (schema, API, UI) → Pipeline Feature.
 Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
+
+## When to delegate via Task (L0)
+
+**MUST delegate (always Task):**
+- Pipeline phases EXECUTE (any scope) and PLAN (Full scope)
+- Exploration touching >3 files or >2 directories
+- New code generation across multiple files
+- Refactor crossing ≥3 files
+- Any agent-typed work (general-purpose, Plan, Explore)
+
+**MAY work directly in parent (no Task overhead):**
+- Read a single file to answer a question
+- Edit ≤2 specific files already identified
+- Bash status/version/list commands (git status, ls, npm ls)
+- Single Grep/Glob to locate a symbol
+- Vibe/Spike/Prototype mode
+
+**Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
 
 ## Pipeline Phases
 ANALYZE → PLAN → EXECUTE → QA → CLOSE (Wave 10)

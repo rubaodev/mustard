@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const { generatePrdMarkdown, slugify } = require('./dashboard-prd-template.js');
@@ -14,14 +15,71 @@ const { renderHtml } = require('./dashboard-ui.js');
 const { ENV_CATALOG, isKnownKey, isValidValue, defaultsMap } = require('./dashboard-env-catalog.js');
 const { COMMANDS, CATEGORIES } = require('./dashboard-commands-catalog.js');
 
-const PORT = 7878;
+const PORT_BASE = 7878;
+const PORT_RANGE = 100;
 const HOST = '127.0.0.1';
 const ROOT = process.cwd();
+
+// Deterministic port from ROOT path. Same project → same port; different
+// projects → (almost always) different ports. Collisions resolved by probing.
+function hashPort(root) {
+  const h = crypto.createHash('sha1').update(root).digest();
+  const n = h.readUInt32BE(0) % PORT_RANGE;
+  return PORT_BASE + n;
+}
+
+// Probe /api/info on a port. cb(null, info) on success, cb(err) otherwise.
+function probeInfo(port, cb) {
+  const req = http.request({
+    host: HOST, port, method: 'GET', path: '/api/info', timeout: 1000,
+  }, (res) => {
+    if (res.statusCode !== 200) { res.resume(); return cb(new Error('status ' + res.statusCode)); }
+    let body = '';
+    res.setEncoding('utf8');
+    res.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    res.on('end', () => { try { cb(null, JSON.parse(body)); } catch (e) { cb(e); } });
+  });
+  req.on('error', cb);
+  req.on('timeout', () => { req.destroy(new Error('timeout')); });
+  req.end();
+}
 const CLAUDE_DIR = path.join(ROOT, '.claude');
 const PID_FILE = path.join(CLAUDE_DIR, '.dashboard.pid');
+const PORT_FILE = path.join(CLAUDE_DIR, '.dashboard.port');
 const SPEC_DIR = path.join(CLAUDE_DIR, 'spec');
 const STATES_DIR = path.join(CLAUDE_DIR, '.pipeline-states');
 const EVENTS_FILE = path.join(CLAUDE_DIR, '.harness', 'events.jsonl');
+
+// Monorepo: descobre todos os events.jsonl dos subprojetos (apps/*, packages/*,
+// backend/**, etc.) e agrega na hora de servir /api/events. Cache de 10s para
+// evitar fs.readdir a cada request.
+const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'bin', 'obj', '.claude.backup']);
+const HARNESS_SCAN_MAX_DEPTH = 5;
+let _harnessCache = { files: null, at: 0 };
+function discoverHarnessFiles() {
+  if (Date.now() - _harnessCache.at < 10000 && _harnessCache.files) return _harnessCache.files;
+  const out = [];
+  function walk(dir, depth) {
+    if (depth > HARNESS_SCAN_MAX_DEPTH) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      if (IGNORE_DIRS.has(ent.name) || ent.name.startsWith('.claude.backup')) continue;
+      const sub = path.join(dir, ent.name);
+      if (ent.name === '.claude') {
+        const f = path.join(sub, '.harness', 'events.jsonl');
+        if (fs.existsSync(f)) out.push(f);
+        continue;
+      }
+      if (ent.name.startsWith('.')) continue;
+      walk(sub, depth + 1);
+    }
+  }
+  walk(ROOT, 0);
+  _harnessCache = { files: out, at: Date.now() };
+  return out;
+}
 const DETECT_CACHE = path.join(CLAUDE_DIR, '.detect-cache.json');
 const SETTINGS_FILE = path.join(CLAUDE_DIR, 'settings.json');
 const MAX_BODY = 100 * 1024;
@@ -36,24 +94,117 @@ function readGitBranch() {
 
 function safe(fn) { try { return fn(); } catch (_) { return null; } }
 
-// Parse checklist items from markdown text
+// Parse checklist items from markdown text.
+// Order of precedence: ## Checklist > ## Tasks (with Wave/Review sub-headings).
+// Items carry `wave` (number, 'review', or null) inferred from nearest `### ... Wave N`/`### ... Review` heading.
 function parseChecklist(text) {
   const lines = text.split(/\r?\n/);
-  const items = [];
-  let inChecklist = false;
+  const checklistItems = [];
+  const taskItems = [];
+  let mode = null; // 'checklist' | 'tasks' | null
+  let waveCtx = null;
   for (const line of lines) {
-    if (/^##\s+Checklist\s*$/i.test(line)) { inChecklist = true; continue; }
-    if (inChecklist && /^##\s+/.test(line)) { inChecklist = false; continue; }
-    if (inChecklist) {
-      const done = line.match(/^\s*-\s+\[x\]\s+(.+)$/i);
-      const pending = line.match(/^\s*-\s+\[\s\]\s+(.+)$/i);
-      if (done) items.push({ text: done[1].trim(), done: true });
-      else if (pending) items.push({ text: pending[1].trim(), done: false });
+    if (/^##\s+Checklist\s*$/i.test(line)) { mode = 'checklist'; waveCtx = null; continue; }
+    if (/^##\s+(Tasks|Plano|Plan)\s*$/i.test(line)) { mode = 'tasks'; waveCtx = null; continue; }
+    if (mode && /^##\s+/.test(line)) { mode = null; waveCtx = null; continue; }
+    if (!mode) continue;
+    if (mode === 'tasks' && /^###\s+/.test(line)) {
+      const wm = line.match(/wave\s+(\d+)/i);
+      if (wm) { waveCtx = Number(wm[1]); continue; }
+      if (/review/i.test(line)) { waveCtx = 'review'; continue; }
+      waveCtx = null;
+      continue;
     }
+    const done = line.match(/^\s*-\s+\[x\]\s+(.+)$/i);
+    const pending = line.match(/^\s*-\s+\[\s\]\s+(.+)$/i);
+    if (!done && !pending) continue;
+    const item = { text: (done || pending)[1].trim(), done: !!done, wave: mode === 'tasks' ? waveCtx : null };
+    (mode === 'checklist' ? checklistItems : taskItems).push(item);
   }
+  const items = checklistItems.length > 0 ? checklistItems : taskItems;
   const total = items.length;
   const doneCount = items.filter(i => i.done).length;
   return { total, done: doneCount, percent: total > 0 ? Math.round((doneCount / total) * 100) : 0, items };
+}
+
+// Read pipeline-state JSON (e.g. 2026-05-11-detail-rollout-all.json).
+// Returns null if not a wave plan or file absent.
+function readWavePlanState(dirName) {
+  const p = path.join(STATES_DIR, `${dirName}.json`);
+  if (!fs.existsSync(p)) return null;
+  const ps = safe(() => JSON.parse(fs.readFileSync(p, 'utf8')));
+  if (!ps || !ps.isWavePlan) return null;
+  return ps;
+}
+
+function waveStatusFor(waveId, ps) {
+  if (Array.isArray(ps.failedWaves) && ps.failedWaves.includes(waveId)) return 'failed';
+  if (Array.isArray(ps.completedWaves) && ps.completedWaves.includes(waveId)) return 'completed';
+  if (ps.currentWave === waveId) return 'current';
+  return 'pending';
+}
+
+// Parse header fields from spec.md/wave-plan.md. Accepts:
+//   "### Status: X | Phase: Y | Scope: Z | Wave: W"  (single-line pipe-separated)
+//   "### Phase: EXECUTE"                              (one field per heading line)
+const HEADER_KEYS = new Set(['status', 'phase', 'scope', 'wave', 'checkpoint']);
+function parseSpecHeader(text) {
+  const lines = text.split(/\r?\n/);
+  const out = { status: null, phase: null, scope: null, wave: null, checkpoint: null };
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    const m = lines[i].match(/^###\s*(.+)$/);
+    if (!m) continue;
+    const parts = m[1].split('|');
+    for (const p of parts) {
+      const kv = p.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+      if (!kv) continue;
+      const k = kv[1].toLowerCase();
+      if (HEADER_KEYS.has(k) && out[k] == null) out[k] = kv[2].trim();
+    }
+  }
+  return out;
+}
+
+// Cached read of all harness events (root + monorepo subprojects). Bounded
+// tail per file to keep memory predictable — wave activity lookups don't need
+// the full history.
+let _harnessLinesCache = { lines: null, at: 0 };
+const HARNESS_TAIL = 2000;
+function readHarnessEventLines() {
+  if (Date.now() - _harnessLinesCache.at < 5000 && _harnessLinesCache.lines) return _harnessLinesCache.lines;
+  const files = [];
+  if (fs.existsSync(EVENTS_FILE)) files.push(EVENTS_FILE);
+  for (const f of discoverHarnessFiles()) if (f !== EVENTS_FILE) files.push(f);
+  const out = [];
+  for (const file of files) {
+    let content;
+    try { content = fs.readFileSync(file, 'utf8'); } catch (_) { continue; }
+    const lines = content.split(/\r?\n/).filter(Boolean);
+    const tail = lines.slice(-HARNESS_TAIL);
+    for (const line of tail) out.push(line);
+  }
+  _harnessLinesCache = { lines: out, at: Date.now() };
+  return out;
+}
+
+// Return Map<waveId, lastTsMillis> for events matching a given spec name.
+function harnessActivityByWave(specName) {
+  const byWave = new Map();
+  if (!specName) return byWave;
+  for (const line of readHarnessEventLines()) {
+    let ev;
+    try { ev = JSON.parse(line); } catch (_) { continue; }
+    const pl = ev.payload || {};
+    const tgt = ev.spec || pl.spec;
+    if (tgt !== specName) continue;
+    const w = typeof ev.wave === 'number' ? ev.wave : (typeof pl.wave === 'number' ? pl.wave : null);
+    if (w == null) continue;
+    const t = Date.parse(ev.ts || ev.timestamp);
+    if (isNaN(t)) continue;
+    const prev = byWave.get(w);
+    if (!prev || t > prev) byWave.set(w, t);
+  }
+  return byWave;
 }
 
 // Extract current wave from wave-plan.md content
@@ -129,24 +280,12 @@ function parseSpecFile(absPath, name, state) {
   catch (_) { return result; }
 
   const lines = text.split(/\r?\n/);
-  for (let i = 0; i < Math.min(lines.length, 30); i++) {
-    const line = lines[i];
-    if (/^###\s*Status:/i.test(line)) {
-      const parts = line.replace(/^###\s*/i, '').split('|');
-      const kv = {};
-      for (const p of parts) {
-        const m = p.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
-        if (m) kv[m[1].toLowerCase()] = m[2].trim();
-      }
-      if (kv.status) result.status = kv.status;
-      if (kv.phase) result.phase = kv.phase;
-      if (kv.scope) result.scope = kv.scope;
-      if (kv.wave) result.wave = kv.wave;
-      continue;
-    }
-    const cp = line.match(/^###\s*Checkpoint:\s*(.+)$/i);
-    if (cp) { result.checkpoint = cp[1].trim(); continue; }
-  }
+  const hdr = parseSpecHeader(text);
+  if (hdr.status) result.status = hdr.status;
+  if (hdr.phase) result.phase = hdr.phase;
+  if (hdr.scope) result.scope = hdr.scope;
+  if (hdr.wave) result.wave = hdr.wave;
+  if (hdr.checkpoint) result.checkpoint = hdr.checkpoint;
 
   const summaryIdx = lines.findIndex(l => /^##\s+Summary\s*$/i.test(l));
   if (summaryIdx >= 0) {
@@ -224,6 +363,89 @@ function parseSpecFile(absPath, name, state) {
         result.apiCalls = m.metrics.apiCalls != null ? m.metrics.apiCalls : null;
         result.retries = m.metrics.retries != null ? m.metrics.retries : null;
       }
+    }
+
+    // Inline wave plan: single spec.md declaring waves in pipeline-state JSON.
+    const ps = readWavePlanState(dirName);
+    if (ps && Array.isArray(ps.waves) && ps.waves.length > 0) {
+      result.isWavePlan = true;
+      result.currentWave = ps.currentWave != null ? String(ps.currentWave) : null;
+      result.totalWaves = ps.totalWaves || ps.waves.length;
+      result.wave = result.currentWave ? `${result.currentWave}/${result.totalWaves}` : result.wave;
+      result.completedWaves = ps.completedWaves || [];
+      result.failedWaves = ps.failedWaves || [];
+
+      const parentDir = path.dirname(absPath);
+      const activityByWave = harnessActivityByWave(dirName);
+      const aggregatedItems = [];
+      // Pipeline-state's phaseName tracks the live wave phase; parent spec.md
+      // header is set at approval and never refreshed.
+      const livePhase = ps.phaseName || ps.phase || result.phase || 'EXECUTE';
+
+      result.waves = ps.waves.map((w) => {
+        // Sub-wave spec.md is sourced from state.json's `w.spec` when present;
+        // otherwise fall back to conventional `wave-{id}-{slug}` directory.
+        const fallbackDir = `wave-${w.id}${w.slug ? '-' + w.slug : ''}`;
+        const subSpecRel = w.spec || `${fallbackDir}/spec.md`;
+        const subSpecAbs = path.join(parentDir, subSpecRel);
+        const subText = fs.existsSync(subSpecAbs) ? safe(() => fs.readFileSync(subSpecAbs, 'utf8')) : null;
+
+        let displayName = w.name || w.slug || fallbackDir;
+        if (subText) {
+          const titleM = subText.match(/^#\s+(.+?)\s*$/m);
+          if (titleM) displayName = titleM[1].replace(/^Wave\s+\d+\s*[—\-:]?\s*/i, '').trim() || displayName;
+        }
+
+        const subChecklist = subText ? parseChecklist(subText) : { items: [] };
+        const wItems = subChecklist.items.length > 0
+          ? subChecklist.items
+          : (result.checklist.items || []).filter((it) => it.wave === w.id);
+        const wDone = wItems.filter((it) => it.done).length;
+        for (const it of wItems) aggregatedItems.push({ text: it.text, done: it.done, wave: w.id });
+
+        const status = waveStatusFor(w.id, ps);
+        const tsMs = activityByWave.get(w.id) || null;
+        const lastActivity = tsMs ? new Date(tsMs).toISOString() : null;
+
+        return {
+          id: w.id,
+          name: displayName,
+          slug: w.slug || null,
+          files: w.files || null,
+          entities: w.entities || null,
+          status,
+          phase: status === 'current' ? livePhase : status === 'completed' ? 'DONE' : status === 'failed' ? 'FAILED' : null,
+          checklist: {
+            total: wItems.length,
+            done: wDone,
+            percent: wItems.length > 0 ? Math.round((wDone / wItems.length) * 100) : 0,
+            items: wItems,
+          },
+          lastActivity,
+        };
+      });
+
+      // Roll aggregated sub-wave checklist + most recent harness activity up
+      // to the epic-level card. Without this, the spec card stays at 0/0
+      // because the parent spec.md only narrates waves — items live in
+      // sub-wave specs.
+      if (aggregatedItems.length > 0) {
+        const doneCount = aggregatedItems.filter(i => i.done).length;
+        result.checklist = {
+          total: aggregatedItems.length,
+          done: doneCount,
+          percent: Math.round((doneCount / aggregatedItems.length) * 100),
+          items: aggregatedItems,
+        };
+      }
+      let maxTs = result.lastActivity ? Date.parse(result.lastActivity) : 0;
+      for (const w of result.waves) {
+        if (!w.lastActivity) continue;
+        const t = Date.parse(w.lastActivity);
+        if (!isNaN(t) && t > maxTs) maxTs = t;
+      }
+      if (maxTs) result.lastActivity = new Date(maxTs).toISOString();
+      result.phase = livePhase;
     }
   }
 
@@ -330,6 +552,8 @@ function parseMetricsMarkdown(md) {
     hookEvents: [],
     rtkSavings: { tokens: 0, rate: 0, commands: 0 },
     last7Days: [],
+    pipelineHealth: null,
+    knowledgeGrowth: null,
   };
   const lines = md.split(/\r?\n/);
   let section = null;
@@ -338,8 +562,12 @@ function parseMetricsMarkdown(md) {
     const ln = lines[i];
     if (/^##\s+Summary/i.test(ln)) { section = 'summary'; continue; }
     if (/^##\s+Last 7 Days/i.test(ln)) { section = 'days'; continue; }
+    if (/^##\s+Pipeline Health/i.test(ln)) { section = 'health'; out.pipelineHealth = {}; continue; }
+    if (/^##\s+Knowledge Growth/i.test(ln)) { section = 'knowledge'; out.knowledgeGrowth = {}; continue; }
+    if (/^##\s+All Hook Events/i.test(ln)) { section = 'hooks-new'; continue; }
     if (/^##\s+Enforcement Events/i.test(ln)) { section = 'hooks'; continue; }
     if (/^##\s+RTK Token Economy/i.test(ln)) { section = 'rtk'; continue; }
+    if (/^##\s+Token Economy/i.test(ln)) { section = 'economy'; continue; }
     if (/^##\s+/.test(ln)) { section = null; continue; }
 
     if (section === 'summary' && ln.trim()) {
@@ -350,7 +578,8 @@ function parseMetricsMarkdown(md) {
         const events = parseInt(cells[1], 10);
         if (!Number.isNaN(events)) out.last7Days.push({ day: cells[0], events });
       }
-    } else if (section === 'hooks' && ln.startsWith('|') && !/^\|\s*-+/.test(ln)) {
+    } else if (section === 'hooks-new' && ln.startsWith('|') && !/^\|\s*-+/.test(ln)) {
+      // Format: | Event | Count | Category | Tokens Saved |
       const cells = ln.split('|').map(s => s.trim());
       if (cells.length >= 5 && cells[1] && cells[1] !== 'Event' && !cells[1].startsWith('**TOTAL')) {
         const count = parseInt(cells[2], 10);
@@ -358,18 +587,56 @@ function parseMetricsMarkdown(md) {
           out.hookEvents.push({
             event: cells[1],
             count,
+            category: cells[3] || 'other',
+            tokensAffected: 0,
+            tokensSaved: cells[4] === '-' ? 0 : parseInt(cells[4], 10) || 0,
+          });
+        }
+      }
+    } else if (section === 'hooks' && ln.startsWith('|') && !/^\|\s*-+/.test(ln)) {
+      // Legacy format: | Event | Count | Tokens Affected | Tokens Saved |
+      const cells = ln.split('|').map(s => s.trim());
+      if (cells.length >= 5 && cells[1] && cells[1] !== 'Event' && !cells[1].startsWith('**TOTAL')) {
+        const count = parseInt(cells[2], 10);
+        if (!Number.isNaN(count)) {
+          out.hookEvents.push({
+            event: cells[1],
+            count,
+            category: 'other',
             tokensAffected: cells[3] === '-' ? 0 : parseInt(cells[3], 10) || 0,
             tokensSaved: cells[4] === '-' ? 0 : parseInt(cells[4], 10) || 0,
           });
         }
       }
-    } else if (section === 'rtk') {
-      const saved = ln.match(/Total saved:\s*([\d.]+)k tokens/i);
+    } else if (section === 'rtk' || section === 'economy') {
+      const saved = ln.match(/(?:Total saved:|RTK[^:]*:)\s*~?([\d.]+)k tokens/i);
       if (saved) out.rtkSavings.tokens = Math.round(parseFloat(saved[1]) * 1000);
-      const rate = ln.match(/Savings rate:\s*(\d+)%/i);
+      const rate = ln.match(/(\d+)%\s*(?:rate|savings rate)/i) || ln.match(/Savings rate:\s*(\d+)%/i);
       if (rate) out.rtkSavings.rate = parseInt(rate[1], 10);
-      const cmds = ln.match(/Commands rewritten:\s*(\d+)/i);
+      const cmds = ln.match(/(\d+)\s*commands/i) || ln.match(/Commands rewritten:\s*(\d+)/i);
       if (cmds) out.rtkSavings.commands = parseInt(cmds[1], 10);
+    } else if (section === 'health' && /^\s*-\s+/.test(ln)) {
+      const total = ln.match(/Total pipelines tracked:\s*(\d+)\s*\(active:\s*(\d+)\s*·\s*archived:\s*(\d+)\)/i);
+      if (total) { out.pipelineHealth.totalSpecs = parseInt(total[1], 10); out.pipelineHealth.activeCount = parseInt(total[2], 10); out.pipelineHealth.archivedCount = parseInt(total[3], 10); }
+      const pass1 = ln.match(/Pass@1[^:]*:\s*(\d+)%\s*\((\d+)\/(\d+)\)/i);
+      if (pass1) { out.pipelineHealth.pass1Pct = parseInt(pass1[1], 10); out.pipelineHealth.pass1Count = parseInt(pass1[2], 10); }
+      const dur = ln.match(/Avg duration:\s*(.+)$/i);
+      if (dur) out.pipelineHealth.avgDuration = dur[1].trim();
+      const api = ln.match(/Avg API calls per pipeline:\s*(\d+)/i);
+      if (api) out.pipelineHealth.avgApiCalls = parseInt(api[1], 10);
+      const ret = ln.match(/Avg hook retries per pipeline:\s*([\d.]+)/i);
+      if (ret) out.pipelineHealth.avgRetries = parseFloat(ret[1]);
+      const worst = ln.match(/Worst phase:\s*(\w+)\s*\((\d+)\s*total retries across\s*(\d+)/i);
+      if (worst) out.pipelineHealth.worstPhase = { phase: worst[1], totalRetries: parseInt(worst[2], 10), affected: parseInt(worst[3], 10) };
+      const l0 = ln.match(/L0 delegation ratio:\s*(\d+)%\s*\((\d+)\s*delegated\s*\/\s*(\d+)\s*direct\)/i);
+      if (l0) { out.pipelineHealth.l0Pct = parseInt(l0[1], 10); out.pipelineHealth.l0Delegated = parseInt(l0[2], 10); out.pipelineHealth.l0Direct = parseInt(l0[3], 10); }
+    } else if (section === 'knowledge' && /^\s*-\s+/.test(ln)) {
+      const kb = ln.match(/Knowledge entries:\s*(\d+)\s*\(avg confidence:\s*([\d.]+)\)/i);
+      if (kb) { out.knowledgeGrowth.entries = parseInt(kb[1], 10); out.knowledgeGrowth.avgConfidence = parseFloat(kb[2]); }
+      const dec = ln.match(/Decisions captured:\s*(\d+)/i);
+      if (dec) out.knowledgeGrowth.decisions = parseInt(dec[1], 10);
+      const les = ln.match(/Lessons learned:\s*(\d+)/i);
+      if (les) out.knowledgeGrowth.lessons = parseInt(les[1], 10);
     }
   }
   return out;
@@ -381,19 +648,32 @@ function handleEvents(res, query) {
   if (n < 1) n = 1;
   if (n > 1000) n = 1000;
 
-  if (!fs.existsSync(EVENTS_FILE)) return sendJson(res, 200, { events: [] });
-
-  let content;
-  try { content = fs.readFileSync(EVENTS_FILE, 'utf8'); }
-  catch (e) { return sendJson(res, 500, { error: e.message }); }
-
-  const lines = content.split(/\r?\n/).filter(Boolean);
-  const tail = lines.slice(-n);
-  const events = [];
-  for (const line of tail) {
-    try { events.push(JSON.parse(line)); } catch (_) {}
+  const files = [];
+  if (fs.existsSync(EVENTS_FILE)) files.push(EVENTS_FILE);
+  for (const f of discoverHarnessFiles()) {
+    if (f !== EVENTS_FILE) files.push(f);
   }
-  sendJson(res, 200, { events });
+
+  const events = [];
+  for (const file of files) {
+    let content;
+    try { content = fs.readFileSync(file, 'utf8'); } catch (_) { continue; }
+    const subRoot = path.relative(ROOT, path.dirname(path.dirname(path.dirname(file)))).replace(/\\/g, '/');
+    const source = subRoot || '.';
+    const lines = content.split(/\r?\n/).filter(Boolean);
+    const tail = lines.slice(-n);
+    for (const line of tail) {
+      try {
+        const ev = JSON.parse(line);
+        if (!ev._source) ev._source = source;
+        events.push(ev);
+      } catch (_) {}
+    }
+  }
+  events.sort(function(a, b){
+    return (Date.parse(a.ts || a.timestamp) || 0) - (Date.parse(b.ts || b.timestamp) || 0);
+  });
+  sendJson(res, 200, { events: events.slice(-n) });
 }
 
 function readSettings() {
@@ -432,6 +712,8 @@ function handleSettingsPost(res, body) {
 function handleSpecLive(res, query) {
   const specName = String(query.spec || '').trim();
   if (!specName) return sendJson(res, 400, { error: 'spec required' });
+  const waveFilterRaw = query.wave != null ? String(query.wave).trim() : '';
+  const waveFilter = waveFilterRaw !== '' && !isNaN(Number(waveFilterRaw)) ? Number(waveFilterRaw) : null;
 
   // Build candidate metric file names. Accept "epic/wave" → also try just "wave".
   const candidates = [];
@@ -447,21 +729,27 @@ function handleSpecLive(res, query) {
     }
   }
 
-  // Aggregate metrics across candidates
+  // Aggregate metrics across candidates. Try new location (metrics/*.json,
+  // post-Wave 4) before falling back to legacy sidecar.
+  const metricsDir = path.join(CLAUDE_DIR, 'metrics');
   let phase = null, lastActivity = null, apiCalls = 0, retries = 0, hasMetrics = false;
   let agentAttempts = {}, toolBreakdown = {};
   for (const c of candidates) {
-    const p = path.join(STATES_DIR, c + '.metrics.json');
-    if (!fs.existsSync(p)) continue;
-    const m = safe(() => JSON.parse(fs.readFileSync(p, 'utf8')));
-    if (!m || !m.metrics) continue;
+    const pNew = path.join(metricsDir, c + '.json');
+    const pLeg = path.join(STATES_DIR, c + '.metrics.json');
+    let raw = null, isNew = false;
+    if (fs.existsSync(pNew)) { raw = safe(() => JSON.parse(fs.readFileSync(pNew, 'utf8'))); isNew = true; }
+    else if (fs.existsSync(pLeg)) { raw = safe(() => JSON.parse(fs.readFileSync(pLeg, 'utf8'))); }
+    if (!raw) continue;
+    const m = isNew ? raw : raw.metrics;
+    if (!m) continue;
     hasMetrics = true;
-    if (m.previousPhase && !phase) phase = m.previousPhase;
-    if (m.metrics.updatedAt && (!lastActivity || m.metrics.updatedAt > lastActivity)) lastActivity = m.metrics.updatedAt;
-    if (m.metrics.apiCalls != null) apiCalls += m.metrics.apiCalls;
-    if (m.metrics.retries != null) retries += m.metrics.retries;
-    if (m.metrics.agentAttempts) for (const k of Object.keys(m.metrics.agentAttempts)) agentAttempts[k] = (agentAttempts[k] || 0) + m.metrics.agentAttempts[k];
-    if (m.metrics.toolBreakdown) for (const k of Object.keys(m.metrics.toolBreakdown)) toolBreakdown[k] = (toolBreakdown[k] || 0) + m.metrics.toolBreakdown[k];
+    if (!isNew && raw.previousPhase && !phase) phase = raw.previousPhase;
+    if (m.updatedAt && (!lastActivity || m.updatedAt > lastActivity)) lastActivity = m.updatedAt;
+    if (m.apiCalls != null) apiCalls += m.apiCalls;
+    if (m.retries != null) retries += m.retries;
+    if (m.agentAttempts) for (const k of Object.keys(m.agentAttempts)) agentAttempts[k] = (agentAttempts[k] || 0) + m.agentAttempts[k];
+    if (m.toolBreakdown) for (const k of Object.keys(m.toolBreakdown)) toolBreakdown[k] = (toolBreakdown[k] || 0) + m.toolBreakdown[k];
   }
 
   // Match harness events: target is one of the candidate names OR the full path
@@ -470,8 +758,11 @@ function handleSpecLive(res, query) {
   if (specName.indexOf('/') >= 0) matchSet.add(specName.split('/')[0]); // epic name too
 
   const events = [];
-  if (fs.existsSync(EVENTS_FILE)) {
-    const content = safe(() => fs.readFileSync(EVENTS_FILE, 'utf8')) || '';
+  const eventFiles = [];
+  if (fs.existsSync(EVENTS_FILE)) eventFiles.push(EVENTS_FILE);
+  for (const f of discoverHarnessFiles()) if (f !== EVENTS_FILE) eventFiles.push(f);
+  for (const file of eventFiles) {
+    const content = safe(() => fs.readFileSync(file, 'utf8')) || '';
     const lines = content.split(/\r?\n/).filter(Boolean);
     const tail = lines.slice(-2000);
     for (const line of tail) {
@@ -487,6 +778,7 @@ function handleSpecLive(res, query) {
       } catch (_) {}
     }
   }
+  events.sort(function(a, b){ return (Date.parse(a.ts||a.timestamp)||0) - (Date.parse(b.ts||b.timestamp)||0); });
 
   let isLive = false;
   if (lastActivity) {
@@ -496,6 +788,7 @@ function handleSpecLive(res, query) {
 
   // Fallback: also read spec.md / wave-plan.md content so the panel always shows context
   let specMd = null, specRelPath = null, summary = '', checklist = null;
+  let status = null, scope = null, waveLabel = null, checkpoint = null, specPhase = null;
   function tryReadSpec(absDir, label) {
     if (specMd) return;
     if (!fs.existsSync(absDir)) return;
@@ -507,25 +800,68 @@ function handleSpecLive(res, query) {
     if (!text) return;
     specMd = text;
     specRelPath = path.relative(ROOT, file).replace(/\\/g, '/');
-    const idx = text.split(/\r?\n/).findIndex(l => /^##\s+Summary\s*$/i.test(l));
+    const lines = text.split(/\r?\n/);
+
+    // Parse "### Status: X | Phase: Y | Scope: Z | Wave: W" header
+    for (let i = 0; i < Math.min(lines.length, 30); i++) {
+      const ln = lines[i];
+      if (/^###\s*Status:/i.test(ln)) {
+        const parts = ln.replace(/^###\s*/i, '').split('|');
+        for (const p of parts) {
+          const m = p.match(/^\s*([^:]+?)\s*:\s*(.+?)\s*$/);
+          if (!m) continue;
+          const k = m[1].toLowerCase(), v = m[2].trim();
+          if (k === 'status') status = v;
+          else if (k === 'phase') specPhase = v;
+          else if (k === 'scope') scope = v;
+          else if (k === 'wave') waveLabel = v;
+        }
+      }
+      const cp = ln.match(/^###\s*Checkpoint:\s*(.+)$/i);
+      if (cp) checkpoint = cp[1].trim();
+    }
+
+    const idx = lines.findIndex(l => /^##\s+Summary\s*$/i.test(l));
     if (idx >= 0) {
-      const buf = []; const lines = text.split(/\r?\n/);
+      const buf = [];
       for (let i = idx + 1; i < lines.length; i++) { if (/^##\s+/.test(lines[i])) break; buf.push(lines[i]); }
       summary = buf.join('\n').trim();
     }
-    const items = []; let inCl = false;
-    for (const line of text.split(/\r?\n/)) {
-      if (/^##\s+Checklist\s*$/i.test(line)) { inCl = true; continue; }
-      if (inCl && /^##\s+/.test(line)) break;
-      if (!inCl) continue;
-      const dn = line.match(/^\s*-\s+\[x\]\s+(.+)$/i);
-      const pn = line.match(/^\s*-\s+\[\s\]\s+(.+)$/i);
-      if (dn) items.push({ text: dn[1].trim(), done: true });
-      else if (pn) items.push({ text: pn[1].trim(), done: false });
-    }
-    if (items.length) {
-      const dc = items.filter(i => i.done).length;
-      checklist = { total: items.length, done: dc, percent: Math.round((dc / items.length) * 100), items };
+    const parsed = parseChecklist(text);
+    if (parsed.total > 0) checklist = parsed;
+
+    // Epic case: when reading wave-plan.md, aggregate checklists from sub-wave spec.md files
+    // (mirrors the aggregation in parseSpecFile so live monitor and spec card agree).
+    if (file === wp) {
+      const aggItems = [];
+      const subDirs = safe(() => fs.readdirSync(absDir, { withFileTypes: true })) || [];
+      for (const sub of subDirs) {
+        if (!sub.isDirectory()) continue;
+        const subSpec = path.join(absDir, sub.name, 'spec.md');
+        if (!fs.existsSync(subSpec)) continue;
+        const subText = safe(() => fs.readFileSync(subSpec, 'utf8'));
+        if (!subText) continue;
+        const subLines = subText.split(/\r?\n/);
+        let inSub = false;
+        for (const line of subLines) {
+          if (/^##\s+Checklist\s*$/i.test(line)) { inSub = true; continue; }
+          if (inSub && /^##\s+/.test(line)) { inSub = false; continue; }
+          if (!inSub) continue;
+          const dn = line.match(/^\s*-\s+\[x\]\s+(.+)$/i);
+          const pn = line.match(/^\s*-\s+\[\s\]\s+(.+)$/i);
+          if (dn) aggItems.push({ text: `[${sub.name}] ${dn[1].trim()}`, done: true });
+          else if (pn) aggItems.push({ text: `[${sub.name}] ${pn[1].trim()}`, done: false });
+        }
+      }
+      if (aggItems.length) {
+        const dc = aggItems.filter(i => i.done).length;
+        checklist = {
+          total: aggItems.length,
+          done: dc,
+          percent: Math.round((dc / aggItems.length) * 100),
+          items: aggItems,
+        };
+      }
     }
   }
   if (specName.indexOf('/') >= 0) {
@@ -537,19 +873,103 @@ function handleSpecLive(res, query) {
     tryReadSpec(path.join(SPEC_DIR, 'completed', specName));
   }
 
+  // Phase priority: metrics.previousPhase > spec.md "Phase:" header
+  const finalPhase = phase || specPhase || null;
+
+  // Inline wave plan enrichment (only when querying epic/single spec by bare name)
+  let waveStateOut = null;
+  if (specName.indexOf('/') < 0) {
+    const ps = readWavePlanState(specName);
+    if (ps && Array.isArray(ps.waves) && ps.waves.length > 0) {
+      const allItems = (checklist && checklist.items) || [];
+      waveStateOut = {
+        currentWave: ps.currentWave != null ? String(ps.currentWave) : null,
+        totalWaves: ps.totalWaves || ps.waves.length,
+        completedWaves: ps.completedWaves || [],
+        failedWaves: ps.failedWaves || [],
+        waves: ps.waves.map((w) => {
+          const wItems = allItems.filter((it) => it.wave === w.id);
+          const wDone = wItems.filter((it) => it.done).length;
+          const status = waveStatusFor(w.id, ps);
+          return {
+            id: w.id,
+            name: w.name,
+            files: w.files || null,
+            entities: w.entities || null,
+            status,
+            checklist: {
+              total: wItems.length,
+              done: wDone,
+              percent: wItems.length > 0 ? Math.round((wDone / wItems.length) * 100) : 0,
+            },
+          };
+        }),
+      };
+    }
+  }
+
+  // If caller asked for a specific wave, narrow events + checklist to it and
+  // surface a waveContext so the panel can label itself by wave.
+  let outEvents = events;
+  let outChecklist = checklist;
+  let waveContext = null;
+  let outPhase = finalPhase;
+  let outApiCalls = hasMetrics ? apiCalls : null;
+  let outRetries = hasMetrics ? retries : null;
+  let outLastActivity = lastActivity;
+  if (waveFilter != null) {
+    outEvents = events.filter((ev) => {
+      const pl = ev.payload || {};
+      const w = typeof ev.wave === 'number' ? ev.wave : (typeof pl.wave === 'number' ? pl.wave : null);
+      return w === waveFilter;
+    });
+    if (outChecklist && Array.isArray(outChecklist.items)) {
+      const wItems = outChecklist.items.filter((it) => it.wave === waveFilter);
+      const wDone = wItems.filter((it) => it.done).length;
+      outChecklist = {
+        total: wItems.length,
+        done: wDone,
+        percent: wItems.length > 0 ? Math.round((wDone / wItems.length) * 100) : 0,
+        items: wItems,
+      };
+    }
+    if (waveStateOut) {
+      const wd = waveStateOut.waves.find((w) => w.id === waveFilter);
+      if (wd) {
+        waveContext = { id: wd.id, name: wd.name, files: wd.files, entities: wd.entities, status: wd.status };
+        if (wd.status === 'current') outPhase = finalPhase || 'EXECUTE';
+        else if (wd.status === 'completed') outPhase = 'DONE';
+        else if (wd.status === 'failed') outPhase = 'FAILED';
+        else if (wd.status === 'pending') outPhase = 'PENDING';
+      }
+    }
+    // Wave-scoped apiCalls/retries derived from filtered events instead of metrics-aggregated totals.
+    outApiCalls = outEvents.filter((e) => e.event === 'tool.use').length;
+    outRetries = outEvents.filter((e) => e.payload && e.payload.retry).length;
+    const lastEv = outEvents[outEvents.length - 1];
+    outLastActivity = lastEv ? (lastEv.ts || lastEv.timestamp || lastActivity) : null;
+  }
+
   sendJson(res, 200, {
-    events: events.slice(-80),
-    phase,
-    lastActivity,
-    apiCalls: hasMetrics ? apiCalls : null,
-    retries: hasMetrics ? retries : null,
+    events: outEvents.slice(-80),
+    phase: outPhase,
+    status,
+    scope,
+    wave: waveStateOut ? `${waveStateOut.currentWave}/${waveStateOut.totalWaves}` : waveLabel,
+    checkpoint,
+    lastActivity: outLastActivity,
+    apiCalls: outApiCalls,
+    retries: outRetries,
     agentAttempts: hasMetrics ? agentAttempts : null,
     toolBreakdown: hasMetrics ? toolBreakdown : null,
     candidates,
     isLive,
     summary,
-    checklist,
+    checklist: outChecklist,
     specPath: specRelPath,
+    isWavePlan: !!waveStateOut,
+    waveState: waveStateOut,
+    waveContext,
   });
 }
 
@@ -564,19 +984,34 @@ function handleTelemetryExtra(res) {
     activeNow: [],
   };
 
-  // Pipeline metrics aggregation (from .pipeline-states/*.metrics.json)
-  if (fs.existsSync(STATES_DIR)) {
-    const files = safe(() => fs.readdirSync(STATES_DIR)) || [];
+  // Pipeline metrics aggregation
+  //   Primary: .claude/metrics/*.json (written by complete-spec.js post-Wave 4)
+  //   Legacy:  .claude/.pipeline-states/*.metrics.json (pre-Wave 4 sidecar)
+  // Schema differs: primary stores fields at top-level; legacy nests under `metrics`.
+  const sources = [
+    { dir: path.join(CLAUDE_DIR, 'metrics'), unwrap: (m) => m },
+    { dir: STATES_DIR, unwrap: (m) => m && m.metrics, suffix: '.metrics.json' },
+  ];
+  const seen = new Set();
+  for (const src of sources) {
+    if (!fs.existsSync(src.dir)) continue;
+    const files = safe(() => fs.readdirSync(src.dir)) || [];
     for (const f of files) {
-      if (!f.endsWith('.metrics.json')) continue;
-      const m = safe(() => JSON.parse(fs.readFileSync(path.join(STATES_DIR, f), 'utf8')));
-      if (!m || !m.metrics) continue;
+      if (!f.endsWith('.json')) continue;
+      if (src.suffix && !f.endsWith(src.suffix)) continue;
+      if (!src.suffix && f.endsWith('.metrics.json')) continue;
+      const specKey = f.replace(/\.(metrics\.)?json$/, '');
+      if (seen.has(specKey)) continue;
+      const raw = safe(() => JSON.parse(fs.readFileSync(path.join(src.dir, f), 'utf8')));
+      const m = raw && src.unwrap(raw);
+      if (!m) continue;
+      seen.add(specKey);
       out.pipelineAggregates.runs++;
-      out.pipelineAggregates.totalApiCalls += m.metrics.apiCalls || 0;
-      out.pipelineAggregates.totalRetries += m.metrics.retries || 0;
-      if ((m.metrics.retries || 0) === 0) out.pipelineAggregates.pass1++;
-      if (m.metrics.agentAttempts) for (const k of Object.keys(m.metrics.agentAttempts)) out.pipelineAggregates.agentAttempts[k] = (out.pipelineAggregates.agentAttempts[k] || 0) + m.metrics.agentAttempts[k];
-      if (m.metrics.toolBreakdown) for (const k of Object.keys(m.metrics.toolBreakdown)) out.pipelineAggregates.toolBreakdown[k] = (out.pipelineAggregates.toolBreakdown[k] || 0) + m.metrics.toolBreakdown[k];
+      out.pipelineAggregates.totalApiCalls += m.apiCalls || 0;
+      out.pipelineAggregates.totalRetries += m.retries || 0;
+      if ((m.retries || 0) === 0) out.pipelineAggregates.pass1++;
+      if (m.agentAttempts) for (const k of Object.keys(m.agentAttempts)) out.pipelineAggregates.agentAttempts[k] = (out.pipelineAggregates.agentAttempts[k] || 0) + m.agentAttempts[k];
+      if (m.toolBreakdown) for (const k of Object.keys(m.toolBreakdown)) out.pipelineAggregates.toolBreakdown[k] = (out.pipelineAggregates.toolBreakdown[k] || 0) + m.toolBreakdown[k];
     }
   }
 
@@ -591,8 +1026,12 @@ function handleTelemetryExtra(res) {
       const file = fs.existsSync(specPath) ? specPath : (fs.existsSync(wavePath) ? wavePath : null);
       if (!file) continue;
       const text = safe(() => fs.readFileSync(file, 'utf8')) || '';
-      const phaseM = text.match(/^###\s*Status:[^\n]*?Phase:\s*([A-Z_]+)/im);
-      const phase = phaseM ? phaseM[1].toUpperCase() : 'UNKNOWN';
+      const hdr = parseSpecHeader(text);
+      // Inline wave plans expose the live phase via pipeline-state JSON;
+      // parent spec.md header is set at approval and never refreshed.
+      const ps = readWavePlanState(d.name);
+      const phaseRaw = (ps && (ps.phaseName || ps.phase)) || hdr.phase;
+      const phase = phaseRaw ? phaseRaw.toUpperCase().replace(/[^A-Z_]/g, '_') : 'UNKNOWN';
       out.phaseDistribution[phase] = (out.phaseDistribution[phase] || 0) + 1;
 
       const cpm = text.match(/^###\s*Checkpoint:\s*(\d{4}-\d{2}-\d{2})/im);
@@ -606,9 +1045,18 @@ function handleTelemetryExtra(res) {
         }
       }
 
-      // Detect "live now" — look at sub-wave metrics if epic, else direct
+      // Detect "live now" — prefer harness events (closest to reality), fall
+      // back to per-wave metrics files. Inline wave plans (no per-wave
+      // metrics) rely on the event stream entirely.
       let liveLast = null;
-      if (file.endsWith('wave-plan.md')) {
+      const activityByWave = harnessActivityByWave(d.name);
+      if (activityByWave.size > 0) {
+        let maxTs = 0, maxWave = null;
+        for (const [w, t] of activityByWave.entries()) {
+          if (t > maxTs) { maxTs = t; maxWave = w; }
+        }
+        liveLast = { t: new Date(maxTs).toISOString(), wave: maxWave };
+      } else if (file.endsWith('wave-plan.md')) {
         const subs = safe(() => fs.readdirSync(path.join(activeSpecsDir, d.name), { withFileTypes: true })) || [];
         for (const s of subs) {
           if (!s.isDirectory()) continue;
@@ -628,7 +1076,12 @@ function handleTelemetryExtra(res) {
       }
       if (liveLast) {
         const ts = Date.parse(liveLast.t);
-        if (!isNaN(ts) && (Date.now() - ts) < 5 * 60 * 1000) {
+        // Defense vs phantom tagging: require the pipeline-state file itself to
+        // be fresh, not just the event stream. Stale tagging of idle PLAN specs
+        // (root cause of the false "Processando" banner) is now caught here too.
+        const psPath = path.join(STATES_DIR, d.name + '.json');
+        const psFresh = fs.existsSync(psPath) && (Date.now() - fs.statSync(psPath).mtimeMs) < 10 * 60 * 1000;
+        if (!isNaN(ts) && (Date.now() - ts) < 5 * 60 * 1000 && psFresh) {
           out.activeNow.push({ spec: d.name, wave: liveLast.wave, lastActivity: liveLast.t });
         }
       }
@@ -681,6 +1134,10 @@ function handleTelemetryExtra(res) {
 
 function handleCommands(res) {
   sendJson(res, 200, { commands: COMMANDS, categories: CATEGORIES });
+}
+
+function handleInfo(res, port) {
+  sendJson(res, 200, { root: ROOT, pid: process.pid, branch: BRANCH, port });
 }
 
 function handleProjects(res) {
@@ -768,6 +1225,88 @@ const ICONS = {
 // ── Server ────────────────────────────────────────────────────────────
 
 const BRANCH = readGitBranch();
+let BOUND_PORT = hashPort(ROOT);
+
+// ── SSE: realtime spec changes ────────────────────────────────────────
+const sseClients = new Set();
+const sseWatchers = [];
+let sseHeartbeat = null;
+let sseDebounceTimer = null;
+let sseDebouncedSpecs = new Set();
+let sseDebouncedPaths = new Set();
+
+function sseSpecNameFromPath(p) {
+  // p is absolute or relative; normalize separators
+  const n = String(p || '').replace(/\\/g, '/');
+  let m = n.match(/spec\/(?:active|completed)\/([^\/]+)/);
+  if (m) return m[1];
+  m = n.match(/\.pipeline-states\/([^\/]+)\.json$/);
+  if (m) return m[1];
+  return null;
+}
+
+function sseFlush() {
+  sseDebounceTimer = null;
+  const specNames = Array.from(sseDebouncedSpecs);
+  const paths = Array.from(sseDebouncedPaths);
+  sseDebouncedSpecs = new Set();
+  sseDebouncedPaths = new Set();
+  if (!specNames.length && !paths.length) return;
+  const payload = `event: change\ndata: ${JSON.stringify({ ts: Date.now(), specNames, paths })}\n\n`;
+  for (const res of Array.from(sseClients)) {
+    try { res.write(payload); } catch (_) { sseClients.delete(res); }
+  }
+}
+
+function sseWatch(dir) {
+  if (!fs.existsSync(dir)) {
+    console.log(`[mustard-dashboard] sse: skipping (not present) ${dir}`);
+    return;
+  }
+  try {
+    const w = fs.watch(dir, { recursive: true }, (_event, filename) => {
+      const rel = filename ? String(filename).replace(/\\/g, '/') : '';
+      const full = rel ? path.join(dir, rel).replace(/\\/g, '/') : dir.replace(/\\/g, '/');
+      sseDebouncedPaths.add(full);
+      const name = sseSpecNameFromPath(full) || sseSpecNameFromPath(rel);
+      if (name) sseDebouncedSpecs.add(name);
+      if (sseDebounceTimer) clearTimeout(sseDebounceTimer);
+      sseDebounceTimer = setTimeout(sseFlush, 250);
+    });
+    w.on('error', (e) => console.log(`[mustard-dashboard] sse watcher error (${dir}): ${e.message}`));
+    sseWatchers.push(w);
+  } catch (e) {
+    console.log(`[mustard-dashboard] sse: watch failed for ${dir}: ${e.message}`);
+  }
+}
+
+function handleSpecsStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(': connected\n\n');
+  res.write(`event: hello\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+  sseClients.add(res);
+  const cleanup = () => { sseClients.delete(res); try { res.end(); } catch (_) {} };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+  req.on('error', cleanup);
+}
+
+function startSseInfra() {
+  sseWatch(path.join(SPEC_DIR, 'active'));
+  sseWatch(path.join(SPEC_DIR, 'completed'));
+  sseWatch(STATES_DIR);
+  sseHeartbeat = setInterval(() => {
+    for (const res of Array.from(sseClients)) {
+      try { res.write(': ping\n\n'); } catch (_) { sseClients.delete(res); }
+    }
+  }, 20000);
+  if (sseHeartbeat.unref) sseHeartbeat.unref();
+}
 
 const server = http.createServer((req, res) => {
   const parsed = url.parse(req.url, true);
@@ -776,7 +1315,7 @@ const server = http.createServer((req, res) => {
 
   try {
     if (route === 'GET /') {
-      const html = renderHtml(BRANCH);
+      const html = renderHtml(BRANCH, ROOT, BOUND_PORT);
       send(res, 200, 'text/html; charset=utf-8', html);
       return log(200);
     }
@@ -788,6 +1327,8 @@ const server = http.createServer((req, res) => {
     if (route === 'GET /api/commands') { handleCommands(res); return log(200); }
     if (route === 'GET /api/spec/live') { handleSpecLive(res, parsed.query); return log(200); }
     if (route === 'GET /api/telemetry-extra') { handleTelemetryExtra(res); return log(200); }
+    if (route === 'GET /api/info') { handleInfo(res, BOUND_PORT); return log(200); }
+    if (route === 'GET /api/specs/stream') { handleSpecsStream(req, res); return log(200); }
     if (route === 'GET /api/settings') { handleSettingsGet(res); return log(200); }
     if (route === 'POST /api/settings') {
       readBody(req, MAX_BODY, (err, body) => {
@@ -822,23 +1363,53 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[mustard-dashboard] port ${PORT} already in use. Stop the other process or run "/mustard:dashboard stop".`);
-  } else {
-    console.error(`[mustard-dashboard] server error: ${err.message}`);
+// Try ports in order: hash(ROOT), hash(ROOT)+1, ..., wrapping inside [PORT_BASE, PORT_BASE+PORT_RANGE).
+// On EADDRINUSE: probe /api/info — if that port already serves THIS ROOT, exit cleanly
+// (someone else won the race / dashboard already running). If it serves a different root,
+// move to the next candidate.
+function tryListen(attempt) {
+  if (attempt >= PORT_RANGE) {
+    console.error(`[mustard-dashboard] no free port in [${PORT_BASE}, ${PORT_BASE + PORT_RANGE}) for ${ROOT}`);
+    process.exit(1);
   }
-  process.exit(1);
-});
+  const candidate = PORT_BASE + ((hashPort(ROOT) - PORT_BASE + attempt) % PORT_RANGE);
 
-server.listen(PORT, HOST, () => {
-  try { fs.writeFileSync(PID_FILE, String(process.pid), 'utf8'); } catch (_) {}
-  console.log(`[mustard-dashboard] listening on http://${HOST}:${PORT} (pid ${process.pid}, branch ${BRANCH})`);
-});
+  const onError = (err) => {
+    if (err.code === 'EADDRINUSE') {
+      probeInfo(candidate, (probeErr, info) => {
+        if (!probeErr && info && info.root === ROOT) {
+          console.log(`[mustard-dashboard] already running on http://${HOST}:${candidate} for ${ROOT} (pid ${info.pid})`);
+          process.exit(0);
+        }
+        tryListen(attempt + 1);
+      });
+      return;
+    }
+    console.error(`[mustard-dashboard] server error: ${err.message}`);
+    process.exit(1);
+  };
+
+  server.once('error', onError);
+  server.listen(candidate, HOST, () => {
+    server.removeListener('error', onError);
+    BOUND_PORT = candidate;
+    try { fs.writeFileSync(PID_FILE, String(process.pid), 'utf8'); } catch (_) {}
+    try { fs.writeFileSync(PORT_FILE, String(candidate), 'utf8'); } catch (_) {}
+    try { startSseInfra(); } catch (e) { console.log(`[mustard-dashboard] sse startup failed: ${e.message}`); }
+    console.log(`[mustard-dashboard] listening on http://${HOST}:${candidate} (pid ${process.pid}, branch ${BRANCH}, root ${ROOT})`);
+  });
+}
+
+tryListen(0);
 
 function shutdown(signal) {
   console.log(`[mustard-dashboard] received ${signal}, shutting down`);
   try { if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE); } catch (_) {}
+  try { if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE); } catch (_) {}
+  try { if (sseHeartbeat) clearInterval(sseHeartbeat); } catch (_) {}
+  for (const w of sseWatchers) { try { w.close(); } catch (_) {} }
+  for (const res of Array.from(sseClients)) { try { res.end(); } catch (_) {} }
+  sseClients.clear();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }

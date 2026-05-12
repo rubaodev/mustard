@@ -210,7 +210,7 @@ const COMMANDS = [
     category: 'Operations',
     short: 'Inicia/para o dashboard local (esta UI).',
     simples: 'Liga o servidor que serve esta página. Sem args, inicia se não estiver rodando. Sem subcomando = start.',
-    tecnico: 'Spawn detached node .claude/scripts/dashboard.js (porta 7878). Grava PID em .claude/.dashboard.pid. Stop lê PID e mata processo. Probe HTTP HEAD para confirmar liveness.',
+    tecnico: 'Spawn detached node .claude/scripts/dashboard.js. Porta determinística por projeto: 7878 + (sha1(cwd) % 100), com fallback incremental em colisão. Grava PID em .claude/.dashboard.pid e porta em .claude/.dashboard.port. Start probeia GET /api/info pra validar que root === cwd antes de declarar success.',
     when: 'Acompanhar specs em UI, criar PRDs visualmente, ajustar settings.',
     notWhen: 'CLI puro funciona melhor para scripting.',
     examples: ['/mustard:dashboard', '/mustard:dashboard stop', '/mustard:dashboard status'],

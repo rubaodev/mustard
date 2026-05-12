@@ -154,10 +154,19 @@ function buildPipelineState(events, opts) {
         metrics.apiCalls += 1;
         metrics.toolBreakdown[tool] = (metrics.toolBreakdown[tool] || 0) + 1;
       }
-      if (payload.retry === true) metrics.retries += 1;
     } else if (ev.event === 'agent.start') {
       metrics.agentCount += 1;
     }
+  }
+
+  // Retries are real dispatch failures (is_error=true with API/infra keyword),
+  // not heuristic keyword hits on tool_input. Group by phase so worstPhase
+  // remains meaningful post-Wave 4 (replaces dead agentAttempts metric).
+  metrics.retries = dispatchFailures.length;
+  metrics.dispatchFailuresByPhase = {};
+  for (const ev of dispatchFailures) {
+    const ph = (ev.payload && ev.payload.phase) || 'UNKNOWN';
+    metrics.dispatchFailuresByPhase[ph] = (metrics.dispatchFailuresByPhase[ph] || 0) + 1;
   }
 
   return { spec, phase, lastEventAt, dispatchFailures, decisions, lessons, metrics };

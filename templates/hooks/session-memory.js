@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 // ── Harness views (Wave 3) ────────────────────────────────────────────────────
 let harnessViews = null;
@@ -81,10 +82,30 @@ process.stdin.on('end', () => {
       let context = parts.join('\n');
       if (context.length > MAX_CHARS) context = context.slice(0, MAX_CHARS) + '\n...truncated';
 
+      // Measurement: bytes of persistent memory pre-injected into the session
+      // context. Without this hook, the agent would need to read the raw
+      // sources (knowledge.json + memory/*.json + sessions/*.jsonl) via Read
+      // tool calls to retrieve the same condensed view. The injected payload
+      // is the byte count we save the agent from re-fetching.
+      const payload = `[Persistent Memory]\n${context}`;
+      const bytes = Buffer.byteLength(payload, 'utf8');
+      try {
+        emitMetric('session-memory', {
+          tokensAffected: bytes,
+          tokensSaved: Math.round(bytes / 4),
+          note: 'knowledge-injected',
+          extras: {
+            kb_entries: kbEntries.length,
+            category: 'extraction',
+          },
+          cwd,
+        });
+      } catch (_) {}
+
       console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
-          additionalContext: `[Persistent Memory]\n${context}`
+          additionalContext: payload,
         }
       }));
     }

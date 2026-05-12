@@ -364,6 +364,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-hint.js",
             "timeout": 2000
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/followup-cancel-gate.js",
+            "timeout": 5000
           }
         ]
       }

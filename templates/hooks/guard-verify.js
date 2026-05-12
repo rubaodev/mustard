@@ -12,6 +12,8 @@
 const path = require("path");
 const fs = require("fs");
 const { shouldRun } = require('./_lib/hook-env.js');
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
 const ROOT = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -87,6 +89,15 @@ process.stdin.on("end", () => {
     violations.push(...analyzeImports(relPath, newContent));
 
     if (violations.length > 0) {
+      try {
+        emitMetric('guard-verify', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'blocked',
+          extras: { violations: violations.length, file: path.basename(relPath || '') },
+          cwd: data.cwd,
+        });
+      } catch (_) {}
       const msgs = violations.map((v) => `CRITICAL: ${v}`).join("\n");
       process.stdout.write(
         JSON.stringify({

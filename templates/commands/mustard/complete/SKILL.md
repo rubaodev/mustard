@@ -57,10 +57,19 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 4. **Entity Registry — update if needed:**
    - `node .claude/scripts/sync-registry.js`
    - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk node .claude/scripts/sync-registry.js` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
-5. **Move spec** from `.claude/spec/active/` to `.claude/spec/completed/`
-6. **Pipeline State — cleanup:**
-   - Extract `spec-name` from the spec directory (e.g. `2026-02-26-linked-services-card`)
-   - **Delete** `.claude/.pipeline-states/{spec-name}.json` (removes from statusline)
+5. **Mark spec as `closed-followup`** (stage 1 of two-stage close):
+   ```bash
+   node .claude/scripts/complete-spec.js <spec-name>
+   ```
+   - The spec stays under `spec/active/` for a follow-up window so post-feature fixes still link to it.
+   - The script snapshots `affectedFiles` from harness events + `git diff --name-only <parent>...HEAD`.
+   - Pipeline state is updated to `{ status: 'closed-followup', closedAt, affectedFiles }`.
+   - `metrics-tracker.js` only attributes new tool calls to this spec when `tool_input.file_path ∈ affectedFiles`.
+   - Spec is auto-archived (moved to `completed/` + state removed) when:
+     - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
+     - A new `/mustard:feature|bugfix|task` invocation runs `node .claude/scripts/complete-spec.js <spec-name> --archive` on any pending followups first.
+6. **Pipeline State — note:**
+   - The `closed-followup` state intentionally stays around so follow-up edits get linked. Do NOT delete `.claude/.pipeline-states/{spec-name}.json` here — the `--archive` stage handles that.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:

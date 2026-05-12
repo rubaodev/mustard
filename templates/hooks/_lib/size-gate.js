@@ -94,6 +94,7 @@ function run(opts) {
     thresholds,
     blockReason,
     skipWhen,
+    onDecision,
   } = opts || {};
 
   let input = '';
@@ -132,6 +133,9 @@ function run(opts) {
       if (lines >= thresholds.block) {
         const msg = blockReason(lines);
         process.stderr.write(msg + '\n');
+        if (typeof onDecision === 'function') {
+          try { onDecision({ lines, mode, decision: mode === 'strict' ? 'blocked' : 'over-size', thresholds, filePath }); } catch (_) {}
+        }
         if (mode === 'strict') { deny(msg); process.exit(0); }
         allow();
         process.exit(0);

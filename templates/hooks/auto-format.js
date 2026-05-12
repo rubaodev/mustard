@@ -17,6 +17,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 const PRETTIER_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.md', '.html', '.scss']);
 const DOTNET_EXTS = new Set(['.cs']);
@@ -47,10 +48,20 @@ process.stdin.on('end', () => {
     const ext = path.extname(filePath).toLowerCase();
     const cwd = data.cwd || process.cwd();
 
+    let ran = false;
     if (PRETTIER_EXTS.has(ext)) {
-      formatWithPrettier(filePath, cwd);
+      ran = formatWithPrettier(filePath, cwd);
     } else if (DOTNET_EXTS.has(ext)) {
-      formatWithDotnet(filePath, cwd);
+      ran = formatWithDotnet(filePath, cwd);
+    }
+
+    if (ran) {
+      emitMetric('auto-format', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: 'auto-applied',
+        extras: { ext, file: filePath, category: 'workflow' },
+      });
     }
 
     process.exit(0);
@@ -76,7 +87,7 @@ function formatWithPrettier(filePath, cwd) {
       fs.existsSync(path.join(parentCwd, 'node_modules', '.bin', 'prettier'));
 
     if (!hasPrettier && !hasParentPrettier) {
-      return;
+      return false;
     }
 
     execSync(`npx prettier --write "${filePath}"`, {
@@ -85,8 +96,10 @@ function formatWithPrettier(filePath, cwd) {
       timeout: 15000,
       windowsHide: true,
     });
+    return true;
   } catch {
     // Formatter not available or failed — skip silently
+    return false;
   }
 }
 
@@ -113,7 +126,7 @@ function formatWithDotnet(filePath, cwd) {
       searchDir = parent;
     }
 
-    if (!projectFile) return;
+    if (!projectFile) return false;
 
     execSync(`dotnet format "${projectFile}" --include "${filePath}" --no-restore`, {
       cwd: path.dirname(projectFile),
@@ -121,7 +134,9 @@ function formatWithDotnet(filePath, cwd) {
       timeout: 15000,
       windowsHide: true,
     });
+    return true;
   } catch {
     // Formatter not available or failed — skip silently
+    return false;
   }
 }

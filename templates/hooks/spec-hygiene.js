@@ -67,7 +67,7 @@ function runHygiene() {
           tokensAffected: tokens,
           tokensSaved: tokens,
           note: 'stale spec moved from active/',
-          extras: { from: specDir, to: dest },
+          extras: { from: specDir, to: dest, category: 'extraction' },
           cwd,
         });
 

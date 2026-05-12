@@ -18,6 +18,8 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -149,6 +151,19 @@ process.stdin.on('end', () => {
         'utf8'
       );
     } catch {}
+
+    // tokensSaved = bytes of the snapshot that get reinjected as additionalContext
+    // (would otherwise be lost mid-compaction). 4 bytes/token conservative estimate.
+    try {
+      const bytes = Buffer.byteLength(summary, 'utf8');
+      emitMetric('pre-compact', {
+        tokensAffected: bytes,
+        tokensSaved: Math.round(bytes / 4),
+        note: 'snapshot-' + (data.compact_reason || data.trigger || 'auto'),
+        extras: { category: 'extraction' },
+        cwd,
+      });
+    } catch (_) {}
 
     // Return additionalContext
     console.log(JSON.stringify({

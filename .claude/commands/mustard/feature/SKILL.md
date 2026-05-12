@@ -48,15 +48,9 @@ When in doubt → `AskUserQuestion`: "Which layers?"
 
 Any **Full** signal → Full. All **Light** or **Extended Light** → skip PLAN. Record scope (`light`, `extended-light`, or `full`) for PLAN phase branching.
 
-**Extended Light** = same flow as Light (skip PLAN, inline EXECUTE):
-- Entity MUST exist in `entity-registry.json` (Grep confirms it)
-- Operation modifies existing entity (NOT creates new one)
-- Up to 8 files, up to 3 layers — pattern is known
-- No new database table, no new enum type, no new module
-- If ANY condition fails → reclassify as Full
-- Reclassify to Full if >8 files surface during ANALYZE
+**Extended Light** = Light flow (skip PLAN, inline EXECUTE). Constraints: entity exists in `entity-registry.json` (Grep confirms), modifies existing entity (no new entity/table/enum/module), ≤8 files, ≤3 layers. Any failed condition or >8 files surfacing during ANALYZE → reclassify as Full.
 
-Light/Extended Light scope CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when targets are known. If >5 files surface during ANALYZE on Light, RECLASSIFY to Extended Light (if entity in registry) or Full.
+Light/Extended Light scope CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct. >5 files on Light during ANALYZE → reclassify Extended Light (if entity in registry) or Full.
 
 #### Explore (conditional, budget-capped)
 
@@ -88,19 +82,9 @@ If output `ok: false`, append each `issues[]` entry to the spec under `## Concer
 
 #### Spec Language Resolution
 
-Before writing spec.md, resolve language in cascade (stop at first hit):
+Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mustard.json#specLang`, (3) `AskUserQuestion` ÚNICA — `"Spec language: pt | en?"` (persist to mustard.json). Write resolved value as `### Lang: pt|en` after `### Checkpoint`.
 
-1. **Spec header**: existing `### Lang: pt` or `### Lang: en` in spec.md → use it.
-2. **Project preference**: field `specLang: "pt" | "en"` in `.claude/mustard.json` → use it.
-3. **Otherwise**: `AskUserQuestion` ÚNICA — `"Spec language: pt | en?"`. Persist the answer to `.claude/mustard.json#specLang` so future runs skip this step.
-
-Write the resolved value as `### Lang: pt|en` in the spec header (line after `### Checkpoint`).
-
-**HARD RULE — Headers consistency:** when `Lang: pt`, **ALL** `## ` body headings MUST be in PT — translate every default. Examples: `## Boundaries → ## Limites`, `## Root cause → ## Causa raiz`, `## Plan → ## Plano`, `## Concerns → ## Preocupações`, `## Acceptance Criteria → ## Critérios de Aceitação`, `## Non-Goals → ## Não-Objetivos`. Do **NOT** mix EN headers with PT body. When `Lang: en`, keep all headers EN.
-
-**HARD RULE — Source code language:** every file the agent writes or edits stays in English regardless of `Lang`. This covers identifiers, comments in every form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, JSDoc, `<!-- -->`), log/error messages, AC `Command:` content. `Lang` applies to spec narrative only — never to code. Pre-existing comments are NOT translated (surgical changes — karpathy §3).
-
-**Exceptions (always EN):** status values (`draft | implementing | completed`), phase values (`PLAN | EXECUTE | QA | CLOSE`), scope values (`light | extended-light | full`), shell commands, filenames, AC `Command:` field, the `### Lang:` line itself.
+**HARD RULES:** Lang=pt → ALL `## ` body headings in PT (Boundaries→Limites, Root cause→Causa raiz, Plan→Plano, Concerns→Preocupações, Acceptance Criteria→Critérios de Aceitação, Non-Goals→Não-Objetivos). Lang=en → keep headers EN. Source code (identifiers, all comment forms, log/error messages, AC `Command:`) always EN regardless of Lang. Pre-existing comments NOT translated (karpathy §3 surgical). Exceptions always EN: status/phase/scope values, shell commands, filenames, the `### Lang:` line.
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
@@ -188,13 +172,7 @@ Progress: `[v] ANALYZE  [>] PLAN  [ ] EXECUTE  [ ] QA  [ ] CLOSE` — add `[LIGH
 
 ## Spec Layout
 
-Specs may grow beyond a manageable size. Apply the same progressive disclosure pattern used in skills:
-
-- **Default:** single `spec.md` (Light OR small Full ≤200 lines).
-- **When spec.md > 200 lines:** extract autonomous sections to `spec-references/{section}.md` in the SAME spec directory; spec.md body keeps `→ See spec-references/{section}.md` pointers.
-- **Hard block at 500 lines:** gate `MUSTARD_SPEC_SIZE_MODE=strict` (default `warn`) — at warn, log `[SPEC-SIZE] {name} is {N} lines; consider splitting`; at strict, block PLAN from writing a spec exceeding 500 lines.
-- **Wave plans already follow this pattern:** `wave-plan.md` + per-wave `spec.md` directories are the canonical multi-file spec form.
-- **Reference:** Anthropic progressive disclosure (skill-creator best practices) — same principle: load detail on demand, keep body scannable.
+Progressive disclosure for specs: default single `spec.md` (Light/Full ≤200 lines). When >200 lines, extract autonomous sections to `spec-references/{section}.md` in same dir; spec.md keeps `→ See spec-references/{section}.md` pointers. Hard block at 500 (env `MUSTARD_SPEC_SIZE_MODE`, default `warn` — logs `[SPEC-SIZE]`; `strict` blocks PLAN write). Wave plans (`wave-plan.md` + per-wave `spec.md` dirs) are the canonical multi-file form. Reference: Anthropic progressive disclosure (skill-creator).
 
 ### Acceptance Criteria — Cross-Shell Pattern
 

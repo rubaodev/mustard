@@ -145,6 +145,7 @@ process.stdin.on('end', () => {
               limit,
               would_block: wouldBlock,
               mode: MODE,
+              category: wouldBlock ? 'prevention' : 'routing-advisory',
             },
           });
         }

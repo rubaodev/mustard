@@ -26,6 +26,9 @@ try { emit = require('./_lib/harness-event.js').emit; } catch (_) { emit = () =>
 let shouldRun;
 try { shouldRun = require('./_lib/hook-env.js').shouldRun; } catch (_) { shouldRun = () => true; }
 
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
+
 const HOOK_NAME = 'duplication-check';
 
 const CODE_EXTS = new Set(['.ts', '.js', '.tsx', '.jsx', '.cs', '.py', '.go', '.java']);
@@ -276,6 +279,16 @@ process.stdin.on('end', () => {
         symbols: dupes.map(d => d.newSym),
         matches: dupes.flatMap(d => d.matches.map(m => m.name)),
       }, { cwd, hookInput: data });
+    } catch (_) {}
+
+    try {
+      emitMetric('duplication-check', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: mode === 'strict' ? 'blocked' : 'warned',
+        extras: { symbols: dupes.length, file: path.basename(filePath) },
+        cwd,
+      });
     } catch (_) {}
 
     if (mode === 'strict') {

@@ -109,8 +109,39 @@ function getCurrentSessionId(hookInput) {
   }
 }
 
+// Default freshness window for "the newest pipeline-state is still the active one".
+// Beyond this, an idle PLAN/BACKLOG spec sitting around must not steal hook events
+// from unrelated work — phantom-tagging breaks dashboard `activeNow` and metrics.
+const PIPELINE_STATE_FRESHNESS_MS = (() => {
+  const raw = parseInt(process.env.MUSTARD_SPEC_FALLBACK_FRESHNESS_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10 * 60 * 1000;
+})();
+
+function readNewestPipelineState(hookInput, opts) {
+  const requireFresh = !!(opts && opts.requireFresh);
+  try {
+    const cwd = (hookInput && hookInput.cwd) || process.cwd();
+    const dir = path.join(cwd, '.claude', '.pipeline-states');
+    if (!fs.existsSync(dir)) return null;
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    if (!files.length) return null;
+    let best = null, bestT = 0;
+    for (const f of files) {
+      try {
+        const p = path.join(dir, f);
+        const st = fs.statSync(p);
+        if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = p; }
+      } catch (_) {}
+    }
+    if (!best) return null;
+    if (requireFresh && (Date.now() - bestT) > PIPELINE_STATE_FRESHNESS_MS) return null;
+    return JSON.parse(fs.readFileSync(best, 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
 function getCurrentWave(hookInput) {
-  // Allow explicit override from hook input.
   try {
     if (hookInput && typeof hookInput === 'object') {
       if (typeof hookInput.wave === 'number') return hookInput.wave;
@@ -119,7 +150,6 @@ function getCurrentWave(hookInput) {
       }
     }
   } catch (_) {}
-  // Read `.harness/index.json` if present.
   try {
     const indexFile = getIndexFile(hookInput);
     if (fs.existsSync(indexFile)) {
@@ -128,7 +158,24 @@ function getCurrentWave(hookInput) {
       if (parsed && typeof parsed.wave === 'number') return parsed.wave;
     }
   } catch (_) {}
+  const ps = readNewestPipelineState(hookInput);
+  if (ps && typeof ps.currentWave === 'number') return ps.currentWave;
   return 0;
+}
+
+function getCurrentSpec(hookInput) {
+  try {
+    if (hookInput && typeof hookInput === 'object') {
+      if (typeof hookInput.spec === 'string' && hookInput.spec) return hookInput.spec;
+      if (hookInput.tool_input && typeof hookInput.tool_input.spec === 'string' && hookInput.tool_input.spec) {
+        return hookInput.tool_input.spec;
+      }
+    }
+  } catch (_) {}
+  // Freshness gate prevents idle PLAN specs from phantom-tagging unrelated events.
+  const ps = readNewestPipelineState(hookInput, { requireFresh: true });
+  if (ps) return ps.specName || ps.spec || ps.name || null;
+  return null;
 }
 
 function normalizeActor(context) {
@@ -168,7 +215,8 @@ function emit(eventName, payload, context) {
       event: eventName,
       payload: (payload && typeof payload === 'object') ? payload : {},
     };
-    if (ctx.spec) line.spec = String(ctx.spec);
+    const specVal = ctx.spec || getCurrentSpec(hookInput);
+    if (specVal) line.spec = String(specVal);
 
     const file = getEventsFile(ctx.cwd || hookInput);
     fs.appendFileSync(file, JSON.stringify(line) + '\n', 'utf8');
@@ -182,6 +230,7 @@ module.exports = {
   emit,
   getCurrentSessionId,
   getCurrentWave,
+  getCurrentSpec,
   getHarnessDir,
   getSessionsDir,
   getEventsFile,

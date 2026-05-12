@@ -46,7 +46,14 @@ coverage/
 
 # Dashboard runtime
 .claude/.dashboard.pid
+.claude/.dashboard.port
 dashboard-html.txt
 
 # Playwright MCP snapshots
 .playwright-mcp/
+
+.claude/.harness/
+
+templates/.claude/.harness/
+
+templates/.claude/.metrics/

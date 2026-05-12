@@ -75,33 +75,120 @@ function main() {
     }
   }
 
-  // ── Enforcement Events (hooks) ───────────────────────────────────────
-  if (hookEvents.total > 0) {
-    parts.push('## Enforcement Events (hooks)');
-    parts.push('');
-    parts.push('| Event | Count | Tokens Affected | Tokens Saved |');
-    parts.push('|-------|-------|-----------------|--------------|');
-    let tc = 0, ta = 0, ts = 0;
-    for (const evt of Object.keys(hookEvents.byEvent).sort()) {
-      const e = hookEvents.byEvent[evt];
-      const aff = e.tokensAffected > 0 ? e.tokensAffected : '-';
-      const sav = e.tokensSaved > 0 ? e.tokensSaved : '-';
-      parts.push(`| ${evt} | ${e.count} | ${aff} | ${sav} |`);
-      tc += e.count;
-      ta += e.tokensAffected;
-      ts += e.tokensSaved;
+  // ── Pipeline Health (across active + orphaned + archived) ────────────
+  if (!HOOKS_ONLY) {
+    const health = buildPipelineHealth({ specs, archives });
+    if (health.totalSpecs > 0) {
+      parts.push('## Pipeline Health');
+      parts.push('');
+      parts.push(`- Total pipelines tracked: ${health.totalSpecs} (active: ${health.activeCount} · archived: ${health.archivedCount})`);
+      parts.push(`- Pass@1 (no hook retries): ${health.pass1Pct}% (${health.pass1Count}/${health.totalSpecs})`);
+      if (health.avgDurationMs > 0) parts.push(`- Avg duration: ${formatMs(health.avgDurationMs)}`);
+      if (health.avgApiCalls > 0) parts.push(`- Avg API calls per pipeline: ${health.avgApiCalls}`);
+      if (health.avgRetries > 0) parts.push(`- Avg hook retries per pipeline: ${health.avgRetries}`);
+      if (health.worstPhase) {
+        parts.push(`- Worst phase: ${health.worstPhase.phase} (${health.worstPhase.totalRetries} total retries across ${health.worstPhase.affected} pipelines)`);
+      }
+      if (health.l0Direct + health.l0Delegated > 0) {
+        parts.push(`- L0 delegation ratio: ${health.l0Pct}% (${health.l0Delegated} delegated / ${health.l0Direct} direct)`);
+      }
+      parts.push('');
     }
-    parts.push('|-------|-------|-----------------|--------------|');
-    parts.push(`| **TOTAL** | ${tc} | ${ta || '-'} | ${ts || '-'} |`);
-    parts.push('');
+
+    // Knowledge growth
+    const knowledge = readKnowledgeStats(path.join(claudeDir, 'knowledge.json'));
+    const decisions = readMemoryStats(path.join(claudeDir, 'memory', 'decisions.json'));
+    const lessons = readMemoryStats(path.join(claudeDir, 'memory', 'lessons.json'));
+    if (knowledge.total > 0 || decisions.total > 0 || lessons.total > 0) {
+      parts.push('## Knowledge Growth');
+      parts.push('');
+      if (knowledge.total > 0) parts.push(`- Knowledge entries: ${knowledge.total} (avg confidence: ${knowledge.avgConfidence})`);
+      if (decisions.total > 0) parts.push(`- Decisions captured: ${decisions.total}`);
+      if (lessons.total > 0) parts.push(`- Lessons learned: ${lessons.total}`);
+      parts.push('');
+    }
   }
 
-  // ── RTK Token Economy ────────────────────────────────────────────────
-  if (rtk && rtk.saved > 0) {
-    parts.push('## RTK Token Economy');
-    parts.push(`- Total saved: ${Math.round(rtk.saved / 1000)}k tokens`);
-    parts.push(`- Savings rate: ${Math.round(rtk.pct)}%`);
-    if (rtk.commands > 0) parts.push(`- Commands rewritten: ${rtk.commands}`);
+  // ── Three panels: Token Economy (measured) · Incidents Prevented · Workflow Automations ──
+  if (hookEvents.total > 0) {
+    const cats = hookEvents.byCategory || {};
+    const extract = cats['extraction'] || { count: 0, tokensSaved: 0 };
+    const prevent = cats['prevention'] || { count: 0, tokensSaved: 0 };
+    const workflow = cats['workflow']  || { count: 0, tokensSaved: 0 };
+    const routing  = (cats['routing']?.count || 0) + (cats['routing-advisory']?.count || 0);
+    const redirect = cats['redirection'] || { count: 0, tokensSaved: 0 };
+
+    parts.push('## Token Economy (measured)');
+    parts.push('');
+    parts.push('Only deltas backed by real bytes/chars. Hooks of prevention/workflow/routing are surfaced separately as counts (not tokens).');
+    parts.push('');
+    if (rtk && rtk.saved > 0) {
+      parts.push(`- **RTK** (CLI output filtering): ${Math.round(rtk.saved / 1000)}k tokens · ${Math.round(rtk.pct)}% rate · ${rtk.commands} commands`);
+    }
+    if (extract.tokensSaved > 0) {
+      parts.push(`- **Extraction** (memory/pre-compact/spec-hygiene, bytes-based): ${Math.round(extract.tokensSaved / 1000)}k tokens · ${extract.count} events`);
+    }
+    if (prevent.tokensSaved > 0) {
+      parts.push(`- **Prevention** (context-budget blocks, measured overflow): ${Math.round(prevent.tokensSaved / 1000)}k tokens · ${prevent.count} events`);
+    }
+    parts.push('');
+
+    if (prevent.count > 0) {
+      parts.push('## Incidents Prevented (counts, not tokens)');
+      parts.push('');
+      const preventEvents = Object.entries(hookEvents.byEvent)
+        .filter(([, e]) => e.category === 'prevention')
+        .sort((a, b) => b[1].count - a[1].count);
+      parts.push('| Hook | Blocks |');
+      parts.push('|------|--------|');
+      for (const [k, e] of preventEvents) parts.push(`| ${k} | ${e.count} |`);
+      parts.push('');
+    }
+
+    if (workflow.count > 0) {
+      parts.push('## Workflow Automations (counts)');
+      parts.push('');
+      const wfEvents = Object.entries(hookEvents.byEvent)
+        .filter(([, e]) => e.category === 'workflow')
+        .sort((a, b) => b[1].count - a[1].count);
+      parts.push('| Hook | Runs |');
+      parts.push('|------|------|');
+      for (const [k, e] of wfEvents) parts.push(`| ${k} | ${e.count} |`);
+      parts.push('');
+    }
+
+    if (routing > 0 || redirect.count > 0) {
+      parts.push('## Routing & Redirection (counts)');
+      parts.push('');
+      const rEvents = Object.entries(hookEvents.byEvent)
+        .filter(([, e]) => e.category === 'routing' || e.category === 'routing-advisory' || e.category === 'redirection')
+        .sort((a, b) => b[1].count - a[1].count);
+      parts.push('| Hook | Events | Category |');
+      parts.push('|------|--------|----------|');
+      for (const [k, e] of rEvents) parts.push(`| ${k} | ${e.count} | ${e.category} |`);
+      parts.push('');
+    }
+
+    parts.push('## All Hook Events (raw)');
+    parts.push('');
+    parts.push('| Event | Count | Category | Tokens Saved |');
+    parts.push('|-------|-------|----------|--------------|');
+    let tc = 0, ts = 0;
+    for (const evt of Object.keys(hookEvents.byEvent).sort()) {
+      const e = hookEvents.byEvent[evt];
+      const sav = e.tokensSaved > 0 ? e.tokensSaved : '-';
+      parts.push(`| ${evt} | ${e.count} | ${e.category} | ${sav} |`);
+      tc += e.count;
+      ts += e.tokensSaved;
+    }
+    parts.push('|-------|-------|----------|--------------|');
+    parts.push(`| **TOTAL** | ${tc} | — | ${ts || '-'} |`);
+    parts.push('');
+  } else if (rtk && rtk.saved > 0) {
+    // No hook events yet — still show RTK in its own block.
+    parts.push('## Token Economy (measured)');
+    parts.push('');
+    parts.push(`- **RTK** (CLI output filtering): ${Math.round(rtk.saved / 1000)}k tokens · ${Math.round(rtk.pct)}% rate · ${rtk.commands} commands`);
     parts.push('');
   }
 
@@ -177,32 +264,139 @@ function collectArchives(claudeDir) {
   return out;
 }
 
-function aggregateHookEvents(metricsDir) {
-  const result = { byEvent: {}, byDay: {}, total: 0 };
-  if (!fs.existsSync(metricsDir)) return result;
-  const files = fs.readdirSync(metricsDir).filter(f => f.endsWith('.jsonl'));
-  for (const file of files) {
-    let content;
-    try { content = fs.readFileSync(path.join(metricsDir, file), 'utf8'); }
-    catch { continue; }
-    for (const raw of content.split('\n')) {
-      const line = raw.trim();
-      if (!line) continue;
-      let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
-      if (!entry.event) continue;
-      const k = entry.event;
-      if (!result.byEvent[k]) result.byEvent[k] = { count: 0, tokensAffected: 0, tokensSaved: 0 };
-      result.byEvent[k].count++;
-      result.total++;
-      if (typeof entry.tokens_affected === 'number') result.byEvent[k].tokensAffected += entry.tokens_affected;
-      // PR1: rtk-rewrite tokens_saved is heuristic; real numbers come from rtk-gain.
-      if (typeof entry.tokens_saved === 'number' && entry.event !== 'rtk-rewrite') {
-        result.byEvent[k].tokensSaved += entry.tokens_saved;
+// Monorepo: descobre todos os {sub}/.claude/.metrics/*.jsonl
+const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'bin', 'obj']);
+// Normaliza paths para detecção de duplicata: resolve para absoluto + lowercase
+// no Windows (case-insensitive FS) + separadores nativos. Sem normalização,
+// 'C:/a/.claude/.metrics' e 'C:\\a\\.claude\\.metrics' são tratados como dirs
+// distintos e os eventos são somados duas vezes.
+function normalizePath(p) {
+  const abs = path.resolve(p);
+  return process.platform === 'win32' ? abs.toLowerCase() : abs;
+}
+function discoverMetricsDirs(rootMetricsDir) {
+  const out = [];
+  const seen = new Set();
+  function addDir(d) {
+    const key = normalizePath(d);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(d);
+  }
+  if (fs.existsSync(rootMetricsDir)) addDir(rootMetricsDir);
+  const projectRoot = path.dirname(path.dirname(rootMetricsDir));
+  function walk(dir, depth) {
+    if (depth > 5) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      if (IGNORE_DIRS.has(ent.name) || ent.name.startsWith('.claude.backup')) continue;
+      const sub = path.join(dir, ent.name);
+      if (ent.name === '.claude') {
+        const m = path.join(sub, '.metrics');
+        if (fs.existsSync(m)) addDir(m);
+        continue;
       }
-      if (entry.ts) {
-        const day = String(entry.ts).slice(0, 10);
-        result.byDay[day] = (result.byDay[day] || 0) + 1;
+      if (ent.name.startsWith('.')) continue;
+      walk(sub, depth + 1);
+    }
+  }
+  walk(projectRoot, 0);
+  return out;
+}
+
+// Hooks whose tokens_saved values are trustworthy: only those that measure a
+// real delta in bytes/chars (extraction by-byte, budget overflow by-char).
+// Every other hook reports 0 — counts are surfaced via category, not tokens.
+const ALWAYS_TRUSTED_EVENTS = new Set([
+  'memory-auto-extract',
+  'pre-compact',
+  'spec-hygiene-move',
+  'budget-check',
+  'session-memory',
+  'context-lazy-load',
+  'skill-filter',
+  'refs-filter',
+]);
+
+// Fallback category map for events that don't carry `category` (older entries
+// or hooks not yet migrated). Maps event -> category bucket. Anything not
+// listed becomes 'other'.
+const EVENT_CATEGORY = {
+  'auto-format': 'workflow',
+  'bash-safety': 'prevention',
+  'bash-native-redirect': 'redirection',
+  'budget-check': 'prevention',
+  'checklist-auto-mark': 'workflow',
+  'close-gate': 'prevention',
+  'enforce-registry': 'prevention',
+  'memory-auto-extract': 'extraction',
+  'model-routing-gate': 'routing',
+  'pre-compact': 'extraction',
+  'session-memory': 'extraction',
+  'context-lazy-load': 'extraction',
+  'skill-filter': 'extraction',
+  'refs-filter': 'extraction',
+  'delegation': 'isolation',
+  'review-gate': 'prevention',
+  'rtk-rewrite': 'rtk',
+  'skill-size-gate': 'workflow',
+  'skill-validate-gate': 'prevention',
+  'spec-hygiene-move': 'extraction',
+  'spec-size-gate': 'workflow',
+  'tool-use-counter': 'prevention',
+  'duplication-check': 'prevention',
+  'convention-check': 'prevention',
+  'file-guard': 'prevention',
+  'guard-verify': 'prevention',
+  'followup-cancel-gate': 'prevention',
+  'output-budget': 'routing-advisory',
+  'recommended-skills-audit': 'routing-advisory',
+};
+
+function aggregateHookEvents(metricsDir) {
+  const result = { byEvent: {}, byDay: {}, byCategory: {}, total: 0 };
+  const dirs = discoverMetricsDirs(metricsDir);
+  for (const dir of dirs) {
+    let files;
+    try { files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+    for (const file of files) {
+      let content;
+      try { content = fs.readFileSync(path.join(dir, file), 'utf8'); }
+      catch { continue; }
+      for (const raw of content.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        let entry;
+        try { entry = JSON.parse(line); } catch { continue; }
+        if (!entry.event) continue;
+        const k = entry.event;
+        const category = (typeof entry.category === 'string' && entry.category)
+          || EVENT_CATEGORY[k]
+          || 'other';
+        if (!result.byEvent[k]) result.byEvent[k] = { count: 0, tokensAffected: 0, tokensSaved: 0, category };
+        result.byEvent[k].count++;
+        result.total++;
+        if (typeof entry.tokens_affected === 'number') result.byEvent[k].tokensAffected += entry.tokens_affected;
+        // Trust tokens_saved only for hooks that measure a real byte/char
+        // delta. Every other hook contributes counts, not tokens.
+        const trustTokens =
+          entry.event !== 'rtk-rewrite' &&
+          typeof entry.tokens_saved === 'number' &&
+          ALWAYS_TRUSTED_EVENTS.has(entry.event);
+        if (trustTokens) {
+          result.byEvent[k].tokensSaved += entry.tokens_saved;
+        }
+        if (!result.byCategory[category]) result.byCategory[category] = { count: 0, tokensSaved: 0 };
+        result.byCategory[category].count++;
+        if (trustTokens) {
+          result.byCategory[category].tokensSaved += entry.tokens_saved;
+        }
+        if (entry.ts) {
+          const day = String(entry.ts).slice(0, 10);
+          result.byDay[day] = (result.byDay[day] || 0) + 1;
+        }
       }
     }
   }
@@ -405,6 +599,87 @@ function renderArchives(parts, archives) {
   parts.push(`- Pass@1 (hook-level): ${pct}% (${pass1Count}/${archives.length} completed with zero hook retries)`);
   parts.push(`- Avg hook retries per pipeline: ${avg}`);
   parts.push('');
+}
+
+// ── Pipeline health aggregation ────────────────────────────────────────
+
+function buildPipelineHealth({ specs, archives }) {
+  const allSpecs = [...specs.active, ...specs.orphaned, ...archives.map(a => ({ name: a.name, metrics: a.metrics }))];
+  const totalSpecs = allSpecs.length;
+  if (totalSpecs === 0) {
+    return { totalSpecs: 0, activeCount: 0, archivedCount: 0, pass1Count: 0, pass1Pct: 0, avgDurationMs: 0, avgApiCalls: 0, avgRetries: 0, worstPhase: null, l0Pct: 0, l0Direct: 0, l0Delegated: 0 };
+  }
+  let pass1 = 0;
+  let totalDuration = 0;
+  let totalApiCalls = 0;
+  let totalRetries = 0;
+  let l0Direct = 0;
+  let l0Delegated = 0;
+  const phaseRetries = {};
+  const phaseAffected = {};
+  for (const s of allSpecs) {
+    const m = s.metrics || {};
+    if ((m.retries || 0) === 0) pass1++;
+    if (m.durationMs) totalDuration += m.durationMs;
+    else if (m.startedAt && m.updatedAt) totalDuration += new Date(m.updatedAt).getTime() - new Date(m.startedAt).getTime();
+    totalApiCalls += m.apiCalls || 0;
+    totalRetries += m.retries || 0;
+    // L0 delegation ratio: trabalho via Task (delegated) vs trabalho direto
+    // no parent (Bash/Edit/Write). toolBreakdown vem direto do registro real.
+    const tb = m.toolBreakdown || {};
+    l0Direct += (tb.Bash || 0) + (tb.Edit || 0) + (tb.Write || 0);
+    l0Delegated += (tb.Agent || 0) + (tb.Task || 0);
+    // Prefer dispatchFailuresByPhase (post-Wave 4) over legacy agentAttempts
+    // (no longer written by any hook; only present in April 2026 fossils).
+    const phaseSrc = m.dispatchFailuresByPhase || m.agentAttempts || {};
+    for (const [phase, n] of Object.entries(phaseSrc)) {
+      if (typeof n !== 'number' || n <= 0) continue;
+      phaseRetries[phase] = (phaseRetries[phase] || 0) + n;
+      phaseAffected[phase] = (phaseAffected[phase] || 0) + 1;
+    }
+  }
+  let worstPhase = null;
+  for (const [phase, n] of Object.entries(phaseRetries)) {
+    if (!worstPhase || n > worstPhase.totalRetries) {
+      worstPhase = { phase, totalRetries: n, affected: phaseAffected[phase] };
+    }
+  }
+  const l0Total = l0Direct + l0Delegated;
+  const l0Pct = l0Total > 0 ? Math.round((l0Delegated / l0Total) * 100) : 0;
+  return {
+    totalSpecs,
+    activeCount: specs.active.length + specs.orphaned.length,
+    archivedCount: archives.length,
+    pass1Count: pass1,
+    pass1Pct: Math.round((pass1 / totalSpecs) * 100),
+    avgDurationMs: Math.round(totalDuration / totalSpecs),
+    avgApiCalls: Math.round(totalApiCalls / totalSpecs),
+    avgRetries: Math.round((totalRetries / totalSpecs) * 10) / 10,
+    worstPhase,
+    l0Pct,
+    l0Direct,
+    l0Delegated,
+  };
+}
+
+function readKnowledgeStats(p) {
+  try {
+    if (!fs.existsSync(p)) return { total: 0, avgConfidence: '0.0' };
+    const kb = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const entries = Array.isArray(kb.entries) ? kb.entries : [];
+    if (entries.length === 0) return { total: 0, avgConfidence: '0.0' };
+    const sumConf = entries.reduce((s, e) => s + (typeof e.confidence === 'number' ? e.confidence : 0), 0);
+    return { total: entries.length, avgConfidence: (sumConf / entries.length).toFixed(2) };
+  } catch { return { total: 0, avgConfidence: '0.0' }; }
+}
+
+function readMemoryStats(p) {
+  try {
+    if (!fs.existsSync(p)) return { total: 0 };
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    return { total: entries.length };
+  } catch { return { total: 0 }; }
 }
 
 // ── Small helpers ──────────────────────────────────────────────────────

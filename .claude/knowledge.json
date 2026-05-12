@@ -14,10 +14,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 38,
+      "occurrences": 49,
       "createdAt": "2026-04-21T10:45:37.650Z",
-      "updatedAt": "2026-05-10T14:06:14.527Z",
-      "lastSeen": "2026-05-10T14:06:14.527Z"
+      "updatedAt": "2026-05-12T11:19:43.528Z",
+      "lastSeen": "2026-05-12T11:19:43.528Z"
     },
     {
       "id": "convention-1776768337604",
@@ -32,10 +32,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 38,
+      "occurrences": 49,
       "createdAt": "2026-04-21T10:45:37.604Z",
-      "updatedAt": "2026-05-10T14:06:14.495Z",
-      "lastSeen": "2026-05-10T14:06:14.495Z"
+      "updatedAt": "2026-05-12T11:19:43.485Z",
+      "lastSeen": "2026-05-12T11:19:43.485Z"
     },
     {
       "id": "convention-1776768337561",
@@ -50,10 +50,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 38,
+      "occurrences": 49,
       "createdAt": "2026-04-21T10:45:37.561Z",
-      "updatedAt": "2026-05-10T14:06:14.455Z",
-      "lastSeen": "2026-05-10T14:06:14.455Z"
+      "updatedAt": "2026-05-12T11:19:43.443Z",
+      "lastSeen": "2026-05-12T11:19:43.443Z"
     },
     {
       "id": "pattern-1775737719162",
@@ -67,10 +67,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 71,
+      "occurrences": 82,
       "createdAt": "2026-04-09T12:28:39.162Z",
-      "updatedAt": "2026-05-10T14:06:14.412Z",
-      "lastSeen": "2026-05-10T14:06:14.412Z"
+      "updatedAt": "2026-05-12T11:19:43.402Z",
+      "lastSeen": "2026-05-12T11:19:43.402Z"
     },
     {
       "id": "convention-1776768337467",
@@ -85,10 +85,10 @@
         "prescriptive"
       ],
       "confidence": 1,
-      "occurrences": 38,
+      "occurrences": 49,
       "createdAt": "2026-04-21T10:45:37.467Z",
-      "updatedAt": "2026-05-10T14:06:14.358Z",
-      "lastSeen": "2026-05-10T14:06:14.358Z"
+      "updatedAt": "2026-05-12T11:19:43.359Z",
+      "lastSeen": "2026-05-12T11:19:43.359Z"
     },
     {
       "id": "convention-1776771818988",
@@ -102,11 +102,11 @@
         "lesson",
         "prescriptive"
       ],
-      "confidence": 0.9000000000000001,
-      "occurrences": 6,
+      "confidence": 1,
+      "occurrences": 8,
       "createdAt": "2026-04-21T11:43:38.988Z",
-      "updatedAt": "2026-05-08T19:34:24.503Z",
-      "lastSeen": "2026-05-08T19:34:24.503Z"
+      "updatedAt": "2026-05-11T19:06:16.713Z",
+      "lastSeen": "2026-05-11T19:06:16.713Z"
     }
   ]
 }
