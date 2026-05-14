@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * skill-size-gate: PreToolUse hook — warns/blocks oversized SKILL.md files.

@@ -138,7 +138,7 @@ DEPOIS:
 
 ## Verificação
 
-- [ ] `node --test hooks/__tests__/hooks.test.js` passa
+- [ ] `bun test hooks/__tests__/hooks.test.js` passa
 - [ ] Após SubagentStop: `.claude/.agent-memory/` tem entry com summary
 - [ ] Após /approve: `.claude/memory/decisions.json` existe com entries
 - [ ] Após /complete: `.claude/memory/lessons.json` existe com entries

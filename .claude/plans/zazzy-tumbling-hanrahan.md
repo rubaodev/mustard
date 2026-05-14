@@ -247,7 +247,7 @@ No agent-prompt/SKILL.md, adicionar entre ENTITY e SKILLS:
 
 ## Verificação
 
-1. **Output Budget**: `node --test hooks/__tests__/hooks.test.js` + verificar métrica em pipeline state
+1. **Output Budget**: `bun test hooks/__tests__/hooks.test.js` + verificar métrica em pipeline state
 2. **Pipeline Skip**: Criar spec com entidade existente + 6 files → deve classificar Extended Light
 3. **Diff Scoping**: `node scripts/diff-context.js --subproject templates/hooks` → mostra só hooks
 4. **Recipe Engine**: `node scripts/recipe-match.js --entity Contract --operation add-field` → output JSON com paths resolvidos

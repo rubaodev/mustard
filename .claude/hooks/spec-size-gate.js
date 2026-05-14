@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * spec-size-gate: PreToolUse hook — warns/blocks oversized spec files.
@@ -17,6 +17,7 @@
  */
 
 const { run } = require('./_lib/size-gate.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 function isSpecPath(filePath) {
   if (!filePath) return false;
@@ -34,4 +35,12 @@ run({
   thresholds: { warn: 200, strictWarn: 400, block: 500 },
   blockReason: (lines) =>
     `[spec-size-gate] spec exceeds 500 lines (${lines} lines) — split into references/{section}.md (see feature/SKILL.md § Spec Layout)`,
+  onDecision: ({ lines, decision, filePath }) => {
+    emitMetric('spec-size-gate', {
+      tokensAffected: 0,
+      tokensSaved: 0,
+      note: decision === 'blocked' ? 'blocked' : 'over-size',
+      extras: { lines, limit: 500, file: filePath, category: decision === 'blocked' ? 'prevention' : 'workflow' },
+    });
+  },
 });

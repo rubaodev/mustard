@@ -55,7 +55,7 @@ Scans the project and updates `.claude/entity-registry.json`.
 
 ### Flow
 
-1. `node .claude/scripts/sync-registry.js`
+1. `bun .claude/scripts/sync-registry.js`
 2. If script not found, scan manually:
    - Search database schemas (EF Core `DbSet<T>`, Drizzle `pgTable()`, Prisma `model`, etc.)
    - Build entity map with relationships

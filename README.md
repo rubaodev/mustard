@@ -221,7 +221,6 @@ mustard review --ci --pr 42
 | `/maint <action>` | deps, validate, sync — maintenance utilities |
 | `/status` | Consolidated git + pipeline + build + registry status |
 | `/review [number\|url]` | Review a PR locally using the bundled review skill |
-| `/dashboard [start\|stop\|status]` | Local web dashboard (`http://localhost:7878`) with live spec progress, telemetry, PRD builder, settings editor, glossary and command catalog — see [Dashboard](#dashboard) |
 
 ### Analysis & Delegation
 
@@ -256,62 +255,7 @@ mustard review --ci --pr 42
 
 ## Dashboard
 
-The Mustard dashboard is a local web UI served by `node .claude/scripts/dashboard.js` on `http://localhost:7878`. Zero npm dependencies (Node built-ins only), no auth, localhost-bound. Started/stopped via the `/dashboard` slash command.
-
-### Starting the dashboard
-
-```bash
-# Inside Claude Code
-/dashboard            # starts (or shows the URL if already running)
-/dashboard status     # check if running
-/dashboard stop       # kill the server
-```
-
-The PID is stored in `.claude/.dashboard.pid` (gitignored).
-
-### Tabs
-
-| Tab | What it shows |
-|-----|---------------|
-| **Overview** | Live KPIs (active specs, completed, tokens saved, today's events), the spec currently in production with progress bar, and recent harness activity. Polls every 12s. |
-| **Specs** | Active specs grouped (epics show their child waves nested with mini progress bars). Completed specs filtered by period (7d/15d/30d/60d/90d/all), grouped by month. Click any spec → side panel with markdown viewer; click any wave → live monitor with stream. |
-| **Telemetry** | Six sections: tokens (RTK + hooks), pipeline aggregates with **Pass@1**, phase distribution bar, active specs aging (<7d / 7–30d / >30d), hooks table with per-hook plain-language explanation, tools breakdown, 7-day events line chart, storage + knowledge sizes. |
-| **Compose PRD** | Form-based PRD generator following the `tools/prd-builder.html` standard. Fields: title, project (auto-detected from monorepo), type, scope, priority, route, entity, CRUD ops, layers, design, bug repro, AC, constraints, OOS. Live preview, copy / copy-with-`/mustard:feature` / download. |
-| **Comandos** | Catalog of every `/mustard:*` command with both a plain-language explanation (for non-developers) and a technical one (for developers). Filterable by category and full-text search. |
-| **Settings** | Mustard env vars (`MUSTARD_*` keys) grouped by purpose (Pipeline Gates, Hygiene, Tool Use, UX & Profile). Each option (strict/warn/off) is a clickable card explaining what it does. Persists to `.claude/settings.json` `env` block. |
-| **Glossário** | All acronyms and concepts used across the dashboard (CI, QA, AC, RTK, PRD, hooks, gates, agents, etc) with definitions. The same terms get hover tooltips throughout the UI via `<abbr>` tags. |
-
-### Live indicator
-
-A green pulsing pill ("ao vivo") appears on any spec/wave whose `lastActivity` is < 5 min ago (read from `.claude/.pipeline-states/<spec>.metrics.json`). A sticky banner at the top of every tab shows "Processando: <epic> · wave <X>" while a pipeline is running, with an "Acompanhar" button that opens the live monitor side panel (polling 3s).
-
-### HTTP routes
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/` | The single-page UI (HTML + CSS + JS, ~110 KB) |
-| `GET` | `/api/specs` | All specs (active + completed) with checklist progress, lastActivity, apiCalls, retries |
-| `GET` | `/api/spec?path=<rel>` | Single spec markdown + metrics |
-| `GET` | `/api/spec/live?spec=<name>` | Live view: events filtered by spec, phase, agentAttempts, toolBreakdown, isLive flag, plus checklist + summary fallback when no metrics file exists |
-| `GET` | `/api/metrics` | Hook events table + RTK savings + last 7 days (parsed from `metrics-collect.js`) |
-| `GET` | `/api/telemetry-extra` | Pipeline aggregates (runs, Pass@1, totals), phase distribution, active aging, storage breakdown, detect cache info, activeNow |
-| `GET` | `/api/events?n=200` | Tail of `.claude/.harness/events.jsonl` |
-| `GET` | `/api/projects` | Subprojects detected by `sync-detect.js` (read from `.detect-cache.json`) |
-| `GET` | `/api/commands` | Catalog of `/mustard:*` slash commands with leigo + tecnico explanations |
-| `GET` | `/api/settings` | Current Mustard env values + catalog (with `valueDocs` per option) |
-| `POST` | `/api/settings` | Update Mustard env block in `.claude/settings.json` (validates against catalog) |
-| `POST` | `/api/prd` | Generate a spec.md from the Compose PRD form (creates `.claude/spec/active/<date>-<slug>/spec.md`) |
-
-### Files
-
-```
-.claude/scripts/
-├── dashboard.js                    # HTTP server (~600 lines, http/fs built-ins only)
-├── dashboard-ui.js                 # CSS + ICONS + CLIENT_JS + renderHtml
-├── dashboard-prd-template.js       # generatePrdMarkdown() following Mustard spec format
-├── dashboard-env-catalog.js        # MUSTARD_* env catalog with valueDocs
-└── dashboard-commands-catalog.js   # /mustard:* command catalog with leigo+tecnico
-```
+Visualization moved to the Mustard Dashboard — a standalone Tauri desktop product (sold separately, see https://github.com/mustard/mustard-dashboard when released).
 
 ## What Gets Installed
 
@@ -638,13 +582,13 @@ npm install
 npm run build
 
 # Run hook tests
-node --test templates/hooks/__tests__/hooks.test.js
+bun test templates/hooks/__tests__/hooks.test.js
 
 # Run script tests (metrics-report, etc.)
-node --test templates/scripts/__tests__/
+bun test templates/scripts/__tests__/
 
 # Test locally
-node bin/mustard.js init
+bun bin/mustard.js init
 ```
 
 ## License

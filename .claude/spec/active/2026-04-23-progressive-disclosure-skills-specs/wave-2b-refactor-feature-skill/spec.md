@@ -107,7 +107,7 @@ Refactor crítico do `feature/SKILL.md` (458 linhas) — coração do pipeline. 
 - [x] AC-4: Link integrity — every `refs/feature/X.md` referenced in SKILL.md body actually exists — Command: `node -e "const fs=require('fs');const path=require('path');const body=fs.readFileSync('templates/commands/mustard/feature/SKILL.md','utf8');const refs=[...body.matchAll(/refs\/feature\/([a-z0-9-]+\.md)/g)].map(m=>m[1]);const missing=refs.filter(r=>!fs.existsSync(path.join('templates/refs/feature',r)));if(missing.length){console.error('MISSING:',missing);process.exit(1)}"`
 - [x] AC-5: Mirror to .claude/ — Command: `node -e "const fs=require('fs');if(fs.readFileSync('templates/commands/mustard/feature/SKILL.md','utf8')!==fs.readFileSync('.claude/commands/mustard/feature/SKILL.md','utf8'))process.exit(1)"`
 - [x] AC-6: `## Spec Layout` section present — Command: `node -e "if(!/^## Spec Layout/m.test(require('fs').readFileSync('templates/commands/mustard/feature/SKILL.md','utf8')))process.exit(1)"`
-- [x] AC-7: Hook tests still pass — Command: `node -e "const{execSync}=require('child_process');try{execSync('node --test templates/hooks/__tests__/hooks.test.js templates/hooks/__tests__/size-gates.test.js',{stdio:'pipe',timeout:120000})}catch(e){process.exit(1)}"`
+- [x] AC-7: Hook tests still pass — Command: `node -e "const{execSync}=require('child_process');try{execSync('bun test templates/hooks/__tests__/hooks.test.js templates/hooks/__tests__/size-gates.test.js',{stdio:'pipe',timeout:120000})}catch(e){process.exit(1)}"`
 
 ## Dependencies
 

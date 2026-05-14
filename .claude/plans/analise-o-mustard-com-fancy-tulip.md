@@ -139,7 +139,7 @@ $ node metrics-collect.js
 ```
 
 Testes:
-- `node --test templates/hooks/__tests__/hooks.test.js` continua passando.
+- `bun test templates/hooks/__tests__/hooks.test.js` continua passando.
 - Novo teste: criar sidecar fake em tmp `.pipeline-states/foo.metrics.json` e assertar que `metrics-collect.js` lista "foo" em Active.
 - Rodar `node metrics-report.js --compare v3.1.21 v3.1.30` e confirmar que compare mode continua intacto.
 

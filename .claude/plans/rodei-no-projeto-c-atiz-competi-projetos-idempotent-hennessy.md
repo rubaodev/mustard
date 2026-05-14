@@ -128,4 +128,4 @@ Arquivos **não** alterados de propósito:
    - Conferir: cada `{subproject}/.claude/skills/` tem apenas diretórios recém-criados (timestamps novos no header) e nenhum SKILL.md tem corpo <200 chars.
    - Stderr do `skill-generator.js` sem entradas `[skip-empty]`; se houver, o `/scan` surfacia no bloco `errors` do JSON final.
 4. **Hooks/tests** do Mustard:
-   - `node --test hooks/__tests__/hooks.test.js` continua passando (mudança não toca hooks).
+   - `bun test hooks/__tests__/hooks.test.js` continua passando (mudança não toca hooks).

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * spec-hygiene: SessionStart hook — auto-cleans stale specs in .claude/spec/active/

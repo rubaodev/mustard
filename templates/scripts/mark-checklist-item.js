@@ -1,12 +1,12 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * mark-checklist-item: marks a single `- [ ]` item as `- [x]` in a spec's
  * `## Checklist` section. Idempotent. Cross-shell (Node only — no shell).
  *
  * Usage:
- *   node .claude/scripts/mark-checklist-item.js --spec <name> --item "<substring>"
- *   node .claude/scripts/mark-checklist-item.js --spec <name> --line <N>
+ *   bun .claude/scripts/mark-checklist-item.js --spec <name> --item "<substring>"
+ *   bun .claude/scripts/mark-checklist-item.js --spec <name> --line <N>
  *
  * Resolution:
  *   --spec  Looks up `.claude/spec/active/<name>/spec.md`. Accepts the bare

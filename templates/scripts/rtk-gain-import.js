@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * rtk-gain-import — snapshot real RTK token-savings telemetry.

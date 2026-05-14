@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * TOOL-USE COUNTER: Counts tool uses per active Explore subagent and enforces a hard cap.

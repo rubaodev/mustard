@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 11 — Anti-slope hooks Tests
@@ -14,10 +14,10 @@
  * 8.  duplication-check fail-open: corrupted entity-registry → exit 0
  * 9.  convention-check fail-open: invalid knowledge.json → exit 0
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave11.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave11.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

@@ -19,7 +19,7 @@ Re-auditoria detectou confusão conceitual no guard textual. Código está corre
 - [x] Se `.claude/pipeline-config.md` tem seção de budgets, adicionar linha clarificando "measurement scope = Task input.prompt only"
 - [x] Mirror comment change para `.claude/hooks/context-budget.js`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js` → 26/26
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js` → 26/26
 
 ## Files (~3)
 - `templates/hooks/context-budget.js` (comment)

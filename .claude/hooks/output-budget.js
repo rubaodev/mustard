@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * OUTPUT-BUDGET: PostToolUse hook that measures agent response size after

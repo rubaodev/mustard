@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * METRICS-TRACKER: PostToolUse hook that tracks pipeline metrics
@@ -106,7 +106,7 @@ process.stdin.on('end', () => {
       ? pipelineState.currentWave
       : (harnessGetWave ? harnessGetWave(data) : 0);
 
-    // Capture salient fields from tool_input so the dashboard can show *what*
+    // Capture salient fields from tool_input so the Mustard Dashboard (standalone) can show *what*
     // is being done, not just *which tool*. Sizes capped to keep events lean.
     const target = {};
     if (toolInput.file_path) target.file = String(toolInput.file_path).slice(-80);

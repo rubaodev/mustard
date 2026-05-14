@@ -78,11 +78,7 @@ Recomenda-se manter ao menos uma cópia explícita (`.claude.backup-pre-2.0`) fo
 
 4. **Validate**:
 
-   ```bash
-   node .claude/scripts/dashboard.js --check
-   ```
-
-   Deve retornar `{"ok":true,...}` com exit code 0.
+   Install the Mustard Dashboard (standalone) — see https://github.com/mustard/mustard-dashboard when released — and use it to confirm the DB is readable. Alternatively, open `.claude/.harness/mustard.db` directly under Bun (`bun -e "new (require('bun:sqlite').Database)('.claude/.harness/mustard.db'); console.log('ok')"`).
 
 5. **Próxima sessão Claude Code**:
    - Em SessionStart, se `mustard.db` ausente, migration roda automaticamente
@@ -119,7 +115,7 @@ A versão 2.x mantém compat layer (hooks fallback para `events.jsonl` legacy se
 
 2. **MCP server path em settings.json**: `dist/mcp/mustard-memory.js` (cwd = raiz do Mustard). Quando Mustard virar npm package, o path passa para `node_modules/mustard/dist/mcp/mustard-memory.js`.
 
-3. **Bun obrigatório para EventStore**: o store usa `bun:sqlite`. Hooks rodam sob Bun OU Node — mas o DB só inicializa sob Bun. Sem Bun instalado, dashboard cai para fallback legacy (lê `events.jsonl` direto).
+3. **Bun obrigatório para EventStore**: o store usa `bun:sqlite`. Hooks rodam sob Bun OU Node — mas o DB só inicializa sob Bun. Sem Bun instalado, leitores externos (incluindo o Mustard Dashboard standalone) caem para fallback legacy lendo `events.jsonl` direto.
 
 4. **Windows CI advisory**: Bun on Windows ainda flaky em CI; o job `windows` em `.github/workflows/ci.yml` é `continue-on-error: true` em 2.0. Promove para hard-required em 2.x quando estável.
 
@@ -136,7 +132,7 @@ A versão 2.x mantém compat layer (hooks fallback para `events.jsonl` legacy se
 
 Checklist mínimo de smoke test após o upgrade:
 
-- [ ] `node .claude/scripts/dashboard.js --check` retorna `{"ok":true}` exit 0
+- [ ] Mustard Dashboard (standalone, https://github.com/mustard/mustard-dashboard quando publicado) abre o projeto sem erros — ou validação manual via Bun (`bun -e "new (require('bun:sqlite').Database)('.claude/.harness/mustard.db'); console.log('ok')"`)
 - [ ] `.claude/.harness/mustard.db` existe e abre sob Bun (`bun -e "require('bun:sqlite').Database; console.log('ok')"`)
 - [ ] Rodar `mustard update` segunda vez: backup novo criado em `.claude.backup.{timestamp2}/`
 - [ ] MCP server aparece em `claude mcp list` (se Claude Code CLI instalado)
@@ -147,6 +143,6 @@ Checklist mínimo de smoke test após o upgrade:
 | Sintoma | Diagnóstico | Fix |
 |---------|-------------|-----|
 | `database disk image is malformed` ao rodar migration | knowledge_fts old schema (pre-Wave 1) | Apague `mustard.db*` e rode migration de novo — `EventStore.init` regenera com schema novo |
-| Dashboard retorna `ok:false` | Bun ausente ou DB corrompido | Instale Bun (`scoop install bun` no Windows) e rode migration manualmente |
+| Mustard Dashboard (standalone) reporta DB indisponível | Bun ausente ou DB corrompido | Instale Bun (`scoop install bun` no Windows) e rode migration manualmente |
 | MCP tools não aparecem | `settings.json.mcpServers` não registrou | Verifique `settings.json` tem entry `mustard-memory` apontando para `dist/mcp/mustard-memory.js` |
 | Migration trava em projeto grande | Sem progress reporter ainda em 2.0 | Verifique tail do `events.jsonl` — migration lê linha-a-linha, demora ~500ms por 1000 events |

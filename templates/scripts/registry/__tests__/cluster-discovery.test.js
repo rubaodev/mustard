@@ -2,7 +2,7 @@
 // Tests for cluster-discovery.js — focuses on filename-cluster detection,
 // the missing piece that left Next.js feature-folder patterns invisible.
 
-const { test } = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

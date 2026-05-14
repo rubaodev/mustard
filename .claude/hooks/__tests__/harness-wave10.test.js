@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 10 — Dev/QA Contract Tests
@@ -15,10 +15,10 @@
  * 9.  MUSTARD_QA_GATE_MODE=warn + no QA → allow with stderr
  * 10. MUSTARD_QA_GATE_MODE=off → skip QA check entirely
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave10.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave10.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

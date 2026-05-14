@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * MEMORY-AUTO-EXTRACT: SessionEnd hook that extracts non-obvious decisions
@@ -32,6 +32,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { shouldRun } = require('./_lib/hook-env.js');
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
 const MAX_ENTRIES_PER_SESSION = 5;
 const SECTION_PATTERNS = [
@@ -139,6 +141,7 @@ process.stdin.on('end', () => {
     const seenSet = new Set(seen.hashes);
 
     let persistedCount = 0;
+    let bytesPersisted = 0;
     const newHashes = [];
 
     // Walk spec/active for spec.md files (non-recursive into wave dirs handled too)
@@ -173,6 +176,7 @@ process.stdin.on('end', () => {
           seenSet.add(hash);
           newHashes.push(hash);
           persistedCount++;
+          bytesPersisted += Buffer.byteLength(it.content, 'utf8');
         }
       }
     }
@@ -180,6 +184,22 @@ process.stdin.on('end', () => {
     if (newHashes.length > 0) {
       seen.hashes = [...seen.hashes, ...newHashes].slice(-500); // keep last 500
       writeSeen(seenPath, seen);
+    }
+
+    if (persistedCount > 0) {
+      // tokensSaved estimates the prompt re-reading cost avoided in future sessions
+      // (extracted content is now in memory.json; sessions skip re-parsing spec.md).
+      // 4 bytes/token conservative estimate.
+      const tokensSaved = Math.round(bytesPersisted / 4);
+      try {
+        emitMetric('memory-auto-extract', {
+          tokensAffected: bytesPersisted,
+          tokensSaved,
+          note: 'extracted-' + persistedCount,
+          extras: { entries: persistedCount, category: 'extraction' },
+          cwd,
+        });
+      } catch (_) {}
     }
 
     process.exit(0);

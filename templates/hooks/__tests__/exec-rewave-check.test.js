@@ -1,12 +1,12 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 "use strict";
 
 /**
  * Tests for exec-rewave-check.js
- * Run: node --test .claude/hooks/__tests__/exec-rewave-check.test.js
+ * Run: bun test .claude/hooks/__tests__/exec-rewave-check.test.js
  */
 
-const { describe, it } = require("node:test");
+const { describe, it, afterEach } = require('bun:test');
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -73,9 +73,13 @@ function cleanup(dir) {
 // ── test 1: single-layer spec → keep-single ────────────────────────────────────
 
 describe("exec-rewave-check", () => {
-  it("single-layer (all api): keep-single with reason single-layer", (t) => {
-    const proj = makeTempProject();
-    t.after(() => cleanup(proj));
+  // bun:test compat: shared cleanup tracker (replaces node:test's t.after())
+  const _projs = [];
+  afterEach(() => { while (_projs.length) cleanup(_projs.pop()); });
+  const track = (p) => { _projs.push(p); return p; };
+
+  it("single-layer (all api): keep-single with reason single-layer", () => {
+    const proj = track(makeTempProject());
     const specName = "2026-01-01-test-single";
     const filesSection = `## Files
 - src/api/users.ts
@@ -91,9 +95,8 @@ describe("exec-rewave-check", () => {
   });
 
   // ── test 2: multi-layer spec → decomposed ──────────────────────────────────
-  it("multi-layer (schema + api): decomposed into 2 waves", (t) => {
-    const proj = makeTempProject();
-    t.after(() => cleanup(proj));
+  it("multi-layer (schema + api): decomposed into 2 waves", () => {
+    const proj = track(makeTempProject());
     const specName = "2026-01-02-test-multi";
     // wave-dependency works on real files; for DAG we need actual files on disk
     // Create the files so the DAG parser can read them (no imports → each in own wave)
@@ -147,9 +150,8 @@ describe("exec-rewave-check", () => {
   });
 
   // ── test 3: spec with existing wave-plan.md → skip already-decomposed ────────
-  it("already-decomposed (wave-plan.md exists): skip", (t) => {
-    const proj = makeTempProject();
-    t.after(() => cleanup(proj));
+  it("already-decomposed (wave-plan.md exists): skip", () => {
+    const proj = track(makeTempProject());
     const specName = "2026-01-03-test-already";
     const filesSection = `## Files
 - src/schema/thing.ts
@@ -165,9 +167,8 @@ describe("exec-rewave-check", () => {
   });
 
   // ── test 4: pipeline-state.scopeOverride = user-rejected-waves → skip ────────
-  it("scopeOverride user-rejected-waves: skip", (t) => {
-    const proj = makeTempProject();
-    t.after(() => cleanup(proj));
+  it("scopeOverride user-rejected-waves: skip", () => {
+    const proj = track(makeTempProject());
     const specName = "2026-01-04-test-rejected";
     const filesSection = `## Files
 - src/schema/x.ts
@@ -187,9 +188,8 @@ describe("exec-rewave-check", () => {
   });
 
   // ── test 5: spec with no ## Files section → skip error-fallback ───────────────
-  it("spec without ## Files: skip error-fallback", (t) => {
-    const proj = makeTempProject();
-    t.after(() => cleanup(proj));
+  it("spec without ## Files: skip error-fallback", () => {
+    const proj = track(makeTempProject());
     const specName = "2026-01-05-test-nofiles";
     const specDir = path.join(proj, ".claude", "spec", "active", specName);
     fs.mkdirSync(specDir, { recursive: true });

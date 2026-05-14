@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * RTK REWRITE: PreToolUse hook that rewrites Bash commands through RTK

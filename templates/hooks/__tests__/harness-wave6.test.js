@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 6 — On-Demand Memory Escape Hatch Tests
@@ -10,10 +10,10 @@
  * 4. subagent-tracker includes hint when budget has room; omits when tight
  * 5. settings.json contains harness-views.js Bash permission
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave6.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave6.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -399,7 +399,7 @@ describe('Wave 6 — subagent-tracker: escape-hatch hint', () => {
 // ── Test 5: settings.json contains harness-views.js Bash permission ───────────
 
 describe('Wave 6 — settings.json: harness-views.js Bash permission present', () => {
-  it('settings.json allow list contains Bash(node .claude/scripts/harness-views.js:*)', () => {
+  it('settings.json allow list contains Bash(bun .claude/scripts/harness-views.js:*)', () => {
     const settingsPath = path.join(TEMPLATES_DIR, 'settings.json');
     assert.ok(fs.existsSync(settingsPath), `settings.json must exist at ${settingsPath}`);
 

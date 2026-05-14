@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SAFETY: PreToolUse guard for sensitive file access
@@ -14,6 +14,8 @@
 
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
 const BLOCKED_PATTERNS = [
   /credentials/i,
@@ -45,6 +47,15 @@ process.stdin.on('end', () => {
 
     for (const pattern of BLOCKED_PATTERNS) {
       if (pattern.test(normalized) || pattern.test(basename)) {
+        try {
+          emitMetric('file-guard', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked',
+            extras: { pattern: pattern.source, file: basename },
+            cwd: data.cwd,
+          });
+        } catch (_) {}
         console.log(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',

@@ -7,75 +7,47 @@ import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
-import { detect, type RuntimeInfo, type RuntimeKind } from '../runtime/detect-runtime.js';
+import { detect, RuntimeError } from '../runtime/detect-runtime.js';
 
 export interface InitOptions {
   force?: boolean;
   yes?: boolean;
   cursor?: boolean;
-  /** Force runtime kind. 'auto' (default) honors detect(); 'bun'/'node' force. */
-  runtime?: 'bun' | 'node' | 'auto';
   /** When true, print intended actions but do not write to disk. */
   dryRun?: boolean;
 }
 
 interface RuntimeChoice {
-  kind: RuntimeKind;
+  kind: 'bun';
   version: string;
   chosenAt: string;
 }
 
-/**
- * Resolve the runtime to use based on --runtime flag and detect() output.
- *
- * - 'auto' (default): honor detect() result; fallback to Node when Bun unavailable.
- * - 'bun': require detect() to report Bun; otherwise fail with exit 1.
- *          (In dry-run, missing Bun is allowed — reports intent with version='unknown'.)
- * - 'node': force Node regardless of detection.
- */
-function resolveRuntime(
-  flag: 'bun' | 'node' | 'auto' | undefined,
-  dryRun = false,
-): RuntimeChoice {
-  const mode = flag ?? 'auto';
-  const info: RuntimeInfo = detect();
-
-  if (mode === 'bun') {
-    if (info.kind !== 'bun') {
-      if (dryRun) {
-        // Dry-run: report intent without enforcing availability.
-        process.stderr.write(
-          '[mustard] warn: --runtime=bun forced, but Bun not detected (dry-run only)\n'
-        );
-        return { kind: 'bun', version: 'unknown', chosenAt: new Date().toISOString() };
-      }
-      process.stderr.write(
-        '[mustard] error: --runtime=bun requested, but Bun is not available in this environment.\n'
-      );
+function resolveRuntime(): RuntimeChoice {
+  try {
+    const info = detect();
+    return { kind: 'bun', version: info.version, chosenAt: new Date().toISOString() };
+  } catch (err) {
+    if (err instanceof RuntimeError) {
+      process.stderr.write(`[mustard] error: ${err.message}\n`);
       process.exit(1);
     }
-    return { kind: 'bun', version: info.version, chosenAt: new Date().toISOString() };
+    throw err;
   }
-
-  if (mode === 'node') {
-    const version = info.kind === 'node' ? info.version : process.versions.node;
-    return { kind: 'node', version, chosenAt: new Date().toISOString() };
-  }
-
-  // auto: honor detection; Node fallback is implicit (detect() returns 'node' when no Bun)
-  if (mode === 'auto' && info.kind === 'node' && process.env.MUSTARD_RUNTIME_VERBOSE === '1') {
-    process.stderr.write('[mustard] runtime: Bun not detected, falling back to Node\n');
-  }
-  return { kind: info.kind, version: info.version, chosenAt: new Date().toISOString() };
 }
 
 /**
- * Merge runtime info into .claude/mustard.json (surgical).
- * Preserves all other fields; only updates/inserts `runtime`.
+ * Merge mustard metadata into .claude/mustard.json (surgical).
+ * Preserves all other fields; only updates/inserts the keys provided.
+ *
+ * `mustardHome` is the absolute path of the Mustard install used at init/update
+ * time. Hooks read it to locate `dist/runtime/event-store.js` and
+ * `dist/telemetry/token-tracker.js` regardless of the consumer project layout
+ * (sibling, nested, or installed elsewhere).
  */
-async function writeRuntimeToClaudeMustardJson(
+export async function writeMustardMetaToClaudeMustardJson(
   claudePath: string,
-  runtime: RuntimeChoice,
+  meta: { runtime?: RuntimeChoice; mustardHome?: string },
 ): Promise<void> {
   const cfgPath = join(claudePath, 'mustard.json');
   let existing: Record<string, unknown> = {};
@@ -83,11 +55,11 @@ async function writeRuntimeToClaudeMustardJson(
     try {
       existing = JSON.parse(readFileSync(cfgPath, 'utf-8')) as Record<string, unknown>;
     } catch {
-      // malformed — overwrite with fresh runtime-only object
       existing = {};
     }
   }
-  existing.runtime = runtime;
+  if (meta.runtime !== undefined) existing.runtime = meta.runtime;
+  if (meta.mustardHome !== undefined) existing.mustardHome = meta.mustardHome;
   await mkdir(claudePath, { recursive: true });
   await writeFile(cfgPath, JSON.stringify(existing, null, 2) + '\n');
 }
@@ -96,6 +68,15 @@ function getTemplatesDir(): string {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   return join(__dirname, '..', '..', 'templates');
+}
+
+/**
+ * Absolute path of the Mustard install (parent of `templates/` and `dist/`).
+ * Persisted to each project's `.claude/mustard.json` so hooks can resolve
+ * `dist/...` without filesystem walks.
+ */
+export function getMustardHome(): string {
+  return resolve(getTemplatesDir(), '..');
 }
 
 /**
@@ -164,15 +145,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   console.log(chalk.bold('\n🌿 Mustard\n'));
 
-  // Resolve runtime first — used by both dry-run and real flows.
-  // Print one line containing "runtime" and the chosen kind for AC #5/#6.
-  const runtime = resolveRuntime(options.runtime, options.dryRun ?? false);
+  const runtime = resolveRuntime();
+  const mustardHome = getMustardHome();
   console.log(`[mustard] runtime: ${runtime.kind} ${runtime.version}`);
 
   // Dry-run: report intended actions and exit without touching disk.
   if (options.dryRun) {
     console.log(chalk.gray(`  (dry-run) would copy templates → ${claudePath}`));
-    console.log(chalk.gray(`  (dry-run) would write runtime to ${join(claudePath, 'mustard.json')}`));
+    console.log(chalk.gray(`  (dry-run) would write runtime + mustardHome to ${join(claudePath, 'mustard.json')}`));
     return;
   }
 
@@ -189,7 +169,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       spinner.succeed(`Copied ${count} new files (existing files preserved)${ghMsg}`);
       await ensureGlobalPermissions();
       await ensureRtk();
-      await writeRuntimeToClaudeMustardJson(claudePath, runtime);
+      await writeMustardMetaToClaudeMustardJson(claudePath, { runtime, mustardHome });
       if (options.cursor) await installCursorAdapter(projectPath, claudePath);
       printNextSteps();
       return;
@@ -231,7 +211,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
         spinner.succeed(`Copied ${count} new files (existing files preserved)${ghMsg}`);
         await ensureGlobalPermissions();
         await ensureRtk();
-        await writeRuntimeToClaudeMustardJson(claudePath, runtime);
+        await writeMustardMetaToClaudeMustardJson(claudePath, { runtime, mustardHome });
         if (options.cursor) await installCursorAdapter(projectPath, claudePath);
         printNextSteps();
         return;
@@ -263,7 +243,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (options.cursor) await installCursorAdapter(projectPath, claudePath);
 
   // Persist runtime choice to .claude/mustard.json (Wave 2 AC #5/#7)
-  await writeRuntimeToClaudeMustardJson(claudePath, runtime);
+  await writeMustardMetaToClaudeMustardJson(claudePath, { runtime, mustardHome });
 
   // Generate mustard.json (git flow config)
   await generateMustardJson(projectPath, options);

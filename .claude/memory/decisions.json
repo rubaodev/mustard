@@ -1,0 +1,263 @@
+{
+  "entries": [
+    {
+      "id": "decision-1778609196604",
+      "timestamp": "2026-05-12T18:06:36.603Z",
+      "content": "**Bun-first quando disponível, Node fallback**: porque Anthropic adquiriu Bun e Claude Code v2.1.113+ ships com ele",
+      "source": "spec:2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": ""
+    },
+    {
+      "id": "decision-1778609196663",
+      "timestamp": "2026-05-12T18:06:36.663Z",
+      "content": "**Sem build step nos hooks**: Bun roda .ts/.js nativo; manter hooks em .js compatível com ambos",
+      "source": "spec:2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": ""
+    },
+    {
+      "id": "decision-1778609196713",
+      "timestamp": "2026-05-12T18:06:36.713Z",
+      "content": "**TypeScript só em `src/` e futuro `_lib/`**: hooks ficam JS por compat máxima",
+      "source": "spec:2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": ""
+    },
+    {
+      "id": "decision-1778609196794",
+      "timestamp": "2026-05-12T18:06:36.794Z",
+      "content": "Binary 10MB vs 100-150MB",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778609196848",
+      "timestamp": "2026-05-12T18:06:36.848Z",
+      "content": "RAM 30-50MB vs 200-400MB",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778609279458",
+      "timestamp": "2026-05-12T18:07:59.457Z",
+      "content": "Mustard 2.0 Phase 0 adota Bun-first com fallback Node — Anthropic adquiriu Bun em dez/2025 e Claude Code v2.1.113+ ships com runtime nativo; alvo 10x cold-start nos hooks",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778609279549",
+      "timestamp": "2026-05-12T18:07:59.549Z",
+      "content": "Hooks ficam em .js compatível Node+Bun (sem build step). TypeScript só em src/ — preserva compat máxima e zero npm deps after init",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778609279641",
+      "timestamp": "2026-05-12T18:07:59.641Z",
+      "content": "mustard update preserva mustard.json.runtime existente; novos campos opt-in para garantir zero breakage em projetos já inicializados",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778609872499",
+      "timestamp": "2026-05-12T18:17:52.498Z",
+      "content": "Mustard usa require() ao inves de import nos AC apesar do package.json type=module — Node 22+ permite require() de ESM sem top-level await; detect-runtime fica 100%% sincrono para preservar essa garantia",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "Wave 1 EXECUTE — runtime detection module"
+    },
+    {
+      "id": "decision-1778609872597",
+      "timestamp": "2026-05-12T18:17:52.597Z",
+      "content": "Test harness do runtime-shim eh self-rolled (assert/strict + funcao test() inline) porque Bun rejeita require(node:test) fora de bun test — spec mandava bun <file> direto, entao node:test nao serve",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "Wave 1 EXECUTE — hooks runtime-shim"
+    },
+    {
+      "id": "decision-1778610197766",
+      "timestamp": "2026-05-12T18:23:17.766Z",
+      "content": "Dois mustard.json coexistem: legacy em root (git-flow config) e novo .claude/mustard.json (runtime info). Independentes, sem migracao. Runtime usa merge surgical para nao colidir",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "Wave 2 EXECUTE — CLI integration"
+    },
+    {
+      "id": "decision-1778610197844",
+      "timestamp": "2026-05-12T18:23:17.844Z",
+      "content": "update.ts nao precisou de mudancas de codigo. .claude/mustard.json nao esta em foldersToDelete nem e recopiado de templates, entao runtime sobrevive intocado. Adicionado apenas comentario explicativo",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "Wave 2 EXECUTE — update preservation"
+    },
+    {
+      "id": "decision-1778610197923",
+      "timestamp": "2026-05-12T18:23:17.923Z",
+      "content": "--dry-run --runtime=bun em ambiente sem Bun retorna sucesso (reporta intent com version=unknown + stderr warn) — necessario para AC #5 grep. Mas --runtime=bun (sem dry-run) em ambiente sem Bun ainda falha exit 1",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "Wave 2 EXECUTE — dry-run semantics"
+    },
+    {
+      "id": "decision-1778611116166",
+      "timestamp": "2026-05-12T18:38:36.166Z",
+      "content": "EventStore SQLite (bun:sqlite com fallback better-sqlite3) torna-se single source of truth. events.jsonl mantido como replay log. Elimina 11+ stores duplicados que causaram 6 bugs nesta sessao",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778611116270",
+      "timestamp": "2026-05-12T18:38:36.270Z",
+      "content": "FTS5 virtual table para search full-text indexado (knowledge + events). Target <1ms vs 5-15ms do JSON parse atual. Triggers mantem FTS sincronizado com events table",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778611116358",
+      "timestamp": "2026-05-12T18:38:36.358Z",
+      "content": "Dual-write durante 1 release: hooks emitem em events.jsonl E chamam EventStore.append(). Reads sempre do DB. Permite rollback. Proximo release: jsonl vira so backup, DB e truth",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778612973013",
+      "timestamp": "2026-05-12T19:09:33.013Z",
+      "content": "EventStore.rebuild() alinhado com buildPipelineState semantics (ground truth): apiCalls=tool.use(!Read), retries=dispatch.failure, agentCount=count(agent.start). Specs populadas de qualquer event com spec field (nao so spec./phase.enter). Mesmo modelo do legacy para nao mudar numeros no dashboard",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "Wave 5 alignment"
+    },
+    {
+      "id": "decision-1778615215395",
+      "timestamp": "2026-05-12T19:46:55.395Z",
+      "content": "EventStore wrapper findUp(bin/mustard.js) discovery so funciona quando Mustard esta em node_modules ou e ancestor do projeto. Para projetos externos hoje (Sialia), fallback legacy (events.jsonl direto) e aceitavel — Mustard sera npm package no futuro e a discovery resolve nativamente. NAO adicionar MUSTARD_HOME env workaround",
+      "source": "phase-1-sialia-validation",
+      "context": "decision after Phase 1 update on Sialia"
+    },
+    {
+      "id": "decision-1778616401272",
+      "timestamp": "2026-05-12T20:06:41.272Z",
+      "content": "Phase 2 adota manual OTLP JSON emit (sem @opentelemetry/sdk-node). SDK nao se justifica em hook spawn-per-call (AsyncLocalStorage nao propaga cross-process). otlp-transformer entra apenas como devDep para validar shape nos tests. Refactor de ~30 linhas substitui o emit manual pelo SDK quando Claude Code expor CLAUDE_LAST_USAGE",
+      "source": "2026-05-12-mustard-2-0-phase-2-opentelemetry-tokens",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778619308884",
+      "timestamp": "2026-05-12T20:55:08.884Z",
+      "content": "Phase 3 adota @modelcontextprotocol/sdk em src/mcp/ runtime. Hooks continuam zero-dep — MCP roda como server stdio separado spawnado por Claude Code via settings.json mcpServers. Read-only nesta fase (writes so via hooks)",
+      "source": "2026-05-12-mustard-2-0-phase-3-mcp-memory-server",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778622344508",
+      "timestamp": "2026-05-12T21:45:44.508Z",
+      "content": "Rust backend = `rusqlite` nativo, sem Node deps",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778622344623",
+      "timestamp": "2026-05-12T21:45:44.623Z",
+      "content": "Modelo de segurança rígido (relevante pra vender)",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778622344710",
+      "timestamp": "2026-05-12T21:45:44.710Z",
+      "content": "CDN cost 10x menor em escala",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778622344797",
+      "timestamp": "2026-05-12T21:45:44.796Z",
+      "content": "`@tauri-apps/api` cobre fs/dialog/notification/clipboard sem escrever Rust",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778622344897",
+      "timestamp": "2026-05-12T21:45:44.897Z",
+      "content": "Não exige Claude Code ativo no projeto",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778624024841",
+      "timestamp": "2026-05-12T22:13:44.841Z",
+      "content": "Funciona offline / em projetos arquivados",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778624024890",
+      "timestamp": "2026-05-12T22:13:44.889Z",
+      "content": "Dependência única: schema da Phase 1 do Mustard 2.0",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778624024937",
+      "timestamp": "2026-05-12T22:13:44.937Z",
+      "content": "MCP fica como **opcional** pra live data (Phase 2 do dashboard, se justificar)",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778624024989",
+      "timestamp": "2026-05-12T22:13:44.989Z",
+      "content": "Stack padrão 2026, biggest ecosystem",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778624025039",
+      "timestamp": "2026-05-12T22:13:45.039Z",
+      "content": "shadcn/ui = componentes copiados (sem dep runtime, customizáveis)",
+      "source": "spec:2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": ""
+    },
+    {
+      "id": "decision-1778624593998",
+      "timestamp": "2026-05-12T22:23:13.998Z",
+      "content": "Tauri chosen over Electron for Mustard Dashboard: 10MB binary vs 100-150MB, 30-50MB RAM vs 200-400MB, rusqlite native, strict security model",
+      "source": "2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778624594110",
+      "timestamp": "2026-05-12T22:23:14.110Z",
+      "content": "Direct SQLite read instead of MCP for dashboard: works offline, on archived projects, no dependency on Claude Code running. Depends only on Mustard 2.0 Phase 1 schema",
+      "source": "2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778624594225",
+      "timestamp": "2026-05-12T22:23:14.225Z",
+      "content": "Visual style Linear + Notion: dark-mode-first (#0F0F10), sidebar with collapsible sections + status dots, Cmd+K palette, Inter typography, indigo/violet accent, Notion blocks for spec content. Default for all future Mustard UIs",
+      "source": "2026-05-12-mustard-dashboard-1-0-standalone-tauri",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778646345231",
+      "timestamp": "2026-05-13T04:25:45.231Z",
+      "content": "**Backup/cleanup só em --force**: incremental run preserva artefatos com hash inalterado; sem `--force` orchestrate nem entra nesses passos.",
+      "source": "spec:2026-05-13-scan-perf-pre-compute",
+      "context": ""
+    },
+    {
+      "id": "decision-1778646345346",
+      "timestamp": "2026-05-13T04:25:45.346Z",
+      "content": "**Tooling block é stack-aware mas opt-out**: se o subprojeto não tem package.json/csproj/pyproject.toml, o bloco vira string vazia. Agent cai no Step 4 manual normalmente.",
+      "source": "spec:2026-05-13-scan-perf-pre-compute",
+      "context": ""
+    },
+    {
+      "id": "decision-1778646345438",
+      "timestamp": "2026-05-13T04:25:45.438Z",
+      "content": "**Não pré-computar guards.md nem patterns.md**: esses precisam de inferência LLM — pré-computar geraria conteúdo genérico que polui o registry.",
+      "source": "spec:2026-05-13-scan-perf-pre-compute",
+      "context": ""
+    },
+    {
+      "id": "decision-1778646345533",
+      "timestamp": "2026-05-13T04:25:45.533Z",
+      "content": "**Não tocar em sync-detect**: a detecção atual já roda em <2s no Sialia. Otimização aqui não vale o blast radius.",
+      "source": "spec:2026-05-13-scan-perf-pre-compute",
+      "context": ""
+    }
+  ]
+}

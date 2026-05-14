@@ -38,7 +38,7 @@ Sonnet é suficiente para re-review de fixes mesmo em contextos complexos — `p
 - [x] Mesma substituição em `templates/commands/mustard/complete/SKILL.md`
 - [x] Mirror para `.claude/commands/mustard/{review,feature,complete}/SKILL.md`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js` → 26/26
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js` → 26/26
 - [ ] Atualizar memória `feedback_token_efficiency_audit.md`: substituir a linha sobre "Haiku heuristic" por "re-reviews sempre Sonnet"
 - [ ] Atualizar memória `reference_mustard_token_efficiency.md`: na tabela "Gates de pipeline ativos", substituir "Haiku re-review downgrade" por "Sonnet re-review (always)"
 

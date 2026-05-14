@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * METRICS-COLLECT: Unified pipeline + hook + RTK metrics view.

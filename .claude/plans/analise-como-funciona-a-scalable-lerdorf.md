@@ -157,7 +157,7 @@ Validação: agentes paralelos começam a se enxergar. `/mustard:resume` funcion
 - Deletar código morto de `subagent-tracker.js` (lógica de `_index.json`, `_queue.json`).
 - Atualizar docs em `templates/CLAUDE.md` e `AGENTS.md`.
 
-Validação: suite de hooks (`node --test hooks/__tests__/hooks.test.js`) passa. Pipeline completo funciona com apenas `.harness/` + `knowledge.json` + `memory/`.
+Validação: suite de hooks (`bun test hooks/__tests__/hooks.test.js`) passa. Pipeline completo funciona com apenas `.harness/` + `knowledge.json` + `memory/`.
 
 ---
 
@@ -193,7 +193,7 @@ Validação: suite de hooks (`node --test hooks/__tests__/hooks.test.js`) passa.
 - `templates/hooks/_lib/hook-env.js` — profiles e env-based disabling; `harness-event.js` respeita o mesmo padrão (fail-open, exit 0 em erro de I/O).
 - `fs.appendFileSync` — suficiente para escrita concorrente ≤4KB por linha (limite PIPE_BUF do Windows).
 - `readline` (built-in) — streaming do `.jsonl` nas views; evita carregar tudo em memória.
-- Padrão de testes existente (`node --test`) — sem novas dependências.
+- Padrão de testes existente (`bun test`) — sem novas dependências.
 
 ---
 
@@ -201,9 +201,9 @@ Validação: suite de hooks (`node --test hooks/__tests__/hooks.test.js`) passa.
 
 ### Unit (cada wave)
 ```bash
-node --test templates/hooks/__tests__/harness-event.test.js
-node --test templates/hooks/__tests__/harness-views.test.js
-node --test templates/hooks/__tests__/hooks.test.js   # garantir não-regressão
+bun test templates/hooks/__tests__/harness-event.test.js
+bun test templates/hooks/__tests__/harness-views.test.js
+bun test templates/hooks/__tests__/hooks.test.js   # garantir não-regressão
 ```
 
 ### Integration (após wave 2)

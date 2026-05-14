@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * RECOMMENDED-SKILLS-AUDIT: PreToolUse hook (matcher: Task) that measures the

@@ -102,7 +102,7 @@ ANALYZE → [analyze-validation.js] → PLAN → /approve → [Pre-EXECUTE Exist
 - [x] Mirror `templates/commands/mustard/feature/SKILL.md` → `.claude/commands/mustard/feature/SKILL.md`
 - [x] Mirror `templates/commands/mustard/resume/SKILL.md` → `.claude/commands/mustard/resume/SKILL.md`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js` → 26/26
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js` → 26/26
 - [x] **Walkthrough mental obrigatório**: ler o texto inserido em feature.md, simular orchestrator respondendo aos 3 cenários (all-no / mixed / all-yes) — confirmar que as decisões são determinísticas e que o path "all-yes" realmente aciona `AskUserQuestion`. Documentar a simulação na seção `## Result` do spec.
 
 ## Files (~5)

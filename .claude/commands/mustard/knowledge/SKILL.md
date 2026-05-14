@@ -140,7 +140,7 @@ Interactively adds a knowledge entry by prompting the user, then calls `knowledg
 5. Build JSON payload and pipe to script:
    ```bash
    echo '{"type":"...","name":"...","description":"...","source":"manual","tags":[...]}' \
-     | node .claude/scripts/knowledge-update.js
+     | bun .claude/scripts/knowledge-update.js
    ```
 6. Confirm: "Knowledge entry '{name}' saved."
 

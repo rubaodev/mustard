@@ -44,7 +44,7 @@ Spec `reference_mustard_token_efficiency.md` mostra que ANALYZE incompleto é ca
 - [x] Mirror feature.md → `.claude/commands/mustard/feature/SKILL.md`
 - [x] Smoke test: criar spec sintético com problemas conhecidos (Frontend agent sem .tsx em Files), rodar validator, confirmar WARN returned; depois spec limpo, confirmar `{ok:true, issues:[]}`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js` → 26/26
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js` → 26/26
 
 ## Files (~4)
 - `templates/scripts/analyze-validation.js` (create)

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * AC #4: compare EventStore.metrics(spec) (rebuilt from events) against
  * buildPipelineState(events, {spec}).metrics (live computation over the same

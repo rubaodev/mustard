@@ -61,7 +61,7 @@ Adicionar 2 hooks (`spec-size-gate`, `skill-size-gate`) + estender `skill-valida
   - Test skill-size-gate: same 4 cases for `**/SKILL.md` paths
   - Test fail-open: corrupted stdin → exit 0 (no crash)
   - Test path filter: writes to non-spec/non-SKILL files are skipped silently
-  - Use `node --test` style consistent with `templates/hooks/__tests__/hooks.test.js`
+  - Use `bun test` style consistent with `templates/hooks/__tests__/hooks.test.js`
 - [x] Extend `templates/scripts/skill-validate.js`:
   - Add `--lines` flag: when present, after structural validation, check line count of each SKILL.md body
   - Add 3 constants: `WARN_LINES = 200`, `STRICT_WARN_LINES = 400`, `BLOCK_LINES = 500`
@@ -74,14 +74,14 @@ Adicionar 2 hooks (`spec-size-gate`, `skill-size-gate`) + estender `skill-valida
   - Register `spec-size-gate.js` under `hooks.PreToolUse` with matcher `"Write|Edit"`, timeout 5000
   - Register `skill-size-gate.js` under `hooks.PreToolUse` with matcher `"Write|Edit"`, timeout 5000
   - Validate JSON parses (`node -e "JSON.parse(...)"`)
-- [x] Run tests: `node --test templates/hooks/__tests__/size-gates.test.js` (22/22 pass)
-- [x] Run regression: `node --test templates/hooks/__tests__/hooks.test.js` (103/103 pass)
+- [x] Run tests: `bun test templates/hooks/__tests__/size-gates.test.js` (22/22 pass)
+- [x] Run regression: `bun test templates/hooks/__tests__/hooks.test.js` (103/103 pass)
 - [x] Build/type-check (n/a — pure Node.js, no TS)
 
 ## Acceptance Criteria
 
-- [x] AC-1: New hook tests pass — Command: `node --test templates/hooks/__tests__/size-gates.test.js`
-- [x] AC-2: Existing hook tests still pass — Command: `node --test templates/hooks/__tests__/hooks.test.js`
+- [x] AC-1: New hook tests pass — Command: `bun test templates/hooks/__tests__/size-gates.test.js`
+- [x] AC-2: Existing hook tests still pass — Command: `bun test templates/hooks/__tests__/hooks.test.js`
 - [x] AC-3: settings.json is valid JSON with both hooks registered — Command: `node -e "const s=JSON.parse(require('fs').readFileSync('templates/settings.json','utf8'));const m=JSON.stringify(s.hooks.PreToolUse);if(!m.includes('spec-size-gate')||!m.includes('skill-size-gate'))process.exit(1)"`
 - [x] AC-4: skill-validate `--lines --json` returns valid JSON with `lineCount` per skill — Command: `node templates/scripts/skill-validate.js --lines --json | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));if(!j.results||!j.results.every(r=>'lineCount' in r))process.exit(1)"`
 - [x] AC-5: spec-size-gate fail-open on bad stdin — Command: `node -e "const{execSync}=require('child_process');try{execSync('node templates/hooks/spec-size-gate.js',{input:'not-json'})}catch(e){process.exit(1)}"`

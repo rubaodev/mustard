@@ -33,7 +33,7 @@ R1 — 4 mecanismos de enforcement ativos. Sem integration tests, regressões s�
   - PreToolUse(Task) → context-budget fires
   - PostToolUse(Task) → subagent-tracker fires
   - Cada um preserva state (no leak entre hooks)
-- [x] Rodar: `rtk node --test templates/hooks/__tests__/` — todos passam
+- [x] Rodar: `rtk bun test templates/hooks/__tests__/` — todos passam
 - [x] Verificar contagem total > 26 (originais preservados)
 
 ## Files (~1)

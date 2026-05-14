@@ -80,7 +80,7 @@ Reusa padrões já presentes no arquivo: `readdirSync({ withFileTypes: true })` 
    ```bash
    cd C:\Atiz\Mustard
    # Rodar teste existente do sync-detect
-   node --test templates/hooks/__tests__/hooks.test.js
+   bun test templates/hooks/__tests__/hooks.test.js
    ```
    (se houver teste específico para sync-detect, rodar; caso contrário confiar em smoke test manual)
 

@@ -1,10 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Tests for spec-size-gate.js and skill-size-gate.js.
- * Run with: node --test templates/hooks/__tests__/size-gates.test.js
+ * Run with: bun test templates/hooks/__tests__/size-gates.test.js
  */
 
-const { describe, it } = require('node:test');
+const { describe, it } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const path = require('node:path');

@@ -19,7 +19,7 @@ Approves the active spec and prepares the implementation phase.
 ## Action
 
 1. **Step 0: AUTO-SYNC (MANDATORY)** — Run via Bash tool BEFORE any other action:
-   - `node .claude/scripts/sync-registry.js`
+   - `bun .claude/scripts/sync-registry.js`
    - Do NOT proceed to step 2 without running this command
 2. **Read** `.claude/pipeline-config.md` — agents, model selection
 3. Locate active spec in `.claude/spec/active/`
@@ -51,7 +51,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 5b. **Memory Persist — record architectural decisions:**
    - For each significant decision in the spec (technology choices, design patterns, trade-offs):
      ```bash
-     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | node .claude/scripts/memory-persist.js
+     echo '{"type":"decision","content":"<decision description>","source":"<spec-name>","context":"approved at PLAN phase"}' | bun .claude/scripts/memory-persist.js
      ```
    - Focus on: why a pattern was chosen over alternatives, constraints that shaped the design
    - Skip trivial or obvious decisions (max 3 entries)

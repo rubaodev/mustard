@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * CONTEXT-BUDGET: PreToolUse hook with two responsibilities:

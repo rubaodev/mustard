@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * QA-RUN: Executes Acceptance Criteria defined in a spec file.
@@ -10,8 +10,8 @@
  * Wave 10 — Dev/QA contract enforcement.
  *
  * Usage:
- *   node .claude/scripts/qa-run.js --spec auth-login
- *   node .claude/scripts/qa-run.js --spec auth-login --json
+ *   bun .claude/scripts/qa-run.js --spec auth-login
+ *   bun .claude/scripts/qa-run.js --spec auth-login --json
  *
  * Exported API:
  *   module.exports = { runQA };

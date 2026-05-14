@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * MODEL-ROUTING-GATE: PreToolUse hook that validates the model selected for

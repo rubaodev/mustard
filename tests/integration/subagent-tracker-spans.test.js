@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Synthetic integration: span-emitter wrapper + subagent-tracker span flow.
  *
@@ -12,7 +12,7 @@
  *   3. endSpan emits a one-line OTLP wrapper into spans.jsonl with the
  *      required gen_ai.* + mustard.* attributes, then removes the sidecar.
  *
- * Run: node --test tests/integration/subagent-tracker-spans.test.js
+ * Run: bun test tests/integration/subagent-tracker-spans.test.js
  */
 
 import test from 'node:test';

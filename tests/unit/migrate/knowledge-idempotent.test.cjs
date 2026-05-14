@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
@@ -6,10 +6,10 @@
  * (the Phase 4 Wave 1 fix). Regression test against the original
  * "database disk image is malformed" crash on Windows.
  *
- * Run: node --test tests/unit/migrate/knowledge-idempotent.test.cjs
+ * Run: bun test tests/unit/migrate/knowledge-idempotent.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

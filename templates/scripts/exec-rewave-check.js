@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 "use strict";
 
 /**
@@ -8,7 +8,7 @@
  * (layerCount >= 2) are found in the finalised spec's ## Files section.
  *
  * CLI:
- *   node .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{name}/spec.md
+ *   bun .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{name}/spec.md
  *
  * Output: one JSON line on stdout, always exit 0 (fail-open).
  *   { action: "skip",        reason: "already-decomposed" | "user-rejected" | "no-spec-arg" | "error-fallback", error? }

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * skill-validate-gate: PreToolUse hook — warns/blocks SKILL.md writes that fail
@@ -122,7 +122,7 @@ process.stdin.on('end', () => {
     const errorList = (result.errors || []).map(e => `  - ${e}`).join('\n');
     const reason =
       `[skill-validate-gate] SKILL.md fails structural validation:\n${errorList}\n` +
-      `Run \`node .claude/scripts/skill-validate.js\` for details.`;
+      `Run \`bun .claude/scripts/skill-validate.js\` for details.`;
 
     if (mode === 'strict') {
       deny(reason);

@@ -36,7 +36,7 @@ Stop here.
 ### Step 3 — Run QA
 
 ```bash
-node .claude/scripts/qa-run.js --spec {specName}
+bun .claude/scripts/qa-run.js --spec {specName}
 ```
 
 If `qa-run.js` not found: dispatch Task(general-purpose) with QA agent context loaded from `.claude/context/qa/qa.core.md`.

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * HARNESS-INIT: SessionStart bootstrap for the harness event bus (Wave 1).

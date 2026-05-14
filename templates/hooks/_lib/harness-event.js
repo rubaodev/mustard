@@ -111,7 +111,7 @@ function getCurrentSessionId(hookInput) {
 
 // Default freshness window for "the newest pipeline-state is still the active one".
 // Beyond this, an idle PLAN/BACKLOG spec sitting around must not steal hook events
-// from unrelated work — phantom-tagging breaks dashboard `activeNow` and metrics.
+// from unrelated work — phantom-tagging breaks Mustard Dashboard (standalone) `activeNow` and metrics.
 const PIPELINE_STATE_FRESHNESS_MS = (() => {
   const raw = parseInt(process.env.MUSTARD_SPEC_FALLBACK_FRESHNESS_MS || '', 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 10 * 60 * 1000;

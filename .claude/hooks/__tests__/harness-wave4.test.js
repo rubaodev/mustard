@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 4 — Subtraction Tests
@@ -10,10 +10,10 @@
  * 4. metrics-tracker does NOT create .pipeline-states/*.metrics.json
  * 5. buildPipelineState derived from log contains metrics (tool counts, agent count)
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave4.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave4.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -225,9 +225,12 @@ describe('Wave 4 — buildPipelineState: metrics from log', () => {
     const events = [
       { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'pipeline.phase', payload: { from: null, to: 'ANALYZE' }, actor: { kind: 'hook' } },
       { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'agent.start', payload: { description: 'Explore codebase', model: null }, actor: { kind: 'agent', id: 'ag-1', type: 'Explore' } },
-      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Bash', phase: 'ANALYZE', retry: undefined }, actor: { kind: 'hook', id: 'metrics-tracker' } },
-      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Edit', phase: 'ANALYZE', retry: undefined }, actor: { kind: 'hook', id: 'metrics-tracker' } },
-      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Bash', phase: 'EXECUTE', retry: true }, actor: { kind: 'hook', id: 'metrics-tracker' } },
+      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Bash', phase: 'ANALYZE' }, actor: { kind: 'hook', id: 'metrics-tracker' } },
+      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Edit', phase: 'ANALYZE' }, actor: { kind: 'hook', id: 'metrics-tracker' } },
+      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Bash', phase: 'EXECUTE' }, actor: { kind: 'hook', id: 'metrics-tracker' } },
+      // Retries are now counted from dispatch.failure events (real signal), not
+      // from a keyword-derived `retry` flag on tool.use.
+      { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'dispatch.failure', payload: { agentType: 'general-purpose', phase: 'EXECUTE' }, actor: { kind: 'hook', id: 'subagent-tracker' } },
       // Read events should NOT count toward apiCalls
       { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'add-login', event: 'tool.use', payload: { tool: 'Read', phase: 'ANALYZE' }, actor: { kind: 'hook', id: 'metrics-tracker' } },
       { v: 1, ts: now, sessionId: 's1', wave: 1, spec: 'other-spec', event: 'tool.use', payload: { tool: 'Write', phase: 'EXECUTE' }, actor: { kind: 'hook', id: 'metrics-tracker' } },
@@ -238,10 +241,11 @@ describe('Wave 4 — buildPipelineState: metrics from log', () => {
     assert.equal(result.spec, 'add-login');
     assert.equal(result.phase, 'ANALYZE');
     assert.ok(result.metrics, 'metrics object must be present');
-    assert.equal(result.metrics.apiCalls, 3, 'Bash + Edit + retry Bash = 3 (Read excluded)');
+    assert.equal(result.metrics.apiCalls, 3, 'Bash + Edit + Bash = 3 (Read excluded)');
     assert.equal(result.metrics.toolBreakdown.Bash, 2, 'Bash used twice');
     assert.equal(result.metrics.toolBreakdown.Edit, 1, 'Edit used once');
-    assert.equal(result.metrics.retries, 1, 'One retry event');
+    assert.equal(result.metrics.retries, 1, 'One dispatch.failure event');
+    assert.equal(result.metrics.dispatchFailuresByPhase.EXECUTE, 1, 'failure attributed to EXECUTE phase');
     assert.equal(result.metrics.agentCount, 1, 'One agent.start event');
     // other-spec tool.use should not bleed in
     assert.ok(!result.metrics.toolBreakdown.Write, 'Write from other-spec must not appear');

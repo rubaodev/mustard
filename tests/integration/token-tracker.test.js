@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * AC #2, #3, #4 for Mustard 2.0 Phase 2 (OpenTelemetry tokens).
  *
@@ -24,7 +24,7 @@
  * the spec for future hard-validation work (e.g. round-tripping via
  * ProtobufTraceSerializer).
  *
- * Run: node --test tests/integration/token-tracker.test.js
+ * Run: bun test tests/integration/token-tracker.test.js
  */
 
 import test from 'node:test';

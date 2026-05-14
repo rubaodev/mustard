@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // metrics-report — aggregate enforcement metrics from .claude/.metrics/*.jsonl
 // Usage:
 //   node metrics-report.js [--since <ISO>] [--event <type>]

@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
  * EventStore.query — filter combinations.
  *
- * Run: node --test tests/unit/event-store/query.test.cjs
+ * Run: bun test tests/unit/event-store/query.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

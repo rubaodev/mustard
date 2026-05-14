@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * CONVENTION-CHECK: PostToolUse hook that warns when a written file violates
  * naming/path conventions recorded in knowledge.json.

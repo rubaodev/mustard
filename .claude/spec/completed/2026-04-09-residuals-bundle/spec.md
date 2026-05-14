@@ -50,7 +50,7 @@ Re-audit listou como residuais de baixa prioridade. Cada um é low-risk, high-si
 ### Finalização
 - [x] Mirror todos os 4 arquivos modificados para `.claude/`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js` → 26/26 (sem regressão)
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js` → 26/26 (sem regressão)
 - [x] Smoke test manual de cada sub-task (brief, não precisa ser automated test)
 
 ## Files (~8)

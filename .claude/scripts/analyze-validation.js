@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 // analyze-validation.js — WARN-level spec validator (never blocks pipeline)
 const fs = require('fs');

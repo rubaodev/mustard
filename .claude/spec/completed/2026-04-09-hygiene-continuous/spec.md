@@ -37,7 +37,7 @@ Specs stale em `active/` poluem hygiene audits, inflam o contador "N specs em pr
 - [x] Espelhar para `.claude/hooks/spec-hygiene.js` e `.claude/settings.json`
 - [x] Teste manual: criar spec fake em `active/` com todos `[x]` + Status completed, rodar `rtk node templates/hooks/spec-hygiene.js < empty-payload.json`, confirmar movido; limpar depois
 - [x] Build: `rtk npm run build`
-- [x] Rodar hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js`
+- [x] Rodar hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js`
 
 ## Files (~4)
 - `templates/hooks/spec-hygiene.js` (create)

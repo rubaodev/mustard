@@ -48,7 +48,7 @@ Todas com comando executável. Strict pass.
 
 4. **Hooks rodam sob Node (regression)**
    ```bash
-   node --test templates/hooks/__tests__/hooks.test.js
+   bun test templates/hooks/__tests__/hooks.test.js
    ```
    Os 100 testes atuais continuam passando.
 
@@ -83,7 +83,7 @@ Os comandos abaixo são equivalentes cross-shell (cmd.exe + bash) usados pelo `q
 - [ ] AC-1: detect-runtime kind is bun or node — Command: `node -e "const r=require('./dist/runtime/detect-runtime.js'); const x=r.detect(); process.exit(x.kind==='bun'||x.kind==='node'?0:1)"`
 - [ ] AC-2: runtime-shim has shebang and pickRuntime export — Command: `node -e "const fs=require('fs');const f=fs.readFileSync('templates/hooks/_lib/runtime-shim.js','utf8');process.exit(f.includes('#!/usr/bin/env')&&f.includes('pickRuntime')?0:1)"`
 - [ ] AC-3: runtime-shim test passes under Bun — Command: `bun templates/hooks/_lib/__tests__/runtime-shim.test.js`
-- [ ] AC-4: hook regression 100 tests pass under Node — Command: `node --test templates/hooks/__tests__/hooks.test.js`
+- [ ] AC-4: hook regression 100 tests pass under Node — Command: `bun test templates/hooks/__tests__/hooks.test.js`
 - [ ] AC-5: init dry-run with --runtime=bun emits runtime in stdout — Command: `node -e "const {execSync}=require('child_process');const out=execSync('node bin/mustard.js init --dry-run --runtime=bun',{encoding:'utf8',shell:true});process.exit(/runtime.*bun/i.test(out)?0:1)"`
 - [ ] AC-6: explicit --runtime=node selects node — Command: `node -e "const {execSync}=require('child_process');const out=execSync('node bin/mustard.js init --dry-run --runtime=node',{encoding:'utf8',shell:true});process.exit(/runtime.*node/i.test(out)?0:1)"`
 - [ ] AC-7: init in temp dir writes runtime to .claude/mustard.json — Command: `node -e "const {execSync}=require('child_process');const fs=require('fs');const path=require('path');const os=require('os');const repo=process.cwd();const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'mst-qa-'));process.chdir(tmp);execSync('node '+JSON.stringify(path.join(repo,'bin','mustard.js'))+' init --yes',{stdio:'pipe'});const j=JSON.parse(fs.readFileSync('.claude/mustard.json','utf8'));process.exit(j.runtime&&j.runtime.kind?0:1)"`

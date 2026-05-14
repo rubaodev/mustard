@@ -1,11 +1,11 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * RECIPE-MATCH: Match a recipe from .claude/recipes/ by entity and operation
  *
  * Reads structured recipe JSON files, matches by operation (and entity requirement),
  * and outputs the matched recipe with resolved file paths.
  *
- * Usage: node .claude/scripts/recipe-match.js --entity <name> --operation <type> [--subproject <path>]
+ * Usage: bun .claude/scripts/recipe-match.js --entity <name> --operation <type> [--subproject <path>]
  * Output: JSON to stdout with matched recipe + resolved paths
  * Exit 0 with empty output if no match or no recipes dir
  *

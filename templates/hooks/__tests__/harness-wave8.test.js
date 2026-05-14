@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 8 — Epic Fold Tests
@@ -15,10 +15,10 @@
  * 10. Compaction ON (MUSTARD_EPIC_COMPACT=1) removes tool.use for folded specs, keeps findings
  * 11. Compaction OFF keeps all events
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave8.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave8.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

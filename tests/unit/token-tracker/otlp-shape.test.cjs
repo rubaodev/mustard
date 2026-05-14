@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
  * OTLP/JSON shape — strict structural assertions on TokenTracker output.
  *
- * Run: node --test tests/unit/token-tracker/otlp-shape.test.cjs
+ * Run: bun test tests/unit/token-tracker/otlp-shape.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

@@ -1,8 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SECURITY-SCAN: Scans project for secrets, env exposure, and security misconfigurations.
- * Usage: node .claude/scripts/security-scan.js [directory] [--json]
+ * Usage: bun .claude/scripts/security-scan.js [directory] [--json]
  * Exit 0 = clean, Exit 1 = findings detected
  * @version 1.0.0
  */

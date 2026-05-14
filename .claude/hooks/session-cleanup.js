@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SESSION-CLEANUP: Clean stale state files on session end
@@ -17,6 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { shouldRun } = require('./_lib/hook-env.js');
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -30,6 +31,19 @@ process.stdin.on('end', () => {
     const data = JSON.parse(input);
     const cwd = data.cwd || process.cwd();
     const claudeDir = path.join(cwd, '.claude');
+
+    // Archive stale closed-followup specs (Onda 2.3) — best-effort, fail-open
+    try {
+      const completeScript = path.join(claudeDir, 'scripts', 'complete-spec.js');
+      if (fs.existsSync(completeScript)) {
+        spawnSync(process.execPath, [completeScript, '--archive-stale'], {
+          cwd,
+          timeout: 5000,
+          stdio: ['ignore', 'ignore', 'ignore'],
+          windowsHide: true,
+        });
+      }
+    } catch (_) {}
 
     // Clean pipeline states (directory-based + legacy single file)
     cleanPipelineStates(claudeDir);
@@ -57,6 +71,9 @@ function cleanFile(filePath) {
 }
 
 function cleanPipelineStates(claudeDir) {
+  // closed-followup is NOT terminal — it must survive cleanup so metrics-tracker
+  // can still link follow-up edits. Archival happens via complete-spec.js --archive-stale
+  // (invoked above) once the 24h TTL elapses.
   const terminal = new Set(['implemented', 'completed', 'validated', 'cancelled']);
 
   // Directory-based states

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * REVIEW-GATE: PreToolUse hook that validates before git commit
  *

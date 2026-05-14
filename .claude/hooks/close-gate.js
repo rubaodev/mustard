@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * CLOSE-GATE: PreToolUse hook that blocks pipeline CLOSE if sensors fail.
  *
@@ -25,6 +25,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { emit } = require('./_lib/harness-event.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 const TRUNCATE_CHARS = 500;
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per command
@@ -106,32 +107,57 @@ function extractPhase(content) {
 }
 
 /**
- * Read the harness events.jsonl and find the last qa.result event for a spec.
+ * Find the last qa.result event for a spec.
+ *
+ * Read path: EventStore (SQLite projection of events.jsonl). Falls back to a
+ * direct events.jsonl scan when the store is unavailable — keeps the gate
+ * functional in projects that haven't run the migration yet.
+ *
  * Returns { found: bool, overall: 'pass'|'fail'|'skip'|null, failedCount: number }
  */
 function findLastQAResult(cwd, spec) {
-  const eventsFile = path.join(cwd, '.claude', '.harness', 'events.jsonl');
-  if (!fs.existsSync(eventsFile)) {
-    return { found: false, overall: null, failedCount: 0 };
-  }
   let lastQAResult = null;
+
+  // Preferred path: EventStore.query() — O(log n) indexed lookup.
   try {
-    const lines = fs.readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean);
-    for (const line of lines) {
-      try {
-        const ev = JSON.parse(line);
-        if (ev.event !== 'qa.result') continue;
-        if (!ev.payload) continue;
-        // If spec is provided, filter by spec; otherwise accept any qa.result
-        if (spec && ev.payload.spec && ev.payload.spec !== spec) continue;
-        lastQAResult = ev;
-      } catch (_) {}
+    const { getStore } = require('./_lib/event-store.js');
+    const store = getStore(path.join(cwd, '.claude'));
+    if (store) {
+      const filter = spec ? { event: 'qa.result', spec } : { event: 'qa.result' };
+      const events = store.query(filter);
+      if (Array.isArray(events) && events.length > 0) {
+        // EventStore.query returns chronological order; last entry wins.
+        lastQAResult = events[events.length - 1];
+      }
     }
-  } catch (_) {
+  } catch (_) {} // fail-open: fall through to jsonl read
+
+  // Fallback: read events.jsonl directly. Required when EventStore is missing
+  // (legacy installs, runtime without SQLite driver, or pre-migration projects).
+  if (!lastQAResult) {
+    const eventsFile = path.join(cwd, '.claude', '.harness', 'events.jsonl');
+    if (!fs.existsSync(eventsFile)) {
+      return { found: false, overall: null, failedCount: 0 };
+    }
+    try {
+      const lines = fs.readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.event !== 'qa.result') continue;
+          if (!ev.payload) continue;
+          if (spec && ev.payload.spec && ev.payload.spec !== spec) continue;
+          lastQAResult = ev;
+        } catch (_) {}
+      }
+    } catch (_) {
+      return { found: false, overall: null, failedCount: 0 };
+    }
+  }
+
+  if (!lastQAResult || !lastQAResult.payload) {
     return { found: false, overall: null, failedCount: 0 };
   }
-  if (!lastQAResult) return { found: false, overall: null, failedCount: 0 };
-
   const overall = lastQAResult.payload.overall || null;
   const criteria = Array.isArray(lastQAResult.payload.criteria) ? lastQAResult.payload.criteria : [];
   const failedCount = criteria.filter(c => c.status === 'fail').length;
@@ -267,7 +293,7 @@ process.stdin.on('end', () => {
       if (cl.found && cl.unmarked.length > 0) {
         const preview = cl.unmarked.slice(0, 5).map(t => `  - ${t}`).join('\n');
         const more = cl.unmarked.length > 5 ? `\n  …and ${cl.unmarked.length - 5} more` : '';
-        const reason = `[Close Gate] Checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}". Mark each via \`node .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\` as it completes.\n${preview}${more}`;
+        const reason = `[Close Gate] Checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}". Mark each via \`bun .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\` as it completes.\n${preview}${more}`;
 
         if (checklistMode === 'warn') {
           process.stderr.write(`[close-gate] WARN: ${reason}\n`);
@@ -276,6 +302,12 @@ process.stdin.on('end', () => {
           try {
             emit('close-gate.check', { result: 'deny-checklist-unmarked', mode, checklistMode, spec: specName, unmarkedCount: cl.unmarked.length }, { cwd, hookInput: data });
           } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-checklist',
+            extras: { reason: 'checklist-unmarked', specName, unmarkedCount: cl.unmarked.length, category: 'prevention' },
+          });
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -295,7 +327,7 @@ process.stdin.on('end', () => {
 
       if (!qaResult.found) {
         const qaReason = specName
-          ? `[Close Gate] No QA pass recorded for spec "${specName}". Run /mustard:qa or node .claude/scripts/qa-run.js --spec ${specName} first.`
+          ? `[Close Gate] No QA pass recorded for spec "${specName}". Run /mustard:qa or bun .claude/scripts/qa-run.js --spec ${specName} first.`
           : '[Close Gate] No QA pass recorded. Run /mustard:qa before closing.';
 
         if (qaMode === 'warn') {
@@ -306,6 +338,12 @@ process.stdin.on('end', () => {
           try {
             emit('close-gate.check', { result: 'deny-qa-missing', mode, qaMode, spec: specName }, { cwd, hookInput: data });
           } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-qa-missing',
+            extras: { reason: 'qa-missing', specName, category: 'prevention' },
+          });
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -329,6 +367,12 @@ process.stdin.on('end', () => {
           try {
             emit('close-gate.check', { result: 'deny-qa-fail', mode, qaMode, spec: specName, qaOverall: qaResult.overall }, { cwd, hookInput: data });
           } catch (_) {}
+          emitMetric('close-gate', {
+            tokensAffected: 0,
+            tokensSaved: 0,
+            note: 'blocked-qa-fail',
+            extras: { reason: 'qa-fail', specName, qaOverall: qaResult.overall, failedCount: qaResult.failedCount, category: 'prevention' },
+          });
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -402,11 +446,23 @@ process.stdin.on('end', () => {
 
       if (mode === 'warn') {
         process.stderr.write(`[close-gate] WARN: ${reason}\n`);
+        emitMetric('close-gate', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'warned-' + firstFailure.stage,
+          extras: { reason: firstFailure.stage, specName, mode },
+        });
         // allow
         process.exit(0);
       }
 
       // mode === 'strict'
+      emitMetric('close-gate', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: 'blocked-' + firstFailure.stage,
+        extras: { reason: firstFailure.stage, specName, category: 'prevention' },
+      });
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -418,6 +474,12 @@ process.stdin.on('end', () => {
     }
 
     // All passed
+    emitMetric('close-gate', {
+      tokensAffected: 0,
+      tokensSaved: 0,
+      note: 'passed',
+      extras: { specName, stages: stageResults.map(s => s.stage + ':' + s.result).join(',') },
+    });
     process.exit(0);
 
   } catch (err) {

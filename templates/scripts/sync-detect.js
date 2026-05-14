@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * sync-detect.js
@@ -1010,6 +1010,15 @@ function main() {
       notInGit.push(p);
     }
   }
+
+  // Root fallback: single-root projects (Tauri/Vite/Next at repo root, no apps/*)
+  // never surface a depth>0 CLAUDE.md, so the registry would stay empty. When no
+  // subprojects were found and the root itself carries a CLAUDE.md, treat the
+  // root as the lone subproject.
+  if (submodulePaths.length === 0 && fs.existsSync(path.join(ROOT, "CLAUDE.md"))) {
+    submodulePaths.push(".");
+  }
+
   const subprojectPaths = submodulePaths;
 
   // Load previous cache for hash comparison (anti-stale detection)
@@ -1035,7 +1044,7 @@ function main() {
 
     if (!fs.existsSync(claudeFile)) continue;
 
-    const name = path.basename(relPath);
+    const name = relPath === "." ? path.basename(ROOT) : path.basename(relPath);
     const { role, scores } = detectRole(absPath);
     const agent = roleToAgent(role);
     const commands = getCommands(absPath);

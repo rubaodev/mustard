@@ -148,14 +148,13 @@ spec-compliant MCP client works — there is no Mustard-specific protocol.
 - **Bun required.** Server depends on `bun:sqlite`. A Node fallback via
   `better-sqlite3` is on the Phase 1 roadmap.
 
-## Dashboard deprecation
+## Dashboard
 
-`templates/scripts/dashboard.js` and `templates/scripts/dashboard-ui.js`
-are marked `@deprecated` in 2.x. Functionality is preserved for one
-release to give users time to migrate; Mustard 3.0 removes the local JS
-dashboard and ships the standalone `mustard-dashboard` (Tauri desktop
-app) which consumes the same MCP server documented here. Track migration
-status in spec `mustard-dashboard-1-0-standalone-tauri`.
+The local JS dashboard (`templates/scripts/dashboard*.js`) was removed in
+this release. Visualization moves to the standalone `mustard-dashboard`
+(Tauri desktop app), distributed separately and consuming the same MCP
+server documented here. See spec
+`mustard-dashboard-1-0-standalone-tauri` for the migration context.
 
 ## Testing
 

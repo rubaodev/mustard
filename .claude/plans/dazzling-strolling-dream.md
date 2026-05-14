@@ -128,7 +128,7 @@ try {
 
 ## Verificação
 
-1. Rodar `node --test hooks/__tests__/hooks.test.js` — todos os testes passam
+1. Rodar `bun test hooks/__tests__/hooks.test.js` — todos os testes passam
 2. Criar memory entry manualmente: `echo '...' | node scripts/memory-write.js`
 3. Verificar que `_index.json` foi criado com entry
 4. Simular SubagentStart com memory presente → verificar `additionalContext` contém summaries

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * ENFORCEMENT: Entity Registry validation
@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -40,6 +41,12 @@ process.stdin.on('end', () => {
     const registryPath = findRegistry();
 
     if (!registryPath) {
+      emitMetric('enforce-registry', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: 'blocked-no-registry',
+        extras: { reason: 'not-found', version: null, category: 'prevention' },
+      });
       blockWithMessage('Entity registry not found. Run /sync-registry first.');
       return;
     }
@@ -49,6 +56,14 @@ process.stdin.on('end', () => {
     const validation = validateRegistry(registry);
 
     if (!validation.valid) {
+      const version = registry && registry._meta && registry._meta.version ? registry._meta.version : null;
+      const reason = validation.reason || 'invalid';
+      emitMetric('enforce-registry', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: reason === 'stale-version' ? 'blocked-stale-version' : 'blocked-' + reason,
+        extras: { reason, version, category: 'prevention' },
+      });
       blockWithMessage(validation.message);
       return;
     }
@@ -76,6 +91,7 @@ function validateRegistry(registry) {
   if (!registry._meta?.version?.startsWith('3.')) {
     return {
       valid: false,
+      reason: 'stale-version',
       message: 'Registry version ' + (registry._meta?.version || 'unknown') + ' is outdated. Run /sync-registry to update to v3.1.'
     };
   }
@@ -85,6 +101,7 @@ function validateRegistry(registry) {
   if (entities.length === 0) {
     return {
       valid: false,
+      reason: 'no-entities',
       message: 'Registry has no entities. Run /sync-registry to populate.'
     };
   }
@@ -93,6 +110,7 @@ function validateRegistry(registry) {
   if (!registry._patterns || Object.keys(registry._patterns).length === 0) {
     return {
       valid: false,
+      reason: 'no-patterns',
       message: 'Registry has ' + entities.length + ' entities but no _patterns defined. Run /sync-registry to add reference patterns.'
     };
   }

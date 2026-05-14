@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SPEC-LINK: Links a child spec to a parent spec (Wave 7 — parent/child hierarchy).

@@ -94,13 +94,13 @@ Dashboard reescrito como **cliente MCP** — zero duplicação de lógica de que
 
 Tests usam extensão `.cjs` (project tem `"type": "module"`).
 
-- [ ] AC-2: search_knowledge tool returns ranked results — Command: `node --test tests/integration/mcp-search-knowledge.cjs`
-- [ ] AC-3: query_events filter works — Command: `node --test tests/integration/mcp-query-events.cjs`
-- [ ] AC-4: find_similar_specs returns matches — Command: `node --test tests/integration/mcp-similar-specs.cjs`
+- [ ] AC-2: search_knowledge tool returns ranked results — Command: `bun test tests/integration/mcp-search-knowledge.cjs`
+- [ ] AC-3: query_events filter works — Command: `bun test tests/integration/mcp-query-events.cjs`
+- [ ] AC-4: find_similar_specs returns matches — Command: `bun test tests/integration/mcp-similar-specs.cjs`
 - [ ] AC-5: settings.json has mcpServers.mustard-memory — Command: `node -e "const j=require('./templates/settings.json');const m=j.mcpServers&&j.mcpServers['mustard-memory'];process.exit(m&&m.command?0:1)"`
 - [ ] AC-6: dashboard files have deprecation banner — Command: `node -e "const fs=require('fs');for(const f of ['templates/scripts/dashboard.js','templates/scripts/dashboard-ui.js']){const c=fs.readFileSync(f,'utf8');if(!c.includes('DEPRECATED')||!c.includes('mustard-dashboard')){console.log('FAIL',f);process.exit(1)}}process.exit(0)"`
-- [ ] AC-7: MCP latency p95 < 10ms — Command: `node --test tests/integration/mcp-latency.cjs`
-- [ ] AC-8: MCP read-only sandbox — Command: `node --test tests/integration/mcp-sandbox.cjs`
+- [ ] AC-7: MCP latency p95 < 10ms — Command: `bun test tests/integration/mcp-latency.cjs`
+- [ ] AC-8: MCP read-only sandbox — Command: `bun test tests/integration/mcp-sandbox.cjs`
 
 ## Implementation
 

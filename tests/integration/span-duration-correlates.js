@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * AC #6 for Mustard 2.0 Phase 2: span duration correlates positively with
  * input_tokens.
@@ -13,7 +13,7 @@
  * unit under test and it derives duration from Date.now() at start/end. Forcing
  * real wall-clock separation keeps the test honest.
  *
- * Run: node --test tests/integration/span-duration-correlates.js
+ * Run: bun test tests/integration/span-duration-correlates.js
  */
 
 import test from 'node:test';

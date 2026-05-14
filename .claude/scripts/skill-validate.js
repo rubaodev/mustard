@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 "use strict";
 
 /**
@@ -18,13 +18,13 @@
  *             Can be combined with --json and --factual.
  *
  * Usage:
- *   node .claude/scripts/skill-validate.js                   # validate all (structural)
- *   node .claude/scripts/skill-validate.js --json            # JSON output
- *   node .claude/scripts/skill-validate.js --only scan       # skip manual skills
- *   node .claude/scripts/skill-validate.js --quiet           # only show failures
- *   node .claude/scripts/skill-validate.js --factual         # factual checks (--json also works)
- *   node .claude/scripts/skill-validate.js --lines           # line-count check (--json also works)
- *   node .claude/scripts/skill-validate.js --lines --json    # line-count as JSON with lineCount/tier
+ *   bun .claude/scripts/skill-validate.js                   # validate all (structural)
+ *   bun .claude/scripts/skill-validate.js --json            # JSON output
+ *   bun .claude/scripts/skill-validate.js --only scan       # skip manual skills
+ *   bun .claude/scripts/skill-validate.js --quiet           # only show failures
+ *   bun .claude/scripts/skill-validate.js --factual         # factual checks (--json also works)
+ *   bun .claude/scripts/skill-validate.js --lines           # line-count check (--json also works)
+ *   bun .claude/scripts/skill-validate.js --lines --json    # line-count as JSON with lineCount/tier
  *
  * Env:
  *   MUSTARD_SKILL_VALIDATE_MODE = strict (default) | warn | off

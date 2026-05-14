@@ -36,7 +36,7 @@ Zero mudança em triggers ou action principal.
 
 ### 3. `templates/scripts/__tests__/metrics-report.test.js` — suite nova
 
-Usa `node --test` (built-in, zero-deps). Cobre:
+Usa `bun test` (built-in, zero-deps). Cobre:
 - Parse de `--compare tag tag` e `--compare iso iso`
 - Mix: `--compare tag iso`
 - Fallback em histórico esparso (fixture com 2 pipelines)
@@ -66,8 +66,8 @@ Fixture: `__tests__/fixtures/metrics-sample.jsonl` (sintético, ~20 eventos cobr
 
 ## Verificação
 
-1. `rtk node --test templates/scripts/__tests__/metrics-report.test.js` — passa
-2. `rtk node --test templates/hooks/__tests__/hooks.test.js` — não regrediu
+1. `rtk bun test templates/scripts/__tests__/metrics-report.test.js` — passa
+2. `rtk bun test templates/hooks/__tests__/hooks.test.js` — não regrediu
 3. Rodar no repo atual:
    - `rtk node templates/scripts/metrics-report.js --compare v3.1.21 v3.1.22`
    - Validar que produz baseline utilizável

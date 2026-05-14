@@ -7,7 +7,7 @@ import { homedir } from 'os';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
-import { generateMustardJson, ensureGlobalPermissions } from './init.js';
+import { generateMustardJson, ensureGlobalPermissions, getMustardHome, writeMustardMetaToClaudeMustardJson } from './init.js';
 
 export interface UpdateOptions {
   force?: boolean;
@@ -113,6 +113,10 @@ export async function updateCommand(options: UpdateOptions): Promise<void> {
 
   await ensureRtk();
   await ensureGlobalPermissions();
+
+  // Re-stamp mustardHome so hooks resolve dist/* via the current install path.
+  // runtime is left untouched here; init owns runtime persistence.
+  await writeMustardMetaToClaudeMustardJson(claudePath, { mustardHome: getMustardHome() });
 
   await generateMustardJson(projectPath, { yes: options.force });
 

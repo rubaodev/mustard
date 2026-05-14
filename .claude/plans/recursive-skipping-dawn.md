@@ -208,7 +208,7 @@ Para `skill-creator/agents/`: manter separados (são prompts de agente, devem se
 1. **sync-detect.js**: `node templates/scripts/sync-detect.js` — JSON idêntico ao anterior (mesmo algoritmo de hash)
 2. **sync-registry.js**: `node templates/scripts/sync-registry.js` — entity-registry.json idêntico
 3. **subagent-tracker.js**: Fila capped a 10 entries
-4. **guard-verify.js**: `node --test templates/hooks/__tests__/hooks.test.js` se testes existem
+4. **guard-verify.js**: `bun test templates/hooks/__tests__/hooks.test.js` se testes existem
 5. **Hooks**: Todos mantêm fail-open (exit 0)
 6. **Feature/Pipeline skills**: Verificar que `/feature` ainda funciona corretamente referenciando pipeline-execution
 7. **react-best-practices**: Verificar que a skill ainda carrega regras corretamente via rules-catalog.md

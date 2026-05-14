@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 7 — Spec Hierarchy (parent/child) Tests
@@ -13,10 +13,10 @@
  * 7. buildSpecTree returns { error: 'spec not found' } for unknown rootSpec
  * 8. COORDINATE is accepted as a valid phase value in pipeline-state
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave7.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave7.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

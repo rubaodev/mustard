@@ -29,7 +29,7 @@ O JSONL de enforcement metrics (`.claude/.metrics/budget-observations.jsonl`) s�
   - helper `metrics-emit.js`: emite JSONL válido, cria dir, fail-silent em erro de write
   - `context-budget.js` com MODE=strict e prompt oversize: verifica que JSONL contém `tokens_saved > 0` e `note: 'blocked'`
   - `spec-hygiene.js`: verifica que move de spec emite evento com `tokens_saved > 0`
-- [x] Build + test: `rtk npm run build && rtk node --test templates/hooks/__tests__/hooks.test.js`
+- [x] Build + test: `rtk npm run build && rtk bun test templates/hooks/__tests__/hooks.test.js`
 - [x] Validação manual: rodar `rtk node .claude/scripts/metrics-report.js` e confirmar que a tabela mostra valores reais em `tokens_saved` e `tokens_affected`
 
 ## Files (~5)

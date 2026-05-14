@@ -108,8 +108,8 @@ Dashboard troca "tokens economizados" por:
 Comandos abaixo são `cmd.exe`/PowerShell/bash-friendly. QA runner os executa via `execSync` no Windows.
 
 - [ ] AC-1: TokenTracker tsc clean — Command: `bunx tsc --noEmit -p src/telemetry/tsconfig.json`
-- [ ] AC-2: token-tracker integration test passes — Command: `node --test tests/integration/token-tracker.test.js`
-- [ ] AC-6: span duration correlates with input tokens — Command: `node --test tests/integration/span-duration-correlates.js`
+- [ ] AC-2: token-tracker integration test passes — Command: `bun test tests/integration/token-tracker.test.js`
+- [ ] AC-6: span duration correlates with input tokens — Command: `bun test tests/integration/span-duration-correlates.js`
 - [ ] AC-7: zero tokensSaved in dashboard files — Command: `node -e "const fs=require('fs');for(const f of ['templates/scripts/dashboard.js','templates/scripts/dashboard-ui.js']){if(fs.readFileSync(f,'utf8').includes('tokensSaved')){console.log('FAIL',f);process.exit(1)}}process.exit(0)"`
 - [ ] AC-8: EventStore.spans() queryable under Bun — Command: `bun -e "const path=require('path');const os=require('os');const{EventStore}=require('./dist/runtime/event-store.js');const e=new EventStore(path.join(os.tmpdir(),'mst-qa-spans.db'));e.init();const r=e.spans({phase:'PLAN'});process.exit(Array.isArray(r)?0:1)"`
 

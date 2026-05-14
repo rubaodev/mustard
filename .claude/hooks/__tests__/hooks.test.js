@@ -1,10 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Tests for Mustard hooks using node:test and node:assert.
- * Run with: node --test .claude/hooks/__tests__/hooks.test.js
+ * Run with: bun test .claude/hooks/__tests__/hooks.test.js
  */
 
-const { describe, it } = require("node:test");
+const { describe, it } = require('bun:test');
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const path = require("node:path");

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * skill-validate-gate: PreToolUse hook — warns/blocks SKILL.md writes that fail
@@ -19,6 +19,8 @@
 
 const fs = require('fs');
 const path = require('path');
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
 function getMode() {
   const raw = (process.env.MUSTARD_SKILL_VALIDATE_GATE_MODE || 'warn').toLowerCase();
@@ -107,10 +109,20 @@ process.stdin.on('end', () => {
     const result = validator.validateSkill(content);
     if (result.ok) { process.exit(0); }
 
+    try {
+      emitMetric('skill-validate-gate', {
+        tokensAffected: 0,
+        tokensSaved: 0,
+        note: mode === 'strict' ? 'blocked' : 'warned',
+        extras: { errors: (result.errors || []).length, file: path.basename(filePath) },
+        cwd: data.cwd,
+      });
+    } catch (_) {}
+
     const errorList = (result.errors || []).map(e => `  - ${e}`).join('\n');
     const reason =
       `[skill-validate-gate] SKILL.md fails structural validation:\n${errorList}\n` +
-      `Run \`node .claude/scripts/skill-validate.js\` for details.`;
+      `Run \`bun .claude/scripts/skill-validate.js\` for details.`;
 
     if (mode === 'strict') {
       deny(reason);

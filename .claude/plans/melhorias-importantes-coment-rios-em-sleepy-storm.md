@@ -135,7 +135,7 @@ This keeps doc-comments consistent across the codebase, so `/mustard:knowledge g
    ```
    Confirmar que descriptions de entidades novas estão em EN.
 
-4. **Tests existentes** — rodar `node --test templates/hooks/__tests__/hooks.test.js` e `templates/hooks/__tests__/integration.test.js` para garantir que nenhuma asserção textual sobre Dispatch Template quebrou.
+4. **Tests existentes** — rodar `bun test templates/hooks/__tests__/hooks.test.js` e `templates/hooks/__tests__/integration.test.js` para garantir que nenhuma asserção textual sobre Dispatch Template quebrou.
 
 ## Out of scope (explicitamente)
 

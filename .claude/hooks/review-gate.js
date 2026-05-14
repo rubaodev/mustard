@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * REVIEW-GATE: PreToolUse hook that validates before git commit
  *
@@ -26,6 +26,8 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun, isStrictMode } = require('./_lib/hook-env.js');
 const { emit } = require('./_lib/harness-event.js');
+let emitMetric = () => {};
+try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -205,6 +207,15 @@ process.stdin.on('end', () => {
 
     // Strict mode: block on real sensor failures
     if (commitGateMode === 'strict' && blockingFindings.length > 0) {
+      try {
+        emitMetric('review-gate', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'blocked',
+          extras: { findings: blockingFindings.map(f => f.type) },
+          cwd,
+        });
+      } catch (_) {}
       const reason = `[Commit Gate] ${blockingFindings.map(f => f.msg).join(' | ')}`;
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
@@ -218,6 +229,15 @@ process.stdin.on('end', () => {
 
     // Warn mode (or strict with no blocking): emit advisory if there are warnings
     if (warnings.length > 0) {
+      try {
+        emitMetric('review-gate', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'warned',
+          extras: { warnings: warnings.length },
+          cwd,
+        });
+      } catch (_) {}
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',

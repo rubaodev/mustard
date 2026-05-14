@@ -5,7 +5,7 @@ model: haiku
 tools: [Read, Grep, Glob]
 memory: project
 ---
-<!-- mustard:generated at:2026-05-03T05:45:19.818Z role:general -->
+<!-- mustard:generated at:2026-05-13T04:33:18.302Z role:general -->
 
 # Templates Explorer Agent
 

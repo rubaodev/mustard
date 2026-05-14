@@ -19,7 +19,7 @@ Re-auditoria detectou race window entre `fs.renameSync(specDir)` e `fs.unlinkSyn
 - [x] Adicionar comentário acima do bloco: `// Phase 1 (critical): atomic rename. Phase 2 (best-effort): orphan state cleanup — each in own try/catch for idempotence.`
 - [x] Mirror para `.claude/hooks/spec-hygiene.js`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/hooks.test.js` → 26/26
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/hooks.test.js` → 26/26
 - [ ] Smoke test manual (opcional): criar spec fake completed+all-[x], rodar hook, confirmar move + cleanup OK
 
 ## Files (~2)
@@ -44,4 +44,4 @@ Re-auditoria detectou race window entre `fs.renameSync(specDir)` e `fs.unlinkSyn
 - `templates/hooks/spec-hygiene.js:48-68` — Phase 1/2 two-phase commit refactor: `fs.renameSync` extracted before cleanup block; `stateJson`/`stateDiff` replaced by `stateFile`/`diffFile` iterated via `for...of [stateFile, diffFile]` with individual try/catch per file
 - `.claude/hooks/spec-hygiene.js` — mirrored identical changes
 - `npm run build`: PASS (tsc clean)
-- `node --test`: 26/26 pass
+- `bun test`: 26/26 pass

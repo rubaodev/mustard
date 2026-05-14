@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * checklist-auto-mark: PostToolUse hook (Edit|Write) that silently marks
@@ -26,6 +26,10 @@ const path = require('path');
 let shouldRun;
 try { ({ shouldRun } = require('./_lib/hook-env.js')); }
 catch (_) { shouldRun = () => true; }
+
+let emitMetric;
+try { ({ emitMetric } = require('./_lib/metrics-emit.js')); }
+catch (_) { emitMetric = () => {}; }
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -58,6 +62,7 @@ process.stdin.on('end', () => {
     const normEdited = filePath.replace(/\\/g, '/').toLowerCase();
 
     let dirty = false;
+    const markedItems = [];
     for (let i = section.startIdx; i < section.endIdx; i++) {
       const m = lines[i].match(/^(\s*-\s+)\[ \](\s+)(.*)$/);
       if (!m) continue;
@@ -86,6 +91,7 @@ process.stdin.on('end', () => {
       if (matched) {
         lines[i] = `${m[1]}[x]${m[2]}${m[3]}`;
         dirty = true;
+        markedItems.push(text);
         // Don't break — multiple items might share the same file pista (rare,
         // but harmless to mark them together since the file was indeed edited).
       }
@@ -94,6 +100,14 @@ process.stdin.on('end', () => {
     if (dirty) {
       try { fs.writeFileSync(specInfo.path, lines.join('\n'), 'utf8'); }
       catch (_) { /* fail-open */ }
+      for (const itemText of markedItems) {
+        emitMetric('checklist-auto-mark', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'auto-marked',
+          extras: { specName: specInfo.name, itemMatched: itemText.slice(0, 60), category: 'workflow' },
+        });
+      }
     }
 
     process.exit(0);

@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
  * costUsd — pricing table + computation.
  *
- * Run: node --test tests/unit/token-tracker/pricing.test.cjs
+ * Run: bun test tests/unit/token-tracker/pricing.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 
 const { costUsd, PRICING } = require('../../../dist/telemetry/pricing.js');

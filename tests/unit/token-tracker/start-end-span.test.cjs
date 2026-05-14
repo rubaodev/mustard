@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
  * TokenTracker.startSpan / endSpan lifecycle.
  *
- * Run: node --test tests/unit/token-tracker/start-end-span.test.cjs
+ * Run: bun test tests/unit/token-tracker/start-end-span.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

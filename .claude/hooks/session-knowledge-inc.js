@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SESSION-KNOWLEDGE-INC: Incremental knowledge extraction after each Task completion.

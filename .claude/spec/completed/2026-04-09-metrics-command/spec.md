@@ -59,7 +59,7 @@ Infra de métricas (budget-observability + metrics framework) foi entregue mas s
 - [x] Mirror `templates/commands/mustard/metrics/SKILL.md` → `.claude/commands/mustard/metrics/SKILL.md`
 - [x] Mirror `templates/hooks/context-budget.js` → `.claude/hooks/context-budget.js`
 - [x] Build: `rtk npm run build` → PASS
-- [x] Hook tests: `rtk node --test templates/hooks/__tests__/` → 61/61 (26 unit + 35 integration)
+- [x] Hook tests: `rtk bun test templates/hooks/__tests__/` → 61/61 (26 unit + 35 integration)
 - [x] **Smoke test**:
   1. `rtk node -e "require('fs').writeFileSync('.claude/.metrics/.mode','observe'); require('fs').mkdirSync('.claude/.metrics',{recursive:true})"` — simular command observe
   2. Rodar hook com payload de teste — confirmar comportamento observe
@@ -104,4 +104,4 @@ Infra de métricas (budget-observability + metrics framework) foi entregue mas s
 
 ### Build / Tests
 - npm run build: PASS (tsc clean)
-- node --test: 61/61 PASS
+- bun test: 61/61 PASS

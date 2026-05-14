@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * MEMORY-AUTO-EXTRACT: SessionEnd hook that extracts non-obvious decisions

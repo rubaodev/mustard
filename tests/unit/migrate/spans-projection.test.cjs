@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
  * jsonl-to-sqlite — spans.jsonl → spans table projection.
  *
- * Run: node --test tests/unit/migrate/spans-projection.test.cjs
+ * Run: bun test tests/unit/migrate/spans-projection.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

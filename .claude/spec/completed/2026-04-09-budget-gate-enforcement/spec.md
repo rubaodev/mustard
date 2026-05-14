@@ -29,7 +29,7 @@ Extender `templates/hooks/context-budget.js` para bloquear (não apenas avisar) 
 - [x] Espelhar para `.claude/hooks/context-budget.js` e `.claude/settings.json`
 - [x] Testar manualmente: escrever payload stdin JSON (prompt grande) e rodar `node templates/hooks/context-budget.js < payload.json`
 - [x] Build/type-check: `rtk npm run build`
-- [x] Rodar testes existentes de hooks se houver: `rtk node --test hooks/__tests__/hooks.test.js`
+- [x] Rodar testes existentes de hooks se houver: `rtk bun test hooks/__tests__/hooks.test.js`
 
 ## Files (~4-5)
 - `templates/hooks/context-budget.js` (modify — main extension)

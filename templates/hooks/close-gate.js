@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * CLOSE-GATE: PreToolUse hook that blocks pipeline CLOSE if sensors fail.
  *
@@ -293,7 +293,7 @@ process.stdin.on('end', () => {
       if (cl.found && cl.unmarked.length > 0) {
         const preview = cl.unmarked.slice(0, 5).map(t => `  - ${t}`).join('\n');
         const more = cl.unmarked.length > 5 ? `\n  …and ${cl.unmarked.length - 5} more` : '';
-        const reason = `[Close Gate] Checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}". Mark each via \`node .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\` as it completes.\n${preview}${more}`;
+        const reason = `[Close Gate] Checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}". Mark each via \`bun .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\` as it completes.\n${preview}${more}`;
 
         if (checklistMode === 'warn') {
           process.stderr.write(`[close-gate] WARN: ${reason}\n`);
@@ -327,7 +327,7 @@ process.stdin.on('end', () => {
 
       if (!qaResult.found) {
         const qaReason = specName
-          ? `[Close Gate] No QA pass recorded for spec "${specName}". Run /mustard:qa or node .claude/scripts/qa-run.js --spec ${specName} first.`
+          ? `[Close Gate] No QA pass recorded for spec "${specName}". Run /mustard:qa or bun .claude/scripts/qa-run.js --spec ${specName} first.`
           : '[Close Gate] No QA pass recorded. Run /mustard:qa before closing.';
 
         if (qaMode === 'warn') {

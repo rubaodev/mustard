@@ -1,14 +1,14 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
  * EventStore.search (events FTS) + EventStore.knowledge({search}) (knowledge
  * FTS5, Phase 4 Wave 1 addition).
  *
- * Run: node --test tests/unit/event-store/search.test.cjs
+ * Run: bun test tests/unit/event-store/search.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

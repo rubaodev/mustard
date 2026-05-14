@@ -1,12 +1,12 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Tests for mark-checklist-item.js + close-gate.js checklist consistency gate.
  *
- * Run with: node --test templates/hooks/__tests__/checklist-mark.test.js
+ * Run with: bun test templates/hooks/__tests__/checklist-mark.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

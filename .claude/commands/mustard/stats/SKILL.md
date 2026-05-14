@@ -14,7 +14,7 @@ Superset view of pipeline state + enforcement hooks + RTK token economy. This is
 
 ## Action
 
-1. Run `node .claude/scripts/metrics-collect.js` to collect all metrics
+1. Run `bun .claude/scripts/metrics-collect.js` to collect all metrics
 2. Present the output to the user
 3. If no metrics found, inform user to run a pipeline first
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SPAN-EMITTER: CJS wrapper around dist/telemetry/token-tracker.js (ESM).
@@ -11,11 +11,11 @@
  *   - Under Node 22+, `require(esm)` works natively.
  *   - Under Bun, ESM modules are loadable via require unconditionally.
  *
- * Resolution: walks up the filesystem from this file looking for a sibling
- * `bin/mustard.js` (the Mustard install). When a hook runs inside a USER
- * project (e.g. sialia), the Mustard repo is elsewhere — this resolver will
- * fail and the wrapper returns `null`, signalling callers to skip span
- * emission silently.
+ * Resolution order (first that yields a valid dist/telemetry/token-tracker.js wins):
+ *   1. `MUSTARD_HOME` env var (explicit override).
+ *   2. `<claudeDir>/mustard.json#mustardHome` (persisted by `mustard init|update`).
+ *   3. findUp(__dirname, 'bin/mustard.js') — legacy fallback when the consumer
+ *      project is nested inside the Mustard repo.
  *
  * Fail-open contract: any error returns `null`. Callers MUST handle null by
  * skipping the emit. This wrapper never throws.
@@ -25,7 +25,7 @@
  * hook makes (startSpan in PreToolUse OR endSpan in PostToolUse — never both
  * in the same process).
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 const fs = require('node:fs');
@@ -48,6 +48,41 @@ function findUp(startDir, marker) {
   return null;
 }
 
+/** True if `root` looks like a Mustard install (has dist/telemetry/token-tracker.js). */
+function hasTokenTrackerDist(root) {
+  if (!root || typeof root !== 'string') return false;
+  try { return fs.existsSync(path.join(root, 'dist', 'telemetry', 'token-tracker.js')); } catch (_) { return false; }
+}
+
+/**
+ * Read `mustardHome` from `<__dirname>/../../mustard.json` (the consumer's
+ * `.claude/mustard.json`). Returns null when missing/malformed.
+ */
+function readPersistedMustardHome() {
+  try {
+    const cfgPath = path.join(__dirname, '..', '..', 'mustard.json');
+    if (!fs.existsSync(cfgPath)) return null;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    return typeof cfg.mustardHome === 'string' ? cfg.mustardHome : null;
+  } catch (_) { return null; }
+}
+
+/** Resolve Mustard install root by env → mustard.json → findUp. */
+function resolveMustardRoot() {
+  const fromEnv = process.env.MUSTARD_HOME;
+  if (hasTokenTrackerDist(fromEnv)) return fromEnv;
+
+  const fromCfg = readPersistedMustardHome();
+  if (hasTokenTrackerDist(fromCfg)) return fromCfg;
+
+  const mustardBin = findUp(__dirname, path.join('bin', 'mustard.js'));
+  if (mustardBin) {
+    const root = path.dirname(path.dirname(mustardBin));
+    if (hasTokenTrackerDist(root)) return root;
+  }
+  return null;
+}
+
 /**
  * Locate and load the TokenTracker class from dist/telemetry/token-tracker.js.
  * Returns null on any failure. Memoised after first call (success or failure).
@@ -56,11 +91,9 @@ function getTokenTrackerClass() {
   if (_resolveAttempted) return _TokenTrackerClass;
   _resolveAttempted = true;
   try {
-    const mustardBin = findUp(__dirname, path.join('bin', 'mustard.js'));
-    if (!mustardBin) return null;
-    const mustardRoot = path.dirname(path.dirname(mustardBin));
+    const mustardRoot = resolveMustardRoot();
+    if (!mustardRoot) return null;
     const distPath = path.join(mustardRoot, 'dist', 'telemetry', 'token-tracker.js');
-    if (!fs.existsSync(distPath)) return null;
 
     // require(esm) is supported in Node 22+ and Bun.
     const mod = require(distPath);

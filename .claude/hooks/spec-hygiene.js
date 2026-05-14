@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * spec-hygiene: SessionStart hook — auto-cleans stale specs in .claude/spec/active/
@@ -67,7 +67,7 @@ function runHygiene() {
           tokensAffected: tokens,
           tokensSaved: tokens,
           note: 'stale spec moved from active/',
-          extras: { from: specDir, to: dest },
+          extras: { from: specDir, to: dest, category: 'extraction' },
           cwd,
         });
 

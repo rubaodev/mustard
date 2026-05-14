@@ -1,8 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * VERIFY-PIPELINE: Runs build and test verification for active pipeline.
- * Usage: node .claude/scripts/verify-pipeline.js [cwd]
+ * Usage: bun .claude/scripts/verify-pipeline.js [cwd]
  * Exit 0 = all passed, Exit 1 = failures detected
  * @version 1.0.0
  */

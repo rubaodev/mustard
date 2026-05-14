@@ -11,7 +11,7 @@ Shows consolidated project status.
 ## Action
 
 1. **Git Status** — run `rtk git status` and `rtk git log -1 --format=%H %s` for current branch, modified files, and last commit.
-2. **Pipeline** — run `node .claude/scripts/metrics-collect.js` and surface the `## Active:` and any `## Orphaned:` sections. Do NOT attempt to read `.claude/pipeline-state.json` (legacy singular path, no longer written). The canonical source is `.claude/.pipeline-states/*.json`, read via the script above.
+2. **Pipeline** — run `bun .claude/scripts/metrics-collect.js` and surface the `## Active:` and any `## Orphaned:` sections. Do NOT attempt to read `.claude/pipeline-state.json` (legacy singular path, no longer written). The canonical source is `.claude/.pipeline-states/*.json`, read via the script above.
 3. **Build** — if `.claude/.last-build.json` exists, report timestamp and pass/fail; otherwise note "no build state persisted".
 4. **Entity Registry** — read `.claude/entity-registry.json` and report `_meta.version`, `_meta.generatedAt`, and total entity count (length of `entities` or equivalent top-level collection).
 

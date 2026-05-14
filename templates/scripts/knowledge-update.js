@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * KNOWLEDGE-UPDATE: Append knowledge entries to the project knowledge base
  *

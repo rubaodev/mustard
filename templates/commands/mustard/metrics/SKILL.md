@@ -17,8 +17,8 @@ Focused on two use cases:
 For the superset view that also includes per-pipeline metrics, orphans, Pass@1 and Last 7 Days, use **`/mustard:stats`** (cross-reference).
 
 ## Action
-1. Run `rtk node .claude/scripts/metrics-report.js $ARGS` (pass through any flags)
-2. **PR/Review section (DORA):** if `--pr` flag passed (or `--view pr-metrics`), instead run `node .claude/scripts/harness-views.js --view pr-metrics --days {N}` and pretty-print the JSON. Default window: 30 days.
+1. Run `rtk bun .claude/scripts/metrics-report.js $ARGS` (pass through any flags)
+2. **PR/Review section (DORA):** if `--pr` flag passed (or `--view pr-metrics`), instead run `bun .claude/scripts/harness-views.js --view pr-metrics --days {N}` and pretty-print the JSON. Default window: 30 days.
 3. Display output verbatim
 
 ## Flags

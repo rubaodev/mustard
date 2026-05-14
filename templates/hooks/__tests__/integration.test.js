@@ -1,13 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Integration tests for Mustard hooks — cross-hook interaction scenarios.
  * Adds to the existing 26 unit tests without modifying hooks.test.js.
- * Run with: node --test templates/hooks/__tests__/
+ * Run with: bun test templates/hooks/__tests__/
  */
 
 'use strict';
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it, beforeAll, afterAll } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -223,11 +223,11 @@ describe('Suite 2.1: Dumb Zone advisory', () => {
 describe('Suite 3: spec-hygiene classification', () => {
   let tmpDir;
 
-  before(() => {
+  beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mustard-hygiene-'));
   });
 
-  after(() => {
+  afterAll(() => {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
   });
 

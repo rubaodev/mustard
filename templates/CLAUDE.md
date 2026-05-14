@@ -57,25 +57,25 @@ Guards always loaded via `{subproject}/CLAUDE.md`.
 
 ## Stack
 
-Node.js (>=18), CommonJS, no external dependencies. 31 lifecycle hooks, 25 scripts, 18 slash commands, 7 foundation skills.
+Bun (>=1.2.0), CommonJS, no external dependencies. 31 lifecycle hooks, 25 scripts, 18 slash commands, 7 foundation skills.
 
 ## Commands
 
 ```bash
 # Run hook tests
-node --test hooks/__tests__/hooks.test.js
+bun test hooks/__tests__/hooks.test.js
 
 # Subproject discovery (outputs JSON)
-node scripts/sync-detect.js
-node scripts/sync-detect.js --no-cache
+bun scripts/sync-detect.js
+bun scripts/sync-detect.js --no-cache
 
 # Entity registry generation
-node scripts/sync-registry.js
-node scripts/sync-registry.js --force
+bun scripts/sync-registry.js
+bun scripts/sync-registry.js --force
 
 # Skill validation (invoked by /scan §4.7; also callable standalone)
-node scripts/skill-validate.js
-node scripts/skill-validate.js --json
+bun scripts/skill-validate.js
+bun scripts/skill-validate.js --json
 ```
 
 ## Guards

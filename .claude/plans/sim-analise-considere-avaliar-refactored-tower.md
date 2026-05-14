@@ -211,7 +211,7 @@ Comportamento:
 ### Teste automatizado
 
 ```bash
-node --test templates/hooks/__tests__/hooks.test.js
+bun test templates/hooks/__tests__/hooks.test.js
 npm run build
 ```
 

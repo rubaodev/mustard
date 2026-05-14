@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SESSION-KNOWLEDGE: Extracts patterns from session before cleanup.

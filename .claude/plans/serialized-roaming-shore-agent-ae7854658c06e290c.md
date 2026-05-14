@@ -145,4 +145,4 @@ When a pipeline session ends (pause, /compact, or context limit), the runner MUS
 
 ## Validation
 
-After edits: `node --test hooks/__tests__/hooks.test.js` (text-only changes, tests should pass unchanged)
+After edits: `bun test hooks/__tests__/hooks.test.js` (text-only changes, tests should pass unchanged)

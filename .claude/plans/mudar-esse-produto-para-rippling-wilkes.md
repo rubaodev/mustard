@@ -79,7 +79,7 @@ Verificar: CHANGELOG já documenta remoção (linhas 9-10, 20, 22, 62, 84) — m
 
 ## Verificação end-to-end
 
-1. `node --test templates/hooks/__tests__/hooks.test.js` — todos os tests passam
+1. `bun test templates/hooks/__tests__/hooks.test.js` — todos os tests passam
 2. `node bin/mustard.js init` em projeto sandbox — gera `.claude/` correto, 19 hooks no settings
 3. Sessão real Claude Code: nenhum hook órfão é invocado, nenhum erro de "hook not found"
 4. `Grep("grepai", path="C:\\Atiz\\Mustard")` — só CHANGELOG matches (histórico)

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * GUARD-VERIFY: PostToolUse hook for Write|Edit

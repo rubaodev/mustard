@@ -1,0 +1,95 @@
+{
+  "entries": [
+    {
+      "id": "lesson-1778609872726",
+      "timestamp": "2026-05-12T18:17:52.725Z",
+      "content": "Bun 1.3.8 instalado nesta maquina; Claude Code v2.1.112+ ships com Bun nativo (confirmado via web). bunSqliteAvailable=true esperado quando rodando sob bun",
+      "source": "2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "context": "Wave 1 web validation"
+    },
+    {
+      "id": "lesson-1778610801303",
+      "timestamp": "2026-05-12T18:33:21.303Z",
+      "content": "mustard update --force pula o backup automatico (linha 64-79 src/commands/update.ts: backup esta DENTRO do if !options.force). Bug de design: --force deveria pular APENAS o prompt, nao o backup. Recover via mv .claude.backup.* .claude se algo quebrar",
+      "source": "sialia-update-validation",
+      "context": "discovered during Phase 0 follow-up validation"
+    },
+    {
+      "id": "lesson-1778610801386",
+      "timestamp": "2026-05-12T18:33:21.386Z",
+      "content": "Sialia update Phase 0 validation PASSED: 208 files updated, 100/100 hook tests pass, runtime-shim artefatos chegaram, .claude/mustard.json preservou {specLang:pt}. Confirmacao final do follow-up deferred do spec 2026-05-12-mustard-2-0-phase-0-compat-runtime",
+      "source": "sialia-update-validation",
+      "context": "Phase 0 follow-up validated"
+    },
+    {
+      "id": "lesson-1778611414748",
+      "timestamp": "2026-05-12T18:43:34.747Z",
+      "content": "FTS5 external content (content=X, content_rowid=Y) exige rowid INTEGER. Se tabela base usa id TEXT, ou adicionar coluna separada row_id INTEGER PRIMARY KEY, ou popular FTS manualmente sem trigger auto-sync",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "Wave 1 finding — knowledge_fts"
+    },
+    {
+      "id": "lesson-1778611912295",
+      "timestamp": "2026-05-12T18:51:52.295Z",
+      "content": "SQLite UNIQUE INDEX trata NULL como distinct por default. Use COALESCE(col, fallback) na index para tratar NULL como mesmo valor (necessario para dedup events com session_id ou actor_id NULL)",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "Wave 2 migration"
+    },
+    {
+      "id": "lesson-1778611912376",
+      "timestamp": "2026-05-12T18:51:52.375Z",
+      "content": "FTS5 external content (content=X, content_rowid=Y) tem 2 caminhos: trigger AFTER INSERT (requer rowid INTEGER na tabela base) ou populacao manual via DELETE+INSERT com ROW_NUMBER(). Opcao manual quando tabela base usa id TEXT",
+      "source": "2026-05-12-mustard-2-0-phase-1-event-store-sqlite",
+      "context": "Wave 2 knowledge_fts solution"
+    },
+    {
+      "id": "lesson-1778616779175",
+      "timestamp": "2026-05-12T20:12:59.174Z",
+      "content": "OTLP JSON int64 attributes usam decimal string (intValue: \"1250\"), nao integer literal, por causa do proto3 JSON mapping. Easy to miss; backends rejeitam se virar int",
+      "source": "2026-05-12-mustard-2-0-phase-2-opentelemetry-tokens",
+      "context": "Wave 1 OTLP shape"
+    },
+    {
+      "id": "lesson-1778616779315",
+      "timestamp": "2026-05-12T20:12:59.315Z",
+      "content": "@opentelemetry/otlp-transformer e serializer-only — nao tem parser de OTLP JSON arbitrario. Para validar shape de emit manual, usar assertions estruturais ou round-trip via ProtobufSerializer. Documentar no test",
+      "source": "2026-05-12-mustard-2-0-phase-2-opentelemetry-tokens",
+      "context": "Wave 1 otlp-transformer scope"
+    },
+    {
+      "id": "lesson-1778619555189",
+      "timestamp": "2026-05-12T20:59:15.189Z",
+      "content": "MCP SDK v1.29+ usa registerTool (nao tool() — esse e deprecated). inputSchema e Record<string,ZodType> nao z.object({}). top-level await funciona com ES2022+NodeNext em ESM",
+      "source": "2026-05-12-mustard-2-0-phase-3-mcp-memory-server",
+      "context": "Wave 1 MCP SDK API"
+    },
+    {
+      "id": "lesson-1778620331396",
+      "timestamp": "2026-05-12T21:12:11.395Z",
+      "content": "Quando package.json tem type:module, tests CommonJS precisam extensao .cjs explicita. Bun roda .js como CJS nativo mas Node respeita type:module. Use .cjs para tests que precisam require()",
+      "source": "2026-05-12-mustard-2-0-phase-3-mcp-memory-server",
+      "context": "Wave 2 test file naming"
+    },
+    {
+      "id": "lesson-1778620331502",
+      "timestamp": "2026-05-12T21:12:11.502Z",
+      "content": "Migration jsonl-to-sqlite crasha com database disk image is malformed quando knowledge.json tem entries em Windows. Pre-existing bug do FTS5 external-content rowid trigger (concern carregado de Phase 1). Workaround em tests: seed direto na knowledge table sem FTS. Phase 4 hardening DEVE resolver",
+      "source": "phase-3-migration-bug",
+      "context": "discovered during Phase 3 Wave 2 tests"
+    },
+    {
+      "id": "lesson-1778621668908",
+      "timestamp": "2026-05-12T21:34:28.907Z",
+      "content": "FTS5 standalone (sem content=...content_rowid) e o caminho mais simples quando tabela base tem id TEXT. Populate via INSERT INTO fts(rowid, id, name, description) com rowid INTEGER. Self-heal in init() drops old declaration via sqlite_master scan",
+      "source": "phase-4-knowledge-fts-fix",
+      "context": "Wave 1 schema fix"
+    },
+    {
+      "id": "lesson-1778621668993",
+      "timestamp": "2026-05-12T21:34:28.993Z",
+      "content": "@opentelemetry/otlp-transformer ProtobufTraceSerializer requer ReadableSpan[] from sdk-trace-base. Mustard emite OTLP/JSON manual sem SDK — round-trip forçaria bundling do SDK. Decisao: remover devDep e documentar",
+      "source": "phase-4-otlp-transformer-removal",
+      "context": "Wave 1 dep cleanup"
+    }
+  ]
+}

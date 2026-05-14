@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
@@ -29,7 +29,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert');
-const test = require('node:test');
+const { test } = require('bun:test');
 
 // Resolve TokenTracker via the compiled output (matches what hooks load).
 const { TokenTracker } = require('../../dist/telemetry/token-tracker.js');

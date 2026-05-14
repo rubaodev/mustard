@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * checklist-auto-mark: PostToolUse hook (Edit|Write) that silently marks

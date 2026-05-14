@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 3 — Tests for view-driven reads
@@ -9,10 +9,10 @@
  * 3. harness-views CLI: --view pipeline-state --spec returns JSON with phase
  * 4. Fallback: subagent-tracker doesn't crash when events.jsonl is missing
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave3.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave3.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * AUTO-FORMAT: PostToolUse hook for Write|Edit

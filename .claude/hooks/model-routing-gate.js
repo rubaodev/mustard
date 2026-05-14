@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * MODEL-ROUTING-GATE: PreToolUse hook that validates the model selected for
@@ -171,7 +171,7 @@ process.stdin.on('end', () => {
       if (isExplorer) {
         emitMetric('model-routing-gate', {
           tokensAffected: 0,
-          tokensSaved: estimateSavings('opus', expected),
+          tokensSaved: 0,
           note: 'no-model-denied',
           extras: {
             expected,
@@ -180,6 +180,7 @@ process.stdin.on('end', () => {
             scope:         state ? (state.scope || 'unknown') : 'none',
             reason,
             subagent_type: subagentType,
+            category: 'prevention',
           },
         });
 
@@ -197,7 +198,7 @@ process.stdin.on('end', () => {
       if (expected !== 'opus') {
         emitMetric('model-routing-gate', {
           tokensAffected: 0,
-          tokensSaved: estimateSavings('opus', expected),
+          tokensSaved: 0,
           note: 'no-model-advisory',
           extras: {
             expected,
@@ -206,6 +207,7 @@ process.stdin.on('end', () => {
             scope:         state ? (state.scope || 'unknown') : 'none',
             reason,
             subagent_type: subagentType,
+            category: 'routing-advisory',
           },
         });
 
@@ -237,12 +239,12 @@ process.stdin.on('end', () => {
     const isViolation = modelRank > expectedRank;
     const noteLabel   = isViolation ? 'violation' : 'passed';
 
-    // Emit metric on every gate check
+    // Emit metric on every gate check. tokens_saved stays 0 — routing is a
+    // routing decision, not a recurring saving. Strict-mode blocks are tracked
+    // via `category: 'prevention'`; non-blocking checks are 'routing'.
     emitMetric('model-routing-gate', {
       tokensAffected: 0,
-      tokensSaved: isViolation
-        ? estimateSavings(model, expected)
-        : 0,
+      tokensSaved: 0,
       note: noteLabel,
       extras: {
         expected,
@@ -252,6 +254,7 @@ process.stdin.on('end', () => {
         reason,
         mode,
         subagent_type: subagentType,
+        category: isViolation && mode === 'strict' ? 'prevention' : 'routing',
       },
     });
 
@@ -285,15 +288,3 @@ process.stdin.on('end', () => {
   }
 });
 
-/**
- * Rough token-savings estimate when an upgrade violation occurs.
- * Based on approximate cost ratio differences (not exact — advisory only).
- * @param {string} actual    The requested (more expensive) model key
- * @param {string} expected  The recommended (cheaper) model key
- * @returns {number}
- */
-function estimateSavings(actual, expected) {
-  // Very rough: each tier step saves ~1000 tokens worth of API cost equivalent
-  const diff = (MODEL_COST_RANK[actual] || 2) - (MODEL_COST_RANK[expected] || 2);
-  return Math.max(0, diff * 1000);
-}

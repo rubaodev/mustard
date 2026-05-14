@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * PIPELINE-PHASE: PostToolUse hook that emits pipeline.phase events to the

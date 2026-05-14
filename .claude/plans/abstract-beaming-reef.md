@@ -60,7 +60,7 @@ node templates/scripts/metrics-report.js --event rtk-gain     # números reais
 # Quebrar template artificialmente (remover description line) e rodar
 node templates/scripts/skill-generator.js --dry-run
 # Deve listar [invalid] ... missing "description"
-node --test templates/hooks/__tests__/hooks.test.js  # nada regride
+bun test templates/hooks/__tests__/hooks.test.js  # nada regride
 ```
 
 ---
@@ -289,7 +289,7 @@ node templates/scripts/sync-compile.js
 node templates/scripts/metrics-report.js --event compile-size
 
 # Regressão zero
-node --test templates/hooks/__tests__/hooks.test.js
+bun test templates/hooks/__tests__/hooks.test.js
 ```
 
 Se os 5 comandos acima passam, os 6 PRs estão entregues. Nenhum "acreditar por fé" — tudo mensurável.

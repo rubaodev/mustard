@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * BASH-NATIVE-REDIRECT: PreToolUse hook that intercepts Bash commands with

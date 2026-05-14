@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SUBAGENT TRACKER: Tracks active subagents for statusline display
@@ -18,6 +18,11 @@
 const fs = require('fs');
 const path = require('path');
 const { shouldRun, isSelfDelegation } = require('./_lib/hook-env.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
+
+// ── Span emitter (Phase 2 — OTLP JSON tokens) ─────────────────────────────────
+let _spanEmitter = null;
+try { _spanEmitter = require('./_lib/span-emitter.js'); } catch (_) {} // fail-open: optional
 
 // ── Harness event bus (Wave 2 dual emission) ─────────────────────────────────
 let harnessEmit = null;
@@ -39,6 +44,48 @@ function emitEvent(eventName, payload, ctx) {
 const DEDUP_FILE = 'explorer-dedup.json';
 const DEDUP_DENY_MS  = 60_000;  // deny window: same type within 60s → block
 const DEDUP_CLEAN_MS = 120_000; // prune entries older than 120s when reading
+
+/**
+ * Read newest active pipeline-state once and return {spec, phase, wave}.
+ * Fail-open: returns nulls on any error. Caller can pass a freshness window
+ * (ms) — if the newest state is older than that, it's treated as stale and
+ * spec/phase are null (used by PostToolUse to avoid tagging events with a
+ * dead pipeline).
+ */
+function readPipelineState(projectDir, freshnessMs) {
+  const out = { spec: null, phase: null, wave: null };
+  try {
+    const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
+    if (!fs.existsSync(statesDir)) return out;
+    const files = fs.readdirSync(statesDir)
+      .filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    if (files.length === 0) return out;
+
+    let newest = null;
+    let newestMtime = 0;
+    for (const f of files) {
+      try {
+        const fp = path.join(statesDir, f);
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs > newestMtime) {
+          newestMtime = stat.mtimeMs;
+          newest = fp;
+        }
+      } catch {}
+    }
+    if (!newest) return out;
+    if (typeof freshnessMs === 'number' && (Date.now() - newestMtime) >= freshnessMs) {
+      return out;
+    }
+    const st = JSON.parse(fs.readFileSync(newest, 'utf8'));
+    out.spec = st.specName || st.spec || st.name || null;
+    out.phase = st.phaseName || st.phase || null;
+    if (typeof st.wave === 'number') out.wave = st.wave;
+    return out;
+  } catch {
+    return out;
+  }
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -75,9 +122,10 @@ process.stdin.on('end', () => {
  * The SubagentStart event doesn't carry description, so we capture it here
  * and match it later via FIFO queue with type-matching preference.
  *
- * Also parses recommended_skills from the Task prompt, persists them in
- * .subagent-registry.json, and increments skillHits.loaded in the active
- * pipeline state.
+ * Also parses recommended_skills from the Task prompt and increments
+ * skillHits.loaded in the active pipeline state. Mustard 2.0 Phase 1:
+ * `.subagent-registry.json` writes were removed — agent.start events in the
+ * EventStore (or events.jsonl replay log) are the truth source.
  */
 function handlePreToolUse(data, stateDir) {
   if (isSelfDelegation(data)) { return; }
@@ -119,28 +167,10 @@ function handlePreToolUse(data, stateDir) {
     const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
     const wave = harnessGetWave ? harnessGetWave(data) : 0;
 
-    // Attempt to read spec from active pipeline state
-    let currentSpec = null;
-    try {
-      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
-      if (fs.existsSync(statesDir)) {
-        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
-        if (stateFiles.length > 0) {
-          let newestMtime = 0; let newestState = null;
-          for (const f of stateFiles) {
-            try {
-              const fp = path.join(statesDir, f);
-              const stat = fs.statSync(fp);
-              if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
-            } catch {}
-          }
-          if (newestState) {
-            const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
-            currentSpec = st.spec || st.name || null;
-          }
-        }
-      }
-    } catch {}
+    // Single read of newest pipeline-state for spec + phase (formerly read twice).
+    const ps = readPipelineState(projectDir);
+    const currentSpec = ps.spec;
+    const currentPhase = ps.phase;
 
     // Extract model from tool input prompt (best-effort — may be absent)
     const model = (toolInput.model || null);
@@ -156,6 +186,49 @@ function handlePreToolUse(data, stateDir) {
       spec: currentSpec,
       actor: { kind: 'agent', id: subagentType, type: subagentType },
     });
+
+    // ── Phase 2 span emit: persist sidecar so PostToolUse can complete it ─
+    try {
+      const toolUseId = data.tool_use_id || (data.tool_input && data.tool_input.tool_use_id);
+      if (toolUseId && _spanEmitter) {
+        const claudeDir = path.join(projectDir, '.claude');
+        const tracker = _spanEmitter.getTracker(claudeDir);
+        if (tracker) {
+          const promptBytes = Buffer.byteLength(toolInput.prompt || '', 'utf8');
+          tracker.startSpan({
+            name: 'task.dispatch',
+            toolUseId: String(toolUseId),
+            model: model || 'unknown',
+            agentType: subagentType || 'general-purpose',
+            spec: currentSpec || undefined,
+            phase: currentPhase || undefined,
+            wave: typeof wave === 'number' ? wave : undefined,
+            promptBytes,
+          });
+        }
+      }
+    } catch (_) { /* fail-open: span emit is advisory */ }
+
+    // Descriptive metric: bytes of work isolated into a sub-context via Task.
+    // This is NOT savings — it reports how much prompt was delegated rather
+    // than running in the parent context. Aggregated as "isolation" so the
+    // dashboard can show throughput without inflating the token-saved total.
+    try {
+      const promptBytes = Buffer.byteLength(toolInput.prompt || '', 'utf8');
+      if (promptBytes > 0) {
+        emitMetric('delegation', {
+          tokensAffected: Math.round(promptBytes / 4),
+          tokensSaved: 0,
+          note: 'task-dispatched',
+          extras: {
+            subagent_type: subagentType,
+            model: model || 'inherited',
+            category: 'isolation',
+          },
+          cwd: projectDir,
+        });
+      }
+    } catch (_) { /* fail-silent */ }
   } catch (_) {} // fail-open
 
   // ── skill_hit_rate: parse recommended_skills from Task prompt ─────────────
@@ -169,30 +242,10 @@ function handlePreToolUse(data, stateDir) {
 
     const projectDir = path.resolve(stateDir, '..', '..');
 
-    // Persist entry to .subagent-registry.json for later Read attribution
-    const registryPath = path.join(projectDir, '.claude', '.subagent-registry.json');
-    let registry = {};
-    try {
-      if (fs.existsSync(registryPath)) {
-        registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-      }
-    } catch {}
-    // Use timestamp + agentType as pseudo-taskId (best effort — no real taskId available at PreToolUse)
-    const taskId = `${Date.now()}-${subagentType}`;
-    registry[taskId] = {
-      agentType: subagentType,
-      recommendedSkills,
-      startedAt: new Date().toISOString(),
-      // endedAt is written when SubagentStop fires (not implemented here — left undefined)
-    };
-    // Prune entries older than 2 hours to prevent unbounded growth
-    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-    for (const [key, entry] of Object.entries(registry)) {
-      if (new Date(entry.startedAt || 0).getTime() < cutoff) {
-        delete registry[key];
-      }
-    }
-    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+    // Mustard 2.0 Phase 1: `.subagent-registry.json` write removed. The
+    // (agentType, recommendedSkills, startedAt) tuple is already carried by the
+    // `agent.start` event emitted above in handlePreToolUse — consumers read
+    // it via EventStore.query({event:'agent.start'}) or events.jsonl replay.
 
     // Increment skillHits.loaded in the active pipeline state
     const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
@@ -247,60 +300,123 @@ function parseRecommendedSkills(prompt) {
 }
 
 /**
- * PostToolUse(Task): Detect API overload / dispatch failures in tool_response
- * and flag the active pipeline state with `lastDispatchFailure` so /resume can
- * auto-recover.
- *
- * We write to pipeline-state ONLY when a failure is detected — happy-path
- * dispatches never touch the state file from here.
+ * PostToolUse(Task): This is where the Task tool actually returns. We do three things:
+ *   1. Emit `agent.stop` with the real tool_response (SubagentStop carries no body)
+ *   2. Detect dispatch failures (API overload, HTTP 5xx) and emit `dispatch.failure`
+ *      so retries are measured from real signals instead of keyword guesses
+ *   3. Flag pipeline-state with `lastDispatchFailure` so /resume can auto-recover
  */
 function handlePostToolUse(data, stateDir) {
   try {
     if (isSelfDelegation(data)) { return; }
 
+    const toolInput = data.tool_input || {};
     const toolResponse = data.tool_response || {};
-    const responseText = JSON.stringify(toolResponse).toLowerCase();
-    // Detect dispatch failures conservatively: require is_error=true (Claude
-    // Code sets this on Task tool failures) AND at least one failure keyword.
-    // Covers:
-    //   - API overload / rate limiting (429, 529, throttle, too many requests)
-    //   - Infrastructure errors (tool result missing, HTTP 5xx, service unavailable)
-    // The regex avoids false positives on agents that merely *document* error
-    // handling in their returned content (see "unrelated error" test below).
+    const subagentType = toolInput.subagent_type || 'unknown';
+    const projectDir = path.resolve(stateDir, '..', '..');
+
+    // Resolve spec/phase from newest pipeline-state for event tagging (single read,
+    // 10-min freshness window — stale states are ignored to avoid mis-tagging).
+    const ps = readPipelineState(projectDir, 10 * 60 * 1000);
+    const currentSpec = ps.spec;
+    const currentPhase = ps.phase;
+
+    // (1) Emit agent.stop with real summary. tool_response shape varies — most
+    // commonly an array of content blocks; serialize defensively and cap size.
+    try {
+      const responseStr = typeof toolResponse === 'string'
+        ? toolResponse
+        : JSON.stringify(toolResponse);
+      const summary = (responseStr || '').slice(0, 800);
+      const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+      const wave = harnessGetWave ? harnessGetWave(data) : 0;
+      emitEvent('agent.stop', {
+        summary,
+        confidence: null,
+        durationMs: null,
+        toolCount: null,
+        isError: toolResponse.is_error === true || undefined,
+      }, {
+        cwd: projectDir,
+        sessionId,
+        wave,
+        spec: currentSpec,
+        actor: { kind: 'agent', id: subagentType, type: subagentType },
+      });
+    } catch (_) {}
+
+    // ── Phase 2 span emit: close span sidecar started by PreToolUse ──────
+    try {
+      const toolUseId = data.tool_use_id || (data.tool_input && data.tool_input.tool_use_id);
+      if (toolUseId && _spanEmitter) {
+        const claudeDir = path.join(projectDir, '.claude');
+        const tracker = _spanEmitter.getTracker(claudeDir);
+        if (tracker) {
+          const responseText = typeof toolResponse === 'string'
+            ? toolResponse
+            : JSON.stringify(toolResponse || {});
+          const responseBytes = Buffer.byteLength(responseText, 'utf8');
+          const endInput = {
+            toolUseId: String(toolUseId),
+            responseBytes,
+            isError: toolResponse && toolResponse.is_error === true,
+          };
+          const errorType = toolResponse && toolResponse.error_type;
+          if (typeof errorType === 'string' && errorType) endInput.errorType = errorType;
+          tracker.endSpan(endInput);
+        }
+      }
+    } catch (_) { /* fail-open: span emit is advisory */ }
+
+    // (2)(3) Dispatch failure detection — require is_error=true AND a failure
+    // keyword so we don't false-positive on agents merely documenting errors.
+    const responseTextLower = (typeof toolResponse === 'string'
+      ? toolResponse
+      : JSON.stringify(toolResponse)).toLowerCase();
     const isDispatchFailure =
       toolResponse.is_error === true &&
-      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests|tool result missing|\b50[0-4]\b|service unavailable/.test(responseText);
+      /overload|rate.?limit|\b429\b|\b529\b|throttl|too many requests|tool result missing|\b50[0-4]\b|service unavailable/.test(responseTextLower);
 
     if (!isDispatchFailure) return;
 
-    const projectDir = path.resolve(stateDir, '..', '..');
+    // Emit dispatch.failure event — this is the real retry signal that replaces
+    // the old keyword-based `retry:true` flag on tool.use events.
+    try {
+      const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
+      const wave = harnessGetWave ? harnessGetWave(data) : 0;
+      emitEvent('dispatch.failure', {
+        agentType: subagentType,
+        description: (toolInput.description || '').slice(0, 200),
+        phase: currentPhase,
+      }, {
+        cwd: projectDir,
+        sessionId,
+        wave,
+        spec: currentSpec,
+        actor: { kind: 'hook', id: 'subagent-tracker' },
+      });
+    } catch (_) {}
+
+    // Flag pipeline-state for /resume auto-recovery
     const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
     if (!fs.existsSync(statesDir)) return;
-
-    const files = fs.readdirSync(statesDir)
-      .filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
+    const files = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
     if (files.length === 0) return;
-
-    let newest = null;
-    let newestMtime = 0;
+    let newest = null, newestMtime = 0;
     for (const f of files) {
       try {
         const fp = path.join(statesDir, f);
         const stat = fs.statSync(fp);
-        if (stat.mtimeMs > newestMtime) {
-          newestMtime = stat.mtimeMs;
-          newest = fp;
-        }
+        if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newest = fp; }
       } catch {}
     }
     if (!newest) return;
 
-    const toolInput = data.tool_input || {};
     const state = JSON.parse(fs.readFileSync(newest, 'utf8'));
     state.lastDispatchFailure = {
       at: new Date().toISOString(),
       reason: 'dispatch_failure',
-      agentType: toolInput.subagent_type || 'unknown',
+      agentType: subagentType,
       description: toolInput.description || '',
       prompt: (toolInput.prompt || '').slice(0, 2000),
     };
@@ -382,7 +498,7 @@ function handleStart(data, stateDir) {
           if (visText.length > budget) visText = visText.slice(0, budget - 3) + '...';
 
           // Wave 6: append escape-hatch hint only when budget allows it
-          const hintLine = '\n[Memory] Query more: node .claude/scripts/harness-views.js --view <name> [--query text]';
+          const hintLine = '\n[Memory] Query more: bun .claude/scripts/harness-views.js --view <name> [--query text]';
           if (visText.length + hintLine.length <= budget) {
             visText += hintLine;
           }
@@ -402,57 +518,11 @@ function handleStart(data, stateDir) {
   console.log(JSON.stringify(response));
 }
 
-function handleStop(data, stateDir) {
-  const agentId = data.agent_id || '';
-  const agentType = data.agent_type || 'unknown';
-  const projectDir = path.resolve(stateDir, '..', '..');
-
-  // ── Emit agent.stop event to harness log ─────────────────────────────────
-  try {
-    const toolResponse = data.tool_response || {};
-    const responseText = typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
-    const fullSummary = (responseText || '').slice(0, 800);
-
-    const sessionId = harnessGetSessionId ? harnessGetSessionId(data) : null;
-    const wave = harnessGetWave ? harnessGetWave(data) : 0;
-
-    // Attempt to read spec from active pipeline state
-    let currentSpec = null;
-    try {
-      const statesDir = path.join(projectDir, '.claude', '.pipeline-states');
-      if (fs.existsSync(statesDir)) {
-        const stateFiles = fs.readdirSync(statesDir).filter(f => f.endsWith('.json') && !f.endsWith('.metrics.json'));
-        if (stateFiles.length > 0) {
-          let newestMtime = 0; let newestState = null;
-          for (const f of stateFiles) {
-            try {
-              const fp = path.join(statesDir, f);
-              const stat = fs.statSync(fp);
-              if (stat.mtimeMs > newestMtime) { newestMtime = stat.mtimeMs; newestState = fp; }
-            } catch {}
-          }
-          if (newestState) {
-            const st = JSON.parse(fs.readFileSync(newestState, 'utf8'));
-            currentSpec = st.spec || st.name || null;
-          }
-        }
-      }
-    } catch {}
-
-    emitEvent('agent.stop', {
-      summary: fullSummary,
-      confidence: null,
-      durationMs: null,
-      toolCount: null,
-    }, {
-      cwd: projectDir,
-      sessionId,
-      wave,
-      spec: currentSpec,
-      actor: { kind: 'agent', id: agentId || agentType, type: agentType },
-    });
-  } catch (_) {} // fail-open
-}
+// SubagentStop carries no tool_response body — `agent.stop` is now emitted from
+// `handlePostToolUse` (PostToolUse Task) where the real response lives. This
+// handler is kept as a no-op to preserve the hook wiring; future enhancements
+// (e.g. session-level cleanup) can hook in here.
+function handleStop(_data, _stateDir) {}
 
 function handleSessionStart(data, stateDir) {
   // Clean up stale counter files left by tool-use-counter.js from previous sessions.
@@ -483,6 +553,25 @@ function handleSessionStart(data, stateDir) {
       if (remaining.length === 0) fs.rmdirSync(stateDir);
     } catch {}
   } catch {}
+
+  // ── Phase 2: sweep orphan span sidecars (> 10 min mtime). Sidecars live at
+  // .claude/.harness/.active-spans/{toolUseId}.json and are normally deleted
+  // by TokenTracker.endSpan. Orphans arise from killed Bun processes, crashes,
+  // or PostToolUse hooks that never fired.
+  try {
+    const projectDir = path.resolve(stateDir, '..', '..');
+    const sidecarDir = path.join(projectDir, '.claude', '.harness', '.active-spans');
+    if (fs.existsSync(sidecarDir)) {
+      const now = Date.now();
+      for (const f of fs.readdirSync(sidecarDir)) {
+        const fp = path.join(sidecarDir, f);
+        try {
+          const stat = fs.statSync(fp);
+          if (now - stat.mtimeMs > STALE_MS) fs.unlinkSync(fp);
+        } catch {} // fail-open
+      }
+    }
+  } catch {} // fail-open
 }
 
 // ── Explorer dedup helpers ──

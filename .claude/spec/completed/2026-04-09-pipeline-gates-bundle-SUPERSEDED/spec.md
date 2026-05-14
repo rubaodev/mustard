@@ -74,7 +74,7 @@ Ambos derivam da mesma causa raiz: **a pipeline confia que o ANALYZE foi complet
   ```
 - [ ] Mirror feature.md + resume.md para `.claude/commands/mustard/`
 - [ ] Rodar `rtk npm run build` → PASS
-- [ ] Rodar `rtk node --test hooks/__tests__/hooks.test.js` → 26/26
+- [ ] Rodar `rtk bun test hooks/__tests__/hooks.test.js` → 26/26
 - [ ] Smoke test do validator: criar spec mínimo sintético e rodar o script; confirmar `{ok:true, issues:[]}` para spec limpo e issues para spec com problemas
 - [ ] Smoke test do pre-EXECUTE gate: descrever manualmente o dispatch mental (sem rodar Haiku real) — garantir que o SKILL.md deixa o passo claro e copy-pasteável
 

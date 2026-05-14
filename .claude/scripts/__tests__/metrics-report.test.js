@@ -7,7 +7,7 @@
 // - Point the script at that dir via MUSTARD_METRICS_DIR env var.
 // - Assert on stdout/stderr/exit via spawnSync.
 
-const { test } = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');

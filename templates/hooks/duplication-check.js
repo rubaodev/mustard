@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * DUPLICATION-CHECK: PostToolUse hook that warns when a newly written symbol
  * closely resembles an existing symbol in the entity-registry.

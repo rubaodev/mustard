@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * EPIC-FOLD: Wave 8 — Consolidate and compact events when an epic completes.

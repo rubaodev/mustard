@@ -130,8 +130,8 @@ O dispatch template (`templates/commands/mustard/templates/agent-prompt/SKILL.md
    - Qualquer pipeline novo: spec.md tem `## Contexto` (ou `## Context`) como primeira seção do corpo após o header, com 2-4 linhas em prose.
 
 6. **Tests existentes não quebram:**
-   - `node --test templates/hooks/__tests__/hooks.test.js` (103/103 pass)
-   - `node --test templates/hooks/__tests__/size-gates.test.js` (22/22 pass)
+   - `bun test templates/hooks/__tests__/hooks.test.js` (103/103 pass)
+   - `bun test templates/hooks/__tests__/size-gates.test.js` (22/22 pass)
    - `npm run build` na raiz
 
 ---

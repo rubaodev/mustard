@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 9 — Strict Gates Tests
@@ -15,10 +15,10 @@
  * 9.  review-gate warn (default) + secrets → allow with warning
  * 10. close-gate.check event emitted in harness log with correct payload
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave9.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave9.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

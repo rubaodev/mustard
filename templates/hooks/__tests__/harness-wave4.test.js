@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * Harness Wave 4 — Subtraction Tests
@@ -10,10 +10,10 @@
  * 4. metrics-tracker does NOT create .pipeline-states/*.metrics.json
  * 5. buildPipelineState derived from log contains metrics (tool counts, agent count)
  *
- * Run with: node --test templates/hooks/__tests__/harness-wave4.test.js
+ * Run with: bun test templates/hooks/__tests__/harness-wave4.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

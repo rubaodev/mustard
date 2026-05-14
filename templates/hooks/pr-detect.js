@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * PR-DETECT: PostToolUse(Bash) hook that emits DORA events when GitHub PRs

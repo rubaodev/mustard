@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * USER-PROMPT-HINT: UserPromptSubmit hook that detects bugfix/feature/analysis

@@ -152,7 +152,7 @@ Total: 3 arquivos, ~25 linhas alteradas/adicionadas.
 
 ```bash
 # 1. Rodar suite de testes dos hooks (Node built-in test runner)
-rtk node --test templates/hooks/__tests__/hooks.test.js
+rtk bun test templates/hooks/__tests__/hooks.test.js
 
 # Expected output:
 #   ✔ should flag lastDispatchFailure on real overload (is_error=true + 529)

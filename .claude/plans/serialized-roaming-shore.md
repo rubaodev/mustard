@@ -214,7 +214,7 @@ Sem código novo, sem testes automatizados.
 
 ## Verificação
 
-1. **Unit tests:** `node --test templates/hooks/__tests__/hooks.test.js`
+1. **Unit tests:** `bun test templates/hooks/__tests__/hooks.test.js`
 2. **Build:** `npm run build && npm test`
 3. **Integration manual:** `node bin/mustard.js init` em projeto temporário, verificar que todos os novos arquivos são copiados
 4. **Hook smoke test:** Para cada novo hook, testar com stdin JSON mockado e verificar stdout/exit code

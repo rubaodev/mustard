@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * skill-size-gate: PreToolUse hook — warns/blocks oversized SKILL.md files.
@@ -17,6 +17,7 @@
  */
 
 const { run } = require('./_lib/size-gate.js');
+const { emitMetric } = require('./_lib/metrics-emit.js');
 
 function isSkillPath(filePath) {
   if (!filePath) return false;
@@ -39,4 +40,12 @@ run({
   blockReason: (lines) =>
     `[skill-size-gate] SKILL.md exceeds 500 lines (${lines} lines) — split verbose sections into references/examples.md`,
   skipWhen: skipGenerated,
+  onDecision: ({ lines, decision, filePath }) => {
+    emitMetric('skill-size-gate', {
+      tokensAffected: 0,
+      tokensSaved: 0,
+      note: decision === 'blocked' ? 'blocked' : 'over-size',
+      extras: { lines, limit: 500, file: filePath, category: decision === 'blocked' ? 'prevention' : 'workflow' },
+    });
+  },
 });

@@ -48,10 +48,10 @@ npm run build
 npm test
 
 # Initialize a project
-node bin/mustard.js init
+bun bin/mustard.js init
 
 # Update existing project
-node bin/mustard.js update
+bun bin/mustard.js update
 ```
 
 ## Structure

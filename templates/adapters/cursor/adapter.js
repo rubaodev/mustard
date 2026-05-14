@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * CURSOR-ADAPTER: Translates Cursor IDE hook format to Claude Code hook protocol.

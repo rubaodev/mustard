@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
@@ -8,10 +8,10 @@
  * import it standalone — the closest "handler-level" test is to spin up
  * the server once per test with seeded fixtures.
  *
- * Run: node --test tests/unit/mcp/tool-handlers.test.cjs
+ * Run: bun test tests/unit/mcp/tool-handlers.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 

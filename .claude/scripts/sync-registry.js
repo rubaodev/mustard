@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
@@ -8,8 +8,8 @@
  * This script is intentionally thin — all scanning logic lives in registry/.
  *
  * Usage:
- *   node .claude/scripts/sync-registry.js          # Skip if registry is populated
- *   node .claude/scripts/sync-registry.js --force  # Regenerate unconditionally
+ *   bun .claude/scripts/sync-registry.js          # Skip if registry is populated
+ *   bun .claude/scripts/sync-registry.js --force  # Regenerate unconditionally
  *
  * Architecture (SOLID):
  *   - scanner-loader.js  — Dependency Inversion, Open/Closed (add scanner = new file)

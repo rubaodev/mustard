@@ -63,4 +63,4 @@ Implemented 2026-04-09. Framework created with zero hook instrumentation.
 - Mirrored to `.claude/scripts/`
 - `.gitignore` updated: added `.claude/.metrics/`
 - Smoke test passed: append + read back confirmed
-- `npm run build`: PASS | `node --test`: 26/26
+- `npm run build`: PASS | `bun test`: 26/26

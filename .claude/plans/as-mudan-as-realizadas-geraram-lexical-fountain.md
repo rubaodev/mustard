@@ -350,7 +350,7 @@ Cada ação é independente. Pode parar em qualquer ponto. Tier 1 sozinho já fe
 
 ```bash
 # Tier 1
-node --test templates/scripts/registry/__tests__/
+bun test templates/scripts/registry/__tests__/
 
 # Cobertura nova: decoradores + function prefixes
 # (rodar em projeto teste com Angular ou React)

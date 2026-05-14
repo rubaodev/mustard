@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // _metrics-write — append-only metrics helper for enforcement hooks.
 // Usage: require('./_metrics-write').append({event: 'budget-block', role: 'explorer', ...})
 // Hooks opt-in by requiring this module — zero instrumentation by default.

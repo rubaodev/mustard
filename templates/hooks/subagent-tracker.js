@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 /**
  * SUBAGENT TRACKER: Tracks active subagents for statusline display
@@ -498,7 +498,7 @@ function handleStart(data, stateDir) {
           if (visText.length > budget) visText = visText.slice(0, budget - 3) + '...';
 
           // Wave 6: append escape-hatch hint only when budget allows it
-          const hintLine = '\n[Memory] Query more: node .claude/scripts/harness-views.js --view <name> [--query text]';
+          const hintLine = '\n[Memory] Query more: bun .claude/scripts/harness-views.js --view <name> [--query text]';
           if (visText.length + hintLine.length <= budget) {
             visText += hintLine;
           }

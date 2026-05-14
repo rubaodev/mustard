@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * STATUSLINE v4: Concise 2-line status bar for Claude Code
  *

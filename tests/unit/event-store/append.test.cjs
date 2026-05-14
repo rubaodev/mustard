@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 'use strict';
 
 /**
@@ -10,10 +10,10 @@
  *  - payload serializes/deserializes as JSON
  *  - requireDb throws when init() not called
  *
- * Run: node --test tests/unit/event-store/append.test.cjs
+ * Run: bun test tests/unit/event-store/append.test.cjs
  */
 
-const test = require('node:test');
+const { test } = require('bun:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
