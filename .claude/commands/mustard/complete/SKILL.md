@@ -21,7 +21,7 @@ Finalizes the current pipeline, either completing or canceling.
 Before finalizing, run build/test verification:
 
 ```bash
-node .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
+bun .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
 ```
 
 - **Exit 0** (all passed): proceed to completion
@@ -55,17 +55,26 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - `### Checkpoint: {ISO timestamp now}`
    - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mark-checklist-item.js`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
 4. **Entity Registry — update if needed:**
-   - `node .claude/scripts/sync-registry.js`
-   - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk node .claude/scripts/sync-registry.js` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
-5. **Move spec** from `.claude/spec/active/` to `.claude/spec/completed/`
-6. **Pipeline State — cleanup:**
-   - Extract `spec-name` from the spec directory (e.g. `2026-02-26-linked-services-card`)
-   - **Delete** `.claude/.pipeline-states/{spec-name}.json` (removes from statusline)
+   - `bun .claude/scripts/sync-registry.js`
+   - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk bun .claude/scripts/sync-registry.js` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
+5. **Mark spec as `closed-followup`** (stage 1 of two-stage close):
+   ```bash
+   bun .claude/scripts/complete-spec.js <spec-name>
+   ```
+   - The spec stays under `spec/active/` for a follow-up window so post-feature fixes still link to it.
+   - The script snapshots `affectedFiles` from harness events + `git diff --name-only <parent>...HEAD`.
+   - Pipeline state is updated to `{ status: 'closed-followup', closedAt, affectedFiles }`.
+   - `metrics-tracker.js` only attributes new tool calls to this spec when `tool_input.file_path ∈ affectedFiles`.
+   - Spec is auto-archived (moved to `completed/` + state removed) when:
+     - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
+     - A new `/mustard:feature|bugfix|task` invocation runs `bun .claude/scripts/complete-spec.js <spec-name> --archive` on any pending followups first.
+6. **Pipeline State — note:**
+   - The `closed-followup` state intentionally stays around so follow-up edits get linked. Do NOT delete `.claude/.pipeline-states/{spec-name}.json` here — the `--archive` stage handles that.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
      ```bash
-     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | node .claude/scripts/knowledge-update.js
+     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | bun .claude/scripts/knowledge-update.js
      ```
    - Focus on: naming conventions used, architectural decisions, integration patterns
    - Skip trivial or already-known patterns
@@ -74,7 +83,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - Review what went well or poorly during this pipeline
    - For each lesson worth remembering across sessions:
      ```bash
-     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | node .claude/scripts/memory-persist.js
+     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | bun .claude/scripts/memory-persist.js
      ```
    - Focus on: integration gotchas, naming issues discovered, performance pitfalls
    - Skip trivial or already-captured lessons (max 3 entries)
@@ -96,7 +105,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
        "retries": "{from metrics}",
        "pass1": "{true if metrics.retries === 0, otherwise false}",
        "toolBreakdown": "{from metrics}",
-       "agentAttempts": "{from metrics, if present}",
+       "dispatchFailuresByPhase": "{from metrics, if present}",
        "gate_saves": "{from metrics, if present}",
        "wave_reentry": "{from metrics, if present}",
        "skillHits": "{from metrics, if present}",
@@ -104,7 +113,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
      }
      ```
    - Set `"pass1": true` if `metrics.retries === 0`, otherwise `"pass1": false`
-   - Omit `agentAttempts`, `gate_saves`, `wave_reentry`, `skillHits` if not present in state metrics
+   - Omit `dispatchFailuresByPhase`, `gate_saves`, `wave_reentry`, `skillHits` if not present in state metrics
    - If no metrics in state file, skip silently
 7. **Output — visual feedback:**
 
@@ -137,11 +146,11 @@ On completion, the output must include:
 
 After marking a spec CLOSE, check if the parent epic is now complete:
 ```bash
-node .claude/scripts/epic-fold.js --detect
+bun .claude/scripts/epic-fold.js --detect
 ```
 If output lists epics ready to fold:
 ```bash
-node .claude/scripts/epic-fold.js --epic <name>
+bun .claude/scripts/epic-fold.js --epic <name>
 ```
 This consolidates learning into knowledge.json and marks granular events compactable.
 
