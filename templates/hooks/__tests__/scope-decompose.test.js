@@ -1,10 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Tests for scripts/scope-decompose.js.
- * Run with: node --test templates/hooks/__tests__/scope-decompose.test.js
+ * Run with: bun test templates/hooks/__tests__/scope-decompose.test.js
  */
 
-const { describe, it } = require('node:test');
+const { describe, it } = require('bun:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -95,5 +95,40 @@ describe('scope-decompose decision logic', () => {
     assert.equal(r.code, 0);
     assert.equal(r.parsed.decompose, false);
     assert.equal(r.parsed.reason, 'error-fallback');
+  });
+
+  it('roadmap signal via .claude/plans/*.md reference → decompose:true reason:roadmap-signal', async () => {
+    const r = await runScript({
+      fileCount: 3,
+      layerCount: 1,
+      newEntityCount: 0,
+      knowledgeMatches: [],
+      text: 'Veja .claude/plans/contract-plan.md para o roadmap',
+    });
+    assert.equal(r.code, 0);
+    assert.equal(r.parsed.decompose, true);
+    assert.equal(r.parsed.reason, 'roadmap-signal');
+    assert.ok(Array.isArray(r.parsed.roadmapMatches));
+    assert.ok(r.parsed.roadmapMatches.length >= 1);
+  });
+
+  it('roadmap signal via multiple Wave N mentions → hit', async () => {
+    const r = await runScript({
+      fileCount: 2,
+      layerCount: 1,
+      newEntityCount: 0,
+      knowledgeMatches: [],
+      text: 'Wave 1 entrega estrutura. Wave 2 entrega UI. Wave 3 entrega billing.',
+    });
+    assert.equal(r.code, 0);
+    assert.equal(r.parsed.decompose, true);
+    assert.equal(r.parsed.reason, 'roadmap-signal');
+  });
+
+  it('no roadmap text falls back to quantitative logic', async () => {
+    const r = await runScript({ fileCount: 3, layerCount: 1, newEntityCount: 0, knowledgeMatches: [] });
+    assert.equal(r.code, 0);
+    assert.equal(r.parsed.decompose, false);
+    assert.equal(r.parsed.reason, 'single-layer');
   });
 });

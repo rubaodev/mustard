@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * scope-decompose.js
@@ -38,6 +38,24 @@ function readStdin() {
   });
 }
 
+function detectRoadmapSignal(text) {
+  if (!text || typeof text !== "string") return { hit: false, matches: [] };
+  const patterns = [
+    { name: "plans-ref", re: /\.claude\/plans\/[^\s"'`)\]]+\.md/g },
+    { name: "wave-numbered", re: /\b(?:Wave|W|Etapa|Fase|Phase)\s*\d+\b/gi },
+    { name: "roadmap-keyword", re: /\b(?:roadmap|multi[-\s]?wave)\b/gi },
+  ];
+  const matches = [];
+  for (const { name, re } of patterns) {
+    const found = text.match(re) || [];
+    for (const m of found) matches.push(`${name}:${m}`);
+  }
+  const hasPlansRef = matches.some((m) => m.startsWith("plans-ref:"));
+  const otherHits = matches.filter((m) => !m.startsWith("plans-ref:")).length;
+  const hit = hasPlansRef || otherHits >= 2;
+  return { hit, matches };
+}
+
 function decide(signals) {
   const {
     fileCount = 0,
@@ -45,7 +63,18 @@ function decide(signals) {
     newEntityCount = 0,
     estimatedTouchPoints = 0,
     knowledgeMatches = [],
+    text = "",
   } = signals;
+
+  const roadmap = detectRoadmapSignal(text);
+  if (roadmap.hit) {
+    return {
+      decompose: true,
+      reason: "roadmap-signal",
+      roadmapMatches: roadmap.matches,
+      signals: { fileCount, layerCount, newEntityCount, estimatedTouchPoints, historicalMatches: 0 },
+    };
+  }
 
   const hasHistoricalMatch = Array.isArray(knowledgeMatches) && knowledgeMatches.length > 0;
 

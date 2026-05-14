@@ -62,16 +62,18 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 
 → See `../../../refs/resume/handoff-summary.md` for exact format and integrity validation rules.
 
+   6a. **Wave Tree:** Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` and print inline. Fail-open.
+
 6. Ask: **"Continue from next action, or review spec first?"**
 
 ### Step 2: Bootstrap (after confirmation)
 
-6. **AUTO-SYNC:** `node .claude/scripts/sync-registry.js`
+6. **AUTO-SYNC:** `bun .claude/scripts/sync-registry.js`
    - **Skip if `resumeMode === "continued"`** (Step 0.5): registry is reused from prior session.
    - Always run if `resumeMode === "reanalyzed"` or `"escalated-to-reanalyze"`.
 
 ### Diff Context (automatic)
-Run `node .claude/scripts/diff-context.js --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
+Run `bun .claude/scripts/diff-context.js --subproject {subproject_path}` per subproject to capture the current git state scoped to each subproject. Include the subproject-specific output in the agent prompt as `{diff_context}` so agents see only changes relevant to their scope.
 
 **Skip if `resumeMode === "continued"`** unless a wave just completed (wave transitions always refresh diff). The prior diff snapshot is reused from `.claude/.pipeline-states/{specName}.diff-{subproject}.md`.
 
@@ -84,7 +86,7 @@ Run `node .claude/scripts/diff-context.js --subproject {subproject_path}` per su
 
 **CRITICAL: Main context IS the Pipeline Runner. NEVER delegate to intermediate Task agent.**
 
-11b. **Pre-EXECUTE Rewave Check** (skip if `pipeline-state.isWavePlan === true`): Run `node .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{specName}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was split into N waves — update `pipeline-state.isWavePlan: true, currentWave: 1` and proceed using wave-1's spec (`wave-1-{role}/spec.md`). If `action: "keep-single"` or `"skip"`, continue with the original spec. Silent — no AskUserQuestion.
+11b. **Pre-EXECUTE Rewave Check** (skip if `pipeline-state.isWavePlan === true`): Run `bun .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{specName}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was split into N waves — update `pipeline-state.isWavePlan: true, currentWave: 1` and proceed using wave-1's spec (`wave-1-{role}/spec.md`). If `action: "keep-single"` or `"skip"`, continue with the original spec. Silent — no AskUserQuestion.
 
 12. **Match recipe by name only:** Grep `{subproject}/.claude/commands/recipes.md` for recipe title matching the task type — do NOT read the full recipes file. Extract only: recipe number, pattern refs, reference modules
 12b. **Pre-EXECUTE Existence Gate**: Same gate as `feature/SKILL.md § Pre-EXECUTE Existence Gate`. Invoke identically (Full scope only, `## Files` ≤ 8). On retry/resume, the gate naturally handles idempotence: tasks already `[x]` from a prior run are treated as Mixed — the Haiku confirms they stay done and the orchestrator only re-dispatches what remains `[ ]`.
@@ -102,6 +104,7 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
 3. **Between waves** (see Step 17 post-dispatch):
    - On wave completion: run `/mustard:git commit` style commit with message `feat(wave-{N}/{role}): {summary}`. If `/mustard:git commit` is not appropriate for the project, fall back to `git add {files} && git commit -m "..."`.
    - Update state: `completedWaves.push(currentWave)`, `currentWave += 1`, `updatedAt`.
+   - After updating state, run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` to show progress.
    - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
    - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
 4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
@@ -166,10 +169,12 @@ Extract CRITICAL findings verbatim from review return (or harness view). Build r
 
 20. **CLOSE:**
     - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
-    - `node .claude/scripts/sync-registry.js`
+    - `bun .claude/scripts/sync-registry.js`
     - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
     - Move spec to `.claude/spec/completed/` (the entire `{specName}/` directory, including wave subdirs if any)
     - **Delete** `.claude/.pipeline-states/{spec-name}.json`
+    - **Pipeline Summary (BEFORE banner):** run `bun .claude/scripts/pipeline-summary.js --spec-dir .claude/spec/active/{specName}` and print the markdown inline. For wave plans, the same spec-dir applies (the script reads the root `spec.md`; for wave-plan-final closes, use the wave-plan dir). Fail-open: on non-zero exit or missing script, log a warning and continue with the banner — do NOT abort CLOSE. Apply to both single-spec and wave-plan-final paths.
+    - **Wave Tree (before banner):** `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{specName}` (or `completed/` if already moved). Fail-open.
     - Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══` (for wave plans: append `| Waves: {totalWaves}`).
 
 ### Wave Failure Handling
