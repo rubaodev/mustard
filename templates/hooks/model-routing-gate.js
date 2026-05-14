@@ -113,6 +113,18 @@ function determineExpected(subagentType, description, state) {
     return { expected: 'opus', reason: 'Plan agents use opus (architectural reasoning)' };
   }
 
+  // Rule 2.5: Description-verb override — analysis/review tasks at the start
+  // of the description ("Review X", "Audit Y", "Validate Z") route to sonnet.
+  // Opt-out: high-stakes keywords keep opus depth (security audits, critical
+  // path verification, production-risk inspection).
+  const descRaw = description || '';
+  const descLower = descRaw.trim().toLowerCase();
+  const isAnalysisVerb = /^(review|audit|validate|verify|check|inspect)\b/.test(descLower);
+  const isHighStakes = /\b(security|critical|production)\b/i.test(descRaw);
+  if (isAnalysisVerb && !isHighStakes) {
+    return { expected: 'sonnet', reason: 'Analysis/review task — sonnet sufficient' };
+  }
+
   // Rule 3: Active pipeline drives model
   if (state && state.type) {
     const pipelineType = (state.type || '').toLowerCase();
@@ -194,7 +206,38 @@ process.stdin.on('end', () => {
         process.exit(0);
       }
 
-      // Non-explorer: advisory only when expected model is cheaper than opus
+      // Non-explorer: when expected is sonnet the orchestrator is almost
+      // certainly inheriting opus from the parent — deny and require the
+      // model to be specified explicitly. When expected is opus the inherited
+      // value matches, so allow silently. `warn` mode keeps the legacy
+      // advisory behaviour for users who want the old escape valve.
+      const mode = getMode();
+      if (expected === 'sonnet' && mode === 'strict') {
+        emitMetric('model-routing-gate', {
+          tokensAffected: 0,
+          tokensSaved: 0,
+          note: 'no-model-denied-sonnet',
+          extras: {
+            expected,
+            actual: 'inherited',
+            pipeline_type: state ? (state.type || 'unknown') : 'none',
+            scope:         state ? (state.scope || 'unknown') : 'none',
+            reason,
+            subagent_type: subagentType,
+            category: 'prevention',
+          },
+        });
+
+        process.stdout.write(JSON.stringify({
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            `[Model Routing] No model specified — this task should use model: '${expected}'. ` +
+            `${reason}. Add model: '${expected}' to your Task dispatch ` +
+            `(or set MUSTARD_MODEL_GATE_MODE=warn to downgrade to an advisory).`,
+        }) + '\n');
+        process.exit(0);
+      }
+
       if (expected !== 'opus') {
         emitMetric('model-routing-gate', {
           tokensAffected: 0,

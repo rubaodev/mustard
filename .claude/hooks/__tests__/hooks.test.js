@@ -1059,15 +1059,141 @@ describe("model-routing-gate.js", () => {
     });
   }
 
-  it("should allow when no model specified for non-explorer agents", async () => {
-    const result = await runHook(hook, {
-      hook_event_name: "PreToolUse",
-      tool_name: "Task",
-      tool_input: { subagent_type: "general-purpose", description: "do work", prompt: "test" },
-    });
-    assert.equal(result.code, 0);
-    if (result.parsed?.permissionDecision) {
-      assert.notEqual(result.parsed.permissionDecision, "deny");
+  it("should allow no-model dispatch in feature pipeline (expected=opus, inherited matches)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-nomodel-feat-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "full", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "do work", prompt: "test" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.code, 0);
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny",
+          "Expected=opus with inherited model should pass silently");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should deny no-model dispatch when expected=sonnet (strict mode)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-nomodel-deny-"));
+    try {
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "do work", prompt: "test" },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.parsed?.permissionDecision, "deny",
+        "No model + expected=sonnet must deny in strict mode");
+      const reason = result.parsed?.permissionDecisionReason || "";
+      assert.ok(reason.includes("sonnet"), "Denial reason must mention sonnet");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should advise (not deny) no-model dispatch when expected=sonnet in warn mode", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-nomodel-warn-"));
+    try {
+      const result = await runHookEnv({
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "general-purpose", description: "do work", prompt: "test" },
+        cwd: tmpDir,
+      }, { MUSTARD_MODEL_GATE_MODE: "warn" }, { cwd: tmpDir, projectDir: tmpDir });
+
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny",
+          "warn mode should not deny");
+      }
+      const ctx = result.parsed?.hookSpecificOutput?.additionalContext || "";
+      assert.ok(ctx.includes("sonnet"), "Advisory must mention sonnet");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should route review-prefixed description to sonnet expected (Rule 2.5)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-review-verb-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "full", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "general-purpose",
+          description: "review wave-1 backend changes",
+          prompt: "test",
+          model: "opus",
+        },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      assert.equal(result.parsed?.permissionDecision, "deny",
+        "review-prefixed description should expect sonnet — opus is an upgrade");
+      const metricsFile = path.join(tmpDir, ".claude", ".metrics", "model-routing-gate.jsonl");
+      const entry = JSON.parse(fs.readFileSync(metricsFile, "utf8").trim().split("\n").pop());
+      assert.equal(entry.expected, "sonnet");
+      assert.equal(entry.actual, "opus");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should keep opus for security review (high-stakes opt-out)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-sec-review-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "full", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "general-purpose",
+          description: "review security of token storage",
+          prompt: "test",
+          model: "opus",
+        },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny",
+          "security review should fall through to feature=opus expected");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should NOT match Rule 2.5 mid-sentence (only verb at start)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-gate-midverb-"));
+    try {
+      setupPipelineState(tmpDir, { type: "feature", scope: "full", phaseName: "EXECUTE" });
+      const result = await runHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: {
+          subagent_type: "general-purpose",
+          description: "implement input validation for login",
+          prompt: "test",
+          model: "opus",
+        },
+        cwd: tmpDir,
+      }, { cwd: tmpDir, projectDir: tmpDir });
+
+      if (result.parsed?.permissionDecision) {
+        assert.notEqual(result.parsed.permissionDecision, "deny",
+          "validation mid-sentence should not trigger Rule 2.5; feature pipeline keeps opus");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
