@@ -1213,15 +1213,31 @@ fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result
 #[tauri::command]
 fn dashboard_telemetry(repo_path: String) -> Result<telemetry::TelemetrySummary, String> {
     let base = std::path::PathBuf::from(&repo_path);
+    // Derive the current session cut-off once and feed it into the
+    // accumulator readers so they can report "+N this session" alongside the
+    // lifetime totals.
+    let session_start = telemetry::session_start_ts(&base);
+    let since = session_start.as_deref();
     Ok(telemetry::TelemetrySummary {
         rtk: telemetry::rtk_summary(&base),
         measured: telemetry::measured(&base),
-        prevention: telemetry::hook_fire_counts(&base),
-        routing: telemetry::routing_breakdown(&base),
+        prevention: telemetry::hook_fire_counts(&base, since),
+        routing: telemetry::routing_breakdown(&base, since),
         workflow: telemetry::workflow_by_phase(&base),
         tool_breakdown: telemetry::tool_breakdown(&base),
         agent_activity: telemetry::agent_activity_from_jsonl(&base),
+        session_start_ts: session_start.clone(),
     })
+}
+
+/// Friction telemetry from `.claude/.metrics/friction.json` — measured atrito
+/// (hook-retry counts, heavy pipelines). Distinct from knowledge patterns;
+/// the Knowledge page renders this in its own "Atrito" section. Empty vec
+/// when the file is absent (the common case — friction is rare).
+#[tauri::command]
+fn dashboard_friction(repo_path: String) -> Result<Vec<telemetry::FrictionEntry>, String> {
+    let base = std::path::PathBuf::from(&repo_path);
+    Ok(telemetry::friction_entries(&base))
 }
 
 /// Live activity derived from events.jsonl tail. Refreshed on every PreToolUse
@@ -1623,7 +1639,7 @@ pub fn run() {
             dashboard_specs, dashboard_spec_markdown,
             dashboard_spec_complete, dashboard_spec_cancel, dashboard_spec_reactivate,
             dashboard_search_events, dashboard_search_knowledge,
-            dashboard_telemetry, dashboard_live_activity,
+            dashboard_telemetry, dashboard_live_activity, dashboard_friction,
             telemetry::dashboard_prompt_economy,
             telemetry::collector_health,
             dashboard_consumption, dashboard_consumption_global,

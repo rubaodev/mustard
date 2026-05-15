@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useStore } from "@/lib/store";
 import {
   useProjects,
@@ -16,8 +16,7 @@ import type { CollectorHealth } from "@/api/promptEconomy";
 import { parseQaOverall } from "@/lib/qa";
 import type {
   HookFireCount,
-  RoutingByIntent,
-  RoutingByNote,
+  RoutingBlock,
   PhaseCount,
   ToolCount,
   ActivePipeline,
@@ -27,7 +26,7 @@ import type {
   RecentEvent,
   AgentActivityBlock,
 } from "@/lib/dashboard";
-import { formatNumber, formatTokens, formatPct, formatDurationMs } from "@/lib/format";
+import { formatNumber, formatTokens, formatPct, formatDurationMs, formatUsd } from "@/lib/format";
 import { StatusDot } from "@/components/StatusDot";
 import { LivePipelineCard } from "@/components/LivePipelineCard";
 import { Markdown } from "@/components/Markdown";
@@ -35,11 +34,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { relativeTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Pin, PinOff, RefreshCw, X } from "lucide-react";
 
-const PHASES = ["ANALYZE", "PLAN", "EXECUTE", "QA", "CLOSE"] as const;
+// Canonical pipeline vocabulary — must match refs/canonical-phases.md.
+// REVIEW sits between EXECUTE and QA: it already emits real events but was
+// invisible while older vocabularies omitted it.
+const PHASES = ["ANALYZE", "PLAN", "EXECUTE", "REVIEW", "QA", "CLOSE"] as const;
 const REFRESH_FAST = 3_000;
 const REFRESH_SLOW = 30_000;
 
@@ -99,6 +102,7 @@ const PANEL_DEFAULT_WIDTH = 480;
 export function Telemetry() {
   const projectsRoot = useStore((s) => s.projectsRoot);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const [searchParams, setSearchParams] = useSearchParams();
   const projects = useProjects();
   const selectedProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
   const path = selectedProject?.path ?? null;
@@ -223,6 +227,19 @@ export function Telemetry() {
 
   const isLive = (live.data?.is_fresh ?? false) || livePipelines.length > 0;
 
+  // Tab is reflected in the URL (?tab=economia) so the old /prompt-economy
+  // route can redirect straight into the Economia tab.
+  const tabParam = searchParams.get("tab");
+  const activeTab = tabParam === "economia" ? "economia" : "atividade";
+  const setTab = (v: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (v === "atividade") next.delete("tab");
+    else next.set("tab", v);
+    setSearchParams(next, { replace: true });
+  };
+
+  const hasError = !!(live.error || pipelines.error || tele.error);
+
   const mainContent = (
     <>
       <Header
@@ -239,7 +256,7 @@ export function Telemetry() {
         refreshing={live.isFetching || pipelines.isFetching}
       />
 
-      {live.error || pipelines.error || tele.error ? (
+      {hasError ? (
         <Card size="sm">
           <CardContent>
             <p className="text-[13px] text-destructive">
@@ -249,38 +266,47 @@ export function Telemetry() {
           </CardContent>
         </Card>
       ) : (
-        <>
-          <ExecutingSection
-            pipelines={livePipelines}
-            totalActive={pipelines.data?.length ?? 0}
-            onPipelineClick={selectPipeline}
-          />
-          <PhaseGridSection
-            live={live.data}
-            loading={live.isLoading}
-            onPhaseClick={selectPhase}
-          />
-          <EconomySection
-            rtk={{
-              available: tele.data?.rtk.available ?? false,
-              tokens_saved: tele.data?.rtk.tokens_saved ?? 0,
-              savings_pct: tele.data?.rtk.savings_pct ?? null,
-              total_commands: tele.data?.rtk.total_commands ?? 0,
-            }}
-            hooks={tele.data?.prevention ?? []}
-            routing={tele.data?.routing}
-            promptEconomy={promptEconomy.data ?? null}
-            loading={tele.isLoading}
-          />
-          <QualitySection
-            quality={quality.data}
-            loading={quality.isLoading}
-            workflow={tele.data?.workflow.by_phase ?? []}
-            qaEvents={recentEvents.data ?? []}
-          />
-          <AgentActivitySection block={tele.data?.agent_activity} />
-          <ToolsSection tools={tele.data?.tool_breakdown ?? []} />
-        </>
+        <Tabs value={activeTab} onValueChange={setTab} className="gap-5">
+          <TabsList>
+            <TabsTrigger value="atividade">Atividade</TabsTrigger>
+            <TabsTrigger value="economia">Economia</TabsTrigger>
+          </TabsList>
+          <TabsContent value="atividade" className="flex flex-col gap-7">
+            <ExecutingSection
+              pipelines={livePipelines}
+              totalActive={pipelines.data?.length ?? 0}
+              onPipelineClick={selectPipeline}
+            />
+            <PhaseGridSection
+              live={live.data}
+              loading={live.isLoading}
+              onPhaseClick={selectPhase}
+            />
+            <QualitySection
+              quality={quality.data}
+              loading={quality.isLoading}
+              workflow={tele.data?.workflow.by_phase ?? []}
+              qaEvents={recentEvents.data ?? []}
+            />
+            <AgentActivitySection block={tele.data?.agent_activity} />
+            <ToolsSection tools={tele.data?.tool_breakdown ?? []} />
+          </TabsContent>
+          <TabsContent value="economia" className="flex flex-col gap-7">
+            <EconomySection
+              rtk={{
+                available: tele.data?.rtk.available ?? false,
+                tokens_saved: tele.data?.rtk.tokens_saved ?? 0,
+                savings_pct: tele.data?.rtk.savings_pct ?? null,
+                total_commands: tele.data?.rtk.total_commands ?? 0,
+              }}
+              hooks={tele.data?.prevention ?? []}
+              routing={tele.data?.routing}
+              promptEconomy={promptEconomy.data ?? null}
+              sessionStartTs={tele.data?.session_start_ts ?? null}
+              loading={tele.isLoading}
+            />
+          </TabsContent>
+        </Tabs>
       )}
     </>
   );
@@ -410,11 +436,14 @@ function Header({
           </Badge>
           <CollectorBadge state={collectorHealth} />
         </nav>
-        <h1 className="text-xl font-medium tracking-tight">O que está rodando</h1>
+        <h1 className="text-xl font-medium tracking-tight">Telemetria</h1>
         <p className="text-[13px] text-muted-foreground leading-relaxed">
-          Cada bloco abaixo mostra de onde os números vêm e quando atualizam.
-          Foco no que está acontecendo agora — números acumulados ficam
-          claramente rotulados.
+          Aba <strong className="text-foreground/80">Atividade</strong>: o que está
+          rodando agora — pipelines, fases, QA e agentes. Aba{" "}
+          <strong className="text-foreground/80">Economia</strong>: quanto o Mustard
+          poupa — RTK, hooks, roteamento de modelo e os blocos honestos de Prompt
+          Economy. Cada bloco mostra de onde o número vem; totais acumulados ficam
+          rotulados como tal.
         </p>
       </div>
       <div className="flex items-center gap-2">
@@ -766,6 +795,14 @@ const PHASE_META: Record<
     isExecution: true,
     description: "Edita o código — é aqui que a wave roda de fato.",
   },
+  REVIEW: {
+    label: "Revisar",
+    color: "text-indigo-500 dark:text-indigo-400",
+    bg: "bg-indigo-500",
+    border: "border-indigo-500/30",
+    isExecution: false,
+    description: "Inspeção do código produzido antes do QA — busca erros e regressões.",
+  },
   QA: {
     label: "QA",
     color: "text-violet-500 dark:text-violet-400",
@@ -1019,11 +1056,265 @@ const NOTE_META: Record<string, { label: string; tip: string; tone: string; dot:
   },
 };
 
+// ── Prompt Economy honest blocks (absorbed from the former /prompt-economy
+//    page — single source of truth, no divergence) ────────────────────────────
+
+/** bytes → human-readable. Local to this page; only the economy blocks need it. */
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatActiveTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return `${m}m ${s}s`;
+  }
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+/** USD measured by the Anthropic API via native OTEL — lifetime total. */
+function CostBlock({ cost }: { cost: import("@/api/promptEconomy").PromptEconomy["cost"] }) {
+  const topModels = cost.by_model.slice(0, 4);
+  return (
+    <Card size="sm" className="ring-foreground/5">
+      <CardContent className="flex flex-col gap-2">
+        <SubHeader
+          label="Cache da API · USD medido"
+          detail="O que a Anthropic API de fato cobrou, lido do stream OTEL nativo do Claude Code. Já inclui o desconto de cache — é o número real, não estimativa. Acumulado vitalício."
+          accent="indigo"
+        />
+        <div className="flex items-baseline gap-2 mt-1">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            USD total
+          </span>
+          <span className="text-2xl font-mono tabular-nums text-indigo-400 leading-none">
+            {formatUsd(cost.usd_total)}
+          </span>
+        </div>
+        {topModels.length > 0 ? (
+          <ul className="flex flex-col gap-1 mt-1 border-t border-border/40 pt-2">
+            <li className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+              por modelo
+            </li>
+            {topModels.map((m) => (
+              <li
+                key={m.model}
+                className="flex items-baseline justify-between gap-3 text-[12.5px]"
+              >
+                <span className="font-mono text-muted-foreground truncate">{m.model}</span>
+                <span className="font-mono tabular-nums text-foreground shrink-0">
+                  {formatUsd(m.usd)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[11.5px] text-muted-foreground italic">
+            Sem dados por modelo ainda.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Bytes Mustard chose NOT to send — counterfactual savings, not money. */
+function SubtractionsBlock({
+  subtractions,
+}: {
+  subtractions: import("@/api/promptEconomy").PromptEconomy["subtractions"];
+}) {
+  const rows: { label: string; bytes: number; count: number }[] = [
+    { label: "diff-vs-full", bytes: subtractions.diff_vs_full_bytes, count: subtractions.diff_vs_full_count },
+    { label: "wave-slice", bytes: subtractions.wave_slice_bytes, count: subtractions.wave_slice_count },
+    { label: "review-diff-first", bytes: subtractions.review_diff_first_bytes, count: subtractions.review_diff_first_count },
+    { label: "analyze-diff-skip", bytes: subtractions.analyze_diff_skip_bytes, count: subtractions.analyze_diff_skip_count },
+  ];
+  const totalBytes = rows.reduce((a, r) => a + r.bytes, 0);
+  const totalCount = rows.reduce((a, r) => a + r.count, 0);
+  return (
+    <Card size="sm" className="ring-foreground/5">
+      <CardContent className="flex flex-col gap-2">
+        <SubHeader
+          label="Bytes omitidos pelo Mustard"
+          detail="Contexto que o orquestrador escolheu NÃO enviar (diff em vez de arquivo inteiro, fatia de wave em vez do roadmap todo). Economia contrafactual — não é dinheiro, é prompt que nunca existiu."
+          accent="indigo"
+        />
+        <div className="flex items-baseline gap-2 mt-1">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Total
+          </span>
+          <span className="text-2xl font-mono tabular-nums text-violet-400 leading-none">
+            {formatBytes(totalBytes)}
+          </span>
+        </div>
+        {totalCount === 0 ? (
+          <p className="text-[11.5px] text-muted-foreground leading-snug border-t border-border/40 pt-2">
+            Nenhum evento de subtração ainda. Esses eventos são raros por design —
+            só disparam em <code className="font-mono">/resume</code>,{" "}
+            <code className="font-mono">/review</code> e no início de pipelines.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1 mt-1 border-t border-border/40 pt-2">
+            {rows.map((r) => (
+              <li
+                key={r.label}
+                className="flex items-baseline justify-between gap-3 text-[12.5px]"
+              >
+                <span className="font-mono text-muted-foreground">{r.label}</span>
+                <span className="flex items-baseline gap-2 shrink-0">
+                  <span className="font-mono tabular-nums text-foreground">
+                    {formatBytes(r.bytes)}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground tabular-nums">
+                    ({r.count} {r.count === 1 ? "evento" : "eventos"})
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Operational counters from Claude Code — sessions + active time. */
+function ClaudeEventsBlock({
+  events,
+}: {
+  events: import("@/api/promptEconomy").PromptEconomy["claude_events"];
+}) {
+  return (
+    <Card size="sm" className="ring-foreground/5">
+      <CardContent className="flex flex-col gap-2">
+        <SubHeader
+          label="Eventos Claude Code"
+          detail="Telemetria operacional vinda do mesmo stream OTEL: quantas sessões começaram e quanto tempo de uso ativo somaram. Mede uso, não dinheiro. Acumulado vitalício."
+          accent="indigo"
+        />
+        <div className="grid grid-cols-2 gap-4 mt-1">
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Sessions
+            </span>
+            <span className="text-2xl font-mono tabular-nums text-foreground leading-none">
+              {events.session_count.toLocaleString()}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Tempo ativo
+            </span>
+            <span className="text-2xl font-mono tabular-nums text-foreground leading-none">
+              {formatActiveTime(events.active_time_seconds)}
+            </span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CanaryTail({ lines }: { lines: string[] }) {
+  return (
+    <Card size="sm" className="ring-rose-500/20 border-rose-500/30">
+      <CardContent className="flex flex-col gap-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[11px] uppercase tracking-[0.08em] font-medium text-rose-400">
+            Canary tail
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            últimas {lines.length} linhas — só aparece quando o coletor OTEL está parado
+          </span>
+        </div>
+        <pre className="font-mono text-[11px] leading-relaxed text-muted-foreground/80 whitespace-pre-wrap break-all bg-background/40 rounded-md p-3 max-h-64 overflow-auto">
+          {lines.join("\n")}
+        </pre>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Prompt Economy section — the three honest blocks, formerly its own page.
+ * Now a sub-section of the Economia tab so there is one source of truth and
+ * no chance of the old "901KB vs 1.7MB" divergence between two pages.
+ */
+function PromptEconomySection({
+  data,
+  loading,
+}: {
+  data: import("@/api/promptEconomy").PromptEconomy | null;
+  loading: boolean;
+}) {
+  const allZero =
+    !!data &&
+    data.cost.usd_total === 0 &&
+    data.subtractions.wave_slice_bytes === 0 &&
+    data.subtractions.diff_vs_full_bytes === 0 &&
+    data.subtractions.review_diff_first_bytes === 0 &&
+    data.subtractions.analyze_diff_skip_bytes === 0 &&
+    data.claude_events.session_count === 0 &&
+    data.claude_events.active_time_seconds === 0;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <SectionHeader
+        title="Prompt Economy — três blocos honestos"
+        hint="USD medido pela Anthropic API, bytes que o Mustard escolheu não enviar e telemetria operacional do Claude Code. Cada bloco vem de uma fonte distinta — nada de número inventado."
+      />
+      {loading && !data ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {[0, 1, 2].map((i) => (
+            <Card size="sm" key={i} className="ring-foreground/5">
+              <CardContent>
+                <SkeletonRows n={4} />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : !data || allZero ? (
+        <Card size="sm" className="ring-foreground/5">
+          <CardContent className="flex flex-col gap-1">
+            <p className="text-sm font-medium">Sem atividade ainda</p>
+            <p className="text-[12.5px] text-muted-foreground leading-relaxed">
+              Rode <code className="font-mono">/mustard:feature</code> ou{" "}
+              <code className="font-mono">/mustard:bugfix</code> neste projeto para
+              começar a alimentar estes blocos. Se a telemetria OTEL não estiver
+              ligada, o badge no topo fica vermelho — confira em Settings.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <CostBlock cost={data.cost} />
+          <SubtractionsBlock subtractions={data.subtractions} />
+          <ClaudeEventsBlock events={data.claude_events} />
+        </div>
+      )}
+      {data && data.freshness.canary_tail && data.freshness.canary_tail.length > 0 && !data.freshness.otel_healthy && (
+        <CanaryTail lines={data.freshness.canary_tail} />
+      )}
+    </section>
+  );
+}
+
 function EconomySection({
   rtk,
   hooks,
   routing,
   promptEconomy,
+  sessionStartTs,
   loading,
 }: {
   rtk: {
@@ -1033,8 +1324,9 @@ function EconomySection({
     total_commands: number;
   };
   hooks: HookFireCount[];
-  routing: { blocks: number; allows: number; by_intent: RoutingByIntent[]; by_note: RoutingByNote[] } | undefined;
+  routing: RoutingBlock | undefined;
   promptEconomy: import("@/api/promptEconomy").PromptEconomy | null;
+  sessionStartTs: string | null;
   loading: boolean;
 }) {
   const topHooks = useMemo(
@@ -1046,19 +1338,40 @@ function EconomySection({
     [hooks],
   );
   const hookTotal = useMemo(() => hooks.reduce((s, h) => s + h.tokens_saved, 0), [hooks]);
+  const hookSessionTotal = useMemo(
+    () => hooks.reduce((s, h) => s + h.session_tokens_saved, 0),
+    [hooks],
+  );
   const hookMax = topHooks[0]?.tokens_saved ?? 1;
 
   const blocks = routing?.blocks ?? 0;
   const allows = routing?.allows ?? 0;
+  const sessionBlocks = routing?.session_blocks ?? 0;
+  const sessionAllows = routing?.session_allows ?? 0;
   const preventionPct = (blocks / Math.max(blocks + allows, 1)) * 100;
+
+  // "+N nesta sessão" suffix — only shown when the session window produced
+  // something, so a fresh session doesn't render a noisy "+0".
+  const sessionTag = (n: number) =>
+    n > 0 ? (
+      <span className="text-emerald-500 dark:text-emerald-400" title="Quanto deste total veio da sessão atual (desde que o Claude Code abriu este projeto).">
+        {" "}· +{formatNumber(n)} nesta sessão
+      </span>
+    ) : null;
 
   return (
     <section className="flex flex-col gap-2">
       <SectionHeader
         title="Economia de tokens"
-        hint="Três mecanismos diferentes para reduzir o que vai para o modelo. Todos os números aqui são ACUMULADOS desde a instalação — não são consumo de hoje."
+        hint="Três mecanismos para reduzir o que vai ao modelo. Os totais são ACUMULADOS desde a instalação; o trecho verde '+N nesta sessão' isola o que aconteceu na sessão atual."
       />
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+      {sessionStartTs == null && (
+        <p className="text-[11px] text-muted-foreground/70 leading-snug">
+          Nenhuma sessão detectada em <code className="font-mono">events.jsonl</code> —
+          os deltas de sessão não aparecem até um pipeline rodar.
+        </p>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <Card size="sm" className="ring-foreground/5">
           <CardContent className="flex flex-col gap-2">
             <SubHeader
@@ -1097,11 +1410,17 @@ function EconomySection({
               detail="Hooks que reescrevem entradas/saídas de ferramentas para evitar gastar tokens. Ex.: auto-format envia diff em vez do arquivo todo; tool-use-counter corta exploração antes que ela inche o contexto."
               accent="emerald"
             />
-            <BigStat
-              label="Total"
-              value={formatTokens(hookTotal)}
-              accent="emerald"
-            />
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Total
+              </span>
+              <span className="text-xl font-mono font-medium tabular-nums leading-none text-emerald-500 dark:text-emerald-400">
+                {formatTokens(hookTotal)}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                acumulado{sessionTag(hookSessionTotal)}
+              </span>
+            </div>
             {loading ? (
               <SkeletonRows n={3} />
             ) : topHooks.length === 0 ? (
@@ -1166,6 +1485,8 @@ function EconomySection({
               <span title="Quantos dispatches passaram direto (modelo já estava correto ou downgrade aceitável)">
                 {formatNumber(allows)} liberados
               </span>
+              <span className="text-muted-foreground/70"> · acumulado</span>
+              {sessionTag(sessionBlocks + sessionAllows)}
             </p>
             {routing && routing.by_intent.length > 0 && (
               <div className="flex flex-col gap-1 mt-1 border-t border-border/40 pt-2">
@@ -1237,80 +1558,8 @@ function EconomySection({
           </CardContent>
         </Card>
 
-        <Card size="sm" className="ring-foreground/5">
-          <CardContent className="flex flex-col gap-2">
-            <SubHeader
-              label="Prompt Economy · honest blocks"
-              detail="Três blocos honestos: USD medido pela Anthropic API (OTEL nativo), bytes omitidos pelo orquestrador Mustard e telemetria operacional do Claude Code. Detalhes em /prompt-economy."
-              accent="indigo"
-            />
-            {(() => {
-              if (!promptEconomy) {
-                return (
-                  <p className="text-[12px] text-muted-foreground">
-                    Sem dados de prompt economy ainda.
-                  </p>
-                );
-              }
-              const subBytes =
-                promptEconomy.subtractions.wave_slice_bytes +
-                promptEconomy.subtractions.review_diff_first_bytes +
-                promptEconomy.subtractions.analyze_diff_skip_bytes;
-              const subCount =
-                promptEconomy.subtractions.wave_slice_count +
-                promptEconomy.subtractions.review_diff_first_count +
-                promptEconomy.subtractions.analyze_diff_skip_count;
-              const allZero =
-                promptEconomy.cost.usd_total === 0 &&
-                subBytes === 0 &&
-                promptEconomy.claude_events.session_count === 0;
-              if (allZero) {
-                return (
-                  <p className="text-[12px] text-muted-foreground">
-                    Sem atividade ainda. Pipelines novos vão alimentar este card.
-                  </p>
-                );
-              }
-              return (
-                <>
-                  <div className="grid grid-cols-2 gap-2 mt-1">
-                    <BigStat
-                      label="USD (API)"
-                      value={`$${promptEconomy.cost.usd_total.toFixed(2)}`}
-                      accent="indigo"
-                    />
-                    <BigStat
-                      label="Sessions"
-                      value={formatNumber(promptEconomy.claude_events.session_count)}
-                      accent="indigo"
-                    />
-                  </div>
-                  <ul className="flex flex-col gap-1 mt-1 border-t border-border/40 pt-2">
-                    <li className="flex items-baseline gap-2 text-[12px]">
-                      <span className="text-muted-foreground flex-1">Bytes omitidos</span>
-                      <span className="font-mono tabular-nums text-muted-foreground/70">
-                        {subBytes.toLocaleString()} · {subCount} ev
-                      </span>
-                    </li>
-                    <li className="flex items-baseline gap-2 text-[12px]">
-                      <span className="text-muted-foreground flex-1">OTEL</span>
-                      <span className="font-mono tabular-nums text-muted-foreground/70">
-                        {promptEconomy.freshness.otel_healthy ? "healthy" : "down"}
-                      </span>
-                    </li>
-                  </ul>
-                  <Link
-                    to="/prompt-economy"
-                    className="text-[11px] text-primary hover:underline self-start mt-1"
-                  >
-                    ver detalhes →
-                  </Link>
-                </>
-              );
-            })()}
-          </CardContent>
-        </Card>
       </div>
+      <PromptEconomySection data={promptEconomy} loading={loading} />
     </section>
   );
 }
@@ -1439,7 +1688,7 @@ function QualitySection({
           <CardContent className="flex flex-col gap-2">
             <SubHeader
               label="Histórico do projeto"
-              detail="O quanto as pipelines deste projeto costumam dar certo de primeira. Calculado a partir de todos os QAs já rodados (cache em mustard.db)."
+              detail="Progresso e ritmo das pipelines deste projeto: quantas specs já fecharam e quanto tempo cada fase costuma levar. Para acerto de QA, veja o card ao lado."
             />
             {loading ? (
               <SkeletonRows n={3} />
@@ -1451,10 +1700,10 @@ function QualitySection({
             ) : (
               <div className="grid grid-cols-2 gap-2 mt-1">
                 <div
-                  title="Quantas waves passaram em QA na PRIMEIRA tentativa, sem precisar reexecutar. 100% = todas passaram de primeira; 50% = metade precisou de fix-loop."
+                  title="Quantas specs deste projeto já foram concluídas, sobre o total de specs. NÃO é pass@1 de QA — para acerto real de QA veja o card 'Critérios de aceitação' ao lado."
                 >
                   <BigStat
-                    label="Acerto de 1ª"
+                    label="Specs concluídas"
                     value={formatPct(quality!.pass_at_1 * 100)}
                     accent={quality!.pass_at_1 >= 0.7 ? "emerald" : "amber"}
                   />
@@ -1609,6 +1858,7 @@ const PHASE_TIP: Record<string, string> = {
   ANALYZE: "Exploração inicial: Grep/Read sem editar. Onde o agente entende o problema antes de planejar.",
   PLAN: "Desenho da spec/plan. Não toca código de produção; só decide o quê e onde mexer.",
   EXECUTE: "Onde o código é editado de fato. Cada wave (impl/backend/frontend) roda aqui.",
+  REVIEW: "Inspeção do código produzido — correção, convenções e regressões — antes do QA.",
   QA: "Verificação dos critérios de aceitação (## Acceptance Criteria). Bloqueia CLOSE se algum AC falhar.",
   CLOSE: "Promove a spec a completed, sincroniza registry e fecha o pipeline.",
 };

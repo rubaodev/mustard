@@ -42,6 +42,12 @@ pub struct HookFireCount {
     pub fires: u64,
     pub tokens_saved: u64,
     pub most_recent_ts: Option<String>,
+    /// Lifetime totals are append-only and never reset. These `session_*`
+    /// fields count only the lines whose `ts` falls inside the current
+    /// session window (see `session_start_ts`), so the UI can honestly show
+    /// "323.4K total · +N nesta sessão".
+    pub session_fires: u64,
+    pub session_tokens_saved: u64,
 }
 
 #[derive(Serialize)]
@@ -69,6 +75,11 @@ pub struct RoutingBlock {
     pub allows: u64,
     pub by_intent: Vec<RoutingByIntent>,
     pub by_note: Vec<RoutingByNote>,
+    /// Session-scoped subset of `blocks` / `allows` — only dispatches inside
+    /// the current session window. Lifetime numbers above never reset; these
+    /// answer "what happened in this run".
+    pub session_blocks: u64,
+    pub session_allows: u64,
 }
 
 #[derive(Serialize)]
@@ -128,6 +139,71 @@ pub struct TelemetrySummary {
     pub workflow: WorkflowBlock,
     pub tool_breakdown: Vec<ToolCount>,
     pub agent_activity: AgentActivityBlock,
+    /// ISO-8601 timestamp marking the start of the current session, or null
+    /// when no session boundary could be derived. Every `session_*` counter
+    /// in this payload is "lines whose ts >= this value".
+    pub session_start_ts: Option<String>,
+}
+
+// ── Session window ───────────────────────────────────────────────────────────
+//
+// Hook `.metrics/*.jsonl` files and `model-routing-gate.jsonl` are append-only
+// for the lifetime of the install — they never reset. To honestly show "+N
+// this session" we need a cut-off timestamp. We derive it from events.jsonl:
+// the `ts` of the FIRST event sharing the LAST event's `sessionId`. That is
+// the moment the current Claude Code session began emitting.
+
+/// Returns the ISO timestamp at which the current session started, or `None`
+/// when events.jsonl is missing/empty or carries no `sessionId`.
+pub fn session_start_ts(repo_path: &Path) -> Option<String> {
+    let path = repo_path.join(".claude").join(".harness").join("events.jsonl");
+    let content = std::fs::read_to_string(&path).ok()?;
+
+    // First pass: find the sessionId of the most recent line that has one.
+    let mut last_session: Option<String> = None;
+    for line in content.lines().rev() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
+            if !sid.is_empty() {
+                last_session = Some(sid.to_string());
+                break;
+            }
+        }
+    }
+    let session = last_session?;
+
+    // Second pass: earliest ts carrying that sessionId.
+    let mut earliest: Option<String> = None;
+    for line in content.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let sid = v.get("sessionId").and_then(|x| x.as_str()).unwrap_or("");
+        if sid != session {
+            continue;
+        }
+        if let Some(ts) = v.get("ts").and_then(|x| x.as_str()) {
+            match &earliest {
+                Some(cur) if cur.as_str() <= ts => {}
+                _ => earliest = Some(ts.to_string()),
+            }
+        }
+    }
+    earliest
+}
+
+/// True when `ts` is lexically >= the session cut-off. ISO-8601 UTC strings
+/// sort chronologically, so a plain string comparison is correct and avoids a
+/// date-parsing dependency.
+fn in_session(ts: Option<&str>, since: Option<&str>) -> bool {
+    match (ts, since) {
+        (Some(t), Some(s)) => t >= s,
+        _ => false,
+    }
 }
 
 // ── RTK ─────────────────────────────────────────────────────────────────────
@@ -229,7 +305,7 @@ pub fn rtk_summary_global() -> RtkBlock {
 
 const EXCLUDED_HOOKS: &[&str] = &["rtk-gain", "rtk-rewrite", "budget-observations"];
 
-pub fn hook_fire_counts(repo_path: &Path) -> Vec<HookFireCount> {
+pub fn hook_fire_counts(repo_path: &Path, session_since: Option<&str>) -> Vec<HookFireCount> {
     let metrics_dir = repo_path.join(".claude").join(".metrics");
     let rd = match std::fs::read_dir(&metrics_dir) {
         Ok(r) => r,
@@ -263,6 +339,8 @@ pub fn hook_fire_counts(repo_path: &Path) -> Vec<HookFireCount> {
         };
         let mut fires: u64 = 0;
         let mut tokens_saved: u64 = 0;
+        let mut session_fires: u64 = 0;
+        let mut session_tokens_saved: u64 = 0;
         let mut most_recent_ts: Option<String> = None;
         for line in content.lines() {
             let v: serde_json::Value = match serde_json::from_str(line) {
@@ -270,12 +348,25 @@ pub fn hook_fire_counts(repo_path: &Path) -> Vec<HookFireCount> {
                 Err(_) => continue,
             };
             fires += 1;
-            tokens_saved += v["tokens_saved"].as_u64().unwrap_or(0);
-            if let Some(ts) = v["ts"].as_str() {
+            let saved = v["tokens_saved"].as_u64().unwrap_or(0);
+            tokens_saved += saved;
+            let ts = v["ts"].as_str();
+            if let Some(ts) = ts {
                 most_recent_ts = Some(ts.to_string());
             }
+            if in_session(ts, session_since) {
+                session_fires += 1;
+                session_tokens_saved += saved;
+            }
         }
-        results.push(HookFireCount { hook: stem, fires, tokens_saved, most_recent_ts });
+        results.push(HookFireCount {
+            hook: stem,
+            fires,
+            tokens_saved,
+            most_recent_ts,
+            session_fires,
+            session_tokens_saved,
+        });
     }
 
     results.sort_by(|a, b| b.tokens_saved.cmp(&a.tokens_saved).then(b.fires.cmp(&a.fires)));
@@ -284,7 +375,7 @@ pub fn hook_fire_counts(repo_path: &Path) -> Vec<HookFireCount> {
 
 // ── Routing breakdown ────────────────────────────────────────────────────────
 
-pub fn routing_breakdown(repo_path: &Path) -> RoutingBlock {
+pub fn routing_breakdown(repo_path: &Path, session_since: Option<&str>) -> RoutingBlock {
     let path = repo_path
         .join(".claude")
         .join(".metrics")
@@ -294,6 +385,8 @@ pub fn routing_breakdown(repo_path: &Path) -> RoutingBlock {
         allows: 0,
         by_intent: vec![],
         by_note: vec![],
+        session_blocks: 0,
+        session_allows: 0,
     };
     if !path.exists() {
         return empty();
@@ -305,6 +398,8 @@ pub fn routing_breakdown(repo_path: &Path) -> RoutingBlock {
 
     let mut total_blocks: u64 = 0;
     let mut total_allows: u64 = 0;
+    let mut session_blocks: u64 = 0;
+    let mut session_allows: u64 = 0;
     // grouping key (subagent_type | pipeline_type) -> (blocks, allows)
     let mut grouped: HashMap<String, (u64, u64)> = HashMap::new();
     // per-note tally for the prevention-category breakdown
@@ -344,12 +439,19 @@ pub fn routing_breakdown(repo_path: &Path) -> RoutingBlock {
         let key = extract_routing_key(&v);
 
         let entry = grouped.entry(key).or_insert((0, 0));
+        let session = in_session(v.get("ts").and_then(|x| x.as_str()), session_since);
         if is_block {
             total_blocks += 1;
             entry.0 += 1;
+            if session {
+                session_blocks += 1;
+            }
         } else {
             total_allows += 1;
             entry.1 += 1;
+            if session {
+                session_allows += 1;
+            }
         }
     }
 
@@ -376,6 +478,8 @@ pub fn routing_breakdown(repo_path: &Path) -> RoutingBlock {
         allows: total_allows,
         by_intent: intent_vec,
         by_note,
+        session_blocks,
+        session_allows,
     }
 }
 
@@ -1010,6 +1114,81 @@ fn read_tail(path: &Path, max_bytes: u64) -> std::io::Result<String> {
     let mut buf = Vec::with_capacity((len - start) as usize);
     f.read_to_end(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+// ── Friction telemetry (Wave 4) ─────────────────────────────────────────────
+//
+// `.claude/.metrics/friction.json` holds measured atrito (high hook-retry,
+// heavy API usage) — telemetry, NOT knowledge. The session-knowledge hooks
+// write it as `{ version, entries: [...] }`. The dashboard reads it so the
+// Knowledge page can show friction in a section separate from real patterns.
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct FrictionEntry {
+    pub name: String,
+    pub description: String,
+    pub source: Option<String>,
+    pub tags: Vec<String>,
+    /// Measured hook-level retries (only on high-hook-retry entries).
+    pub retry_count: Option<u64>,
+    /// Measured API call count (only on heavy-pipeline entries).
+    pub api_calls: Option<u64>,
+    /// Optional prescriptive hint derived by the extractor.
+    pub prescription: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// Read friction entries for a repo. Returns an empty vec when the file is
+/// missing or malformed — friction is genuinely rare, so empty is the norm.
+pub fn friction_entries(repo_path: &Path) -> Vec<FrictionEntry> {
+    let path = repo_path
+        .join(".claude")
+        .join(".metrics")
+        .join("friction.json");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let v: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let entries = match v.get("entries").and_then(|e| e.as_array()) {
+        Some(a) => a,
+        None => return vec![],
+    };
+    entries
+        .iter()
+        .filter_map(|e| {
+            let name = e.get("name").and_then(|x| x.as_str())?.to_string();
+            Some(FrictionEntry {
+                name,
+                description: e
+                    .get("description")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                source: e.get("source").and_then(|x| x.as_str()).map(String::from),
+                tags: e
+                    .get("tags")
+                    .and_then(|x| x.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| t.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                retry_count: e.get("retryCount").and_then(|x| x.as_u64()),
+                api_calls: e.get("apiCalls").and_then(|x| x.as_u64()),
+                prescription: e
+                    .get("prescription")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
+                updated_at: e.get("updatedAt").and_then(|x| x.as_str()).map(String::from),
+            })
+        })
+        .collect()
 }
 
 // ── Honest Prompt Economy (Wave 5) ──────────────────────────────────────────

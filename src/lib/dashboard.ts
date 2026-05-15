@@ -172,6 +172,9 @@ export interface HookFireCount {
   fires: number;
   tokens_saved: number;
   most_recent_ts: string | null;
+  /** Subset of `fires` / `tokens_saved` within the current session window. */
+  session_fires: number;
+  session_tokens_saved: number;
 }
 
 export interface RoutingByIntent {
@@ -191,6 +194,9 @@ export interface RoutingBlock {
   allows: number;
   by_intent: RoutingByIntent[];
   by_note: RoutingByNote[];
+  /** Subset of `blocks` / `allows` within the current session window. */
+  session_blocks: number;
+  session_allows: number;
 }
 
 export interface PhaseCount {
@@ -230,10 +236,37 @@ export interface TelemetrySummary {
   workflow: WorkflowBlock;
   tool_breakdown: ToolCount[];
   agent_activity: AgentActivityBlock;
+  /** ISO timestamp the current session began emitting, or null. Every
+   *  `session_*` counter in this payload counts lines with `ts >=` this. */
+  session_start_ts: string | null;
 }
 
 export function fetchTelemetry(repoPath: string): Promise<TelemetrySummary> {
   return invoke<TelemetrySummary>("dashboard_telemetry", { repoPath });
+}
+
+// --- Friction telemetry (.claude/.metrics/friction.json) ---
+
+/**
+ * Measured atrito — hook-retry counts and heavy-pipeline signals. NOT a
+ * knowledge pattern: it lives in friction.json and the Knowledge page shows
+ * it in a separate "Atrito" section. Usually empty (friction is rare).
+ */
+export interface FrictionEntry {
+  name: string;
+  description: string;
+  source: string | null;
+  tags: string[];
+  /** Measured hook-level retries (high-hook-retry entries). */
+  retry_count: number | null;
+  /** Measured API call count (heavy-pipeline entries). */
+  api_calls: number | null;
+  prescription: string | null;
+  updated_at: string | null;
+}
+
+export function fetchFriction(repoPath: string): Promise<FrictionEntry[]> {
+  return invoke<FrictionEntry[]>("dashboard_friction", { repoPath });
 }
 
 // --- Live activity (events.jsonl tail) ---
