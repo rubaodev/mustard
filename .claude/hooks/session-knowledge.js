@@ -17,11 +17,13 @@ const { extractPatternsFromStates } = require('./_lib/knowledge-extract.js');
 var harnessEmit = null;
 var harnessGetSessionId = null;
 var harnessGetWave = null;
+var harnessGetEventsFile = null;
 try {
   var he = require('./_lib/harness-event.js');
   harnessEmit = he.emit;
   harnessGetSessionId = he.getCurrentSessionId;
   harnessGetWave = he.getCurrentWave;
+  harnessGetEventsFile = he.getEventsFile;
 } catch (_) {} // fail-open: harness optional
 
 function emitFinding(pattern, ctx) {
@@ -34,6 +36,70 @@ function emitFinding(pattern, ctx) {
       refs: Array.isArray(pattern.tags) ? pattern.tags : [],
     }, ctx);
   } catch (_) {} // fail-open
+}
+
+/**
+ * Emit one `retry.attempt` event per hook-level retry recorded in a pipeline
+ * state's `metrics.retries`. The dashboard Quality view counts these events to
+ * fill the RETRIES column; without them the column is always 0.
+ *
+ * Idempotency: skip emission when the spec already has `retry.attempt` events
+ * in the harness log — `session-knowledge.js` may run multiple times across a
+ * spec's lifetime and metrics.retries is cumulative, so re-emitting would
+ * double-count. Fail-open: any error is swallowed.
+ *
+ * @param {object} state  parsed .pipeline-states/*.json object
+ * @param {object} data   SessionEnd hook input (for sessionId/wave inference)
+ * @param {string} cwd    project root
+ */
+function emitRetryAttempts(state, data, cwd) {
+  try {
+    if (!harnessEmit || !state || typeof state !== 'object') return;
+    var metrics = state.metrics || {};
+    var retries = Number(metrics.retries) || 0;
+    if (retries < 1) return;
+
+    var spec = state.specName || state._file || null;
+    if (!spec) return;
+
+    // Idempotency: don't re-emit retry.attempt for a spec already counted.
+    if (specHasRetryEvents(cwd, spec)) return;
+
+    var ctx = {
+      cwd: cwd,
+      spec: spec,
+      sessionId: harnessGetSessionId ? harnessGetSessionId(data) : null,
+      wave: harnessGetWave ? harnessGetWave(data) : 0,
+      actor: { kind: 'hook', id: 'session-knowledge' },
+    };
+    for (var n = 0; n < retries; n++) {
+      harnessEmit('retry.attempt', {
+        reason: 'hook-level',
+        tool: null,
+      }, ctx);
+    }
+  } catch (_) {} // fail-open
+}
+
+/**
+ * Returns true when the harness log already has a `retry.attempt` event for
+ * the given spec. Reads events.jsonl tail-to-head. Fail-soft: false on error.
+ */
+function specHasRetryEvents(cwd, spec) {
+  try {
+    if (!harnessGetEventsFile) return false;
+    var eventsFile = harnessGetEventsFile(cwd);
+    if (!fs.existsSync(eventsFile)) return false;
+    var lines = fs.readFileSync(eventsFile, 'utf8').split('\n');
+    for (var i = lines.length - 1; i >= 0; i--) {
+      var raw = lines[i].trim();
+      if (!raw) continue;
+      var obj;
+      try { obj = JSON.parse(raw); } catch (_) { continue; }
+      if (obj && obj.event === 'retry.attempt' && obj.spec === spec) return true;
+    }
+  } catch (_) {}
+  return false;
 }
 
 var input = '';
@@ -74,6 +140,16 @@ process.stdin.on('end', function () {
       }
       var statePatterns = extractPatternsFromStates(stateObjects);
       for (var si = 0; si < statePatterns.length; si++) { patterns.push(statePatterns[si]); }
+
+      // ── Emit retry.attempt events from measured hook-level retries ──────
+      // The retry count lives in metrics.retries but was never a consumable
+      // event — the dashboard's RETRIES column counts `retry.attempt` events,
+      // so it stayed stuck at 0. Emit one event per retry occurrence here so
+      // the signal becomes real telemetry. Knowledge entry labelling stays
+      // untouched (owned by knowledge-extract.js / Wave 4).
+      for (var ri = 0; ri < stateObjects.length; ri++) {
+        emitRetryAttempts(stateObjects[ri], data, cwd);
+      }
     }
 
     // ── Save patterns (max 5 per session) ────────────────────────

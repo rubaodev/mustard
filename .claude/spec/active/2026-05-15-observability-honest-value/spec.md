@@ -249,13 +249,13 @@ AUSENTE}.
 - [x] `resume/SKILL.md` — ao retomar pipeline cuja fase corrente é ANALYZE, emitir o marcador
 - [x] Garantir idempotência: não emitir ANALYZE duas vezes para a mesma spec/sessão
 
-### Wave 3 — retry.attempt vira evento (Status: BACKLOG)
+### Wave 3 — retry.attempt vira evento (Status: DONE)
 
-- [ ] Criar `templates/scripts/emit-retry.js` — flags `--spec --wave --reason --tool`; emite
+- [x] Criar `templates/scripts/emit-retry.js` — flags `--spec --wave --reason --tool`; emite
       `retry.attempt` no harness (cross-shell, sem `bun -e` inline)
-- [ ] Localizar o ponto que hoje computa "hook-level retries" (a origem do `high-hook-retry-*`
+- [x] Localizar o ponto que hoje computa "hook-level retries" (a origem do `high-hook-retry-*`
       em `session-knowledge`/`.metrics`) e fazer emitir um `retry.attempt` por ocorrência
-- [ ] Confirmar empiricamente que `agent.start`/`agent.stop` estão wired no `settings.json`
+- [x] Confirmar empiricamente que `agent.start`/`agent.stop` estão wired no `settings.json`
       template (subagent-tracker já os emite via `emitEvent`) — se o gap do sialia for install
       antigo, registrar em Concerns; senão, corrigir o wiring
 
