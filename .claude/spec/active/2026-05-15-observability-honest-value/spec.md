@@ -228,15 +228,15 @@ AUSENTE}.
       rotulado como convenção, `occurrences` sem sentido)
 - [x] O `provenance-map.md` é a entrada obrigatória das Waves 5 e 6
 
-### Wave 1 — Vocabulário canônico de fases (Status: BACKLOG)
+### Wave 1 — Vocabulário canônico de fases (Status: DONE)
 
-- [ ] Criar `templates/refs/canonical-phases.md` — fonte única: ANALYZE, PLAN, EXECUTE, REVIEW,
+- [x] Criar `templates/refs/canonical-phases.md` — fonte única: ANALYZE, PLAN, EXECUTE, REVIEW,
       QA, CLOSE, COORDINATE; descrição de cada uma + qual evento marca entrada na fase
-- [ ] `pipeline-phase.js` — atualizar comentário `VALID_PHASES` (linha 130-132) para o canônico;
+- [x] `pipeline-phase.js` — atualizar comentário `VALID_PHASES` (linha 130-132) para o canônico;
       aceitar REVIEW e QA na lista
-- [ ] `metrics-tracker.js` — confirmar/ajustar a derivação de `payload.phase` para emitir só
+- [x] `metrics-tracker.js` — confirmar/ajustar a derivação de `payload.phase` para emitir só
       valores do canônico (hoje emite REVIEW, que é válido — manter; garantir QA/CLOSE também)
-- [ ] Alinhar `templates/CLAUDE.md`, `.claude/CLAUDE.md` e `pipeline-config.md`: a tabela de
+- [x] Alinhar `templates/CLAUDE.md`, `.claude/CLAUDE.md` e `pipeline-config.md`: a tabela de
       fases passa a citar o canônico e linkar `canonical-phases.md`
 
 ### Wave 2 — ANALYZE deixa de ser silenciosa (Status: BACKLOG)
