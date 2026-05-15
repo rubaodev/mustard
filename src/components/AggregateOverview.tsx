@@ -295,13 +295,17 @@ export function AggregateOverview({ projects }: { projects: Project[] }) {
           <KpiCard
             label="RTK saved"
             value={globalCons?.rtk.tokens_saved != null ? formatTokens(globalCons.rtk.tokens_saved) : "—"}
-            sub={globalCons?.rtk.savings_pct != null ? `${formatPct(globalCons.rtk.savings_pct)} efic.` : undefined}
+            sub={
+              globalCons?.rtk.savings_pct != null
+                ? `${formatPct(globalCons.rtk.savings_pct)} efic. · global · vitalício`
+                : "global · todos os projetos"
+            }
             loading={consLoading}
           />
           <KpiCard
             label="RTK commands"
             value={globalCons?.rtk.total_commands != null ? formatNumber(globalCons.rtk.total_commands) : "—"}
-            sub={globalCons?.rtk.available === false ? "rtk não instalado" : undefined}
+            sub={globalCons?.rtk.available === false ? "rtk não instalado" : "global · todos os projetos"}
             loading={consLoading}
           />
         </div>
