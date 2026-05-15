@@ -66,13 +66,41 @@ function derivePrescription(metrics) {
 /**
  * Extract candidate knowledge patterns from an array of pipeline state objects.
  *
+ * NOTE: Friction telemetry (high hook-retry counts, heavy API usage) is NOT a
+ * knowledge pattern — it is measured noise. Those signals are produced by
+ * `extractFrictionFromStates` instead and persisted to `.claude/.metrics/
+ * friction.json`, keeping `knowledge.json` limited to real patterns/conventions/
+ * decisions. This function currently emits no entries but is kept as the
+ * extension point for genuine pattern detection.
+ *
  * @param {object[]} stateObjects  Parsed .pipeline-states/*.json objects.
- *                                 Each may have: specName, metrics.retries,
- *                                 metrics.apiCalls, metrics.toolBreakdown
  * @returns {{ type: string, name: string, description: string, source: string, tags: string[], prescription?: string }[]}
  */
 function extractPatternsFromStates(stateObjects) {
-  var patterns = [];
+  // Intentionally empty: friction signals moved to extractFrictionFromStates.
+  // Real knowledge-pattern heuristics can be added here later.
+  return [];
+}
+
+/**
+ * Extract friction telemetry from an array of pipeline state objects.
+ *
+ * Friction is measured atrito (hook-level retries, heavy API usage) — it is
+ * telemetry, not knowledge. Entries carry `type: 'friction'` and are written to
+ * `.claude/.metrics/friction.json` by the session-knowledge hooks, never to
+ * `knowledge.json`.
+ *
+ * The honest count is `retryCount` (the actual measured retries) — there is no
+ * `occurrences` field, since "how many times the extractor re-read the same
+ * state" is a meaningless number.
+ *
+ * @param {object[]} stateObjects  Parsed .pipeline-states/*.json objects.
+ *                                 Each may have: specName, metrics.retries,
+ *                                 metrics.apiCalls, metrics.toolBreakdown
+ * @returns {{ type: string, name: string, description: string, source: string, tags: string[], retryCount?: number, apiCalls?: number, prescription?: string }[]}
+ */
+function extractFrictionFromStates(stateObjects) {
+  var friction = [];
 
   for (var i = 0; i < stateObjects.length; i++) {
     var state = stateObjects[i];
@@ -82,44 +110,46 @@ function extractPatternsFromStates(stateObjects) {
     var label = state.specName || state._file || 'unknown';
     var prescription = derivePrescription(metrics);
 
-    // High hook-retry count → lesson. Counts hook/sandbox events, not agent
-    // redispatches — a clean Pass@1 pipeline can still accumulate dozens.
+    // High hook-retry count → friction signal. Counts hook/sandbox events, not
+    // agent redispatches — a clean Pass@1 pipeline can still accumulate dozens.
     if (metrics.retries && metrics.retries > 2) {
       var retryEntry = {
-        type: 'convention',
+        type: 'friction',
         name: 'high-hook-retry-' + label,
         description: 'Pipeline triggered ' + metrics.retries + ' hook-level retries ' +
           '(sandbox/stash-pop/re-prompts — not agent redispatches). Tool breakdown: ' +
           JSON.stringify(metrics.toolBreakdown || {}),
         source: 'session-knowledge',
-        tags: ['hook-retry', 'pipeline', 'lesson'],
+        tags: ['hook-retry', 'pipeline', 'friction'],
+        retryCount: Number(metrics.retries) || 0,
       };
       if (prescription) {
         retryEntry.prescription = prescription;
         retryEntry.tags = retryEntry.tags.concat(['prescriptive']);
       }
-      patterns.push(retryEntry);
+      friction.push(retryEntry);
     }
 
-    // Heavy tool usage → optimization pattern
+    // Heavy tool usage → friction signal.
     var totalCalls = metrics.apiCalls || 0;
     if (totalCalls > 50) {
       var heavyEntry = {
-        type: 'pattern',
+        type: 'friction',
         name: 'heavy-pipeline-' + label,
         description: 'Pipeline used ' + totalCalls + ' API calls. Consider splitting into smaller scope.',
         source: 'session-knowledge',
-        tags: ['optimization', 'pipeline'],
+        tags: ['optimization', 'pipeline', 'friction'],
+        apiCalls: Number(totalCalls) || 0,
       };
       if (prescription) {
         heavyEntry.prescription = prescription;
         heavyEntry.tags = heavyEntry.tags.concat(['prescriptive']);
       }
-      patterns.push(heavyEntry);
+      friction.push(heavyEntry);
     }
   }
 
-  return patterns;
+  return friction;
 }
 
-module.exports = { extractPatternsFromStates, derivePrescription };
+module.exports = { extractPatternsFromStates, extractFrictionFromStates, derivePrescription };

@@ -259,14 +259,14 @@ AUSENTE}.
       template (subagent-tracker já os emite via `emitEvent`) — se o gap do sialia for install
       antigo, registrar em Concerns; senão, corrigir o wiring
 
-### Wave 4 — Knowledge despoluída (Status: BACKLOG)
+### Wave 4 — Knowledge despoluída (Status: DONE)
 
-- [ ] `session-knowledge.js` — parar de gravar `high-hook-retry-*` e `heavy-pipeline-*` com
+- [x] `session-knowledge.js` — parar de gravar `high-hook-retry-*` e `heavy-pipeline-*` com
       `type: convention`/`pattern`. Opção A: `type: 'friction'` no mesmo `knowledge.json`.
       Opção B: gravar em `.claude/.metrics/friction.json`, fora do `knowledge.json`. Decidir
       no PLAN — preferência por B (Knowledge fica 100% padrão/decisão real)
-- [ ] Remover/ignorar o campo `occurrences` para entradas de atrito (número sem sentido)
-- [ ] `knowledge.json` consumido pelo dashboard fica só com padrão/convenção/decisão reais
+- [x] Remover/ignorar o campo `occurrences` para entradas de atrito (número sem sentido)
+- [x] `knowledge.json` consumido pelo dashboard fica só com padrão/convenção/decisão reais
 
 ### Wave 5 — Dashboard: bugs (Status: BACKLOG)
 

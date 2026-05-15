@@ -1831,7 +1831,21 @@ describe("subagent-tracker.js explorer dedup", () => {
 // ─── knowledge-extract prescriptions ────────────────────────────────────────
 
 describe("knowledge-extract prescriptions", () => {
-  const { extractPatternsFromStates, derivePrescription } = require("../_lib/knowledge-extract.js");
+  const {
+    extractPatternsFromStates,
+    extractFrictionFromStates,
+    derivePrescription,
+  } = require("../_lib/knowledge-extract.js");
+
+  it("extractPatternsFromStates should NOT emit friction entries (atrito is not knowledge)", () => {
+    // Friction signals (high-hook-retry, heavy-pipeline) moved to friction.json.
+    const states = [{
+      specName: "login-feature",
+      metrics: { retries: 9, apiCalls: 99, toolBreakdown: { Bash: 9, Edit: 17, Agent: 3 } },
+    }];
+    const patterns = extractPatternsFromStates(states);
+    assert.equal(patterns.length, 0, "knowledge.json must stay free of friction telemetry");
+  });
 
   it("should emit L0-violation prescription when Bash+Edit dominate over Agent with high retries", () => {
     // Bash(9) + Edit(17) = 26; Agent(3)*3 = 9; 26 > 9. retries=4 > 2.
@@ -1844,10 +1858,13 @@ describe("knowledge-extract prescriptions", () => {
       },
     }];
 
-    const patterns = extractPatternsFromStates(states);
-    // retries > 2 triggers the high-hook-retry entry
-    const retryEntry = patterns.find(p => p.name === "high-hook-retry-login-feature");
+    const friction = extractFrictionFromStates(states);
+    // retries > 2 triggers the high-hook-retry friction entry
+    const retryEntry = friction.find(p => p.name === "high-hook-retry-login-feature");
     assert.ok(retryEntry, "Expected high-hook-retry entry");
+    assert.equal(retryEntry.type, "friction", "Friction entries carry type 'friction'");
+    assert.equal(retryEntry.retryCount, 4, "Honest retryCount field replaces occurrences");
+    assert.equal(retryEntry.occurrences, undefined, "No meaningless occurrences field");
     assert.ok(retryEntry.prescription, "Expected prescription field");
     assert.ok(
       /delegate investigation via Task\(general-purpose\)/.test(retryEntry.prescription),
@@ -1856,7 +1873,7 @@ describe("knowledge-extract prescriptions", () => {
     assert.ok(retryEntry.tags.includes("prescriptive"), "Tags should include 'prescriptive'");
     assert.ok(retryEntry.tags.includes("hook-retry"));
     assert.ok(retryEntry.tags.includes("pipeline"));
-    assert.ok(retryEntry.tags.includes("lesson"));
+    assert.ok(retryEntry.tags.includes("friction"));
     assert.ok(retryEntry.description.includes("4 hook-level retries"));
   });
 
@@ -1871,10 +1888,13 @@ describe("knowledge-extract prescriptions", () => {
       },
     }];
 
-    const patterns = extractPatternsFromStates(states);
+    const friction = extractFrictionFromStates(states);
     // apiCalls > 50 triggers heavy-pipeline; retries > 2 also triggers high-hook-retry.
-    const heavyEntry = patterns.find(p => p.name === "heavy-pipeline-big-refactor");
+    const heavyEntry = friction.find(p => p.name === "heavy-pipeline-big-refactor");
     assert.ok(heavyEntry, "Expected heavy-pipeline entry");
+    assert.equal(heavyEntry.type, "friction", "Friction entries carry type 'friction'");
+    assert.equal(heavyEntry.apiCalls, 81, "Honest apiCalls field");
+    assert.equal(heavyEntry.occurrences, undefined, "No meaningless occurrences field");
     assert.ok(heavyEntry.prescription, "Expected prescription field");
     assert.ok(
       /split into at least 2 smaller pipelines/.test(heavyEntry.prescription),
@@ -1901,8 +1921,8 @@ describe("knowledge-extract prescriptions", () => {
       },
     }];
 
-    const patterns = extractPatternsFromStates(states);
-    const retryEntry = patterns.find(p => p.name === "high-hook-retry-tweak-hell");
+    const friction = extractFrictionFromStates(states);
+    const retryEntry = friction.find(p => p.name === "high-hook-retry-tweak-hell");
     assert.ok(retryEntry, "Expected high-hook-retry entry");
     assert.ok(retryEntry.prescription, "Expected prescription field");
     assert.ok(
@@ -1924,8 +1944,8 @@ describe("knowledge-extract prescriptions", () => {
       },
     }];
 
-    const patterns = extractPatternsFromStates(states);
-    const retryEntry = patterns.find(p => p.name === "high-hook-retry-mild-case");
+    const friction = extractFrictionFromStates(states);
+    const retryEntry = friction.find(p => p.name === "high-hook-retry-mild-case");
     assert.ok(retryEntry, "Expected high-hook-retry entry");
     assert.equal(retryEntry.prescription, undefined, "No prescription when no heuristic matches");
     assert.ok(!retryEntry.tags.includes("prescriptive"),
