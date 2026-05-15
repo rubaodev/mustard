@@ -24,6 +24,8 @@ At the start of **PLAN** and **EXECUTE** only, run `bun .claude/scripts/diff-con
 
 ### ANALYZE Phase
 
+**Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+
 Run telemetry tag (silent, optional): `bun .claude/scripts/emit-subtraction.js --type analyze-diff-skip --note pipeline-start --spec {spec-name}`. This records the disciplinary subtraction (ANALYZE never runs diff-context.js — diff is always empty pre-work). Fail-open: hook absent = no-op.
 
 **Auto-sync (silent):** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
@@ -108,7 +110,8 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
    - `wave-plan.md` (table copied/adapted from the plans file, status column initialized to `queued` for all)
    - `wave-1-{role}/spec.md` — full detail (Status: draft, narrative copied)
    - `wave-N-{role}/spec.md` for N=2..total — skeleton only (Status: queued, Title + 1-line summary)
-4. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
+4. **Create `.claude/.pipeline-states/{spec-name}.json`** — a wave plan has no root `spec.md`, so this scaffold is the only place its pipeline state is born. Fields: `specName`, `status: "draft"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`, `isWavePlan: true`, `currentWave: 1`, `totalWaves: <wave count>`, `completedWaves: []`, `failedWaves: []`. `/mustard:approve` § Step 3b expects this file to already exist.
+5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
 
 #### Full Scope
 

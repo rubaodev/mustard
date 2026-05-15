@@ -91,6 +91,8 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
         - Inform user inline: `Expandi wave-{N} stub via Plan agent. Avançando para EXECUTE.`
      4. Proceed to step 4 with the now-expanded spec.
 4. **Read entire operational spec** (single Read) — extract header (Status/Phase/Checkpoint) + count `[x]` vs `[ ]` + identify agents/waves from headers `### {Agent} Agent (Wave {N})`
+
+   4a. **Phase marker on ANALYZE resume:** if the extracted `Phase` is `ANALYZE`, run `bun .claude/scripts/emit-phase.js --spec {specName} --to ANALYZE`. A pipeline interrupted mid-ANALYZE has no pipeline-state file yet, so `pipeline-phase.js` never recorded it — emit the marker here. Idempotent (no duplicate if already emitted) and fail-open. Skip for any other phase (those already have a pipeline-state file the hook tracks).
 5. If `.claude/.pipeline-states/{specName}.json` exists (single-spec mode; wave-plan mode already loaded it in step 3) → read for current wave + scope + `explorationSummary` + `decisions`. Optionally enrich with harness view (fail-open). Validate integrity (trust spec header on mismatch).
 6. **Present Handoff Summary** — compiled from pipeline state + spec + agent memory + git context.
 

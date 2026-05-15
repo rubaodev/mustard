@@ -239,15 +239,15 @@ AUSENTE}.
 - [x] Alinhar `templates/CLAUDE.md`, `.claude/CLAUDE.md` e `pipeline-config.md`: a tabela de
       fases passa a citar o canônico e linkar `canonical-phases.md`
 
-### Wave 2 — ANALYZE deixa de ser silenciosa (Status: BACKLOG)
+### Wave 2 — ANALYZE deixa de ser silenciosa (Status: DONE)
 
-- [ ] `feature/SKILL.md` — no início da fase ANALYZE, emitir
+- [x] `feature/SKILL.md` — no início da fase ANALYZE, emitir
       `pipeline.phase {from: null, to: ANALYZE}` via `bun .claude/scripts/emit-*` (mesmo padrão
       cross-shell de `emit-subtraction.js`); reusar `emit-subtraction.js` generalizado OU
       pequeno `emit-phase.js` se preferir separação
-- [ ] `bugfix/SKILL.md` — idem ao entrar em ANALYZE
-- [ ] `resume/SKILL.md` — ao retomar pipeline cuja fase corrente é ANALYZE, emitir o marcador
-- [ ] Garantir idempotência: não emitir ANALYZE duas vezes para a mesma spec/sessão
+- [x] `bugfix/SKILL.md` — idem ao entrar em ANALYZE
+- [x] `resume/SKILL.md` — ao retomar pipeline cuja fase corrente é ANALYZE, emitir o marcador
+- [x] Garantir idempotência: não emitir ANALYZE duas vezes para a mesma spec/sessão
 
 ### Wave 3 — retry.attempt vira evento (Status: BACKLOG)
 

@@ -33,6 +33,8 @@ This step is silent when there's nothing to audit — no output if `active/` is 
 
 ### ANALYZE (diagnose + assess)
 
+**Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
+
 Run telemetry tag (silent, optional): `bun .claude/scripts/emit-subtraction.js --type analyze-diff-skip --note pipeline-start --spec {spec-name}`. Records the disciplinary subtraction (ANALYZE skips diff-context.js). Fail-open.
 
 1. **AUTO-SYNC:** Run `bun .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `bun .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
