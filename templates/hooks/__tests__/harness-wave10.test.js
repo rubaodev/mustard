@@ -31,8 +31,8 @@ const CLOSE_GATE = path.join(HOOKS_DIR, 'close-gate.js');
 const QA_RUN = path.join(SCRIPTS_DIR, 'qa-run.js');
 
 const IS_WIN = process.platform === 'win32';
-const EXIT_PASS = IS_WIN ? 'cmd /c exit 0' : 'sh -c "exit 0"';
-const EXIT_FAIL = IS_WIN ? 'cmd /c exit 1' : 'sh -c "exit 1"';
+const EXIT_PASS = 'node -e "process.exit(0)"';
+const EXIT_FAIL = 'node -e "process.exit(1)"';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ function writeQAResultEvent(projectDir, specName, overall, criteria = []) {
 }
 
 function makePipelineStateInput(projectDir, specName, phase, extraFields = {}) {
-  const content = JSON.stringify({ spec: specName, specName, phase, ...extraFields });
+  const content = JSON.stringify({ spec: specName, specName, phaseName: phase, phase: 99, ...extraFields });
   const filePath = path.join(projectDir, '.claude', '.pipeline-states', specName + '.json');
   return {
     tool: 'Write',
@@ -517,5 +517,89 @@ describe('Wave 10 — close-gate: QA_GATE_MODE=off → skip QA check entirely', 
     const decision = result.response ? result.response.permissionDecision : null;
     assert.notEqual(decision, 'deny',
       `MUSTARD_QA_GATE_MODE=off must skip QA check, got: ${decision}`);
+  });
+});
+
+// ── Regression: extractPhase reads real pipeline-state shape ─────────────────
+
+describe('Wave 10 — close-gate regression: real pipeline-state shape triggers gate', () => {
+  let tmp;
+  beforeEach(() => { tmp = makeProjectDir(); });
+  afterEach(() => { cleanDir(tmp); });
+
+  it('denies CLOSE with real pipeline-state shape (phaseName string + numeric phase)', async () => {
+    writeMustardJson(tmp, { testCommand: EXIT_PASS });
+    // Build input directly — explicit field shape proves gate reads phaseName, not numeric phase.
+    const content = JSON.stringify({ spec: 'real-shape-spec', specName: 'real-shape-spec', phase: 3, phaseName: 'CLOSE' });
+    const filePath = path.join(tmp, '.claude', '.pipeline-states', 'real-shape-spec.json');
+    const input = {
+      tool: 'Write',
+      tool_input: { file_path: filePath, content },
+      cwd: tmp,
+    };
+    // No qa.result event written — gate should deny.
+
+    const result = await runHook(CLOSE_GATE, input, {
+      projectDir: tmp,
+      env: {
+        MUSTARD_CLOSE_GATE_MODE: 'strict',
+        MUSTARD_QA_GATE_MODE: 'strict',
+      },
+    });
+
+    assert.equal(result.code, 0, 'hook must exit 0');
+    assert.ok(result.response, `expected hookSpecificOutput, stdout: ${result.stdout}`);
+    assert.equal(result.response.permissionDecision, 'deny',
+      `expected deny — trigger was dead without phaseName fix, got: ${result.response.permissionDecision}`);
+  });
+
+  it('Portuguese heading "## Critérios de Aceitação" is recognized → overall=pass', async () => {
+    // Regression: pt-language specs use "Critérios de Aceitação" per spec-language HARD RULE.
+    // extractACSection must match both the English and Portuguese canonical headings.
+    const ptSpec = `# Feature: pt-spec
+### Status: implementing | Phase: EXECUTE | Scope: light
+
+## Resumo
+Spec em português para testar heading pt.
+
+## Critérios de Aceitação
+
+- [ ] AC-1: Build OK — Command: \`${EXIT_PASS}\`
+`;
+    writeSpec(tmp, 'pt-ac-spec', ptSpec);
+
+    const result = await runScript(QA_RUN, ['--spec', 'pt-ac-spec', '--json'], {
+      projectDir: tmp,
+      env: { MUSTARD_DISABLED_HOOKS: 'all' },
+    });
+
+    assert.equal(result.code, 0, `qa-run should exit 0 (pass), stderr: ${result.stderr}`);
+    assert.ok(result.parsed, `expected JSON output, stdout: ${result.stdout}`);
+    assert.equal(result.parsed.payload.overall, 'pass',
+      `pt heading must be recognized — expected pass, got: ${result.parsed.payload.overall}`);
+    assert.ok(Array.isArray(result.parsed.payload.criteria) && result.parsed.payload.criteria.length >= 1,
+      `expected ≥1 criterion, got: ${JSON.stringify(result.parsed.payload.criteria)}`);
+    assert.equal(result.parsed.payload.criteria[0].id, 'AC-1');
+    assert.equal(result.parsed.payload.criteria[0].status, 'pass');
+  });
+
+  it('allows CLOSE when qa.result overall=skip (no AC)', async () => {
+    writeMustardJson(tmp, { testCommand: EXIT_PASS });
+    // Emit a skip qa.result event
+    writeQAResultEvent(tmp, 'skip-qa-spec', 'skip', []);
+    const input = makePipelineStateInput(tmp, 'skip-qa-spec', 'CLOSE');
+
+    const result = await runHook(CLOSE_GATE, input, {
+      projectDir: tmp,
+      env: {
+        MUSTARD_CLOSE_GATE_MODE: 'strict',
+        MUSTARD_QA_GATE_MODE: 'strict',
+      },
+    });
+
+    assert.equal(result.code, 0, 'hook must exit 0');
+    const decision = result.response ? result.response.permissionDecision : null;
+    assert.notEqual(decision, 'deny',
+      `expected allow for qa.result=skip, got: ${decision}`);
   });
 });

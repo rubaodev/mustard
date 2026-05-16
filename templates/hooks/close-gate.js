@@ -176,7 +176,14 @@ function extractPhase(content) {
   if (!content) return null;
   try {
     const obj = JSON.parse(content);
-    return obj && typeof obj.phase === 'string' ? obj.phase.toUpperCase() : null;
+    if (!obj) return null;
+    // Pipeline-state files use a numeric `phase` index plus a string
+    // `phaseName`. Legacy fixtures use a string `phase`. Read whichever
+    // string field is present.
+    const raw = typeof obj.phaseName === 'string' ? obj.phaseName
+      : typeof obj.phase === 'string' ? obj.phase
+      : null;
+    return raw ? raw.toUpperCase() : null;
   } catch (_) {
     return null;
   }
@@ -463,6 +470,10 @@ process.stdin.on('end', () => {
           }) + '\n');
           process.exit(0);
         }
+      } else if (qaResult.overall === 'skip') {
+        // No testable AC — QA is advisory (matches /mustard:qa § Step 5).
+        process.stderr.write(`[close-gate] WARN: QA skipped for spec "${specName}" (no acceptance criteria) — proceeding.\n`);
+        // fall through to build/test checks
       } else if (qaResult.overall !== 'pass') {
         const failedStr = qaResult.failedCount > 0 ? `${qaResult.failedCount} criteria failed` : `overall=${qaResult.overall}`;
         const qaReason = specName

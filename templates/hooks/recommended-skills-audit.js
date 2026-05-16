@@ -104,7 +104,7 @@ process.stdin.on('end', () => {
     const data = JSON.parse(input || '{}');
     const event = data.hook_event_name || '';
     const toolName = data.tool_name || '';
-    if (event !== 'PreToolUse' || toolName !== 'Task') {
+    if (event !== 'PreToolUse' || (toolName !== 'Task' && toolName !== 'Agent')) {
       process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }) + '\n');
       process.exit(0);
     }

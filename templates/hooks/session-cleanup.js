@@ -152,8 +152,20 @@ function cleanPipelineStates(claudeDir) {
 function isSpecDone(claudeDir, specName) {
   // Check completed/ directory
   if (fs.existsSync(path.join(claudeDir, 'spec', 'completed', specName))) return true;
+  const activeDir = path.join(claudeDir, 'spec', 'active', specName);
+  // Wave plans have wave-plan.md at the root instead of spec.md — a live wave
+  // plan is NOT done just because spec.md is absent. When it finishes, CLOSE
+  // moves the dir to completed/ (caught above), so a wave-plan.md still in
+  // active/ means the plan is in progress and its state must survive.
+  const wavePlanFile = path.join(activeDir, 'wave-plan.md');
+  try {
+    if (fs.existsSync(wavePlanFile)) {
+      const head = fs.readFileSync(wavePlanFile, 'utf8').slice(0, 500);
+      return /Status:\s*(completed|done)\b/i.test(head);
+    }
+  } catch { return false; }
   // Check active spec status header
-  const specFile = path.join(claudeDir, 'spec', 'active', specName, 'spec.md');
+  const specFile = path.join(activeDir, 'spec.md');
   try {
     if (!fs.existsSync(specFile)) return true; // spec deleted = done
     const head = fs.readFileSync(specFile, 'utf8').slice(0, 500);

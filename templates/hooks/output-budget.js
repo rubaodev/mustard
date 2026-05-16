@@ -61,8 +61,8 @@ process.stdin.on('end', () => {
     const data = JSON.parse(input);
     const toolName = data.tool_name || '';
 
-    // Only act on Task completions
-    if (toolName !== 'Task') { process.exit(0); }
+    // Only act on Task/Agent completions
+    if (toolName !== 'Task' && toolName !== 'Agent') { process.exit(0); }
 
     const toolInput    = data.tool_input    || {};
     const toolResponse = data.tool_response || '';

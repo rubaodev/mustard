@@ -69,8 +69,9 @@ function resolveShell() {
  * or null if the section is not found.
  */
 function extractACSection(markdown) {
-  // Find "## Acceptance Criteria" heading (case-insensitive)
-  const headingIdx = markdown.search(/^##\s+Acceptance\s+Criteria\s*$/im);
+  // Match either English ("## Acceptance Criteria") or Portuguese ("## Critérios de Aceitação").
+  // The pt heading is a HARD RULE when spec Lang: pt — AC item lines stay English regardless.
+  const headingIdx = markdown.search(/^##\s+(?:Acceptance\s+Criteria|Critérios\s+de\s+Aceitação)\s*$/im);
   if (headingIdx < 0) return null;
 
   const fromHere = markdown.slice(headingIdx);
@@ -255,6 +256,9 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
       report: `## QA Report for spec: ${spec}\n\n**SKIP** — no Acceptance Criteria section in spec.\n`,
     };
     process.stderr.write(`[qa-run] WARN: ${result.skippedReason}\n`);
+    try {
+      emit('qa.result', { spec, overall: 'skip', criteria: [] }, { cwd, actor: { kind: 'script', id: 'qa-run' } });
+    } catch (_) {}
     return result;
   }
 
@@ -268,6 +272,9 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
       report: `## QA Report for spec: ${spec}\n\n**SKIP** — no parseable AC items found.\n`,
     };
     process.stderr.write(`[qa-run] WARN: ${result.skippedReason}\n`);
+    try {
+      emit('qa.result', { spec, overall: 'skip', criteria: [] }, { cwd, actor: { kind: 'script', id: 'qa-run' } });
+    } catch (_) {}
     return result;
   }
 

@@ -105,8 +105,8 @@ process.stdin.on('end', () => {
 
     const tool = data.tool_name || '';
 
-    // A Task dispatch IS delegation — reset the main-context counter.
-    if (tool === 'Task') {
+    // A Task/Agent dispatch IS delegation — reset the main-context counter.
+    if (tool === 'Task' || tool === 'Agent') {
       state.mainCount = 0;
       state.lastResetAt = new Date().toISOString();
       writeState(projectDir, state);

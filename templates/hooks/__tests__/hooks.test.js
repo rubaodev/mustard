@@ -434,6 +434,112 @@ describe("subagent-tracker.js memory injection", () => {
   });
 });
 
+// ─── subagent-tracker.js (wave-slice subtraction) ───────────────────────────
+
+describe("subagent-tracker.js wave-slice subtraction", () => {
+  const hook = "subagent-tracker.js";
+
+  function setup(tmpDir, phaseName) {
+    const statesDir = path.join(tmpDir, ".claude", ".pipeline-states");
+    fs.mkdirSync(statesDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".harness"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".agent-state"), { recursive: true });
+    fs.writeFileSync(path.join(statesDir, "demo.json"), JSON.stringify({
+      v: 1,
+      specName: "demo",
+      phaseName,
+      wave: 1,
+      status: "implementing",
+    }), "utf8");
+    // Monolithic spec with a Wave 1 section.
+    const specDir = path.join(tmpDir, ".claude", "spec", "active", "demo");
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(path.join(specDir, "spec.md"),
+      "# Spec\n\n## Summary\nLots of context here that the agent never sees.\n" +
+      "More omitted prose to make the omission measurable and non-zero.\n\n" +
+      "### Backend Agent (Wave 1)\n- [ ] Step 1\n- [ ] Step 2\n\n" +
+      "### Frontend Agent (Wave 2)\n- [ ] Step A\n", "utf8");
+  }
+
+  async function dispatch(tmpDir) {
+    return runHook(hook, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: {
+        subagent_type: "general-purpose",
+        description: "wave 1 backend",
+        prompt: "Implement the backend wave.",
+      },
+      cwd: tmpDir,
+    }, { cwd: tmpDir, projectDir: tmpDir });
+  }
+
+  function readEvents(tmpDir) {
+    const evFile = path.join(tmpDir, ".claude", ".harness", "events.jsonl");
+    if (!fs.existsSync(evFile)) return [];
+    return fs.readFileSync(evFile, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l));
+  }
+
+  it("should emit mustard.subtraction.applied when phase is EXECUTE", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wave-slice-"));
+    setup(tmpDir, "EXECUTE");
+    try {
+      const r = await dispatch(tmpDir);
+      assert.equal(r.code, 0);
+      const sub = readEvents(tmpDir).find(e => e.event === "mustard.subtraction.applied");
+      assert.ok(sub, "mustard.subtraction.applied must be emitted");
+      assert.equal(sub.payload.type, "wave-slice");
+      assert.equal(sub.payload.measured, true);
+      assert.ok(sub.payload.bytes_omitted > 0, "bytes_omitted must be positive");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should NOT emit subtraction when phase is not EXECUTE", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wave-slice-neg-"));
+    setup(tmpDir, "PLAN");
+    try {
+      const r = await dispatch(tmpDir);
+      assert.equal(r.code, 0);
+      const sub = readEvents(tmpDir).find(e => e.event === "mustard.subtraction.applied");
+      assert.ok(!sub, "no subtraction event outside EXECUTE phase");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should emit for wave-plan state that uses currentWave (not wave)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wave-slice-cw-"));
+    const statesDir = path.join(tmpDir, ".claude", ".pipeline-states");
+    fs.mkdirSync(statesDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".harness"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".claude", ".agent-state"), { recursive: true });
+    // Wave-plan pipelines store the active wave in `currentWave`, not `wave`.
+    fs.writeFileSync(path.join(statesDir, "demo.json"), JSON.stringify({
+      v: 1, specName: "demo", phaseName: "EXECUTE", currentWave: 1,
+      isWavePlan: true, status: "implementing",
+    }), "utf8");
+    const specDir = path.join(tmpDir, ".claude", "spec", "active", "demo");
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(path.join(specDir, "spec.md"),
+      "# Spec\n\n## Summary\nLots of context here that the agent never sees.\n" +
+      "More omitted prose to make the omission measurable and non-zero.\n\n" +
+      "### Backend Agent (Wave 1)\n- [ ] Step 1\n- [ ] Step 2\n\n" +
+      "### Frontend Agent (Wave 2)\n- [ ] Step A\n", "utf8");
+    try {
+      const r = await dispatch(tmpDir);
+      assert.equal(r.code, 0);
+      const sub = readEvents(tmpDir).find(e => e.event === "mustard.subtraction.applied");
+      assert.ok(sub, "must emit even when state uses currentWave");
+      assert.equal(sub.payload.wave, 1);
+      assert.ok(sub.payload.bytes_omitted > 0, "bytes_omitted must be positive");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── metrics-tracker.js (sidecar + no-recursion) ────────────────────────────
 
 describe("metrics-tracker.js", () => {

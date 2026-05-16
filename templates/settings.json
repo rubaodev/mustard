@@ -166,7 +166,7 @@
         ]
       },
       {
-        "matcher": "Task",
+        "matcher": "Task|Agent",
         "hooks": [
           {
             "type": "command",
@@ -224,7 +224,7 @@
         ]
       },
       {
-        "matcher": "Bash|Write|Edit|Task|Read",
+        "matcher": "Bash|Write|Edit|Task|Agent|Read",
         "hooks": [
           {
             "type": "command",
@@ -254,7 +254,7 @@
         ]
       },
       {
-        "matcher": "Task",
+        "matcher": "Task|Agent",
         "hooks": [
           {
             "type": "command",

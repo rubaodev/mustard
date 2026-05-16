@@ -77,7 +77,10 @@ function readPipelineState(projectDir, freshnessMs) {
     const st = JSON.parse(fs.readFileSync(newest, 'utf8'));
     out.spec = st.specName || st.spec || st.name || null;
     out.phase = st.phaseName || st.phase || null;
+    // Wave-plan pipelines store the active wave in `currentWave`; single specs
+    // use `wave`. Read both so the subtraction emitter works for either layout.
     if (typeof st.wave === 'number') out.wave = st.wave;
+    else if (typeof st.currentWave === 'number') out.wave = st.currentWave;
     return out;
   } catch {
     return out;
@@ -95,9 +98,10 @@ process.stdin.on('end', () => {
     const projectDir = data.cwd || process.cwd();
     const stateDir = path.join(projectDir, '.claude', '.agent-state');
 
-    if (event === 'PreToolUse' && data.tool_name === 'Task') {
+    const isDispatchTool = data.tool_name === 'Task' || data.tool_name === 'Agent';
+    if (event === 'PreToolUse' && isDispatchTool) {
       handlePreToolUse(data, stateDir);
-    } else if (event === 'PostToolUse' && data.tool_name === 'Task') {
+    } else if (event === 'PostToolUse' && isDispatchTool) {
       handlePostToolUse(data, stateDir);
     } else if (event === 'SubagentStart') {
       handleStart(data, stateDir);
@@ -215,6 +219,50 @@ function handlePreToolUse(data, stateDir) {
         });
       }
     } catch (_) { /* fail-silent */ }
+
+    // ── mustard.subtraction.applied (wave-slice) ───────────────────────────
+    // Every EXECUTE dispatch receives only its wave's spec slice, never the
+    // full spec. That omission is a real, per-Task economy — but it is only
+    // observable HERE, in the hook that sees the dispatch. The orchestrator
+    // (an LLM) used to emit it by hand and almost never remembered, so the
+    // metric stayed zero. One event per Task: N agents in a wave = N real
+    // omissions, each a separate API context.
+    try {
+      const isExecute = ps.phase === 'EXECUTE' || ps.phase === 3;
+      if (isExecute && typeof ps.wave === 'number' && ps.wave >= 1 && ps.spec) {
+        let specPath = path.join(projectDir, '.claude', 'spec', 'active', ps.spec, 'spec.md');
+        if (!fs.existsSync(specPath)) {
+          // wave-plan layout: the spec dir holds per-wave sub-folders.
+          const specDir = path.join(projectDir, '.claude', 'spec', 'active', ps.spec);
+          const waveRe = new RegExp(`^wave-${ps.wave}-`);
+          const sub = fs.readdirSync(specDir).find(d => waveRe.test(d));
+          specPath = sub ? path.join(specDir, sub, 'spec.md') : null;
+        }
+        if (specPath && fs.existsSync(specPath)) {
+          const { measure } = require('../scripts/spec-extract.js');
+          const m = measure(specPath, ps.wave);
+          // slice_bytes === 0 means the wave section was not found — we cannot
+          // measure the omission honestly, so we emit nothing.
+          if (m && m.slice_bytes !== 0) {
+            emitEvent('mustard.subtraction.applied', {
+              type: 'wave-slice',
+              bytes_omitted: m.omitted_bytes,
+              full_bytes: m.full_bytes,
+              slice_bytes: m.slice_bytes,
+              prompt_bytes: prefix_bytes,
+              wave: ps.wave,
+              measured: true,
+            }, {
+              cwd: projectDir,
+              sessionId,
+              wave,
+              spec: ps.spec,
+              actor: { kind: 'hook', id: 'subagent-tracker' },
+            });
+          }
+        }
+      }
+    } catch (_) {} // fail-open: subtraction telemetry is advisory
   } catch (_) {} // fail-open
 
   // ── skill_hit_rate: parse recommended_skills from Task prompt ─────────────

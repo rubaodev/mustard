@@ -135,6 +135,27 @@ describe('subagent-tracker — agent.start emission', () => {
     assert.equal(agentStart.sessionId, 's-w2-start');
   });
 
+  it('emits agent.start when dispatched via the Agent tool (post-rename)', async () => {
+    const result = await runHook('subagent-tracker.js', {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Agent',
+      cwd: tmp,
+      session_id: 's-w2-agent',
+      tool_input: {
+        description: 'Explore the codebase for auth patterns',
+        subagent_type: 'Explore',
+        prompt: 'Find all auth-related files.',
+      },
+    }, { projectDir: tmp });
+
+    assert.equal(result.code, 0, `hook exited non-zero: ${result.stderr}`);
+
+    const events = readEvents(tmp);
+    const agentStart = events.find((e) => e.event === 'agent.start');
+    assert.ok(agentStart, 'agent.start must be emitted for the Agent tool, not just Task');
+    assert.equal(agentStart.actor.type, 'Explore');
+  });
+
   it('fail-open: hook exits 0 even when harness-event is disabled', async () => {
     const result = await runHook('subagent-tracker.js', {
       hook_event_name: 'PreToolUse',
@@ -155,22 +176,20 @@ describe('subagent-tracker — agent.start emission', () => {
   });
 });
 
-// ─── subagent-tracker: agent.stop (SubagentStop) ────────────────────────────
+// ─── subagent-tracker: agent.stop (PostToolUse/Agent) ───────────────────────
 
 describe('subagent-tracker — agent.stop emission', () => {
   let tmp;
   beforeEach(() => { tmp = makeProjectDir(os.tmpdir()); });
   afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
 
-  it('emits agent.stop event on SubagentStop', async () => {
-    const agentId = 'ag-test-001';
-
+  it('emits agent.stop event when an Agent dispatch returns', async () => {
     const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStop',
-      agent_id: agentId,
-      agent_type: 'general-purpose',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Agent',
       cwd: tmp,
       session_id: 's-w2-stop',
+      tool_input: { subagent_type: 'general-purpose' },
       tool_response: { output: 'Implemented the login endpoint and wrote tests. All passing. No issues found.' },
     }, { projectDir: tmp });
 

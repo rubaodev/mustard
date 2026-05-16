@@ -147,20 +147,14 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
    - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2):
      1. Run `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` to get the wave slice; save as `{spec_slice}`.
      2. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{spec_slice}` + the diff (NOT the full spec, NOT the full touched files) into the agent prompt.
-     3. Record BOTH subtractions (measured, never estimated):
-        - `bun .claude/scripts/emit-subtraction.js --type wave-slice --measure-spec {spec_path} --wave {N} --spec {spec-name}` — spec markdown not re-sent (small, marginal).
-        - `bun .claude/scripts/emit-subtraction.js --type diff-vs-full --measure-diff .claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md --wave {N} --spec {spec-name}` — **the dominant economy:** full size of every file the diff touches minus the diff size. Code files dwarf spec markdown.
    - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
 4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
 
 #### Wave Slice Injection
 
-Entre waves, o orquestrador NÃO reinjeta a spec inteira nem os arquivos de código completos nos prompts dos agentes — isso desperdiça tokens em conteúdo que a wave atual não precisa. Duas subtractions acontecem aqui:
+Entre waves, o orquestrador NÃO reinjeta a spec inteira nem os arquivos de código completos nos prompts dos agentes — `spec-extract.js` recorta só a seção da wave (ou, em wave-plan, a sub-spec inteira) e o `git diff` cacheado substitui os arquivos full.
 
-1. **wave-slice** — `spec-extract.js` recorta só a seção da wave (ou, em wave-plan, a sub-spec inteira da wave). Economia pequena: specs markdown são minúsculas. Medido por `emit-subtraction --type wave-slice --measure-spec`.
-2. **diff-vs-full** — em vez de reenviar o conteúdo completo de cada arquivo que as waves anteriores tocaram, o orquestrador injeta só o `git diff` cacheado. **Esta é a economia dominante** — arquivos de código somam uma ordem de grandeza mais que o spec. Medido por `emit-subtraction --type diff-vs-full --measure-diff`, que soma o tamanho full de cada arquivo do diff e subtrai o tamanho do diff.
-
-`emit-subtraction.js` mede sozinho (`--measure-spec` / `--measure-diff`) — o orquestrador NÃO calcula bytes na mão. Fail-open: se `spec-extract.js` ou o arquivo de diff faltar, cai pra spec/arquivos full e segue (a subtraction simplesmente não é registrada — honesto: se a omissão não aconteceu, não há evento).
+A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracker.js` em todo despacho de Task na fase EXECUTE — o orquestrador não faz nada. Fail-open: se a omissão não aconteceu (seção da wave não medível), nenhum evento é registrado.
 
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 
@@ -202,7 +196,7 @@ After each agent returns, check the return value for an escalation status before
 
 If two or more agents in the same wave return `CONCERN`, surface all concerns together before dispatching the next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing for the full status table.
 
-### Step 4: Validate, Review & Complete
+### Step 4: Validate, Review, QA & Complete
 
 18. **VALIDATE** — Parse agent results: Backend→`dotnet build`, Frontend→`pnpm build`, Mobile→`fvm flutter analyze`. All passed → next. Failed → **granular retry** (see below).
 19. **REVIEW (MANDATORY — NEVER SKIP):**
@@ -219,6 +213,19 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
 Extract CRITICAL findings verbatim from review return (or harness view). Build retry context using Mode=fix-loop (K=1 or 2). Dispatch same subagent_type + model. Re-dispatch review after. Max 2 fix-loops → STOP.
 
 → See `../../../refs/resume/fix-loop-wave.md`
+
+### Step 19c: QA Phase (Wave 10) — MANDATORY
+
+After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE directly — `close-gate.js` denies CLOSE without a passing `qa.result` event.
+
+1. Update pipeline state via Write/Edit: `phaseName: "QA"`.
+2. Run `bun .claude/scripts/qa-run.js --spec {specName}`. For wave plans, `{specName}` is the wave-plan directory name.
+3. Branch on `overall`:
+   - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then update pipeline state via Write/Edit with `phaseName: "CLOSE"` (this Write triggers `close-gate.js`, which verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
+   - **fail** — extract the failing AC list and re-dispatch via the Step 19b Fix Loop Dispatch Protocol, then re-run this step. Maximum 3 QA iterations.
+   - **skip** (no Acceptance Criteria section) — inform inline `QA pulado — spec sem Acceptance Criteria`, then proceed to Step 20.
+4. After 3 failed QA iterations → `AskUserQuestion`: "(a) corrigir manualmente e repetir, (b) relaxar o AC na spec, (c) abortar pipeline."
+5. Visual: `[v] EXECUTE  [v] REVIEW  [>] QA  [ ] CLOSE`.
 
 20. **CLOSE:**
     - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
@@ -258,3 +265,4 @@ On pause: write `pausedAt`/`pauseReason`/`nextAction` to pipeline state, then `m
 - ALWAYS read `.claude/pipeline-config.md` for agent/wave/model config — NEVER hardcode project-specific values
 - ALWAYS use agent-prompt template — NEVER build prompts from scratch
 - ALWAYS execute wave transitions between waves
+- ALWAYS run QA (Step 19c) after REVIEW and before CLOSE — NEVER go REVIEW→CLOSE directly

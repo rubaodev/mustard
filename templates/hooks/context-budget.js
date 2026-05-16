@@ -117,7 +117,7 @@ process.stdin.on('end', () => {
     const prompt = toolInput.prompt || '';
 
     // ── ENFORCEMENT: block over-budget Task dispatches ──────────────────────
-    if (event === 'PreToolUse' && toolName === 'Task' && prompt) {
+    if (event === 'PreToolUse' && (toolName === 'Task' || toolName === 'Agent') && prompt) {
       const subagentType = toolInput.subagent_type || '';
       const description  = toolInput.description   || '';
       const budget = getBudget(subagentType, description);
