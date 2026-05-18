@@ -6,5 +6,9 @@
   "2026-05-14-auto-wave-plan-and-tree": "QA",
   "2026-05-14-contract-plan-roadmap-w2-w12": "PLAN",
   "2026-05-14-prompt-prefix-metrics": "CLOSE",
-  "2026-05-15-honest-prompt-economy": "EXECUTE"
+  "2026-05-15-honest-prompt-economy": "EXECUTE",
+  "2026-05-15-observability-honest-value": "EXECUTE",
+  "2026-05-15-prompt-economy-auto-subtraction": "EXECUTE",
+  "2026-05-15-qa-phase-never-runs": "QA",
+  "2026-05-15-verification-stats": "PLAN"
 }

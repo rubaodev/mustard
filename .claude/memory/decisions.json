@@ -258,6 +258,76 @@
       "content": "**Não tocar em sync-detect**: a detecção atual já roda em <2s no Sialia. Otimização aqui não vale o blast radius.",
       "source": "spec:2026-05-13-scan-perf-pre-compute",
       "context": ""
+    },
+    {
+      "id": "decision-1778844669793",
+      "timestamp": "2026-05-15T11:31:09.793Z",
+      "content": "REVIEW reconhecida como fase de 1a classe no vocabulario canonico (nao sub-passo de EXECUTE) — ja emite 37 eventos reais; esconde-la era o bug.",
+      "source": "2026-05-15-observability-honest-value",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778844669918",
+      "timestamp": "2026-05-15T11:31:09.918Z",
+      "content": "Telemetria de atrito (high-hook-retry/heavy-pipeline) sai do knowledge.json (Opcao B) — Knowledge e padroes/licoes reais, nao contador de retry; misturar tornou a pagina inutil.",
+      "source": "2026-05-15-observability-honest-value",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778844670027",
+      "timestamp": "2026-05-15T11:31:10.027Z",
+      "content": "Pagina Prompt Economy fundida em Telemetria — e drill-down da mesma fonte (usePromptEconomy); duas paginas geravam divergencia de numero (901KB vs 1.7MB).",
+      "source": "2026-05-15-observability-honest-value",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778845122186",
+      "timestamp": "2026-05-15T11:38:42.186Z",
+      "content": "**REVIEW vira fase reconhecida**, não sub-passo escondido de EXECUTE. Motivo: já emite 37",
+      "source": "spec:2026-05-15-observability-honest-value",
+      "context": ""
+    },
+    {
+      "id": "decision-1778845122335",
+      "timestamp": "2026-05-15T11:38:42.335Z",
+      "content": "**ANALYZE emitida pelo SKILL, não por hook.** Motivo: ANALYZE roda no parent antes de",
+      "source": "spec:2026-05-15-observability-honest-value",
+      "context": ""
+    },
+    {
+      "id": "decision-1778845122446",
+      "timestamp": "2026-05-15T11:38:42.446Z",
+      "content": "**Atrito sai do `knowledge.json` (Opção B preferida).** Motivo: Knowledge é \"padrões e",
+      "source": "spec:2026-05-15-observability-honest-value",
+      "context": ""
+    },
+    {
+      "id": "decision-1778845122553",
+      "timestamp": "2026-05-15T11:38:42.553Z",
+      "content": "**Prompt Economy é fundida em Telemetria, não mantida como página irmã.** Motivo: é",
+      "source": "spec:2026-05-15-observability-honest-value",
+      "context": ""
+    },
+    {
+      "id": "decision-1778845122656",
+      "timestamp": "2026-05-15T11:38:42.656Z",
+      "content": "**Home vira placar de ROI.** Motivo: o objetivo declarado do usuário é \"provar que",
+      "source": "spec:2026-05-15-observability-honest-value",
+      "context": ""
+    },
+    {
+      "id": "decision-1778865736568",
+      "timestamp": "2026-05-15T17:22:16.568Z",
+      "content": "Subtraction events (mustard.subtraction.applied) emitted from subagent-tracker.js hook on PreToolUse(Task) instead of orchestrator running emit-subtraction.js manually — discipline-dependent emission is structurally unreliable",
+      "source": "2026-05-15-prompt-economy-auto-subtraction",
+      "context": "approved at PLAN phase"
+    },
+    {
+      "id": "decision-1778865736737",
+      "timestamp": "2026-05-15T17:22:16.737Z",
+      "content": "Per-Task-dispatch emission with no per-wave idempotency — counterfactual is naive orchestrator pasting full spec into every Task prompt, so N agents in a wave = N real omissions",
+      "source": "2026-05-15-prompt-economy-auto-subtraction",
+      "context": "approved at PLAN phase"
     }
   ]
 }
