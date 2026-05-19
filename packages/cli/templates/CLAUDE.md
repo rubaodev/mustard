@@ -67,8 +67,7 @@ Bun (>=1.2.0), CommonJS, no external dependencies. Enforcement runs as the singl
 bun test hooks/__tests__/hooks.test.js
 
 # Subproject discovery (outputs JSON)
-bun scripts/sync-detect.js
-bun scripts/sync-detect.js --no-cache
+mustard-rt run sync-detect
 
 # Entity registry generation
 bun scripts/sync-registry.js

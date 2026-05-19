@@ -66,7 +66,7 @@ The agent return JSON (`skillsWritten`, `skills[]`, `noPatternsMarker`) is **adv
 
 If `bun .claude/scripts/scan/orchestrate.js` fails to run (script missing, Node error, JSON parse failure):
 
-1. Run `bun .claude/scripts/sync-detect.js --no-cache` directly. Parse its `subprojects[]`.
+1. Run `mustard-rt run sync-detect` directly. Parse its `subprojects[]`.
 2. For each subproject, dispatch one `Task(general-purpose)` with this minimal prompt:
    ```
    Scan subproject {name} at {path}. Read {path}/CLAUDE.md.

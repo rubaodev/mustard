@@ -10,6 +10,8 @@
 //! crate, shared by every hook module. It is `mustard-rt`-local — it does not
 //! touch `mustard-core`.
 
+pub mod sha256;
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// An RFC-3339 / ISO-8601 UTC timestamp string (`YYYY-MM-DDThh:mm:ss.sssZ`),

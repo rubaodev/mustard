@@ -28,9 +28,9 @@ cat .claude/.detect-cache.json
 ```
 Save the old `sourceHashes` and `moduleHashes` values.
 
-**Step B — Run detect with `--no-cache`** (does NOT overwrite cache):
+**Step B — Run detect** (`mustard-rt run sync-detect` always does a fresh scan; the JS `--no-cache` flag has no equivalent):
 ```bash
-bun .claude/scripts/sync-detect.js --no-cache
+mustard-rt run sync-detect
 ```
 Parse JSON output → list of `{ name, path, role, agent, stackSummary, gitDirty?, gitDirtyCount? }` + new `sourceHashes` + `moduleHashes`.
 - If `/scan <subproject>` was called, filter to that subproject only.
@@ -326,11 +326,12 @@ bun .claude/scripts/sync-registry.js --force
 
 Skill generation itself is **entirely the responsibility of the Step 3 agents** (see `scan-format.md` §10).
 
-## Step 5 — Update Cache
+## Step 5 — Refresh Detect
 
 ```bash
-bun .claude/scripts/sync-detect.js
+mustard-rt run sync-detect
 ```
+(`mustard-rt run sync-detect` recomputes discovery + source hashes on every run; there is no separate cache file to update.)
 
 ## Step 6 — Validate Skills (--factual mode)
 

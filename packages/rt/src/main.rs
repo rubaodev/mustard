@@ -16,9 +16,10 @@
 //! - `mustard-rt check <id>` — run a single named module, so `settings.json`
 //!   can migrate entry-by-entry while `node` and `mustard-rt` coexist.
 //!
-//! The third face — `mustard-rt <script>` for the b4 script port — is **out of
-//! scope** here. The [`Cli`] enum leaves a clear extension point (a future
-//! `Script` subcommand) without implementing it.
+//! A third face — `mustard-rt run <name>` — is now implemented (the b4 script
+//! port). Unlike `on` / `check` it does not read harness JSON from stdin: a
+//! `run` subcommand takes `clap` arguments and prints its own output, porting
+//! what used to be a standalone `bun` script under `templates/scripts/`.
 //!
 //! ## Protocol parity with the JS hooks
 //!
@@ -31,6 +32,7 @@
 mod dispatch;
 mod registry;
 mod hooks;
+mod run;
 mod util;
 
 use clap::{Parser, Subcommand};
@@ -45,8 +47,8 @@ struct Cli {
     command: Command,
 }
 
-/// The two-faced binary. `Script` (b4) is intentionally absent — adding it is
-/// a new variant here plus a handler, the dispatcher stays untouched.
+/// The three-faced binary: the `On` / `Check` enforcement faces and the `Run`
+/// face (the b4 script port). Only `Run` skips the stdin read.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run every module applicable to a whole harness lifecycle event.
@@ -59,10 +61,23 @@ enum Command {
         /// The module id, e.g. `bash_guard`.
         id: String,
     },
+    /// Run a ported utility script (the b4 face). Takes `clap` args, not stdin.
+    Run {
+        #[command(subcommand)]
+        command: run::RunCmd,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    // The `Run` face is not an enforcement face: it takes `clap` args, never
+    // reads stdin, and writes its own output. Handle it before the stdin read
+    // so a `run` subcommand does not block waiting for harness JSON.
+    if let Command::Run { command } = cli.command {
+        run::dispatch(command);
+        return;
+    }
 
     // Read the harness JSON from stdin. A read failure or a parse failure is
     // *not* fatal: the central fail-open contract (b3 spec § Arquitetura step
@@ -76,6 +91,8 @@ fn main() {
             dispatch::run_event(trigger, &input)
         }
         Command::Check { id } => dispatch::run_check(&id, &input),
+        // `Run` is handled above, before the stdin read.
+        Command::Run { .. } => unreachable!("Run is dispatched before stdin read"),
     };
 
     emit_outcome(&outcome);
