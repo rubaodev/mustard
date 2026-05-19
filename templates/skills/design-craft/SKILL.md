@@ -90,7 +90,7 @@ Focus on these to avoid generic AI output:
 - **Spatial Composition**: Unexpected layouts. Asymmetry. Overlap. Diagonal flow. Grid-breaking elements. Generous negative space OR controlled density.
 - **Backgrounds & Visual Details**: Create atmosphere — gradient meshes, noise textures, geometric patterns, layered transparencies, dramatic shadows, decorative borders, grain overlays.
 
-**NEVER:** Overused font families (Inter, Roboto, Arial, system fonts), cliched color schemes (purple gradients on white), predictable layouts, cookie-cutter design. No two designs should look the same.
+**NEVER:** Overused font families (Inter, Roboto, Arial, system fonts), cliched color schemes (purple gradients on white), predictable layouts, cookie-cutter design. No two designs should look the same. Trendy fonts also become clichés — do not converge on Space Grotesk (or any single "moment" font) across generations. Vary between light and dark themes.
 
 ---
 

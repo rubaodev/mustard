@@ -26,7 +26,7 @@
 
 Mustard sets up a `.claude/` folder that turns Claude Code into a structured development pipeline with explicit phases (ANALYZE → PLAN → EXECUTE → QA → CLOSE), wave-based agent dispatch, enforcement hooks, and token economy.
 
-- **18 pipeline commands** — feature, bugfix, approve, complete, resume, scan, scan-format, git, maint, qa, task, knowledge, skill, status, stats, metrics, review, plus the agent-prompt template
+- **15 pipeline commands** — feature, bugfix, approve, close, resume, scan, git, maint, qa, task, knowledge, skill, status, stats, review
 - **31 enforcement hooks** — bash safety, model routing gate, context budget (with Dumb Zone 40% advisory), output budget, close-gate (Wave 9+10), spec hygiene, spec/skill size gates, RTK rewrite, file guard, registry enforcement, memory auto-extract, PR detection (DORA), session knowledge, and more
 - **7 bundled skills** — design-craft, react-best-practices, senior-architect, skill-creator, commit-workflow, pipeline-execution, karpathy-guidelines
 - **25 utility scripts** — subproject detection, entity registry sync (with doc-comment glossary enrichment), recipe matcher, harness views (incl. DORA `pr-metrics`), QA runner, wave decomposition, skill validation, and more
@@ -211,7 +211,7 @@ mustard review --ci --pr 42
 | `/bugfix <error>` | Autonomous bug fix (diagnose → fix → validate). Fast Path skips spec; Full Path writes and presents the spec before `/approve` |
 | `/approve [--resume]` | Approve the active spec. With `--resume`, immediately chains into the `/resume` flow in the same session |
 | `/resume` | Resume an interrupted pipeline from the last checkpoint |
-| `/complete` | Finalize or cancel a pipeline |
+| `/close` | Finalize or cancel a pipeline |
 
 ### Operations
 
@@ -238,8 +238,7 @@ mustard review --ci --pr 42
 
 | Command | Description |
 |---------|-------------|
-| `/stats` | Pipeline metrics, token savings, performance |
-| `/metrics` | Enforcement metrics report — hook hit rates, budget distributions, gate activity. Supports `--compare <from> <to>` (git tag or ISO date) to diff two windows |
+| `/stats` | Pipeline metrics, token savings, performance. `--hooks` adds enforcement hook hit rates / budget distributions / gate activity; `--compare <from> <to>` (git tag or ISO date) diffs two windows; `--pr` shows DORA metrics |
 | `/knowledge notes [target]` | Manage project observations |
 | `/knowledge audit` | Audit memory for duplicates |
 | `/knowledge report daily\|weekly` | Progress reports from git data |
@@ -269,10 +268,9 @@ Visualization moved to the Mustard Dashboard — a standalone Tauri desktop prod
 │   ├── feature/SKILL.md               #   /feature — feature pipeline
 │   ├── bugfix/SKILL.md                #   /bugfix — bug fix pipeline
 │   ├── approve/SKILL.md               #   /approve [--resume] — approve spec
-│   ├── complete/SKILL.md              #   /complete — finalize pipeline
+│   ├── close/SKILL.md                 #   /close — finalize pipeline
 │   ├── resume/SKILL.md                #   /resume — resume pipeline
 │   ├── scan/SKILL.md                  #   /scan — analyze codebase
-│   ├── scan-format/SKILL.md           #   /scan agent format rules
 │   ├── git/SKILL.md                   #   /git — commit, push, merge, deploy
 │   ├── maint/SKILL.md                 #   /maint — deps, validate, sync
 │   ├── task/SKILL.md                  #   /task — delegated analysis/review/refactor
@@ -280,9 +278,7 @@ Visualization moved to the Mustard Dashboard — a standalone Tauri desktop prod
 │   ├── skill/SKILL.md                 #   /skill — manage skills
 │   ├── status/SKILL.md                #   /status — consolidated status
 │   ├── stats/SKILL.md                 #   /stats — pipeline metrics
-│   ├── metrics/SKILL.md               #   /metrics — enforcement metrics report
-│   ├── review/SKILL.md                #   /review — PR review
-│   └── templates/agent-prompt/        #   Agent prompt template
+│   └── review/SKILL.md                #   /review — PR review
 ├── recipes/                           # Stack-agnostic recipes (5)
 │   ├── add-field.json                 #   Schema + DTO + optional FE form
 │   ├── add-endpoint.json              #   Handler + DTO + service + route
@@ -484,7 +480,7 @@ Mustard integrates [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) as c
 - **Transparent hook** — `rtk-rewrite.js` (PreToolUse:Bash) wraps every Bash command through `rtk`, compressing output before it enters Claude's context
 - **Fail-open** — if RTK is not available, the hook passes through with zero impact
 - **Statusline** — real-time token savings displayed in the Claude Code status bar
-- **Pipeline report** — `/complete` and `/stats` show total tokens saved
+- **Pipeline report** — `/close` and `/stats` show total tokens saved
 
 | Command type | Typical savings |
 |--------------|-----------------|

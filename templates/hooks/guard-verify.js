@@ -12,6 +12,7 @@
 const path = require("path");
 const fs = require("fs");
 const { shouldRun } = require('./_lib/hook-env.js');
+const { headingRegex } = require('../scripts/_lib/spec-sections.js');
 let emitMetric = () => {};
 try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
@@ -179,10 +180,14 @@ function checkBoundaries(filePath, cwd) {
       if (!fs.existsSync(specFile)) continue;
 
       const content = fs.readFileSync(specFile, "utf8");
-      const boundaryMatch = content.match(/##\s+Boundaries\s*\n([\s\S]*?)(?:\n##\s|\n---\s*\n|$)/);
-      if (!boundaryMatch) continue;
-
-      const boundaryBlock = boundaryMatch[1];
+      // Recognize EN ("## Boundaries") and PT ("## Limites") headings via the
+      // single-source spec-sections module. The block runs from the heading
+      // until the next `## ` heading, a `---` rule, or EOF.
+      const headingMatch = headingRegex('boundaries').exec(content);
+      if (!headingMatch) continue;
+      const afterHeading = content.slice(headingMatch.index + headingMatch[0].length);
+      const blockMatch = afterHeading.match(/^([\s\S]*?)(?:\n##\s|\n---\s*\n|$)/);
+      const boundaryBlock = blockMatch ? blockMatch[1] : afterHeading;
       const lines = boundaryBlock.split("\n")
         .map((l) => l.replace(/^[-*]\s+`?/, "").replace(/`.*/, "").trim())
         .filter(Boolean);

@@ -651,7 +651,7 @@ mustard init</code></pre>
     <div class="section-head">
       <div>
         <div class="section-num">07 · Fechamento</div>
-        <h2>QA &amp; <code>/complete</code> — a <em>vistoria</em></h2>
+        <h2>QA &amp; <code>/close</code> — a <em>vistoria</em></h2>
       </div>
       <span class="tag">Capítulo sete</span>
     </div>
@@ -660,7 +660,7 @@ mustard init</code></pre>
 
     <pre class="reveal"><code>/qa                              # spec ativa mais recente
 /qa --spec linked-services       # spec específica
-/complete                        # fecha tudo</code></pre>
+/close                           # fecha tudo</code></pre>
 
     <h3 style="margin-top:36px;font-size:22px">Checklist obrigatório</h3>
     <ol class="steps reveal">
@@ -673,7 +673,7 @@ mustard init</code></pre>
 
     <div class="note warn">
       <span class="label">Bloqueio comum</span>
-      <p>Tentar <code>/complete</code> sem QA passar. O hook <em>close-gate</em> trava — rode <code>/qa</code> antes.</p>
+      <p>Tentar <code>/close</code> sem QA passar. O hook <em>close-gate</em> trava — rode <code>/qa</code> antes.</p>
     </div>
   </div>
 </section>
@@ -824,14 +824,14 @@ mustard init</code></pre>
     </div>
 
     <pre class="reveal"><code>/stats                                    # dashboard completo
-/metrics                                  # foco em hooks
-/metrics --since 2026-04-09               # recente
-/metrics --event budget-check             # filtra evento
-/metrics --compare v3.1.21 v3.1.22        # delta entre releases</code></pre>
+/stats --hooks                            # foco em hooks
+/stats --hooks --since 2026-04-09         # recente
+/stats --hooks --event budget-check       # filtra evento
+/stats --hooks --compare v3.1.21 v3.1.22  # delta entre releases</code></pre>
 
     <div class="note">
       <span class="label">Cadência</span>
-      <p><code>/stats</code> uma vez por semana. <code>/metrics --compare</code> antes de cada release. Logs em <code>.claude/.metrics/</code> rotacionam a 10 MB.</p>
+      <p><code>/stats</code> uma vez por semana. <code>/stats --hooks --compare</code> antes de cada release. Logs em <code>.claude/.metrics/</code> rotacionam a 10 MB.</p>
     </div>
   </div>
 </section>
@@ -854,7 +854,7 @@ mustard init</code></pre>
       <tr><td><code>bash-native-redirect</code></td><td>Bloqueia grep/cat/ls/find no Bash</td><td>Use Grep/Glob/Read nativos</td></tr>
       <tr><td><code>tool-use-counter</code></td><td>Limita Explore agent a 15–20 buscas</td><td>Reformule o prompt do agente</td></tr>
       <tr><td><code>enforce-registry</code></td><td>Exige <code>/scan</code> antes</td><td>Rode <code>/scan</code></td></tr>
-      <tr><td><code>close-gate</code></td><td>Bloqueia <code>/complete</code> sem QA</td><td>Rode <code>/qa</code> antes</td></tr>
+      <tr><td><code>close-gate</code></td><td>Bloqueia <code>/close</code> sem QA</td><td>Rode <code>/qa</code> antes</td></tr>
       <tr><td><code>spec-size-gate</code></td><td>Avisa quando spec fica enorme</td><td>Quebre em pipelines menores</td></tr>
       <tr><td><code>model-routing-gate</code></td><td>Modelo errado para a tarefa</td><td>Haiku=Explore · Sonnet=bug · Opus=feature</td></tr>
     </table>
@@ -938,7 +938,7 @@ rtk gh pr view 123</code></pre>
       <li><strong>/feature add-phone-to-user</strong> — Mustard detecta Light scope automaticamente</li>
       <li><strong>Aguarde EXECUTE</strong> — sem PLAN porque é Light</li>
       <li><strong>/qa</strong> — roda build, type-check e testes (3 AC)</li>
-      <li><strong>/complete</strong> — fecha o pipeline, arquiva spec em <code>completed/</code></li>
+      <li><strong>/close</strong> — fecha o pipeline, arquiva spec em <code>completed/</code></li>
       <li><strong>/git push</strong> — sincroniza, commita e empurra</li>
       <li><strong>/review</strong> — revisão automática do PR</li>
       <li><strong>/git merge main</strong> — cascade até produção</li>
@@ -963,7 +963,7 @@ rtk gh pr view 123</code></pre>
     <ol class="traps reveal">
       <li><strong>Pular o /scan inicial</strong>Registry vazio bloqueia tudo — bootstrap é obrigatório.</li>
       <li><strong>Trabalhar direto em main</strong>O <code>/git</code> recusa. Crie <code>dev_&lt;seu-nome&gt;</code> sempre.</li>
-      <li><strong>Tentar /complete sem QA</strong>O hook <em>close-gate</em> bloqueia. Rode <code>/qa</code> antes.</li>
+      <li><strong>Tentar /close sem QA</strong>O hook <em>close-gate</em> bloqueia. Rode <code>/qa</code> antes.</li>
       <li><strong>Forçar modelo barato em feature</strong>Qualidade despenca, retries explodem. Não economize aqui.</li>
       <li><strong>Editar pipeline-states manualmente</strong>Corrompe estado. Use <code>/resume</code> sempre.</li>
       <li><strong>Commit em arquivos efêmeros</strong>.metrics/, .agent-state/ são runtime — nunca vão pro repo.</li>
@@ -996,7 +996,7 @@ PIPELINES
   /approve [--resume]
   /resume
   /qa [--spec &lt;nome&gt;]
-  /complete
+  /close
 
 TAREFAS DELEGADAS
   /task {analyze|audit|review|refactor|docs|implement|compare} &lt;escopo&gt;
@@ -1010,8 +1010,7 @@ KNOWLEDGE &amp; SKILLS
 
 OBSERVABILIDADE
   /status
-  /stats
-  /metrics [--since|--event|--compare]
+  /stats [--hooks|--pr|--since|--event|--compare]
 
 MANUTENÇÃO
   /maint {deps|validate|sync}

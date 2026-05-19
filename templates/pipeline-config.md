@@ -8,6 +8,15 @@ Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 (+ `COORDINATE` for roadmaps / multi-spec parents).
 Single source of truth — phase names, descriptions, entry triggers: `refs/canonical-phases.md`.
 
+### Spec Artifact — Two Layers
+
+A spec is a single `spec.md` file organized in two named layers:
+
+- `## PRD` — the *what & why* (intent): `## Contexto`, `## Usuários/Stakeholders`, `## Métrica de sucesso`, `## Não-Objetivos`, closing with `## Critérios de Aceitação` (the verifiable *what*).
+- `## Plano` — the *how* (execution): `## Informações da Entidade`, `## Arquivos`, optional `## Component Contract`, `## Tarefas`, `## Dependências`, `## Limites`.
+
+Both `## PRD` and `## Plano` are `##`-level **divider headings**; every parsed subsection stays at `##` (parsers anchor on `## Contexto`, `## Arquivos`, `## Tarefas`, `## Critérios de Aceitação`, `## Limites`). PLAN produces both layers; `/approve` approves them together (no separate PRD gate); EXECUTE consumes the Plano layer; QA runs the Critérios de Aceitação. Light scope keeps the same two-layer shape but lean. Heading templates: `/feature` § Full/Light Scope and `refs/feature/spec-language.md`.
+
 ## Agents
 | Color | Role | Subproject | Build Command | Validate Command |
 |-------|------|-----------|---------------|------------------|
@@ -173,6 +182,18 @@ Agents load context via skills (auto-triggered by Claude based on task descripti
 | Recipes (structured) | `.claude/recipes/*.json` | Matched by `recipe-match.js --entity --operation` |
 | Stack/Modules | `{subproject}/.claude/commands/` | Read on-demand |
 | Entity registry | `.claude/entity-registry.json` | Grep by entity name |
+| Shared language | `CONTEXT.md` (project glossary, built by `grill-with-docs`) | Relevance-sliced by `context-slice.js`, injected as `{context_md}` |
+
+### CONTEXT.md — Relevance-Sliced Glossary
+
+`CONTEXT.md` is the project's shared-language glossary, produced and maintained by the `grill-with-docs` skill. It is **never injected whole** into agent prompts — the same anti-bloat rule that governs `entity-registry.json` ("Grep for the entity, never read the full JSON") applies here.
+
+- **Producer:** `grill-with-docs` (opt-in during `/feature` PLAN, Full scope) writes/updates `CONTEXT.md` on its own.
+- **Consumer:** `context-slice.js` cuts only the term blocks whose term or definition matches the active spec's entities, file names, or significant key-tokens. The slice fills the `{context_md}` placeholder in the PREFIX-STABLE block of the agent-prompt template.
+- **Cadence:** the slice is snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md` — it is stable for the pipeline (spec does not change mid-run), so it caches across all dispatches of the wave.
+- **Backstop:** capped at `MUSTARD_GLOSSARY_MAX_LINES` lines (default 250); an over-cap slice is truncated with a stderr warning.
+- **Multi-context:** repeated `--context` flags or a `CONTEXT-MAP.md` are concatenated and deduped.
+- **Graceful degrade:** when no `CONTEXT.md` exists, the slice is empty and `{context_md}` is left blank — dispatches never block.
 
 ## Recipe Engine
 
@@ -221,6 +242,15 @@ When dispatching impl agents, recommend skills based on role:
 | mobile | Skills in `{subproject}/.claude/skills/` | `design-craft` |
 
 Complex/architecture tasks (any role): add `senior-architect`.
+
+Engineering/productivity skills (verbatim from `github.com/mattpocock/skills`, auto-loaded by description):
+
+| Skill | Use when |
+|-------|----------|
+| `grill-me` | Stress-testing a plan/design via relentless interview |
+| `grill-with-docs` | Grilling a plan against the project's domain model + ADRs |
+| `diagnose` | Hard bugs / performance regressions needing a disciplined loop |
+| `improve-codebase-architecture` | Finding refactoring/deepening opportunities |
 
 Agents auto-load relevant skills based on task description. Orchestrator may hint specific skills in `{recommended_skills}`.
 

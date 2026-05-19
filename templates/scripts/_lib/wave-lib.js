@@ -8,6 +8,8 @@
  * also had identical parseFiles).
  */
 
+const { headingRegex } = require("./spec-sections.js");
+
 /**
  * Classify a file path into a coarse architectural role.
  * @param {string} filePath
@@ -30,7 +32,9 @@ function detectRole(filePath) {
  */
 function parseFilesSection(specText) {
   const lines = specText.split("\n");
-  const start = lines.findIndex((l) => /^##\s+Files/.test(l));
+  // Recognize both EN ("## Files") and PT ("## Arquivos") headings.
+  const filesHeading = headingRegex("files");
+  const start = lines.findIndex((l) => filesHeading.test(l));
   if (start === -1) return null;
 
   const paths = [];

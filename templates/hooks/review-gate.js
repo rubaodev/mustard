@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun, isStrictMode } = require('./_lib/hook-env.js');
 const { emit } = require('./_lib/harness-event.js');
+const { formatGateMessage } = require('./_lib/gate-message.js');
 let emitMetric = () => {};
 try { emitMetric = require('./_lib/metrics-emit.js').emitMetric; } catch (_) {}
 
@@ -216,7 +217,12 @@ process.stdin.on('end', () => {
           cwd,
         });
       } catch (_) {}
-      const reason = `[Commit Gate] ${blockingFindings.map(f => f.msg).join(' | ')}`;
+      const reason = formatGateMessage({
+        gate: 'Commit Gate',
+        what: blockingFindings.map(f => f.msg).join(' | '),
+        why: 'committing secrets or a broken build is unrecoverable',
+        exit: 'unstage the flagged files / fix the build, or set MUSTARD_COMMIT_GATE_MODE=warn',
+      });
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -242,7 +248,12 @@ process.stdin.on('end', () => {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: isStrictMode() ? 'deny' : 'allow',
-          permissionDecisionReason: `[Review Gate] ${warnings.join(' | ')}`,
+          permissionDecisionReason: formatGateMessage({
+            gate: 'Review Gate',
+            what: warnings.join(' | '),
+            why: 'these may not belong in the commit',
+            exit: 'review the staged changes before committing',
+          }),
         },
       }) + '\n');
     }

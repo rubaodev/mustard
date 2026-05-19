@@ -15,6 +15,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { SECTIONS } = require(path.join(__dirname, '_lib', 'spec-sections.js'));
 
 // ---------- arg parsing ----------
 function parseArgs(argv) {
@@ -68,6 +69,28 @@ function splitSections(text) {
   }
   flush();
   return sections;
+}
+
+/**
+ * Resolve a section from the raw-keyed `sections` object by canonical key.
+ * `splitSections` keys by literal heading text, so a PT spec stores its
+ * Acceptance Criteria under "Critérios de Aceitação". This walks the canonical
+ * key's accepted variants (EN first, then aliases, then PT) and returns the
+ * first match — keeping EN behavior identical while also recognizing PT.
+ *
+ * @param {Record<string,string>} sections — output of splitSections.
+ * @param {string} key — a canonical key present in SECTIONS.
+ * @returns {string|undefined}
+ */
+function getSection(sections, key) {
+  const variants = SECTIONS[key];
+  if (!variants) return undefined;
+  for (const name of variants) {
+    if (Object.prototype.hasOwnProperty.call(sections, name)) {
+      return sections[name];
+    }
+  }
+  return undefined;
 }
 
 function parseAC(section) {
@@ -203,12 +226,15 @@ function render(model, lang) {
 // ---------- build model ----------
 function buildModel({ header, sections, state, lang }) {
   const L = lang === 'pt';
-  const acList = parseAC(sections['Acceptance Criteria']);
+  const acList = parseAC(getSection(sections, 'acceptanceCriteria'));
   const acDone = acList.filter(a => a.done);
   const acFailed = acList.filter(a => !a.done);
-  const concerns = parseBullets(sections['Concerns'] || sections['Concerns Surfaced']);
-  const checklist = parseChecklist(sections['Checklist']);
-  const files = parseFiles(sections['Files']);
+  const concerns = parseBullets(getSection(sections, 'concerns') || sections['Concerns Surfaced']);
+  // The close-out checklist: EN specs use "## Checklist" specifically (a spec
+  // may also carry a separate "## Tasks" — don't let it shadow). PT specs
+  // collapse both onto "## Tarefas".
+  const checklist = parseChecklist(sections['Checklist'] || sections['Tarefas']);
+  const files = parseFiles(getSection(sections, 'files'));
 
   // Done lines
   const done = [];

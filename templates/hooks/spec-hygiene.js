@@ -86,7 +86,7 @@ function runHygiene() {
 
       } else if (classification === 'warn') {
         process.stderr.write(
-          `[hygiene] Spec ${name} appears done but Status=implementing. Run /mustard:complete to finalize.\n`
+          `[hygiene] Spec ${name} appears done but Status=implementing. Run /mustard:close to finalize.\n`
         );
         // SILENT: do nothing for all other states
       }

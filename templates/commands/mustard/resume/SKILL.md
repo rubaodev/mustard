@@ -114,6 +114,17 @@ Run `bun .claude/scripts/diff-context.js --subproject {subproject_path}` per sub
 
 **Skip if `resumeMode === "continued"`** unless a wave just completed (wave transitions always refresh diff). The prior diff snapshot is reused from `.claude/.pipeline-states/{specName}.diff-{subproject}.md`.
 
+### Context Slice (automatic, per-wave snapshot)
+
+Alongside the diff-context refresh, produce the relevance-filtered glossary slice that fills the `{context_md}` placeholder of the agent-prompt template.
+
+1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill); also pass sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice.js` accepts repeated `--context` flags and expands a map.
+2. Run `bun .claude/scripts/context-slice.js --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
+3. Fill `{context_md}` in every subagent prompt with the contents of that snapshot file.
+4. **Graceful degrade:** no `CONTEXT.md` → empty slice → leave `{context_md}` empty. Never block the dispatch.
+
+The slice is stable for the whole pipeline, so it sits in the PREFIX-STABLE block and caches across dispatches. **Re-run the snapshot only on a wave transition** (same cadence as the diff refresh). **Skip if `resumeMode === "continued"`** unless a wave just completed — the prior snapshot is reused from `.claude/.pipeline-states/{specName}.context-md.md`.
+
 7. **Read** `.claude/pipeline-config.md`. For `entity-registry.json`: use Grep to extract ONLY the relevant entity block (e.g. `"Contract":`), NEVER read the full JSON
 9. **Update spec header:** `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`
 10. **Update/create pipeline state:** `status: "implementing"`, `phaseName: "EXECUTE"`, `specName`
@@ -145,8 +156,8 @@ When the pipeline state indicates a wave plan, the orchestrator dispatches only 
    - Force `resumeMode = "reanalyzed"` for the next wave transition so diff-context refreshes with the just-committed changes.
    - **Cache this wave's diff:** right after the wave-{N-1} commit, run `git diff HEAD~1 HEAD > .claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md` so the next wave can be sliced against it.
    - **Wave Slice Injection (see § Wave Slice Injection below):** before dispatching wave N (N≥2):
-     1. Run `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` to get the wave slice; save as `{spec_slice}`.
-     2. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{spec_slice}` + the diff (NOT the full spec, NOT the full touched files) into the agent prompt.
+     1. Run `bun .claude/scripts/spec-extract.js --spec {spec_path} --wave {N}` to get the wave slice; it populates `{task_steps}`.
+     2. Prepend the cached previous wave diff from `.claude/.pipeline-states/{spec-name}.wave-{N-1}.diff.md`. Inject `{task_steps}` + the diff (NOT the full spec, NOT the full touched files) into the agent prompt.
    - If `currentWave > totalWaves` → skip remaining wave dispatch, go to Step 19 REVIEW + Step 20 CLOSE on the overall wave plan.
 4. **If a wave fails (REJECTED after 2 fix-loops, or BLOCKED)** — see § Wave Failure Handling below.
 
@@ -159,7 +170,7 @@ A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracke
 13. **Plan waves:** `Depends on: none` → Wave 1; dependencies → later. DB+Backend parallel. Frontend after Backend UNLESS all parallel override conditions met (see `.claude/pipeline-config.md` Parallel Rules). Review agents: ALWAYS dispatch in single parallel message. Skip completed tasks.
 
 **Note on wave plans:** when `isWavePlan === true`, this step plans the agent wave structure **within** the current wave's spec only — agents internal to the current wave-spec may still split across DB/Backend/Frontend sub-waves. The outer wave (1..N) is the cross-spec sequence managed by Step 12c.
-14. **Build agent prompts using template** (`.claude/commands/mustard/templates/agent-prompt/SKILL.md`):
+14. **Build agent prompts using template** (`.claude/refs/agent-prompt/agent-prompt.md`):
     - Read template once, then fill placeholders per agent using `.claude/pipeline-config.md` data:
       - `{subproject}` → from Agents table (Subproject column)
       - `{reference_files}` → 2-3 files from matched recipe
@@ -167,8 +178,9 @@ A subtraction `wave-slice` é emitida automaticamente pelo hook `subagent-tracke
       - `{entity_info}` → `_patterns` type, refs, subs from registry
       - `{role}`, `{boundary}`, `{return_sections}` → from Role Rules table in config
       - `{validate_command}`, `{build_command}` → from Agents table in config
-      - `{retry_context}` → empty on first dispatch. On retry, fill per `agent-prompt/SKILL.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
+      - `{retry_context}` → empty on first dispatch. On retry, fill per `.claude/refs/agent-prompt/agent-prompt.md § Retry Modes`. Granular retries use Step 4 § Granular Retry Protocol. Fix-loops (after REJECTED review) use Step 19b § Fix Loop Dispatch Protocol.
       - `{task_steps}` → checkboxed steps from spec
+      - `{context_md}` → relevance-filtered glossary slice from `.claude/.pipeline-states/{specName}.context-md.md` (see § Context Slice). Empty when no `CONTEXT.md` exists.
       - `{recommended_skills}` → from Skill Recommendations in `.claude/pipeline-config.md`:
         1. **Prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix). **Skip** for read-only Explore and Review agents.
         2. Glob `{subproject}/.claude/skills/` for generated pattern skills
@@ -207,6 +219,7 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
     - APPROVED (zero CRITICAL) → CLOSE
     - REJECTED (any CRITICAL) → see Step 19b § Fix Loop Dispatch Protocol (max 2 loops)
     - **NEVER skip review** — not even for Light scope. Light scope gets same checklist, just fewer files to review
+    - **Record the verdict (after it is consolidated):** for each reviewed subproject run `bun .claude/scripts/review-result.js --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}`. This emits the `review` metric that surfaces in `/stats` under Verification. Fail-open — never blocks CLOSE.
 
 ### Step 19b: Fix Loop Dispatch Protocol
 

@@ -112,6 +112,13 @@ bun scripts/skills.js validate --json
 - `templates-skill-authoring` — Foundation/subproject skill creation
 - `commit-workflow` — Standardized commit message + body format
 
+**Engineering/productivity skills (verbatim from `github.com/mattpocock/skills` — not Mustard-generated):**
+
+- `grill-me` — Relentless plan/design interview until shared understanding
+- `grill-with-docs` — Grill a plan against the domain model; updates `CONTEXT.md`/ADRs inline
+- `diagnose` — Disciplined diagnosis loop for hard bugs and perf regressions
+- `improve-codebase-architecture` — Find deepening opportunities informed by `CONTEXT.md` + `docs/adr/`
+
 ## Token Economy
 
 RTK (Rust Token Killer) integrates as core infrastructure via `hooks/rtk-rewrite.js` — transparently rewrites Bash commands through `rtk`, achieving 60-90% token reduction on CLI outputs. Run `rtk gain` for analytics. If RTK is not installed, the hook silently passes through. For cost optimization hooks (`MUSTARD_BASH_REDIRECT_MODE`, model routing gate, tool-use counter) and enforcement hooks (`duplication-check`, `convention-check`, shared memory architecture), see `pipeline-config.md`.

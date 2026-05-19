@@ -167,6 +167,28 @@ Testable, binary (pass/fail) criteria.
 `;
 }
 
+// PT-language spec: "## Tarefas" + "## Critérios de Aceitação" headings.
+// AC item lines stay English per the spec-language hard rule.
+function makeSpecWithACPt(passCmd) {
+  return `# Feature: teste-recurso
+### Status: implementing | Phase: EXECUTE | Scope: light
+### Lang: pt
+
+## Resumo
+Recurso de teste para a Wave 10.
+
+## Tarefas
+- [x] Implementar recurso
+
+## Critérios de Aceitação
+
+Critérios testáveis e binários (pass/fail).
+
+- [ ] AC-1: Build succeeds — Command: \`${passCmd}\`
+- [ ] AC-2: Linting passes — Command: \`${passCmd}\`
+`;
+}
+
 function makeSpecNoAC() {
   return `# Feature: no-ac
 ### Status: implementing | Phase: EXECUTE
@@ -214,6 +236,33 @@ describe('Wave 10 — qa-run: parses AC items from spec markdown', () => {
     const ids = result.parsed.payload.criteria.map(c => c.id);
     assert.ok(ids.includes('AC-1'), `AC-1 must be parsed, ids: ${ids}`);
     assert.ok(ids.includes('AC-2'), `AC-2 must be parsed, ids: ${ids}`);
+  });
+});
+
+// ── Test 1b: qa-run.js parses PT "## Critérios de Aceitação" + "## Tarefas" ───
+
+describe('Wave 10 — qa-run: parses AC from a PT-language spec', () => {
+  let tmp;
+  beforeEach(() => { tmp = makeProjectDir(); });
+  afterEach(() => { cleanDir(tmp); });
+
+  it('recognizes "## Critérios de Aceitação" and runs AC items', async () => {
+    writeSpec(tmp, 'pt-ac-test', makeSpecWithACPt(EXIT_PASS));
+
+    const result = await runScript(QA_RUN, ['--spec', 'pt-ac-test', '--json'], {
+      projectDir: tmp,
+      env: { MUSTARD_DISABLED_HOOKS: 'all' },
+    });
+
+    assert.equal(result.code, 0, `qa-run should exit 0 when all AC pass, stderr: ${result.stderr}`);
+    assert.ok(result.parsed, `expected JSON output, stdout: ${result.stdout}`);
+    // A regression in PT heading recognition would surface as overall=skip
+    // (no Acceptance Criteria section found).
+    assert.notEqual(result.parsed.payload.overall, 'skip',
+      'PT "## Critérios de Aceitação" must be recognized as the AC section');
+    const ids = result.parsed.payload.criteria.map(c => c.id);
+    assert.ok(ids.includes('AC-1') && ids.includes('AC-2'),
+      `AC-1 and AC-2 must be parsed from PT spec, ids: ${ids}`);
   });
 });
 

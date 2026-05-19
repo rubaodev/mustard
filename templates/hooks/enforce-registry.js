@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
 const { emitMetric } = require('./_lib/metrics-emit.js');
+const { formatGateMessage } = require('./_lib/gate-message.js');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -47,7 +48,12 @@ process.stdin.on('end', () => {
         note: 'blocked-no-registry',
         extras: { reason: 'not-found', version: null, category: 'prevention' },
       });
-      blockWithMessage('Entity registry not found. Run /sync-registry first.');
+      blockWithMessage(formatGateMessage({
+        gate: 'Registry Gate',
+        what: 'Entity registry not found',
+        why: '/feature and /bugfix need it to resolve known entities',
+        exit: 'run /sync-registry, then retry the command',
+      }));
       return;
     }
 
@@ -92,7 +98,12 @@ function validateRegistry(registry) {
     return {
       valid: false,
       reason: 'stale-version',
-      message: 'Registry version ' + (registry._meta?.version || 'unknown') + ' is outdated. Run /sync-registry to update to v3.1.'
+      message: formatGateMessage({
+        gate: 'Registry Gate',
+        what: 'Registry version ' + (registry._meta?.version || 'unknown') + ' is outdated',
+        why: '/feature and /bugfix expect schema v3.1',
+        exit: 'run /sync-registry to update the registry',
+      }),
     };
   }
 
@@ -102,7 +113,12 @@ function validateRegistry(registry) {
     return {
       valid: false,
       reason: 'no-entities',
-      message: 'Registry has no entities. Run /sync-registry to populate.'
+      message: formatGateMessage({
+        gate: 'Registry Gate',
+        what: 'Registry has no entities',
+        why: 'the pipeline cannot resolve any known entity',
+        exit: 'run /sync-registry to populate the registry',
+      }),
     };
   }
 
@@ -111,7 +127,12 @@ function validateRegistry(registry) {
     return {
       valid: false,
       reason: 'no-patterns',
-      message: 'Registry has ' + entities.length + ' entities but no _patterns defined. Run /sync-registry to add reference patterns.'
+      message: formatGateMessage({
+        gate: 'Registry Gate',
+        what: 'Registry has ' + entities.length + ' entities but no _patterns defined',
+        why: 'the pipeline needs reference patterns to scaffold code',
+        exit: 'run /sync-registry to add reference patterns',
+      }),
     };
   }
 
@@ -123,7 +144,7 @@ function blockWithMessage(reason) {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "block",
-      permissionDecisionReason: 'Entity Registry Required\n\n' + reason + '\n\nRun /sync-registry to update the registry, then retry your command.'
+      permissionDecisionReason: reason,
     }
   };
   console.log(JSON.stringify(response));

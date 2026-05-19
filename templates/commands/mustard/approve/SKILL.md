@@ -8,6 +8,8 @@
 
 Approves the active spec and prepares the implementation phase.
 
+A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *what & why* (intent) — and `## Plano` — the *how* (execution). Approving a spec approves **both layers at once**: there is no separate "approve PRD" gate. The two-layer split is a reading aid, not a second checkpoint — keep it that way.
+
 - **Default** (`/approve`): prepares pipeline state and STOPS, instructing the user to run `/resume` in a new session with clean context. Recommended for Full-scope specs with 5+ files.
 - **With `--resume` flag** (`/approve --resume`): after preparation, immediately hands off to the `/resume` flow in the same session (skips `/resume` Step 0 and Step 1 — no dispatch-failure check, no handoff summary, no re-confirmation). Use when the spec was just approved and you want to skip the session-restart hop. Tradeoff: the EXECUTE phase inherits the ANALYZE+PLAN context instead of starting clean — fine for small/medium specs, less efficient for large ones.
 
@@ -69,6 +71,8 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
    - activeForm: `"Running {Layer} agent"`
 8. **Output — visual feedback:**
    - Output progress line: `[v] ANALYZE  [v] PLAN  [>] EXECUTE  [ ] CLOSE`
+   - Print one layer-signal line so the user knows what was just approved:
+     `Aprovado: camada PRD (o quê & porquê) + camada Plano (o como).` (Lang=en: `Approved: PRD layer (what & why) + Plano layer (how).`)
 9. **Branch on `--resume` flag:**
 
    **Without `--resume` (default) — STOP and instruct user to start a new session:**
@@ -93,4 +97,4 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 
 If the spec is not satisfactory:
 - Provide textual feedback for adjustments
-- Use /complete to cancel
+- Use /close to cancel

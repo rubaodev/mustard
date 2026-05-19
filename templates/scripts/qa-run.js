@@ -24,6 +24,8 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { emit } = require('../hooks/_lib/harness-event.js');
+const { emitMetric } = require('../hooks/_lib/metrics-emit.js');
+const { findSection } = require('./_lib/spec-sections.js');
 
 const AC_TIMEOUT_MS = 120_000; // 2 min per AC
 
@@ -69,20 +71,17 @@ function resolveShell() {
  * or null if the section is not found.
  */
 function extractACSection(markdown) {
-  // Match either English ("## Acceptance Criteria") or Portuguese ("## Critérios de Aceitação").
-  // The pt heading is a HARD RULE when spec Lang: pt — AC item lines stay English regardless.
-  const headingIdx = markdown.search(/^##\s+(?:Acceptance\s+Criteria|Critérios\s+de\s+Aceitação)\s*$/im);
-  if (headingIdx < 0) return null;
+  // Recognize both EN ("## Acceptance Criteria") and PT ("## Critérios de
+  // Aceitação") headings via the single-source spec-sections module.
+  // The pt heading is a HARD RULE when spec Lang: pt — AC item lines stay
+  // English regardless.
+  const section = findSection(markdown, 'acceptanceCriteria');
+  if (!section) return null;
 
-  const fromHere = markdown.slice(headingIdx);
-  // Skip past the heading line
-  const newlineIdx = fromHere.indexOf('\n');
-  if (newlineIdx < 0) return '';
-  const rest = fromHere.slice(newlineIdx + 1);
-
-  // Terminate at the next ## heading
-  const nextSection = rest.search(/^##\s/im);
-  return nextSection >= 0 ? rest.slice(0, nextSection) : rest;
+  // findSection's content includes the heading line; strip it so callers
+  // receive the section body only (matches the previous contract).
+  const newlineIdx = section.content.indexOf('\n');
+  return newlineIdx < 0 ? '' : section.content.slice(newlineIdx + 1);
 }
 
 /**
@@ -195,6 +194,30 @@ function writeQAReport(cwd, spec, payload) {
   }
 }
 
+/**
+ * Emit a hook metric for a QA outcome. Fail-silent: any error is swallowed so
+ * it can never break runQA (mirrors the harness emit guard).
+ */
+function emitQAMetric(cwd, spec, overall, criteria) {
+  try {
+    let passCount = 0;
+    let failCount = 0;
+    let skipCount = 0;
+    for (const c of criteria) {
+      if (c.status === 'pass') passCount++;
+      else if (c.status === 'fail') failCount++;
+      else if (c.status === 'skip') skipCount++;
+    }
+    emitMetric('qa', {
+      note: overall,
+      extras: { spec, overall, passCount, failCount, skipCount, category: 'verification' },
+      cwd,
+    });
+  } catch (_) {
+    // fail-silent: metric emission never affects QA result
+  }
+}
+
 // ── Main runQA ─────────────────────────────────────────────────────────────────
 
 /**
@@ -226,6 +249,7 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
       report: `## QA Report for spec: ${spec}\n\n**SKIP** — spec file not found.\n`,
     };
     process.stderr.write(`[qa-run] ${result.skippedReason}\n`);
+    emitQAMetric(cwd, spec, 'skip', []);
     return result;
   }
 
@@ -242,6 +266,7 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
       report: `## QA Report for spec: ${spec}\n\n**SKIP** — cannot read spec file.\n`,
     };
     process.stderr.write(`[qa-run] ${result.skippedReason}\n`);
+    emitQAMetric(cwd, spec, 'skip', []);
     return result;
   }
 
@@ -259,6 +284,7 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
     try {
       emit('qa.result', { spec, overall: 'skip', criteria: [] }, { cwd, actor: { kind: 'script', id: 'qa-run' } });
     } catch (_) {}
+    emitQAMetric(cwd, spec, 'skip', []);
     return result;
   }
 
@@ -275,6 +301,7 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
     try {
       emit('qa.result', { spec, overall: 'skip', criteria: [] }, { cwd, actor: { kind: 'script', id: 'qa-run' } });
     } catch (_) {}
+    emitQAMetric(cwd, spec, 'skip', []);
     return result;
   }
 
@@ -315,6 +342,9 @@ async function runQA({ spec, cwd: cwdArg } = {}) {
   } catch (_) {
     // fail-open: event emission does not affect QA result
   }
+
+  // ── Emit hook metric ──────────────────────────────────────────────────────────
+  emitQAMetric(cwd, spec, overall, criteria);
 
   // ── Write sidecar ─────────────────────────────────────────────────────────────
   writeQAReport(cwd, spec, payload);

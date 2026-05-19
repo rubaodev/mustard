@@ -2,11 +2,11 @@
 
 ## Trigger
 
-`/status`
+`/status [--harness]`
 
 ## Description
 
-Shows consolidated project status.
+Shows consolidated project status. With `--harness`, shows the enforcement layer instead: which hooks are wired, what each enforces, and the current mode of each — so the harness is legible without reading `settings.json` by hand.
 
 ## Action
 
@@ -15,11 +15,74 @@ Shows consolidated project status.
 3. **Build** — if `.claude/.last-build.json` exists, report timestamp and pass/fail; otherwise note "no build state persisted".
 4. **Entity Registry** — read `.claude/entity-registry.json` and report `_meta.version`, `_meta.generatedAt`, and total entity count (length of `entities` or equivalent top-level collection).
 
+## Flags
+
+- `--harness` — show the enforcement layer (wired hooks grouped by lifecycle event, what each enforces, and current mode). Read-only: never edits `settings.json`. See **Harness View** below.
+
+## Harness View (`/status --harness`)
+
+When invoked with `--harness`, ignore steps 1–4 above and produce the harness view instead.
+
+This view is **READ-ONLY**. Read `.claude/settings.json` to enumerate the wired hooks; never write or edit it.
+
+1. Read `.claude/settings.json` and parse the `hooks` object.
+2. Group the registered hooks by lifecycle event, in this order: `PreToolUse`, `PostToolUse`, `SessionStart`, `PreCompact`, `SessionEnd`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`.
+3. For each hook entry, report four columns:
+   - **Hook** — the hook file name (e.g. `close-gate.js`).
+   - **Matcher** — the matcher of its containing block (e.g. `Write|Edit`, `Bash`, `.*`, `startup`). Use `(any)` when no matcher key is present.
+   - **Enforces** — one line describing what it does (use the Mode reference table below, or `pipeline-config.md` for hooks not listed).
+   - **Mode** — resolve from the override env var when one exists, falling back to the default; otherwise `n/a`.
+4. Resolve **Mode** like this:
+   - If the hook has a mode env var (see table), read it from `settings.json` `env` block first; if absent there, use the documented default.
+   - Show it as `{value} (env: {VAR_NAME})` so the reader knows which variable to flip.
+   - Hooks with no mode env (counters, trackers, formatters, memory/session hooks) show `n/a`.
+   - A hook whose name appears in `MUSTARD_DISABLED_HOOKS` (CSV) shows `disabled`.
+5. Keep the output compact and scannable — a grouped table per lifecycle event. Do NOT dump raw `settings.json`.
+
+### Mode env reference
+
+Used to resolve the **Mode** column. Read the current value from `settings.json` `env`; fall back to the default when the key is absent.
+
+| Hook | Mode env var | Default |
+|------|-------------|---------|
+| `close-gate.js` | `MUSTARD_CLOSE_GATE_MODE` | strict |
+| `close-gate.js` (Wave 10 QA) | `MUSTARD_QA_GATE_MODE` | strict |
+| `checklist-auto-mark.js` / checklist gate | `MUSTARD_CHECKLIST_GATE_MODE` | strict |
+| debt gate | `MUSTARD_DEBT_GATE_MODE` | (see hook) |
+| `context-budget.js` | `CONTEXT_BUDGET_MODE` | strict |
+| `spec-size-gate.js` | `MUSTARD_SPEC_SIZE_MODE` | warn |
+| `review-gate.js` (commit gate) | `MUSTARD_COMMIT_GATE_MODE` | warn |
+| `bash-native-redirect.js` | `MUSTARD_BASH_REDIRECT_MODE` | strict |
+| `model-routing-gate.js` | `MUSTARD_MODEL_GATE_MODE` | strict |
+| `duplication-check.js` | `MUSTARD_DUPLICATION_MODE` | off |
+| `convention-check.js` | `MUSTARD_CONVENTION_MODE` | off |
+| (global kill-switch) | `MUSTARD_DISABLED_HOOKS` | (empty) |
+
+Hooks not in this table have no mode env — report their **Mode** as `n/a`. Do not invent env var names; if a hook's mode is unclear, consult `pipeline-config.md`.
+
+### Output layout (`--harness`)
+
+```
+Harness — enforcement layer (read-only view of settings.json)
+
+PreToolUse
+  Hook                      Matcher      Enforces                              Mode
+  close-gate.js             Write|Edit   blocks CLOSE if build/QA fail          strict (env: MUSTARD_CLOSE_GATE_MODE)
+  bash-native-redirect.js   Bash         redirects grep/ls/cat to native tools  strict (env: MUSTARD_BASH_REDIRECT_MODE)
+  ...
+
+PostToolUse
+  ...
+
+(one block per lifecycle event that has hooks)
+```
+
 ## Rules
 
 - Always delegate pipeline state reading to `metrics.js collect` — never parse `.pipeline-states/` directly. This keeps `/status` and `/stats` consistent.
-- If `metrics.js collect` reports `## Orphaned:` pipelines, include them under the Pipeline section and suggest the user run `/mustard:complete {spec-name}` for each, or `/mustard:maint` for bulk cleanup.
+- If `metrics.js collect` reports `## Orphaned:` pipelines, include them under the Pipeline section and suggest the user run `/mustard:close {spec-name}` for each, or `/mustard:maint` for bulk cleanup.
 - If no `.claude/` directory exists, inform user that project is not initialized and suggest `mustard init`.
+- `--harness` is strictly read-only: it reads `.claude/settings.json` and never edits it. To change a mode, the user edits the `env` block themselves (or via `/mustard:maint`).
 
 ## Information Layout
 

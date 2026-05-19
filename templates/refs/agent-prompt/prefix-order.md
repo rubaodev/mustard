@@ -7,13 +7,16 @@ A API da Anthropic faz cache automático de prefixos de prompt que sejam **byte-
 
 ## Ordem canônica
 
-O template `agent-prompt/SKILL.md` produz, após interpolação, um arquivo no formato:
+O template `agent-prompt.md` produz, após interpolação, um arquivo no formato:
 
 ```text
 <!-- PREFIX-STABLE -->
 
 ## CONTEXT
 ...links para skills/recipes (apenas IDs/nomes, sem inline do conteúdo)...
+
+## SHARED LANGUAGE
+...fatia do CONTEXT.md filtrada por relevância à spec ({context_md} — estável no pipeline)...
 
 ## REFERENCE
 ...arquivos a serem lidos pelo agent (apenas paths)...
@@ -46,6 +49,7 @@ Tudo que vier **antes** de `<!-- VARIABLE -->` precisa ser textualmente idêntic
 - **Interpolação dentro de PREFIX-STABLE só pode usar valores estáveis.** Skill IDs (`karpathy-guidelines`), nomes de recipe (`feature.entity-crud`), nomes de role (`Implementation Agent`) — nunca os corpos. O agent é responsável por carregar o corpo via Skill tool quando precisar.
 - **Os marcadores são comentários HTML, preservados verbatim.** `<!-- PREFIX-STABLE -->` e `<!-- VARIABLE -->` aparecem literais no prompt final. Não envolva em código, não traduza, não reformate.
 - **Qualquer interpolação de spec text, diff, ou retry context dentro do PREFIX-STABLE invalida o cache.** Se você precisa injetar conteúdo dinâmico, faça isso depois do `<!-- VARIABLE -->` marker. Se descobrir um caso onde isso parece impossível, abra issue antes de violar a regra — provavelmente é um sinal de que o template precisa ser dividido.
+- **`{context_md}` é a exceção que confirma a regra.** A fatia do glossário é *conteúdo*, não um ID — mas é **estável dentro de uma wave**: a spec operacional da wave não muda enquanto ela executa, então a fatia produzida por `context-slice.js` é byte-idêntica entre todos os dispatches da mesma wave. Em wave-plans, cada wave tem sua própria spec operacional — o orquestrador re-gera a fatia a cada transição de wave e cacheia em `.claude/.pipeline-states/{specName}.context-md.md`. Por isso ela pode ficar no PREFIX-STABLE sem invalidar o cache dentro da wave. Conteúdo que muda *por dispatch* (spec slice, diff, retry) continua proibido aqui.
 - **Tamanho mínimo do prefixo: 1024 caracteres** (aprox. 1024 tokens). Prefixos menores ainda são válidos textualmente, mas não ativam cache — o ganho fica em 0.
 
 ## Como verificar

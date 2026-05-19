@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed — command namespace cleanup
+
+- Renamed the `/complete` command to `/close`, aligning it with the canonical `CLOSE` pipeline phase. The underlying `complete-spec.js` script keeps its name.
+- Merged the metrics command into `/stats`: hook-level aggregation now lives behind `/stats --hooks`, with `--since`/`--event`/`--compare`/`--pr`/`--days` flags. The standalone command folder was removed.
+- Moved `scan-format` and the `agent-prompt` template out of `commands/` into `refs/` — they are internal agent instructions, not user commands.
+- Command surface reduced from 18 to 15 real slash commands. No pipeline behavior changed.
+
 ## [2.0.0] - 2026-05-12
 
 Mustard 2.0 — Event Store + Telemetry + MCP + Hardening. Migration automática, zero breaking changes; veja `docs/upgrade-to-2.0.md` para passos de upgrade e rollback.

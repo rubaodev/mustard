@@ -20,6 +20,7 @@
 
 const { shouldRun } = require('./_lib/hook-env.js');
 const { emitMetric } = require('./_lib/metrics-emit.js');
+const { formatGateMessage } = require('./_lib/gate-message.js');
 
 /** Line budgets by role. */
 const BUDGETS = {
@@ -90,8 +91,12 @@ process.stdin.on('end', () => {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          additionalContext:
-            `[Output Budget] Agent response exceeded return cap. Role: ${role} | Limit: ${limit} lines | Actual: ${actual} lines. Future dispatches: focus on files changed + non-obvious decisions + blockers only.`,
+          additionalContext: formatGateMessage({
+            gate: 'Output Budget',
+            what: `${role} agent response exceeded the return cap (${actual} lines vs limit ${limit})`,
+            why: 'verbose returns crowd the parent context',
+            exit: 'on future dispatches return only files changed + non-obvious decisions + blockers',
+          }),
         },
       }) + '\n');
     } else {

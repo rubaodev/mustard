@@ -7,7 +7,7 @@
 The full prompt sent to each Task agent launched in Step 3:
 
 ```
-Read .claude/commands/mustard/scan-format.md for analysis and format rules.
+Read .claude/refs/scan/scan-format.md for analysis and format rules.
 
 EVIDENCE RULE — before emitting any skill:
 1. Skill must correspond to a cluster in _patterns[stack].discovered[] with fileCount >= 3.

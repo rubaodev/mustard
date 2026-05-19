@@ -1,0 +1,10 @@
+Branch: dev_rubens
+Changes: 4 staged, 42 modified, 44 untracked
+Files: claude/.harness/.phase-cache.json, .claude/.harness/events.jsonl, .claude/entity-registry.json, .claude/memory/decisions.json, .claude/memory/lessons.json, CHANGELOG.md, README.md, TUTORIAL.md, curso-mustard.html, templates/CLAUDE.md, templates/commands/mustard/approve/SKILL.md, templates/commands/mustard/bugfix/SKILL.md, templates/commands/mustard/close/SKILL.md, templates/commands/mustard/complete/SKILL.md, templates/commands/mustard/feature/SKILL.md, templates/commands/mustard/metrics/SKILL.md, templates/commands/mustard/qa/SKILL.md, templates/commands/mustard/resume/SKILL.md, templates/commands/mustard/review/SKILL.md, templates/commands/mustard/scan-format/SKILL.md
+Recent commits:
+ab100a6 chore: plan file + runtime state
+6b12620 refactor(scripts): consolidate templates/scripts — delete dead, merge families, dedupe
+ffefe47 chore: update runtime state, knowledge base and decision log
+Active pipelines: 2026-04-09-analyze-validator.metrics, 2026-04-09-budget-gate-doc-fix.metrics, 2026-04-09-budget-gate-enforcement.metrics, 2026-04-09-budget-observability.metrics, 2026-04-09-enforcement-integration-tests.metrics, 2026-04-09-enforcement-metrics.metrics, 2026-04-09-existence-gate-diff-precheck.metrics, 2026-04-09-haiku-auto-rereview.metrics, 2026-04-09-haiku-heuristic-table.metrics, 2026-04-09-hygiene-continuous.metrics, 2026-04-09-hygiene-race-fix.metrics, 2026-04-09-metrics-command.metrics, 2026-04-09-pipeline-gates-bundle.metrics, 2026-04-09-pre-execute-existence-gate.metrics, 2026-04-09-residuals-bundle.metrics, 2026-04-09-rtk-subagent-coverage.metrics, 2026-04-09-sonnet-always-rereview.metrics, 2026-04-10-metrics-instrumentation.metrics, 2026-04-10-task-implement-action.metrics, 2026-04-17-git-skill-hardening.metrics, 2026-04-17-scan-no-confirmation-prompts.metrics, 2026-04-21-retry-context-fix-loop-aware.metrics, 2026-05-15-verification-stats, 2026-05-18-spec-section-parsing
+Persistent memory: 50 decisions, 16 lessons
+Compact trigger: auto

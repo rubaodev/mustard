@@ -187,6 +187,26 @@ describe("exec-rewave-check", () => {
     assert.equal(parsed.reason, "user-rejected");
   });
 
+  // ── test 4b: PT spec with "## Arquivos" → Files section recognized ──────────
+  it("pt spec (## Arquivos): single-layer keep-single, NOT no-files-section", () => {
+    const proj = track(makeTempProject());
+    const specName = "2026-01-04b-test-pt-files";
+    // PT heading must be recognized via the spec-sections module — a regression
+    // here would surface as { reason: "no-files-section" }.
+    const filesSection = `## Arquivos
+- src/api/users.ts
+- src/api/orders.ts
+- src/api/helpers.ts`;
+    makeSpec(proj, specName, filesSection);
+
+    const { parsed } = run(proj, `.claude/spec/active/${specName}/spec.md`);
+    assert.ok(parsed, "output must be valid JSON");
+    assert.notEqual(parsed.reason, "no-files-section",
+      "PT '## Arquivos' must be parsed as the Files section");
+    assert.equal(parsed.action, "keep-single");
+    assert.equal(parsed.reason, "single-layer");
+  });
+
   // ── test 5: spec with no ## Files section → skip error-fallback ───────────────
   it("spec without ## Files: skip error-fallback", () => {
     const proj = track(makeTempProject());

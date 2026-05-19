@@ -28,6 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const { shouldRun } = require('./_lib/hook-env.js');
 const { emitMetric } = require('./_lib/metrics-emit.js');
+const { formatGateMessage } = require('./_lib/gate-message.js');
 
 function getMode() {
   if (process.env.CONTEXT_BUDGET_MODE) return process.env.CONTEXT_BUDGET_MODE;
@@ -169,11 +170,13 @@ process.stdin.on('end', () => {
           const actualTokens = Math.round(actual / 4);
           process.stdout.write(JSON.stringify({
             permissionDecision: 'deny',
-            permissionDecisionReason:
-              `[Context Budget] Task prompt exceeds role budget. ` +
-              `Role: ${roleLabel} | Limit: ${limitTokens} tokens (~${limit} chars) | ` +
-              `Actual: ${actualTokens} tokens (~${actual} chars). ` +
-              `Trim the prompt or split the task.`
+            permissionDecisionReason: formatGateMessage({
+              gate: 'Context Budget',
+              what: `Task prompt exceeds the ${roleLabel} role budget ` +
+                `(${actualTokens} tokens / ~${actual} chars vs limit ${limitTokens} tokens / ~${limit} chars)`,
+              why: 'an oversized briefing crowds the subagent context and degrades reasoning',
+              exit: 'trim the prompt or split the task, or set CONTEXT_BUDGET_MODE=warn',
+            }),
           }) + '\n');
           process.exit(0);
         }
@@ -234,23 +237,31 @@ process.stdin.on('end', () => {
       // Above 65% — strongly suggest /compact
       const kTokens = Math.round(totalTokens / 1000);
       const pctRounded = Math.round(pct * 100);
-      advisory =
-        `[Dumb Zone — Compact Now] Estimated context ~${kTokens}K tokens = ${pctRounded}% of ${Math.round(windowTokens / 1000)}K window. ` +
-        `Above ${Math.round(COMPACT_PCT * 100)}% reasoning quality drops sharply (Liu et al. 2023). ` +
-        `Run /compact then /resume, or split the task.`;
+      advisory = formatGateMessage({
+        gate: 'Dumb Zone',
+        what: `estimated context ~${kTokens}K tokens = ${pctRounded}% of the ${Math.round(windowTokens / 1000)}K window`,
+        why: `above ${Math.round(COMPACT_PCT * 100)}% reasoning quality drops sharply (Liu et al. 2023)`,
+        exit: 'run /compact then /resume, or split the task',
+      });
     } else if (pct >= DUMB_ZONE_PCT) {
       // Above 40% — Dumb Zone warning
       const kTokens = Math.round(totalTokens / 1000);
       const pctRounded = Math.round(pct * 100);
-      advisory =
-        `[Dumb Zone Advisory] Estimated context ~${kTokens}K tokens = ${pctRounded}% of ${Math.round(windowTokens / 1000)}K window. ` +
-        `≥${Math.round(DUMB_ZONE_PCT * 100)}% degrades reasoning ("Dumb Zone", Dex Horthy / Liu et al. 2023). ` +
-        `Consider trimming recommended_skills, narrowing scope, or running /compact.`;
+      advisory = formatGateMessage({
+        gate: 'Dumb Zone',
+        what: `estimated context ~${kTokens}K tokens = ${pctRounded}% of the ${Math.round(windowTokens / 1000)}K window`,
+        why: `≥${Math.round(DUMB_ZONE_PCT * 100)}% degrades reasoning (Dex Horthy / Liu et al. 2023)`,
+        exit: 'trim recommended_skills, narrow scope, or run /compact',
+      });
     } else if (refTokens > LEGACY_TOKEN_THRESHOLD && !modelHint) {
       // Legacy fallback: when no model hint, retain old 50K absolute warn for .md refs
       const kTokens = Math.round(refTokens / 1000);
-      advisory =
-        `[Context Budget Advisory] ~${kTokens}K tokens of .md refs loaded (>50K). Trim recommended_skills or split task.`;
+      advisory = formatGateMessage({
+        gate: 'Context Budget',
+        what: `~${kTokens}K tokens of .md refs loaded (>50K)`,
+        why: 'large reference files crowd the context window',
+        exit: 'trim recommended_skills or split the task',
+      });
     }
 
     if (advisory) {

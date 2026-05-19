@@ -90,6 +90,27 @@
       "content": "@opentelemetry/otlp-transformer ProtobufTraceSerializer requer ReadableSpan[] from sdk-trace-base. Mustard emite OTLP/JSON manual sem SDK — round-trip forçaria bundling do SDK. Decisao: remover devDep e documentar",
       "source": "phase-4-otlp-transformer-removal",
       "context": "Wave 1 dep cleanup"
+    },
+    {
+      "id": "lesson-1779139490809",
+      "timestamp": "2026-05-18T21:24:50.809Z",
+      "content": "/approve --resume após /clear: a sessão perde contexto de qual spec aprovar. Com múltiplas specs draft, perguntar ao usuário antes de prosseguir — o prerequisito do skill (spec apresentada e aguardando aprovação) não se sustenta entre sessões.",
+      "source": "2026-05-18-skill-wiring-cleanup",
+      "context": "CLOSE"
+    },
+    {
+      "id": "lesson-1779140754997",
+      "timestamp": "2026-05-18T21:45:54.997Z",
+      "content": "qa-run.js so reconhece o heading ## Acceptance Criteria em ingles; specs PT com ## Criterios de Aceitacao sao puladas (skip). Workaround atual: rodar os AC manualmente e emitir qa.result via harness-event.js. Fix definitivo pertence a spec spec-section-parsing.",
+      "source": "2026-05-18-context-glossary",
+      "context": "QA phase"
+    },
+    {
+      "id": "lesson-1779140764790",
+      "timestamp": "2026-05-18T21:46:04.790Z",
+      "content": "qa-run.js so reconhece o heading ## Acceptance Criteria em ingles; specs PT com ## Criterios de Aceitacao sao puladas como skip. Workaround: rodar os AC manualmente e emitir qa.result via .claude/hooks/_lib/harness-event.js emit(). Fix definitivo pertence a spec spec-section-parsing (parsing idioma-agnostico).",
+      "source": "2026-05-18-context-glossary",
+      "context": "QA phase"
     }
   ]
 }

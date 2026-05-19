@@ -55,7 +55,7 @@ Prepend the following to EVERY subagent prompt dispatched during the pipeline:
 
 If the diff file is empty or missing, skip the Git State header entirely. Never dispatch an agent without attempting interpolation.
 
-2. **DIAGNOSE:** Dispatch Explore agent (**≤20 tool uses, ≤3 full file reads**):
+2. **DIAGNOSE:** Dispatch Explore agent (**≤20 tool uses, ≤3 full file reads**) with `diagnose` skill (explicit exception: diagnostic loop is the method of a bug-Explore agent):
    - Scoped Grep searches with specific path + pattern for the error/symptom
    - Trace callers/callees via Grep in relevant directories (prefer Grep over Read)
    - Return as soon as root cause is clear — don't exhaustively scan
@@ -104,9 +104,11 @@ For Fast Path (no spec yet), keep the cache in-memory only — it lives for the 
 
 → See `../../../refs/feature/spec-language.md` for full Header Translation Table.
 
+**Two-layer structure (lean):** a bugfix spec follows the same two-layer model as a feature spec (`## PRD` = the *what & why*, `## Plano` = the *how* — see `/feature` § Full Scope and `pipeline-config.md` § Spec Artifact). But a bugfix spec is small, so the layers stay **implicit, not bureaucratic**: `## Contexto` + `## Acceptance Criteria` are the PRD layer; `## Causa raiz` + `## Plano` + `## Boundaries` are the Plano layer. Do NOT add `## PRD`/`## Plano` divider headings or PRD subsections (`## Usuários/Stakeholders`, `## Não-Objetivos`) to a bugfix spec — that is the bureaucracy the layering is meant to avoid.
+
 The spec header MUST include `### Lang: {pt|en}`. The spec MUST include (Wave 10):
    ```markdown
-   ## Contexto    ← exact heading if Lang=pt
+   ## Contexto    ← exact heading if Lang=pt — PRD layer (the "what & why")
    (or)
    ## Context     ← exact heading if Lang=en
 
@@ -155,7 +157,7 @@ Every agent prompt dispatched in Fast Path MUST include:
 Dispatch bugfix agent with:
 - Root cause from ANALYZE
 - `{subproject}/CLAUDE.md` + `{subproject}/.claude/commands/guards.md` for context
-- `{recommended_skills}` starting with `karpathy-guidelines` (bugfix edits code) — see `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`
+- `{recommended_skills}` starting with `karpathy-guidelines, diagnose` (bugfix edits code; `diagnose` provides the disciplined diagnosis loop for fix agents) — see `.claude/refs/agent-prompt/agent-prompt.md § How to fill {recommended_skills}`
 - Specific files to modify
 - Expected behavior after fix
 - **If role=ui** (frontend, mobile-web): append `Read templates/refs/bugfix/browser-debug.md before instrumenting — Playwright MCP + Chrome DevTools MCP playbook (reproduce → isolate → instrument → fix → prevent).` to `{context_extras}`. Stack-agnostic; loaded on demand only for UI bugs.

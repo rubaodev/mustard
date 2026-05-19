@@ -31,20 +31,54 @@ Once resolved, write the chosen value as a header line in `spec.md`:
 
 | EN (default) | PT |
 |---|---|
+| `## PRD` | `## PRD` |
 | `## Context` | `## Contexto` |
-| `## Summary` | `## Resumo` |
-| `## Boundaries` | `## Limites` |
-| `## Files` | `## Arquivos` |
-| `## Root cause` | `## Causa raiz` |
-| `## Tasks` / `## Checklist` | `## Tarefas` |
-| `## Plan` | `## Plano` |
-| `## Acceptance Criteria` | `## Critérios de Aceitação` |
+| `## Users/Stakeholders` | `## Usuários/Stakeholders` |
+| `## Success Metric` | `## Métrica de sucesso` |
 | `## Non-Goals` | `## Não-Objetivos` |
+| `## Acceptance Criteria` | `## Critérios de Aceitação` |
+| `## Plan` | `## Plano` |
+| `## Summary` | `## Resumo` |
+| `## Entity Info` | `## Informações da Entidade` |
+| `## Files` | `## Arquivos` |
+| `## Tasks` / `## Checklist` | `## Tarefas` |
+| `## Dependencies` | `## Dependências` |
+| `## Boundaries` | `## Limites` |
+| `## Root cause` | `## Causa raiz` |
 | `## Concerns` | `## Preocupações` |
 | `## Decisions` | `## Decisões não-óbvias` |
-| `## Dependencies` | `## Dependências` |
-| `## Entity Info` | `## Informações da Entidade` |
 | `## Symptom` | `## Sintoma` |
+
+> **Two-layer spec structure (`/feature`):** `## PRD` and `## Plano` are
+> `##`-level **divider headings** that group the subsections — `## PRD` is the
+> *what & why* (Contexto, Usuários/Stakeholders, Métrica de sucesso,
+> Não-Objetivos, and Critérios de Aceitação at the boundary); `## Plano` is the
+> *how* (Resumo, Informações da Entidade, Arquivos, Tarefas, Dependências,
+> Limites). The spec stays a **single file** — these are internal section
+> dividers, not separate documents. The `## Plano` divider is literally the same
+> string as the legacy `## Plan` section; the layered template never emits a
+> standalone `## Plan` section, so the two never coexist. The new headings
+> (`PRD`, `Plano`, `Usuários/Stakeholders`, `Métrica de sucesso`) are narrative
+> dividers/sections only — no parser consumes them, so they need no entry in
+> `scripts/_lib/spec-sections.js`.
+>
+> **Per-layer narrative rules:** the PRD layer is prose for humans (briefing,
+> who/why, observable success) — no file paths, no method names, no code. The
+> Plano layer is the technical breakdown (entities, files, tasks) and may carry
+> paths and identifiers. `Métrica de sucesso` states an observable outcome
+> (e.g. "o cadastro aceita email e o relatório de campanha lista o usuário"),
+> never an implementation detail. `Usuários/Stakeholders` names who is affected
+> and who requested the change, in plain language.
+
+> **Single source in code:** this table is the human-readable reference, but the
+> *authoritative* mapping consumed by parsers and hooks lives in
+> `scripts/_lib/spec-sections.js` (`SECTIONS`, `headingRegex`, `findSection`,
+> `sectionHeading`). When adding or renaming a **parsed** heading, update
+> **both** — and treat the module as the truth: every spec parser resolves
+> headings through it so EN and PT specs are recognized identically.
+> **Exception:** the `## PRD` and `## Plan`/`## Plano` rows are narrative
+> divider headings only — they are intentionally absent from `SECTIONS` so no
+> parser resolves them. Do not add a `prd` or `plan` key.
 
 ## Always EN — covers ALL code
 
@@ -73,7 +107,7 @@ These stay in English regardless of `Lang`:
 
 ## Dispatch Propagation
 
-Agent dispatch template (`templates/commands/mustard/templates/agent-prompt/SKILL.md`) receives `{spec_lang}` placeholder. Orchestrator reads the spec's `### Lang:` line and fills it. The CONTEXT block instructs:
+Agent dispatch template (`.claude/refs/agent-prompt/agent-prompt.md`) receives `{spec_lang}` placeholder. Orchestrator reads the spec's `### Lang:` line and fills it. The CONTEXT block instructs:
 
 ```
 Spec language is `{spec_lang}`. Use it for spec prose, labels, and any Concerns you append. Source code (identifiers, comments in every form, paths, commands, log messages) stays English regardless. Don't translate pre-existing comments.

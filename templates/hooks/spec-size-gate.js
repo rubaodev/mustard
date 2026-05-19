@@ -27,6 +27,13 @@
 const fs = require('fs');
 const path = require('path');
 const { emitMetric } = require('./_lib/metrics-emit.js');
+const { headingRegex } = require('../scripts/_lib/spec-sections.js');
+const { formatGateMessage } = require('./_lib/gate-message.js');
+
+// fail-open: an unknown section key must never throw past the hook's guard.
+const safeHeading = (key) => {
+  try { return headingRegex(key); } catch (_) { return /(?!)/; }
+};
 
 function isSpecPath(filePath) {
   if (!filePath) return false;
@@ -44,9 +51,12 @@ function isSpecPath(filePath) {
 function extractACSection(content) {
   if (!content || typeof content !== 'string') return null;
   const lines = content.split('\n');
+  // Recognize EN ("## Acceptance Criteria") and PT ("## Critérios de
+  // Aceitação") headings via the single-source spec-sections module.
+  const acHeading = safeHeading('acceptanceCriteria');
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (/^##\s+Acceptance\s+Criteria\b/i.test(lines[i])) { start = i + 1; break; }
+    if (acHeading.test(lines[i])) { start = i + 1; break; }
   }
   if (start === -1) return null;
   let end = lines.length;
@@ -175,9 +185,12 @@ process.stdin.on('end', () => {
             const audit = auditAC(acText);
             if (audit.total >= 3 && audit.rich === 0 && audit.poor > 0) {
               // All AC commands are generic build/test — flag it.
-              process.stderr.write(
-                `[spec-size-gate] AC quality WARN: ${audit.poor}/${audit.total} AC use only build/test commands (no node -e / bash -c / grep / jq verifying real payload). Specs marked complete with only "build passes" AC don't prove the feature works end-to-end. See refs/feature/ac-cross-shell.md.\n`
-              );
+              process.stderr.write(formatGateMessage({
+                gate: 'AC Quality',
+                what: `${audit.poor}/${audit.total} AC use only build/test commands (no node -e / bash -c / grep / jq verifying real payload)`,
+                why: 'specs with only "build passes" AC do not prove the feature works end-to-end',
+                exit: 'add an AC that asserts real payload — see refs/feature/ac-cross-shell.md',
+              }) + '\n');
               try {
                 emitMetric('spec-ac-quality', {
                   tokensAffected: 0,
@@ -188,9 +201,12 @@ process.stdin.on('end', () => {
               } catch (_) {}
             }
             if (audit.nonBinary > 0) {
-              process.stderr.write(
-                `[spec-size-gate] AC quality WARN: ${audit.nonBinary}/${audit.total} AC não-binário (${audit.nonBinaryReasons.join(', ')}) — descreve validação passada, referencia path moveable (spec/active/), ou não tem Command. Re-rodar QA depois de CLOSE vai falhar. Use 'Command: bash -c ...' com assertion executável sobre estado atual.\n`
-              );
+              process.stderr.write(formatGateMessage({
+                gate: 'AC Quality',
+                what: `${audit.nonBinary}/${audit.total} AC are non-binary (${audit.nonBinaryReasons.join(', ')}) — past-tense validation, moveable path (spec/active/), or no Command`,
+                why: 're-running QA after CLOSE will fail on these',
+                exit: "use 'Command: bash -c ...' with an executable assertion over current state",
+              }) + '\n');
               try {
                 emitMetric('spec-ac-quality', {
                   tokensAffected: 0,
@@ -231,7 +247,12 @@ function delegateSizeGate(input) {
   const thresholds = { warn: 200, strictWarn: 400, block: 500 };
 
   if (lines >= thresholds.block && mode === 'strict') {
-    const reason = `[spec-size-gate] spec exceeds 500 lines (${lines} lines) — split into references/{section}.md (see feature/SKILL.md § Spec Layout)`;
+    const reason = formatGateMessage({
+      gate: 'Spec Size',
+      what: `spec exceeds the ${thresholds.block}-line hard limit (${lines} lines)`,
+      why: 'oversized specs are hard to read and review',
+      exit: 'split into references/{section}.md (see feature/SKILL.md § Spec Layout), or set MUSTARD_SPEC_SIZE_MODE=warn',
+    });
     try {
       emitMetric('spec-size-gate', {
         tokensAffected: 0,
@@ -250,13 +271,42 @@ function delegateSizeGate(input) {
     process.exit(0);
   }
   if (lines >= thresholds.warn) {
-    process.stderr.write(`[spec-size-gate] WARN: spec has ${lines} lines (warn at ${thresholds.warn}, strict at ${thresholds.strictWarn}, block at ${thresholds.block})\n`);
+    // Three advisory tiers mirror the documented ladder
+    // (warn 200 → strict-warn 400 → block 500). In warn mode even a spec past
+    // the block threshold only gets a stronger advisory, never a deny.
+    let tier, msg;
+    if (lines >= thresholds.block) {
+      tier = 'block-warn';
+      msg = formatGateMessage({
+        gate: 'Spec Size',
+        what: `spec has ${lines} lines — over the ${thresholds.block}-line hard limit`,
+        why: 'warn mode is active so this is advisory only',
+        exit: 'split into references/{section}.md (see feature/SKILL.md § Spec Layout), or set MUSTARD_SPEC_SIZE_MODE=strict to enforce',
+      });
+    } else if (lines >= thresholds.strictWarn) {
+      tier = 'strict-warn';
+      msg = formatGateMessage({
+        gate: 'Spec Size',
+        what: `spec has ${lines} lines — past the strict threshold (${thresholds.strictWarn}), approaching the ${thresholds.block}-line block`,
+        why: 'oversized specs are hard to read and review',
+        exit: 'split into references/{section}.md (see feature/SKILL.md § Spec Layout)',
+      });
+    } else {
+      tier = 'warn';
+      msg = formatGateMessage({
+        gate: 'Spec Size',
+        what: `spec has ${lines} lines (warn at ${thresholds.warn}, strict at ${thresholds.strictWarn}, block at ${thresholds.block})`,
+        why: 'approaching the size where specs become hard to review',
+        exit: 'consider splitting into references/{section}.md',
+      });
+    }
+    process.stderr.write(msg + '\n');
     try {
       emitMetric('spec-size-gate', {
         tokensAffected: 0,
         tokensSaved: 0,
-        note: 'over-size',
-        extras: { lines, limit: thresholds.block, file: filePath, category: 'workflow' },
+        note: tier === 'warn' ? 'over-size' : `${tier}-over-size`,
+        extras: { lines, limit: thresholds.block, tier, file: filePath, category: 'workflow' },
       });
     } catch (_) {}
   }

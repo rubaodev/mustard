@@ -42,7 +42,7 @@ If no PR found for current branch → error:
 
 ## Step 2 — Emit DORA event (review.start)
 
-Before invoking the review, emit `review.start` to the harness event bus so `/mustard:metrics --view pr-metrics` can compute review-time DORA metrics:
+Before invoking the review, emit `review.start` to the harness event bus so `/mustard:stats --pr` can compute review-time DORA metrics:
 
 ```bash
 node -e "require('./.claude/hooks/_lib/harness-event.js').emit('review.start', { spec: process.env.MUSTARD_SPEC || null, target: '$PR_TARGET' }, { actor: { kind: 'command', id: 'review' } })"

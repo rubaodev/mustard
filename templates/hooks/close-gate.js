@@ -26,6 +26,13 @@ const path = require('path');
 
 const { emit } = require('./_lib/harness-event.js');
 const { emitMetric } = require('./_lib/metrics-emit.js');
+const { headingRegex } = require('../scripts/_lib/spec-sections.js');
+const { formatGateMessage } = require('./_lib/gate-message.js');
+
+// fail-open: an unknown section key must never throw past the hook's guard.
+const safeHeading = (key) => {
+  try { return headingRegex(key); } catch (_) { return /(?!)/; }
+};
 
 const TRUNCATE_CHARS = 500;
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per command
@@ -104,10 +111,14 @@ function findDebtMarkers(cwd, spec) {
   let inFence = false;
 
   // Scope: only flag markers inside ACTIONABLE sections (Tasks, Checklist,
-  // Acceptance Criteria). Pendências is by convention where authors document
-  // legitimate open follow-ups — exempt to avoid false-positive close blocks.
+  // Acceptance Criteria — and their PT equivalents Tarefas / Critérios de
+  // Aceitação). Pendências is by convention where authors document legitimate
+  // open follow-ups — exempt to avoid false-positive close blocks.
   // Concerns/Summary/Non-Goals/Contexto are likewise historical/external debt.
-  const ACTIONABLE_SECTIONS = /^##\s+(Tasks|Checklist|Acceptance\s+Criteria)\b/i;
+  const tasksHeading = safeHeading('tasks');
+  const acHeading = safeHeading('acceptanceCriteria');
+  const isActionableHeading = (line) =>
+    tasksHeading.test(line) || acHeading.test(line);
   const ANY_H2 = /^##\s+\S/;
   let inActionable = false;
 
@@ -129,7 +140,7 @@ function findDebtMarkers(cwd, spec) {
     if (/^```/.test(line.trim())) { inFence = !inFence; continue; }
     if (inFence) continue;
     if (ANY_H2.test(line)) {
-      inActionable = ACTIONABLE_SECTIONS.test(line);
+      inActionable = isActionableHeading(line);
       continue;
     }
     if (!inActionable) continue;
@@ -376,7 +387,12 @@ process.stdin.on('end', () => {
       if (debt.found) {
         const top = debt.markers.slice(0, 5).map(m => `  - line ${m.line} (${m.pattern}): ${m.snippet}`).join('\n');
         const more = debt.markers.length > 5 ? `\n  …and ${debt.markers.length - 5} more` : '';
-        const reason = `[Close Gate] Spec "${specName}" still contains ${debt.markers.length} debt marker(s) — close blocked. Resolve or move to a follow-up spec:\n${top}${more}`;
+        const reason = formatGateMessage({
+          gate: 'Close Gate',
+          what: `spec "${specName}" still contains ${debt.markers.length} debt marker(s)`,
+          why: 'closing a spec with open TODO/FIXME hides unfinished work',
+          exit: 'resolve them or move to a follow-up spec, or set MUSTARD_DEBT_GATE_MODE=warn',
+        }) + `\n${top}${more}`;
 
         if (debtMode === 'warn') {
           process.stderr.write(`[close-gate] WARN: ${reason}\n`);
@@ -410,7 +426,12 @@ process.stdin.on('end', () => {
       if (cl.found && cl.unmarked.length > 0) {
         const preview = cl.unmarked.slice(0, 5).map(t => `  - ${t}`).join('\n');
         const more = cl.unmarked.length > 5 ? `\n  …and ${cl.unmarked.length - 5} more` : '';
-        const reason = `[Close Gate] Checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}". Mark each via \`bun .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\` as it completes.\n${preview}${more}`;
+        const reason = formatGateMessage({
+          gate: 'Close Gate',
+          what: `checklist has ${cl.unmarked.length} unmarked item(s) for spec "${specName}"`,
+          why: 'an incomplete checklist means the spec is not done',
+          exit: `mark each via \`bun .claude/scripts/mark-checklist-item.js --spec ${specName} --item "<text>"\`, or set MUSTARD_CHECKLIST_GATE_MODE=warn`,
+        }) + `\n${preview}${more}`;
 
         if (checklistMode === 'warn') {
           process.stderr.write(`[close-gate] WARN: ${reason}\n`);
@@ -443,9 +464,14 @@ process.stdin.on('end', () => {
       const qaResult = findLastQAResult(cwd, specName);
 
       if (!qaResult.found) {
-        const qaReason = specName
-          ? `[Close Gate] No QA pass recorded for spec "${specName}". Run /mustard:qa or bun .claude/scripts/qa-run.js --spec ${specName} first.`
-          : '[Close Gate] No QA pass recorded. Run /mustard:qa before closing.';
+        const qaReason = formatGateMessage({
+          gate: 'Close Gate',
+          what: specName ? `no QA pass recorded for spec "${specName}"` : 'no QA pass recorded',
+          why: 'CLOSE requires the acceptance criteria to be verified',
+          exit: specName
+            ? `run /mustard:qa or bun .claude/scripts/qa-run.js --spec ${specName}, or set MUSTARD_QA_GATE_MODE=warn`
+            : 'run /mustard:qa before closing, or set MUSTARD_QA_GATE_MODE=warn',
+        });
 
         if (qaMode === 'warn') {
           process.stderr.write(`[close-gate] WARN: ${qaReason}\n`);
@@ -476,9 +502,12 @@ process.stdin.on('end', () => {
         // fall through to build/test checks
       } else if (qaResult.overall !== 'pass') {
         const failedStr = qaResult.failedCount > 0 ? `${qaResult.failedCount} criteria failed` : `overall=${qaResult.overall}`;
-        const qaReason = specName
-          ? `[Close Gate] QA failed for spec "${specName}": ${failedStr}. Fix failing criteria and re-run /mustard:qa.`
-          : `[Close Gate] QA did not pass (${failedStr}). Fix failing criteria and re-run /mustard:qa.`;
+        const qaReason = formatGateMessage({
+          gate: 'Close Gate',
+          what: specName ? `QA failed for spec "${specName}": ${failedStr}` : `QA did not pass (${failedStr})`,
+          why: 'CLOSE requires every acceptance criterion to pass',
+          exit: 'fix the failing criteria and re-run /mustard:qa, or set MUSTARD_QA_GATE_MODE=warn',
+        });
 
         if (qaMode === 'warn') {
           process.stderr.write(`[close-gate] WARN: ${qaReason}\n`);
@@ -563,7 +592,12 @@ process.stdin.on('end', () => {
         ? firstFailure.output.slice(0, TRUNCATE_CHARS) + (firstFailure.output.length > TRUNCATE_CHARS ? '…' : '')
         : '(no output)';
 
-      const reason = `[Close Gate] ${firstFailure.stage} failed: ${truncated}`;
+      const reason = formatGateMessage({
+        gate: 'Close Gate',
+        what: `${firstFailure.stage} failed: ${truncated}`,
+        why: 'CLOSE requires build, type, lint, and test to pass',
+        exit: `fix the ${firstFailure.stage} failure and retry, or set MUSTARD_CLOSE_GATE_MODE=warn`,
+      });
 
       if (mode === 'warn') {
         process.stderr.write(`[close-gate] WARN: ${reason}\n`);

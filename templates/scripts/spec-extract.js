@@ -39,6 +39,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { headingRegex } = require('./_lib/spec-sections.js');
 
 const MAX_CHARS = 4000;             // monolithic wave section cap (one section)
 const WAVE_PLAN_SOFT_LIMIT = 50000; // advisory only — a per-wave sub-spec is NEVER
@@ -112,7 +113,9 @@ function extractWave(specPath, n) {
 function extractAcceptanceCriteria(specPath) {
   const text = readSpec(specPath);
   if (text === null) return null;
-  const heading = /^##\s+Acceptance\s+Criteria[^\n]*$/mi;
+  // Recognize both EN ("## Acceptance Criteria") and PT ("## Critérios de
+  // Aceitação") headings via the single-source module.
+  const heading = headingRegex('acceptanceCriteria');
   const nextHeading = /^## /m;
   return sliceFromHeading(text, heading, nextHeading);
 }

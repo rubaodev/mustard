@@ -100,6 +100,8 @@ const EVENT_CATEGORY = {
   'followup-cancel-gate': 'prevention',
   'output-budget': 'routing-advisory',
   'recommended-skills-audit': 'routing-advisory',
+  'qa': 'verification',
+  'review': 'verification',
 };
 
 function aggregateHookEvents(metricsDir) {
@@ -122,9 +124,12 @@ function aggregateHookEvents(metricsDir) {
         const category = (typeof entry.category === 'string' && entry.category)
           || EVENT_CATEGORY[k]
           || 'other';
-        if (!result.byEvent[k]) result.byEvent[k] = { count: 0, tokensAffected: 0, tokensSaved: 0, category };
+        if (!result.byEvent[k]) result.byEvent[k] = { count: 0, tokensAffected: 0, tokensSaved: 0, category, notes: {} };
         result.byEvent[k].count++;
         result.total++;
+        if (typeof entry.note === 'string' && entry.note) {
+          result.byEvent[k].notes[entry.note] = (result.byEvent[k].notes[entry.note] || 0) + 1;
+        }
         if (typeof entry.tokens_affected === 'number') result.byEvent[k].tokensAffected += entry.tokens_affected;
         const trustTokens =
           entry.event !== 'rtk-rewrite' &&
@@ -208,7 +213,7 @@ function runCollect(collectArgs) {
     renderSpecs(parts, specs.active, 'Active');
     renderSpecs(parts, specs.orphaned, 'Orphaned');
     if (specs.orphaned.length > 0) {
-      parts.push(`> ${specs.orphaned.length} orphaned pipeline state(s) detected. Run \`/mustard:complete {spec-name}\` or \`/mustard:maint\` to reconcile.`);
+      parts.push(`> ${specs.orphaned.length} orphaned pipeline state(s) detected. Run \`/mustard:close {spec-name}\` or \`/mustard:maint\` to reconcile.`);
       parts.push('');
     }
     renderArchives(parts, archives);
@@ -317,6 +322,32 @@ function runCollect(collectArgs) {
       parts.push('| Hook | Events | Category |');
       parts.push('|------|--------|----------|');
       for (const [k, e] of rEvents) parts.push(`| ${k} | ${e.count} | ${e.category} |`);
+      parts.push('');
+    }
+
+    const qaEvt = hookEvents.byEvent['qa'];
+    const reviewEvt = hookEvents.byEvent['review'];
+    if (qaEvt || reviewEvt) {
+      parts.push('## Verification (QA + Review)');
+      parts.push('');
+      if (qaEvt) {
+        const n = qaEvt.notes || {};
+        parts.push(`- **QA**: ${qaEvt.count} run(s) — pass ${n.pass || 0} · fail ${n.fail || 0} · skip ${n.skip || 0}`);
+      } else {
+        parts.push('- **QA**: no data');
+      }
+      if (reviewEvt) {
+        const n = reviewEvt.notes || {};
+        const approved = n.approved || 0;
+        const rejected = n.rejected || 0;
+        let line = `- **Review**: ${reviewEvt.count} verdict(s) — approved ${approved} · rejected ${rejected}`;
+        if (approved + rejected > 0) {
+          line += ` · approval rate ${Math.round((approved / (approved + rejected)) * 100)}%`;
+        }
+        parts.push(line);
+      } else {
+        parts.push('- **Review**: no data');
+      }
       parts.push('');
     }
 
@@ -520,7 +551,7 @@ function renderSpecs(parts, list, label) {
     }
 
     if (s.isOrphaned) {
-      parts.push('- Spec: not in spec/active/ (likely completed without /mustard:complete)');
+      parts.push('- Spec: not in spec/active/ (likely completed without /mustard:close)');
     }
     parts.push('');
   }

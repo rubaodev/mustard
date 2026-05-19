@@ -3,6 +3,7 @@
 // analyze-validation.js — WARN-level spec validator (never blocks pipeline)
 const fs = require('fs');
 const path = require('path');
+const { headingRegex } = require('./_lib/spec-sections.js');
 
 const LAYER_EXTENSIONS = {
   Backend:  ['.ts', '.cs', '.py', '.go', '.rs'],
@@ -39,11 +40,12 @@ function run() {
   const lines = content.split('\n');
   const issues = [];
 
-  // --- Parse ## Files section ---
+  // --- Parse ## Files section (EN "## Files" or PT "## Arquivos") ---
+  const filesHeading = headingRegex('files');
   let inFiles = false;
   const fileLines = [];
   for (const line of lines) {
-    if (/^## Files/.test(line)) { inFiles = true; continue; }
+    if (filesHeading.test(line)) { inFiles = true; continue; }
     if (inFiles && /^##/.test(line)) { inFiles = false; }
     if (inFiles) fileLines.push(line);
   }

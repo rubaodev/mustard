@@ -22,6 +22,17 @@ Audit specs in `active/` before starting — steps 1-5: scan, verify completed/c
 
 At the start of **PLAN** and **EXECUTE** only, run `bun .claude/scripts/diff-context.js --subproject {subproject_path} --phase {plan|execute}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt in those phases (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation. ANALYZE phase intentionally skips this step (diff always empty pre-work) and emits the `analyze-diff-skip` telemetry metric instead.
 
+### Context Slice (automatic, per-wave snapshot)
+
+In the **EXECUTE** phase, as part of the per-wave snapshot (re-run only on a wave transition, alongside the diff-context refresh): produce the relevance-filtered glossary slice that fills the `{context_md}` placeholder of the agent-prompt template.
+
+1. Locate the project's `CONTEXT.md` (built by the `grill-with-docs` skill). Also pass any sibling `CONTEXT.md` files and a `CONTEXT-MAP.md` if present — `context-slice.js` accepts repeated `--context` flags and expands a map.
+2. Run `bun .claude/scripts/context-slice.js --context {CONTEXT.md} --spec {operational_spec} > .claude/.pipeline-states/{specName}.context-md.md`.
+3. Fill `{context_md}` in every subagent prompt of the wave with the contents of that snapshot file.
+4. **Graceful degrade:** if no `CONTEXT.md` exists, the script emits an empty slice — leave `{context_md}` empty. Never block the dispatch.
+
+The slice is stable for the whole pipeline (the spec does not change mid-run), so it lives in the PREFIX-STABLE block and caches across every dispatch of the wave. Re-run the snapshot only when the wave changes.
+
 ### ANALYZE Phase
 
 **Phase marker (first action, before any Grep):** Run `bun .claude/scripts/emit-phase.js --spec {spec-name} --to ANALYZE`. ANALYZE runs in the parent before any pipeline-state file exists, so `pipeline-phase.js` cannot see it — this is the only point that knows ANALYZE started. Idempotent (script skips if already emitted for this spec) and fail-open.
@@ -84,6 +95,20 @@ If output `ok: false`, append each `issues[]` entry to the spec under `## Concer
 
 ### PLAN Phase
 
+#### Grill Opt-In (Full scope only — first PLAN action)
+
+**Only when scope is Full.** Before any other PLAN step, run `AskUserQuestion`:
+
+> "Escrever a spec direto, ou grelhar o plano antes (`grill-with-docs`)?"
+> Options: **"Escrever direto"** / **"Grelhar o plano"**.
+
+- **"Grelhar o plano"** → invoke `Skill(grill-with-docs)` BEFORE drafting the spec. The skill runs its own relentless interview against the project's domain model and maintains `CONTEXT.md` on its own — `/feature` does not write, slice, or read `CONTEXT.md` here. Only after the grilling session concludes, continue to "Spec Language Resolution" and draft the spec.
+- **"Escrever direto"** → proceed straight to "Spec Language Resolution" with no grilling.
+
+**Light / Extended Light scope:** NEVER grill — do NOT show this question. Skip directly to the Light Scope flow.
+
+**The skill is NOT adapted.** `/feature` only triggers `Skill(grill-with-docs)`; Matt's verbatim skill content (`templates/skills/grill-with-docs/`) stays untouched — no Mustard-specific edits, no wrapper. The skill manages `CONTEXT.md`/ADRs entirely on its own per its own instructions.
+
 #### Spec Language Resolution
 
 Cascade (stop at first hit): (1) spec header `### Lang: pt|en`, (2) `.claude/mustard.json#specLang`, (3) `AskUserQuestion` ÚNICA — `"Spec language: pt | en?"` (persist to mustard.json). Write resolved value as `### Lang: pt|en` after `### Checkpoint`.
@@ -113,14 +138,42 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
 
 #### Full Scope
 
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with:
-   - Context section: heading is **exactly** `## Contexto` (Lang=pt) or `## Context` (Lang=en) — never substitute with synonyms (Sintoma, Symptom, Description, Background). Body is **narrative prose, 4-8 lines**: how the system should work + what changed + how the gap violates expectation + observable impact on user/business. NO tables, NO line numbers, NO method names, NO bullets. **MUST follow** `../../../refs/feature/spec-language.md § Contexto Narrative Rules` (good/bad examples there).
-   - Summary, Entity Info, Files, Tasks, Dependencies
-   - Tasks organized by `### {Agent} Agent (Wave {N})`
-   - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
-   - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
-   - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) — 3-8 binary, executable items: `- [ ] AC-1: {description} — Command: \`{exact command}\``. Each: exit 0 = pass; runnable from project root; focus on observable behavior (build, endpoint, test). Include `Testable, binary (pass/fail) criteria. Each MUST be executable and independent.` header line.
-   - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Files` and `## Tasks` when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
+The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *what & why*) at the top, `## Plano` (the *how*) at the bottom. Both are `##`-level **divider headings**; the subsections under them stay at `##` level (parsers anchor on `## Contexto`, `## Arquivos`, `## Tarefas`, `## Critérios de Aceitação`, `## Limites` — never demote them to `###`). The Acceptance Criteria sit at the boundary between the layers: they are the verifiable *what*, so they close the PRD layer.
+
+1. Create `.claude/spec/active/{date}-{name}/spec.md` with this layout (Lang=pt headings shown; Lang=en uses the EN column of `../../../refs/feature/spec-language.md § Header Translation Table`):
+
+   ```text
+   # {Title}
+   ### Status / Phase / Scope / Checkpoint / Lang headers
+
+   ## PRD                       ← divider — the "what & why"
+   ## Contexto                  ← narrative briefing
+   ## Usuários/Stakeholders     ← who is affected / who asked
+   ## Métrica de sucesso        ← how success is measured
+   ## Não-Objetivos             ← explicit out-of-scope
+   ## Critérios de Aceitação    ← boundary: verifiable "what"
+
+   ## Plano                     ← divider — the "how"
+   ## Informações da Entidade
+   ## Arquivos
+   ## Component Contract        ← UI specs only (see CONDITIONAL below)
+   ## Tarefas
+   ## Dependências
+   ## Limites
+   ```
+
+   - **PRD layer** (`## PRD` divider, then):
+     - `## Contexto` — heading **exactly** `## Contexto` (Lang=pt) or `## Context` (Lang=en) — never substitute with synonyms (Sintoma, Symptom, Description, Background). Body is **narrative prose, 4-8 lines**: how the system should work + what changed + how the gap violates expectation + observable impact on user/business. NO tables, NO line numbers, NO method names, NO bullets. **MUST follow** `../../../refs/feature/spec-language.md § Contexto Narrative Rules` (good/bad examples there).
+     - `## Usuários/Stakeholders` — 1-3 lines: who is affected by this change and who requested it. Plain language, no jargon.
+     - `## Métrica de sucesso` — 1-3 lines: how you will know the feature succeeded (observable outcome, not implementation detail).
+     - `## Não-Objetivos` — bullet list of what this spec deliberately does NOT do.
+     - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) — 3-8 binary, executable items: `- [ ] AC-1: {description} — Command: \`{exact command}\``. Each: exit 0 = pass; runnable from project root; focus on observable behavior (build, endpoint, test). Include `Testable, binary (pass/fail) criteria. Each MUST be executable and independent.` header line. Sits last in the PRD layer — it is the verifiable *what*.
+   - **Plano layer** (`## Plano` divider, then):
+     - `## Informações da Entidade`, `## Arquivos`, `## Tarefas`, `## Dependências`, `## Limites`.
+     - Tasks organized by `### {Agent} Agent (Wave {N})`
+     - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
+     - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
+   - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Arquivos` and `## Tarefas` (inside the Plano layer) when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
 3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
@@ -132,7 +185,11 @@ Run `bun .claude/scripts/wave-tree.js --spec-dir .claude/spec/active/{spec-name}
 
 #### Light Scope
 
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths), `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``). At least AC-1 must verify the feature works.
+Light keeps the same two-layer shape but **lean** — a thin PRD layer and a thin Plano layer. Do NOT add bureaucracy: no Usuários/Stakeholders, no Não-Objetivos, no Entity Info, no Dependencies sections. The two dividers cost one line each and keep Light specs consistent with Full.
+
+1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then:
+   - **PRD layer** — `## PRD` divider, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Métrica de sucesso` (1 line — the single observable outcome that proves it worked), then `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``; at least AC-1 must verify the feature works).
+   - **Plano layer** — `## Plano` divider, then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths).
 2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
 3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
 
@@ -155,7 +212,7 @@ When user chooses "Approve and implement now":
 3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
 4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
 4b. **Structured Recipe (if available):** Run `bun .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
-5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `templates/commands/mustard/templates/agent-prompt/SKILL.md § How to fill {recommended_skills}`.
+5. Identify relevant skills for `{recommended_skills}`: **prepend `karpathy-guidelines`** for code-editing agents (impl/backend/frontend/database/bugfix); skip karpathy for Explore and Review. Then list task-relevant skill names. See `.claude/refs/agent-prompt/agent-prompt.md § How to fill {recommended_skills}`.
 6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
 7. Wave transitions between waves (from `.claude/pipeline-config.md`)
 8. On return: validate (build/type-check). The `checklist-auto-mark.js` hook already marked Checklist items as the agent edited matching files (silent, no tool call). If any item didn't auto-mark (no file pista in the item text), close-gate at CLOSE will surface it.
@@ -173,7 +230,7 @@ After each agent returns, check for escalation before advancing:
 
 If two or more agents in same wave return `CONCERN`, surface all concerns together before starting next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing.
 
-9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`.
+9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`. After the verdict is consolidated, for each reviewed subproject run `bun .claude/scripts/review-result.js --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}` — emits the `review` metric surfaced in `/stats` Verification. Fail-open.
 10. All passed + APPROVED → run QA Phase (Wave 10, see below) → on QA `pass`/`skip` → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report
 

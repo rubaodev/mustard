@@ -59,7 +59,7 @@ If `qa-run.js` not found: dispatch Task(general-purpose) with QA agent context l
 **Overall = pass:**
 - Output QA report
 - Update pipeline state: `phaseName: "CLOSE"`
-- Output: "QA passed. All criteria met. Run `/mustard:complete` or proceed to CLOSE."
+- Output: "QA passed. All criteria met. Run `/mustard:close` or proceed to CLOSE."
 
 **Overall = fail:**
 - Output QA report with failing criteria
@@ -74,7 +74,7 @@ If `qa-run.js` not found: dispatch Task(general-purpose) with QA agent context l
 
 ### Step 6 — CLOSE check
 
-Before proceeding to CLOSE (either here or in `/mustard:complete`), close-gate will verify `qa.result` event with `overall=pass` exists in harness log.
+Before proceeding to CLOSE (either here or in `/mustard:close`), close-gate will verify `qa.result` event with `overall=pass` exists in harness log.
 
 ## Return Format
 

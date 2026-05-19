@@ -24,6 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { headingRegex } = require('../scripts/_lib/spec-sections.js');
 const { shouldRun } = require('./_lib/hook-env.js');
 const { emit, getCurrentSessionId, getCurrentWave } = require('./_lib/harness-event.js');
 
@@ -97,12 +98,16 @@ function resolveSpecFile(cwd, state) {
 function extractAllowedPatterns(specText) {
   const patterns = new Set();
   const lines = specText.split('\n');
+  // Recognize EN ("## Files" / "## Boundaries") and PT ("## Arquivos" /
+  // "## Limites") headings via the single-source spec-sections module.
+  const filesHeading = headingRegex('files');
+  const boundariesHeading = headingRegex('boundaries');
   let inFiles = false;
   let inBoundaries = false;
 
   for (const line of lines) {
-    if (/^##\s+Files\b/i.test(line)) { inFiles = true; inBoundaries = false; continue; }
-    if (/^##\s+Boundaries\b/i.test(line)) { inBoundaries = true; inFiles = false; continue; }
+    if (filesHeading.test(line)) { inFiles = true; inBoundaries = false; continue; }
+    if (boundariesHeading.test(line)) { inBoundaries = true; inFiles = false; continue; }
     if (/^##\s+\S/.test(line)) { inFiles = false; inBoundaries = false; continue; }
 
     if (!(inFiles || inBoundaries)) continue;

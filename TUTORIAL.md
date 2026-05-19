@@ -54,7 +54,7 @@ CLOSE: Sync registry, archive spec
 | `/bugfix <error>` | Start bugfix pipeline |
 | `/approve` | Approve spec for implementation |
 | `/resume` | Resume in new session |
-| `/complete` | Finalize pipeline |
+| `/close` | Finalize pipeline |
 | `/git <action>` | commit, push, merge, deploy |
 | `/maint <action>` | deps, validate, sync |
 | `/task <action> <scope>` | Delegated analysis/review |
@@ -84,7 +84,7 @@ Claude: [Dispatches agent, implements, validates]
 
         "Done. Build passed."
 
-You: /complete
+You: /close
 ```
 
 ## Example: Bug Fix
@@ -101,7 +101,7 @@ Claude: [Dispatches Explore agent to diagnose]
 
         "Fixed. Build passed."
 
-You: /complete
+You: /close
 ```
 
 ## Light vs Full Scope
