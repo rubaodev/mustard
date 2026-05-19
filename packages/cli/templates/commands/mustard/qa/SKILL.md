@@ -36,10 +36,10 @@ Stop here.
 ### Step 3 — Run QA
 
 ```bash
-bun .claude/scripts/qa-run.js --spec {specName}
+mustard-rt run qa-run --spec {specName}
 ```
 
-If `qa-run.js` not found: dispatch Task(general-purpose) with QA agent context loaded from `.claude/context/qa/qa.core.md`.
+If `mustard-rt` not found: dispatch Task(general-purpose) with QA agent context loaded from `.claude/context/qa/qa.core.md`.
 
 ### Step 4 — Update pipeline state
 

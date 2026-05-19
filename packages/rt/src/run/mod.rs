@@ -19,16 +19,22 @@ mod diff_context;
 mod emit_phase;
 mod env;
 mod epic_fold;
+mod event_projections;
 mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;
+mod metrics;
+mod pipeline_summary;
+mod qa_run;
 mod recipe_match;
+mod review_result;
 mod scope_decompose;
 mod spec_extract;
 mod spec_link;
 mod spec_sections;
 mod sync_detect;
 mod sync_registry;
+mod verify_pipeline;
 mod wave_dependency;
 mod wave_lib;
 mod wave_size_check;
@@ -207,6 +213,72 @@ pub enum RunCmd {
         #[arg(long)]
         subproject: Option<String>,
     },
+    /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
+    QaRun {
+        /// Spec name (resolved under `.claude/specs` or `.claude/spec/active`).
+        #[arg(long)]
+        spec: String,
+        /// Output format: `json` (default) or `html` (extra artifact).
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Render pipeline + hook telemetry (`collect` / `report` subcommand).
+    Metrics {
+        /// Subcommand: `collect` or `report`.
+        subcommand: Option<String>,
+        /// Subcommand flags (`--hooks-only`, `--since`, `--event`).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+        /// Output format: `json` (default) or `html`.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Query the harness event log by view.
+    EventProjections {
+        /// View name: `agent-visibility`, `pipeline-state`, `session-summary`,
+        /// `epic-summary`.
+        #[arg(long)]
+        view: Option<String>,
+        /// Spec name (required by `pipeline-state` / `epic-summary`).
+        #[arg(long)]
+        spec: Option<String>,
+        /// Wave filter for `agent-visibility`.
+        #[arg(long)]
+        wave: Option<u32>,
+        /// Output format: `json` (default) or `html`.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Run build/test verification for the active pipeline's subprojects.
+    VerifyPipeline {
+        /// Output format: `json` (default) or `html`.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Render a CLOSE-phase Done/Left/Next-Steps summary for a spec.
+    PipelineSummary {
+        /// Path to the spec directory (must contain `spec.md`).
+        #[arg(long = "spec-dir")]
+        spec_dir: Option<String>,
+        /// Output format: `markdown` (default) or `json`.
+        #[arg(long, default_value = "markdown")]
+        format: String,
+    },
+    /// Record a REVIEW-phase verdict (emits a `review.result` event + metric).
+    ReviewResult {
+        /// Spec name.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Verdict: `approved` or `rejected`.
+        #[arg(long)]
+        verdict: Option<String>,
+        /// Count of critical findings.
+        #[arg(long, default_value_t = 0)]
+        critical: i64,
+        /// Subproject the review targeted.
+        #[arg(long)]
+        subproject: Option<String>,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -267,5 +339,27 @@ pub fn dispatch(cmd: RunCmd) {
             operation,
             subproject,
         } => recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
+        RunCmd::QaRun { spec, format } => qa_run::run(&spec, &format),
+        RunCmd::Metrics {
+            subcommand,
+            args,
+            format,
+        } => metrics::run(subcommand.as_deref(), &args, &format),
+        RunCmd::EventProjections {
+            view,
+            spec,
+            wave,
+            format,
+        } => event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
+        RunCmd::VerifyPipeline { format } => verify_pipeline::run(&format),
+        RunCmd::PipelineSummary { spec_dir, format } => {
+            pipeline_summary::run(spec_dir.as_deref(), &format)
+        }
+        RunCmd::ReviewResult {
+            spec,
+            verdict,
+            critical,
+            subproject,
+        } => review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
     }
 }

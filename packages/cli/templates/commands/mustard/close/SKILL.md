@@ -26,7 +26,7 @@ Finalizes the current pipeline, either completing or canceling.
 Before finalizing, run build/test verification:
 
 ```bash
-bun .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
+mustard-rt run verify-pipeline
 ```
 
 - **Exit 0** (all passed): proceed to completion
@@ -38,7 +38,7 @@ bun .claude/scripts/verify-pipeline.js "$PROJECT_DIR"
 Then run QA against the spec's Acceptance Criteria:
 
 ```bash
-bun .claude/scripts/qa-run.js --spec {spec-name} --json
+mustard-rt run qa-run --spec {spec-name}
 ```
 
 Parse the JSON output and branch on `payload.overall`:
@@ -137,12 +137,12 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 7a. **Pipeline Summary (BEFORE banner):**
 
    ```bash
-   bun .claude/scripts/pipeline-summary.js --spec-dir .claude/spec/active/{spec-name}
+   mustard-rt run pipeline-summary --spec-dir .claude/spec/active/{spec-name}
    ```
 
-   Print the resulting markdown inline above the banner. The script renders four sections — `## Feito|What's Done`, `## Falta|What's Left`, `## Próximos Passos|Next Steps`, `## Follow-ups Manuais|Manual Follow-ups` (labels follow the spec's `### Lang:`).
+   Print the resulting markdown inline above the banner. The command renders four sections — `## Feito|What's Done`, `## Falta|What's Left`, `## Próximos Passos|Next Steps`, `## Follow-ups Manuais|Manual Follow-ups` (labels follow the spec's `### Lang:`).
 
-   **Fail-open:** if the script exits non-zero or `pipeline-summary.js` is missing, log a warning and continue with the banner — do NOT abort CLOSE.
+   **Fail-open:** if the command exits non-zero, log a warning and continue with the banner — do NOT abort CLOSE.
 
 7b. **Wave Tree:**
    - Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{spec-name}` (or `.claude/spec/completed/{spec-name}` if `complete-spec` already moved it)

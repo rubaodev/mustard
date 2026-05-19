@@ -87,11 +87,11 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 5) — relatórios + HTML
 
-- [ ] Construir `packages/rt/src/report/` — gerador HTML standalone (template embutido, fail-open).
-- [ ] Portar `qa-run.js`, `metrics.js`, `event-projections.js`, `verify-pipeline.js`, `pipeline-summary.js`, `review-result.js`.
-- [ ] Adicionar `--format json|html` a `qa-run`, `metrics`, `event-projections`, `verify-pipeline` (JSON é o default).
-- [ ] Ao portar `event-projections`: remover/ajustar o `buildSlopeReport` — após B3 deletar `duplication-check`/`convention-check`, ninguém emite `duplication.warn`/`convention.warn` (ver Preocupações).
-- [ ] Atualizar as invocações em `bugfix`, `close`, `feature`, `refs/resume/fix-loop-wave.md`.
+- [x] Construir `packages/rt/src/report/` — gerador HTML standalone (template embutido, fail-open).
+- [x] Portar `qa-run.js`, `metrics.js`, `event-projections.js`, `verify-pipeline.js`, `pipeline-summary.js`, `review-result.js`.
+- [x] Adicionar `--format json|html` a `qa-run`, `metrics`, `event-projections`, `verify-pipeline` (JSON é o default).
+- [x] Ao portar `event-projections`: remover/ajustar o `buildSlopeReport` — após B3 deletar `duplication-check`/`convention-check`, ninguém emite `duplication.warn`/`convention.warn` (ver Preocupações).
+- [x] Atualizar as invocações em `bugfix`, `close`, `feature`, `refs/resume/fix-loop-wave.md`.
 
 ### Impl Agent (Wave 6) — telemetria + validação
 
@@ -130,6 +130,8 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 - **W3 — `memory.js` e `epic-fold.js` mantidos:** os ports Rust estão prontos e as invocações migradas, mas os `.js` permanecem porque testes de hook do B3 (`hooks/__tests__/harness-dual-emission.test.js`, `harness-wave8.test.js`) ainda fazem `spawnSync` dos scripts reais. **Wave 7** deve portar/remover esses testes antes de deletar `memory.js`/`epic-fold.js` — e só então os `_lib/*.js` órfãos.
 
 - **W4 — 7 scripts portados mas mantidos + `scripts/_lib/` a varrer:** `spec-link`, `mark-checklist-item`, `wave-tree`, `wave-dependency`, `scope-decompose`, `exec-rewave-check`, `wave-size-check` estão portados, mas os `.js` ficam porque testes de hook do B3 ainda os `spawn`am. Além disso, a Wave 4 portou `scripts/_lib/spec-sections.js` e `scripts/_lib/wave-lib.js` para Rust — esse diretório `scripts/_lib/` (incluindo o proxy `event-store.js`) também precisa ser varrido na **Wave 7**, junto com `hooks/_lib/`.
+
+- **W5 — sub-features de `metrics`/`event-projections` não portadas:** o core dos 6 scripts está portado, mas `metrics --compare` (resolução de git-tag) e as views `cross-session-timeline`/`spec-tree`/`pr-metrics` de `event-projections` ficaram como JS-only. Os `.js` permanecem (consumidores presentes), então a funcionalidade não regrediu. **Wave 6** deve completar essas sub-features antes da varredura da Wave 7 — caso contrário a deleção dos `.js` perde funcionalidade.
 
 ## Critérios de Aceitação
 

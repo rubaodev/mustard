@@ -14,15 +14,15 @@ Single command for all metrics: pipeline state, enforcement hooks, RTK token eco
 
 ## Action
 
-1. **Default (`/stats`, no flags)** — run `bun .claude/scripts/metrics.js collect` for the full superset view.
-2. **`--hooks`** — run `rtk bun .claude/scripts/metrics.js report $ARGS` for hook-level event aggregation only. Pass through `--since`/`--event`/`--compare` flags.
+1. **Default (`/stats`, no flags)** — run `mustard-rt run metrics collect` for the full superset view.
+2. **`--hooks`** — run `mustard-rt run metrics report $ARGS` for hook-level event aggregation only. Pass through `--since`/`--event` flags.
 3. **`--pr`** (alias `--view pr-metrics`) — run `bun .claude/scripts/event-projections.js --view pr-metrics --days {N}` and pretty-print the JSON. Default window: 30 days.
 4. Present the output to the user.
 5. If no metrics found, inform user to run a pipeline first.
 
 ## Flags
 
-- `--hooks` — hook-level event aggregation (events from `.claude/.metrics/*.jsonl` + RTK savings) via `metrics.js report`
+- `--hooks` — hook-level event aggregation (events from `.claude/.metrics/*.jsonl`) via `mustard-rt run metrics report`
 - `--since <ISO>` — filter events after this date (use with `--hooks`)
 - `--event <type>` — filter to one event type, e.g. `budget-check` (use with `--hooks`)
 - `--compare <from> <to>` — delta between two windows; each is a git tag `vX.Y.Z` or an ISO date (use with `--hooks`)
@@ -72,9 +72,9 @@ Pairing strategy: events match by `payload.spec` (preferred) or `payload.branch`
 
 ## Rules
 
-- Default `/stats` always runs `metrics.js collect` — do not attempt to read state files manually
-- `--hooks` routes to `metrics.js report`; `--pr` routes to `event-projections.js --view pr-metrics`
-- Present output as-is from the script (it is already formatted markdown)
+- Default `/stats` always runs `mustard-rt run metrics collect` — do not attempt to read state files manually
+- `--hooks` routes to `mustard-rt run metrics report`; `--pr` routes to `event-projections.js --view pr-metrics`
+- Present the output JSON as-is from the command
 - If the script fails, inform the user gracefully and suggest running a pipeline first
 
 ## Notes

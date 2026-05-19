@@ -209,7 +209,7 @@ Max 2 retries for Transient + Resolvable. Structural failures trigger a targeted
 After EXECUTE (fix + validate) completes:
 
 1. Update pipeline state: `phaseName: "QA"`
-2. Run: `bun .claude/scripts/qa-run.js --spec {specName}` (Full Path only)
+2. Run: `mustard-rt run qa-run --spec {specName}` (Full Path only)
    - For Fast Path: manually verify the bug reproduction command exits 0, emit result to harness
 3. If `overall=pass`: proceed to CLOSE
 4. If `overall=fail`: the bug reproduction AC still fails — return to EXECUTE for targeted fix, max 3 QA iterations

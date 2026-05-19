@@ -219,7 +219,7 @@ If two or more agents in the same wave return `CONCERN`, surface all concerns to
     - APPROVED (zero CRITICAL) → CLOSE
     - REJECTED (any CRITICAL) → see Step 19b § Fix Loop Dispatch Protocol (max 2 loops)
     - **NEVER skip review** — not even for Light scope. Light scope gets same checklist, just fewer files to review
-    - **Record the verdict (after it is consolidated):** for each reviewed subproject run `bun .claude/scripts/review-result.js --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}`. This emits the `review` metric that surfaces in `/stats` under Verification. Fail-open — never blocks CLOSE.
+    - **Record the verdict (after it is consolidated):** for each reviewed subproject run `mustard-rt run review-result --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}`. This emits the `review` metric that surfaces in `/stats` under Verification. Fail-open — never blocks CLOSE.
 
 ### Step 19b: Fix Loop Dispatch Protocol
 
@@ -232,7 +232,7 @@ Extract CRITICAL findings verbatim from review return (or harness view). Build r
 After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE directly — `close-gate.js` denies CLOSE without a passing `qa.result` event.
 
 1. Update pipeline state via Write/Edit: `phaseName: "QA"`.
-2. Run `bun .claude/scripts/qa-run.js --spec {specName}`. For wave plans, `{specName}` is the wave-plan directory name.
+2. Run `mustard-rt run qa-run --spec {specName}`. For wave plans, `{specName}` is the wave-plan directory name.
 3. Branch on `overall`:
    - **pass** — update `## Acceptance Criteria` checkboxes in the spec (`[x]` for each passed AC), then update pipeline state via Write/Edit with `phaseName: "CLOSE"` (this Write triggers `close-gate.js`, which verifies the `qa.result` event before allowing CLOSE) → proceed to Step 20.
    - **fail** — extract the failing AC list and re-dispatch via the Step 19b Fix Loop Dispatch Protocol, then re-run this step. Maximum 3 QA iterations.
@@ -246,7 +246,7 @@ After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE dire
     - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
     - Move spec to `.claude/spec/completed/` (the entire `{specName}/` directory, including wave subdirs if any)
     - **Delete** `.claude/.pipeline-states/{spec-name}.json`
-    - **Pipeline Summary (BEFORE banner):** run `bun .claude/scripts/pipeline-summary.js --spec-dir .claude/spec/active/{specName}` and print the markdown inline. For wave plans, the same spec-dir applies (the script reads the root `spec.md`; for wave-plan-final closes, use the wave-plan dir). Fail-open: on non-zero exit or missing script, log a warning and continue with the banner — do NOT abort CLOSE. Apply to both single-spec and wave-plan-final paths.
+    - **Pipeline Summary (BEFORE banner):** run `mustard-rt run pipeline-summary --spec-dir .claude/spec/active/{specName}` and print the markdown inline. For wave plans, the same spec-dir applies (the command reads the root `spec.md`; for wave-plan-final closes, use the wave-plan dir). Fail-open: on non-zero exit, log a warning and continue with the banner — do NOT abort CLOSE. Apply to both single-spec and wave-plan-final paths.
     - **Wave Tree (before banner):** `mustard-rt run wave-tree --spec-dir .claude/spec/active/{specName}` (or `completed/` if already moved). Fail-open.
     - Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══` (for wave plans: append `| Waves: {totalWaves}`).
 

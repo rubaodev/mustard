@@ -32,6 +32,7 @@
 mod dispatch;
 mod registry;
 mod hooks;
+mod report;
 mod run;
 mod util;
 

@@ -230,7 +230,7 @@ After each agent returns, check for escalation before advancing:
 
 If two or more agents in same wave return `CONCERN`, surface all concerns together before starting next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing.
 
-9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`. After the verdict is consolidated, for each reviewed subproject run `bun .claude/scripts/review-result.js --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}` — emits the `review` metric surfaced in `/stats` Verification. Fail-open.
+9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`. After the verdict is consolidated, for each reviewed subproject run `mustard-rt run review-result --spec {specName} --verdict {approved|rejected} --critical {N} --subproject {subproject}` — emits the `review` metric surfaced in `/stats` Verification. Fail-open.
 10. All passed + APPROVED → run QA Phase (Wave 10, see below) → on QA `pass`/`skip` → CLOSE flow inline (sync registry, move spec, cleanup state)
 11. Failed → max 2 retries, then STOP + report
 
@@ -240,7 +240,7 @@ Classify before retrying: (1) **Transient?** → retry once immediately. (2) **R
 
 ### QA Phase (Wave 10)
 
-After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `bun .claude/scripts/qa-run.js --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then write `phaseName: "CLOSE"` to pipeline state via Write/Edit (triggers `close-gate.js`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
+After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `mustard-rt run qa-run --spec {specName}`. (3) `overall=pass` → update `## Acceptance Criteria` checkboxes, then write `phaseName: "CLOSE"` to pipeline state via Write/Edit (triggers `close-gate.js`) → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
 
 Update `## Acceptance Criteria` checkboxes: `[x]` passed, `[ ]` failed. Visual: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
 
