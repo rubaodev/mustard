@@ -74,8 +74,8 @@ mustard-rt run sync-registry
 mustard-rt run sync-registry --force
 
 # Skill CLI (invoked by /scan §4.7; also callable standalone)
-bun scripts/skills.js validate
-bun scripts/skills.js validate --json
+mustard-rt run skills validate
+mustard-rt run skills validate --json
 ```
 
 ## Guards

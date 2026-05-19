@@ -95,9 +95,10 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ### Impl Agent (Wave 6) — telemetria + validação
 
-- [ ] Portar `statusline.js`, `skills.js`, `security-scan.js`, `otel-collector.js`, `diagnose-otel.js`, `verify-emit.js`, `_rtk-gain.js`.
-- [ ] Portar a orquestração do `/scan` (deferido da Wave 2): `scan/orchestrate.js`, `scan/_precompute.js`, `scan/finalize.js`.
-- [ ] Atualizar as invocações em `refs/scan/scan-protocol.md`, `refs/scan/evidence-rules.md`, `refs/feature/ac-cross-shell.md`.
+- [x] Portar `statusline`, `skills`, `security-scan`, `verify-emit`, `_rtk-gain` (5/7). `otel-collector`/`diagnose-otel` — bloqueio arquitetural, decisão pendente (ver Concerns W6).
+- [x] Portar a orquestração do `/scan` (deferido da Wave 2): `scan/orchestrate.js`, `scan/_precompute.js`, `scan/finalize.js`.
+- [x] Concluir as sub-features deferidas da W5: `metrics --compare` + views `cross-session-timeline`/`spec-tree`/`pr-metrics` de `event-projections`.
+- [x] Atualizar as invocações em `refs/scan/scan-protocol.md`, `refs/scan/evidence-rules.md`, `refs/feature/ac-cross-shell.md`.
 
 ### Impl Agent (Wave 7) — limpeza + orfanização
 
@@ -132,6 +133,8 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 - **W4 — 7 scripts portados mas mantidos + `scripts/_lib/` a varrer:** `spec-link`, `mark-checklist-item`, `wave-tree`, `wave-dependency`, `scope-decompose`, `exec-rewave-check`, `wave-size-check` estão portados, mas os `.js` ficam porque testes de hook do B3 ainda os `spawn`am. Além disso, a Wave 4 portou `scripts/_lib/spec-sections.js` e `scripts/_lib/wave-lib.js` para Rust — esse diretório `scripts/_lib/` (incluindo o proxy `event-store.js`) também precisa ser varrido na **Wave 7**, junto com `hooks/_lib/`.
 
 - **W5 — sub-features de `metrics`/`event-projections` não portadas:** o core dos 6 scripts está portado, mas `metrics --compare` (resolução de git-tag) e as views `cross-session-timeline`/`spec-tree`/`pr-metrics` de `event-projections` ficaram como JS-only. Os `.js` permanecem (consumidores presentes), então a funcionalidade não regrediu. **Wave 6** deve completar essas sub-features antes da varredura da Wave 7 — caso contrário a deleção dos `.js` perde funcionalidade.
+
+- **W6 — `otel-collector`/`diagnose-otel` não portados (bloqueio arquitetural):** ambos sobem um servidor HTTP (`Bun.serve`) e gravam numa tabela SQLite via `_lib/event-store.js`. Um porte fiel exige adicionar a `mustard-rt` um crate de servidor HTTP + um de SQLite — contra o princípio de binário enxuto e sem dependências. O subsistema OTEL é periférico (referenciado só em `/maint`). **Decisão do usuário pendente** antes da Wave 7. As sub-features deferidas da W5 (`metrics --compare`, views de `event-projections`) foram **concluídas** na W6.
 
 ## Critérios de Aceitação
 

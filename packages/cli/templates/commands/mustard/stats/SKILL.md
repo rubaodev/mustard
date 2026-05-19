@@ -16,7 +16,7 @@ Single command for all metrics: pipeline state, enforcement hooks, RTK token eco
 
 1. **Default (`/stats`, no flags)** — run `mustard-rt run metrics collect` for the full superset view.
 2. **`--hooks`** — run `mustard-rt run metrics report $ARGS` for hook-level event aggregation only. Pass through `--since`/`--event` flags.
-3. **`--pr`** (alias `--view pr-metrics`) — run `bun .claude/scripts/event-projections.js --view pr-metrics --days {N}` and pretty-print the JSON. Default window: 30 days.
+3. **`--pr`** (alias `--view pr-metrics`) — run `mustard-rt run event-projections --view pr-metrics --wave {N}` (the `--wave` arg is the day window for this view) and pretty-print the JSON. Default window: 30 days.
 4. Present the output to the user.
 5. If no metrics found, inform user to run a pipeline first.
 

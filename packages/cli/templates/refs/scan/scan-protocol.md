@@ -336,7 +336,7 @@ mustard-rt run sync-detect
 ## Step 6 — Validate Skills (--factual mode)
 
 ```bash
-bun .claude/scripts/skills.js validate --factual
+mustard-rt run skills validate --factual
 ```
 
 Checks per skill: header, cluster backing (fileCount ≥ 3), sample existence, no fenced code in body, reference paths exist.
@@ -350,8 +350,8 @@ In strict mode, validator exit code 1 aborts the scan return (skills are kept on
 Run after code analysis (step 3) or independently via `/scan --security`:
 
 ```bash
-bun .claude/scripts/security-scan.js "$PROJECT_DIR"
-bun .claude/scripts/security-scan.js "$PROJECT_DIR" --json
+mustard-rt run security-scan "$PROJECT_DIR"
+mustard-rt run security-scan "$PROJECT_DIR" --json
 ```
 
 Include findings in scan output under a `## Security` section:

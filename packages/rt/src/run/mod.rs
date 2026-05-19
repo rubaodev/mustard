@@ -28,7 +28,15 @@ mod pipeline_summary;
 mod qa_run;
 mod recipe_match;
 mod review_result;
+mod rtk_gain;
+mod scan_finalize;
+mod scan_orchestrate;
+mod scan_precompute;
 mod scope_decompose;
+mod security_scan;
+mod skills;
+mod statusline;
+mod verify_emit;
 mod spec_extract;
 mod spec_link;
 mod spec_sections;
@@ -279,6 +287,61 @@ pub enum RunCmd {
         #[arg(long)]
         subproject: Option<String>,
     },
+    /// Render the Claude Code status bar (reads the payload JSON from stdin).
+    Statusline,
+    /// Skill-family CLI: `validate`, `graph`, or `orphans`.
+    Skills {
+        /// Subcommand: `validate`, `graph`, or `orphans`.
+        subcommand: Option<String>,
+        /// Subcommand flags (`--json`, `--factual`, `--days`, …).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Scan a project tree for committed secrets + misconfigurations.
+    SecurityScan {
+        /// Directory to scan. Defaults to the current directory.
+        dir: Option<String>,
+        /// Emit the machine-readable JSON report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Confirm a named harness event landed within a recent window.
+    VerifyEmit {
+        /// Event name to match (required).
+        #[arg(long)]
+        event: Option<String>,
+        /// Look-back window, e.g. `30s`, `1m`, `500ms` (alias `--within`).
+        #[arg(long, alias = "within")]
+        since: Option<String>,
+        /// Also require `payload[key]` to exist.
+        #[arg(long = "payload-key")]
+        payload_key: Option<String>,
+        /// With `--payload-key`, require equality.
+        #[arg(long = "payload-value")]
+        payload_value: Option<String>,
+        /// Also filter by the `spec` field.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Suppress stdout on success.
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Normalise `rtk gain` analytics into the Mustard JSON shape.
+    RtkGain,
+    /// Pre-dispatch orchestration for `/scan` — emits the dispatch plan JSON.
+    ScanOrchestrate {
+        /// Single subproject to scan (optional positional).
+        target: Option<String>,
+        /// Full re-scan: ignore the change-detection cache.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Post-dispatch finalization for `/scan` — registry + skills + security.
+    ScanFinalize {
+        /// Skip the security scan step.
+        #[arg(long = "skip-security")]
+        skip_security: bool,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -361,5 +424,28 @@ pub fn dispatch(cmd: RunCmd) {
             critical,
             subproject,
         } => review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
+        RunCmd::Statusline => statusline::run(),
+        RunCmd::Skills { subcommand, args } => skills::run(subcommand.as_deref(), &args),
+        RunCmd::SecurityScan { dir, json } => security_scan::run(dir.as_deref(), json),
+        RunCmd::VerifyEmit {
+            event,
+            since,
+            payload_key,
+            payload_value,
+            spec,
+            quiet,
+        } => verify_emit::run(
+            event.as_deref(),
+            since.as_deref(),
+            payload_key.as_deref(),
+            payload_value.as_deref(),
+            spec.as_deref(),
+            quiet,
+        ),
+        RunCmd::RtkGain => rtk_gain::run(),
+        RunCmd::ScanOrchestrate { target, force } => {
+            scan_orchestrate::run(force, target.as_deref())
+        }
+        RunCmd::ScanFinalize { skip_security } => scan_finalize::run(skip_security),
     }
 }

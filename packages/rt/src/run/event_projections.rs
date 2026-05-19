@@ -5,11 +5,11 @@
 //! the parsed events; the CLI prints it to stdout. Exit `0` always (fail-open).
 //!
 //! Views ported: `agent-visibility`, `pipeline-state`, `session-summary`,
-//! `epic-summary`. The JS `buildSlopeReport` projection is **deliberately not
-//! ported** — B3 deleted the `duplication.warn` / `convention.warn` hooks that
-//! fed it, so nothing emits those events anymore (b4 spec, dead-code removal).
-//! `cross-session-timeline`, `spec-tree` and `pr-metrics` remain JS-only views
-//! a later wave can port; an unknown `--view` returns `{ "error": ... }`.
+//! `epic-summary`, `cross-session-timeline`, `spec-tree`, `pr-metrics`. The JS
+//! `buildSlopeReport` projection is **deliberately not ported** — B3 deleted
+//! the `duplication.warn` / `convention.warn` hooks that fed it, so nothing
+//! emits those events anymore (b4 spec, dead-code removal). An unknown
+//! `--view` returns `{ "error": ... }`.
 //!
 //! `--format json` (default) prints the projection. `--format html` wraps the
 //! same JSON in a standalone HTML page and prints its path on stderr.
@@ -18,6 +18,7 @@ use crate::report::Report;
 use mustard_core::io::event_store::JsonlEventStore;
 use mustard_core::model::event::HarnessEvent;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// `agent.stop` summary truncation, matching `DEFAULT_AGENT_SUMMARY_CHARS`.
@@ -319,6 +320,301 @@ fn build_epic_summary(events: &[HarnessEvent], cwd: &Path, epic: &str) -> Value 
     })
 }
 
+/// Default `cross-session-timeline` session limit (`DEFAULT_CROSS_SESSION_LIMIT`).
+const CROSS_SESSION_LIMIT: usize = 3;
+/// `spec-tree` recursion depth cap (`MAX_SPEC_TREE_DEPTH`).
+const MAX_SPEC_TREE_DEPTH: u32 = 3;
+
+/// `buildCrossSessionTimeline` — per-session summaries for the most-recent
+/// `limit` files under `.harness/sessions/`, newest first by mtime. Each
+/// summary is enriched with `epicInfo` for specs that have `children_specs`.
+fn build_cross_session_timeline(cwd: &Path, limit: usize) -> Value {
+    let sessions_dir = cwd.join(".claude").join(".harness").join("sessions");
+    let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+        return json!([]);
+    };
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .map(|e| {
+            let mtime = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (e.path(), mtime)
+        })
+        .collect();
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.truncate(limit);
+
+    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    let mut results: Vec<Value> = Vec::new();
+    for (file, _) in files {
+        let Ok(raw) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let events: Vec<HarnessEvent> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let mut summary = build_session_summary(&events);
+        // Enrich each spec that has children with epic metadata.
+        let mut epic_info = serde_json::Map::new();
+        if let Some(specs) = summary.get("specs").and_then(Value::as_array).cloned() {
+            for spec in specs.iter().filter_map(Value::as_str) {
+                let Some(state) = read_state(&states_dir, spec) else {
+                    continue;
+                };
+                let children: Vec<String> = state
+                    .get("children_specs")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default();
+                if children.is_empty() {
+                    continue;
+                }
+                let closed = children
+                    .iter()
+                    .filter(|c| {
+                        read_state(&states_dir, c)
+                            .and_then(|cs| {
+                                cs.get("phaseName")
+                                    .or_else(|| cs.get("phase"))
+                                    .and_then(Value::as_str)
+                                    .map(|p| p.to_uppercase())
+                            })
+                            .as_deref()
+                            == Some("CLOSE")
+                    })
+                    .count();
+                epic_info.insert(
+                    spec.to_string(),
+                    json!({ "total": children.len(), "closed": closed, "children": children }),
+                );
+            }
+        }
+        if let Some(obj) = summary.as_object_mut() {
+            obj.insert("file".to_string(), json!(file.to_string_lossy()));
+            obj.insert("epicInfo".to_string(), Value::Object(epic_info));
+        }
+        results.push(summary);
+    }
+    Value::Array(results)
+}
+
+/// Read a `.pipeline-states/<name>.json` file, `None` on any error.
+fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(states_dir.join(format!("{name}.json"))).ok()?).ok()
+}
+
+/// `buildSpecTree` — the recursive parent/child spec hierarchy (max depth 3),
+/// combining `spec.link` events with on-disk `.pipeline-states` files.
+fn build_spec_tree(events: &[HarnessEvent], cwd: &Path, root_spec: &str) -> Value {
+    let states_dir = cwd.join(".claude").join(".pipeline-states");
+    // parent → children, child → parent — from spec.link events.
+    let mut link_children: std::collections::BTreeMap<String, BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut link_parent: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for ev in events {
+        if ev.event != "spec.link" {
+            continue;
+        }
+        let parent = ev.payload.get("parent").and_then(Value::as_str);
+        let child = ev.payload.get("child").and_then(Value::as_str);
+        if let (Some(p), Some(c)) = (parent, child) {
+            link_children.entry(p.to_string()).or_default().insert(c.to_string());
+            link_parent.insert(c.to_string(), p.to_string());
+        }
+    }
+    // Root must exist on disk or in events.
+    if read_state(&states_dir, root_spec).is_none()
+        && !link_children.contains_key(root_spec)
+        && !link_parent.contains_key(root_spec)
+    {
+        return json!({ "error": "spec not found" });
+    }
+    build_spec_node(&states_dir, &link_children, &link_parent, root_spec, 1, &BTreeSet::new())
+}
+
+/// Build one `spec-tree` node, recursing into children. Detects cycles.
+fn build_spec_node(
+    states_dir: &Path,
+    link_children: &std::collections::BTreeMap<String, BTreeSet<String>>,
+    link_parent: &std::collections::BTreeMap<String, String>,
+    spec: &str,
+    depth: u32,
+    ancestors: &BTreeSet<String>,
+) -> Value {
+    if depth > MAX_SPEC_TREE_DEPTH {
+        return json!({ "spec": spec, "phase": Value::Null, "truncated": true, "children": [] });
+    }
+    if ancestors.contains(spec) {
+        return json!({ "error": "cycle-detected", "cycle_member": spec });
+    }
+    let state = read_state(states_dir, spec);
+    let phase = state
+        .as_ref()
+        .and_then(|s| s.get("phaseName").or_else(|| s.get("phase")).and_then(Value::as_str))
+        .map(str::to_string);
+    let parent_spec = state
+        .as_ref()
+        .and_then(|s| s.get("parent_spec").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| link_parent.get(spec).cloned());
+
+    let mut children_set: BTreeSet<String> = BTreeSet::new();
+    if let Some(arr) = state.as_ref().and_then(|s| s.get("children_specs")).and_then(Value::as_array) {
+        children_set.extend(arr.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    if let Some(linked) = link_children.get(spec) {
+        children_set.extend(linked.iter().cloned());
+    }
+
+    let mut new_ancestors = ancestors.clone();
+    new_ancestors.insert(spec.to_string());
+    let mut children: Vec<Value> = Vec::new();
+    for child in &children_set {
+        let node = build_spec_node(states_dir, link_children, link_parent, child, depth + 1, &new_ancestors);
+        if node.get("error").and_then(Value::as_str).map(|e| e.contains("cycle")).unwrap_or(false) {
+            return json!({ "error": "cycle-detected", "parent": spec, "child": child });
+        }
+        children.push(node);
+    }
+    let mut node = serde_json::Map::new();
+    node.insert("spec".to_string(), json!(spec));
+    node.insert("phase".to_string(), json!(phase));
+    node.insert("children".to_string(), Value::Array(children));
+    if let Some(p) = parent_spec {
+        node.insert("parent_spec".to_string(), json!(p));
+    }
+    Value::Object(node)
+}
+
+/// `buildPRMetrics` — DORA-style metrics from `pr.opened` / `pr.merged` /
+/// `review.start` / `review.complete` events within the last `days`.
+fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
+    let _ = cwd;
+    let now_ms = crate::util::now_millis() as i64;
+    let from_ms = now_ms - days * 86_400_000;
+    let in_window = |ts: &str| -> bool {
+        crate::run::complete_spec::parse_iso_millis(ts)
+            .map(|t| t >= from_ms && t <= now_ms)
+            .unwrap_or(false)
+    };
+    let pair_key = |ev: &HarnessEvent| -> Option<String> {
+        ev.payload
+            .get("spec")
+            .or_else(|| ev.payload.get("branch"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+
+    let (mut opened, mut merged, mut review_start, mut review_complete): (
+        Vec<&HarnessEvent>,
+        Vec<&HarnessEvent>,
+        Vec<&HarnessEvent>,
+        Vec<&HarnessEvent>,
+    ) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for ev in events {
+        if ev.ts.is_empty() || !in_window(&ev.ts) {
+            continue;
+        }
+        match ev.event.as_str() {
+            "pr.opened" => opened.push(ev),
+            "pr.merged" => merged.push(ev),
+            "review.start" => review_start.push(ev),
+            "review.complete" => review_complete.push(ev),
+            _ => {}
+        }
+    }
+
+    // Pair opened → merged (earliest opener first; one merge per opener).
+    let pair_durations = |starts: &mut Vec<&HarnessEvent>, ends: &[&HarnessEvent]| -> Vec<i64> {
+        starts.sort_by(|a, b| a.ts.cmp(&b.ts));
+        let mut sorted_ends: Vec<&HarnessEvent> = ends.to_vec();
+        sorted_ends.sort_by(|a, b| a.ts.cmp(&b.ts));
+        let mut used = vec![false; sorted_ends.len()];
+        let mut durations = Vec::new();
+        for s in starts.iter() {
+            let Some(key) = pair_key(s) else { continue };
+            let Some(s_ms) = crate::run::complete_spec::parse_iso_millis(&s.ts) else {
+                continue;
+            };
+            for (i, e) in sorted_ends.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                let Some(e_ms) = crate::run::complete_spec::parse_iso_millis(&e.ts) else {
+                    continue;
+                };
+                if e_ms < s_ms || pair_key(e) != Some(key.clone()) {
+                    continue;
+                }
+                durations.push(e_ms - s_ms);
+                used[i] = true;
+                break;
+            }
+        }
+        durations
+    };
+    let lead_times = pair_durations(&mut opened, &merged);
+    let review_times = pair_durations(&mut review_start, &review_complete);
+    let sizes: Vec<i64> = opened
+        .iter()
+        .filter_map(|e| e.payload.get("linesChanged").and_then(Value::as_i64))
+        .filter(|n| *n > 0)
+        .collect();
+
+    let stat = |arr: &[i64]| -> Value {
+        if arr.is_empty() {
+            return json!({ "count": 0, "p50": Value::Null, "p90": Value::Null, "max": Value::Null });
+        }
+        let mut sorted = arr.to_vec();
+        sorted.sort_unstable();
+        let pct = |p: usize| -> i64 {
+            let idx = ((p as f64 / 100.0) * sorted.len() as f64).floor() as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        };
+        json!({
+            "count": sorted.len(),
+            "p50": pct(50),
+            "p90": pct(90),
+            "max": *sorted.last().unwrap_or(&0),
+        })
+    };
+    let bucket_by_day = |arr: &[&HarnessEvent]| -> Value {
+        let mut map: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        for e in arr {
+            let day: String = e.ts.chars().take(10).collect();
+            if !day.is_empty() {
+                *map.entry(day).or_insert(0) += 1;
+            }
+        }
+        Value::Array(
+            map.into_iter()
+                .map(|(date, count)| json!({ "date": date, "count": count }))
+                .collect(),
+        )
+    };
+
+    json!({
+        "window": { "days": days },
+        "totals": {
+            "opened": opened.len(),
+            "merged": merged.len(),
+            "reviewsStarted": review_start.len(),
+            "reviewsCompleted": review_complete.len(),
+        },
+        "leadTimeMs": stat(&lead_times),
+        "reviewTimeMs": stat(&review_times),
+        "prSize": stat(&sizes),
+        "openedByDay": bucket_by_day(&opened),
+        "mergedByDay": bucket_by_day(&merged),
+    })
+}
+
 /// Compute the projection for a `--view`.
 fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Value {
     match view {
@@ -329,6 +625,20 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
             Some(s) => build_epic_summary(&read_events(cwd), cwd, s),
             None => json!({ "error": "--spec is required for epic-summary view" }),
         },
+        "cross-session-timeline" => {
+            // `--wave` doubles as the optional `--limit` for this view.
+            let limit = wave.map(|w| w as usize).unwrap_or(CROSS_SESSION_LIMIT);
+            build_cross_session_timeline(cwd, limit)
+        }
+        "spec-tree" => match spec {
+            Some(s) => build_spec_tree(&read_events(cwd), cwd, s),
+            None => json!({ "error": "--spec is required for spec-tree view" }),
+        },
+        "pr-metrics" => {
+            // `--wave` doubles as the optional `--days` window for this view.
+            let days = wave.map(i64::from).unwrap_or(30);
+            build_pr_metrics(&read_events(cwd), cwd, days)
+        }
         other => json!({ "error": format!("Unknown view: {other}") }),
     }
 }
@@ -348,7 +658,7 @@ fn write_html_report(cwd: &Path, view: &str, json_text: &str) -> Option<PathBuf>
 pub fn run(view: Option<&str>, spec: Option<&str>, wave: Option<u32>, format: &str) {
     let Some(view) = view else {
         eprintln!("Usage: event-projections --view <name> [--spec <name>] [--wave <n>] [--format json|html]");
-        eprintln!("Views: agent-visibility, pipeline-state, session-summary, epic-summary");
+        eprintln!("Views: agent-visibility, pipeline-state, session-summary, epic-summary, cross-session-timeline, spec-tree, pr-metrics");
         return;
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -411,5 +721,52 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = project(dir.path(), "slope-report", None, None);
         assert!(v.get("error").is_some());
+    }
+
+    #[test]
+    fn spec_tree_builds_parent_child() {
+        let events = vec![ev(
+            "spec.link",
+            None,
+            json!({ "parent": "epic-a", "child": "child-b" }),
+        )];
+        let dir = tempfile::tempdir().unwrap();
+        let tree = build_spec_tree(&events, dir.path(), "epic-a");
+        assert_eq!(tree["spec"], json!("epic-a"));
+        let children = tree["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["spec"], json!("child-b"));
+    }
+
+    #[test]
+    fn spec_tree_unknown_root_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = build_spec_tree(&[], dir.path(), "ghost");
+        assert_eq!(tree["error"], json!("spec not found"));
+    }
+
+    #[test]
+    fn pr_metrics_pairs_lead_time() {
+        let events = vec![
+            ev("pr.opened", None, json!({ "spec": "auth", "linesChanged": 40 })),
+            {
+                let mut e = ev("pr.merged", None, json!({ "spec": "auth" }));
+                e.ts = "2026-05-19T01:00:00.000Z".to_string();
+                e
+            },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let m = build_pr_metrics(&events, dir.path(), 30);
+        assert_eq!(m["totals"]["opened"], json!(1));
+        assert_eq!(m["totals"]["merged"], json!(1));
+        assert_eq!(m["leadTimeMs"]["count"], json!(1));
+        assert_eq!(m["prSize"]["count"], json!(1));
+    }
+
+    #[test]
+    fn cross_session_timeline_empty_when_no_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = build_cross_session_timeline(dir.path(), 3);
+        assert_eq!(v, json!([]));
     }
 }

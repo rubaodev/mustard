@@ -349,11 +349,12 @@ All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 | `.pipeline-states/{spec}.json` | Pipeline commands | Current phase (ANALYZE/PLAN/EXECUTE/REVIEW/QA/CLOSE/COORDINATE) |
 
 ### How agents read context
-Via **views** in `scripts/event-projections.js`:
-- `buildAgentVisibility(events, opts)` — parallel agents in current wave + prior findings
-- `buildPipelineState(events, { spec })` — phase + metrics (tool counts, retries, agents) for a spec
-- `buildCrossSessionTimeline(sessionsDir, opts)` — episodic memory across sessions
-- `buildSessionSummary(events)` — roll-up for SessionEnd fold
+Via **views** in `mustard-rt run event-projections --view <name>`:
+- `agent-visibility` — parallel agents in current wave + prior findings
+- `pipeline-state` — phase + metrics (tool counts, retries, agents) for a spec
+- `cross-session-timeline` — episodic memory across sessions
+- `session-summary` — roll-up for SessionEnd fold
+- `spec-tree` — parent/child spec hierarchy; `epic-summary` — epic roll-up; `pr-metrics` — DORA-style PR metrics
 
 ### Removed (Wave 4 — no longer written)
 - `.agent-memory/` (was: per-agent summaries → now: `agent.stop` events in log)
@@ -369,17 +370,17 @@ The `mustard-rt` `session_start` module (SessionStart) rotates `.harness/events.
 The automatic injection in SessionStart/SubagentStart is capped (400-800 chars). If you need more historical context, query the harness directly:
 
 ```bash
-# Find specific topic in session summary
-bun .claude/scripts/event-projections.js --view session-summary --query "JWT" --compact
+# Roll-up of the current session
+mustard-rt run event-projections --view session-summary
 
 # Get full state of a spec
-bun .claude/scripts/event-projections.js --view pipeline-state --spec auth-login --compact
+mustard-rt run event-projections --view pipeline-state --spec auth-login
 
-# See last N sessions timeline
-bun .claude/scripts/event-projections.js --view cross-session-timeline --limit 5 --compact
+# See last N sessions timeline (--wave is the session limit for this view)
+mustard-rt run event-projections --view cross-session-timeline --wave 5
 
 # Active parallel agents in current wave
-bun .claude/scripts/event-projections.js --view agent-visibility --compact
+mustard-rt run event-projections --view agent-visibility
 ```
 
 **When to use:**

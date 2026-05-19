@@ -49,7 +49,7 @@
       "WebFetch",
       "WebSearch",
       "Bash",
-      "Bash(bun .claude/scripts/event-projections.js:*)",
+      "Bash(mustard-rt run event-projections:*)",
       "Bash(bun .claude/scripts/qa-run.js:*)"
     ],
     "deny": [
@@ -180,7 +180,7 @@
 
   "statusLine": {
     "type": "command",
-    "command": "bun \"$CLAUDE_PROJECT_DIR\"/.claude/scripts/statusline.js",
+    "command": "mustard-rt run statusline",
     "padding": 1
   }
 }

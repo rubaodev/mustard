@@ -76,7 +76,7 @@ Runs read-only diagnostics. Never blocks — reports only.
 
 ### Flow
 
-1. `bun .claude/scripts/skills.js orphans` — lists skills not invoked in N days (env `MUSTARD_SKILL_ORPHAN_DAYS`, default 30)
+1. `mustard-rt run skills orphans` — lists skills not invoked in N days (env `MUSTARD_SKILL_ORPHAN_DAYS`, default 30)
 2. `bun .claude/scripts/diagnose-otel.js` — end-to-end health check of the OTEL telemetry pipeline (collector process, `/healthz`, data flow)
 3. Report both results to the user
 
