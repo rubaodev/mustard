@@ -58,6 +58,15 @@ coverage/
 # Harness runtime state
 .claude/.harness/
 
+# Compaction memory (session-scoped, ephemeral)
+.claude/.compact-state/
+
+# Nested .claude runtime state (subprojects / imported trees)
+**/.claude/.harness/
+**/.claude/.metrics/
+**/.claude/.compact-state/
+**/.claude/.pipeline-states/
+
 # Timestamped backups created by mustard init/update
 .claude.backup.*/
 
