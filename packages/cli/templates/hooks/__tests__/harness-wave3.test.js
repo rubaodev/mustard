@@ -121,141 +121,9 @@ function readEvents(projectDir) {
     .filter(Boolean);
 }
 
-// ── Test 1: Parallel agents see each other in the same wave ──────────────────
-
-describe('Wave 3 — subagent-tracker: parallel agents see each other', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(os.tmpdir()); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('3rd agent in wave=3 sees agent.start events of agents A and B in wave=3', async () => {
-    // Simulate agent A starting in wave=3
-    appendEvent(tmp, makeEvent({
-      wave: 3,
-      actor: { kind: 'agent', id: 'ag-A', type: 'Explore' },
-      event: 'agent.start',
-      payload: { description: 'Agent A: scan auth patterns', model: null },
-    }));
-
-    // Simulate agent B starting in wave=3
-    appendEvent(tmp, makeEvent({
-      wave: 3,
-      actor: { kind: 'agent', id: 'ag-B', type: 'general-purpose' },
-      event: 'agent.start',
-      payload: { description: 'Agent B: implement login endpoint', model: null },
-    }));
-
-    // Also add a finding from a different wave (should still appear as finding)
-    appendEvent(tmp, makeEvent({
-      wave: 2,
-      actor: { kind: 'agent', id: 'ag-Z', type: 'Explore' },
-      event: 'finding',
-      payload: { kind: 'pattern', content: 'Auth uses JWT tokens', confidence: 0.9, refs: [] },
-    }));
-
-    // Also add an agent.stop for ag-A to verify it won't show as "active" if stopped
-    // (We leave A and B both running — no agent.stop for them)
-
-    // Now agent C starts in wave=3 via SubagentStart event
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-C',
-      agent_type: 'general-purpose',
-      cwd: tmp,
-      session_id: 's-wave3-parallel',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, `hook exited non-zero: ${result.stderr}`);
-
-    const parsed = result.parsed;
-    assert.ok(parsed, 'hook should output JSON');
-    const ctx = parsed.hookSpecificOutput && parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string', 'additionalContext should be a string');
-
-    // Agent C should see Agent A and B in the same wave
-    assert.ok(
-      ctx.includes('ag-A') || ctx.includes('Agent A') || ctx.includes('scan auth'),
-      `additionalContext should reference agent A. Got: ${ctx}`
-    );
-    assert.ok(
-      ctx.includes('ag-B') || ctx.includes('Agent B') || ctx.includes('login endpoint'),
-      `additionalContext should reference agent B. Got: ${ctx}`
-    );
-  });
-
-  it('agent stop removes agent from active list', async () => {
-    // Agent A starts in wave=3
-    appendEvent(tmp, makeEvent({
-      wave: 3,
-      actor: { kind: 'agent', id: 'ag-stopped', type: 'Explore' },
-      event: 'agent.start',
-      payload: { description: 'Agent that will stop', model: null },
-    }));
-
-    // Agent A stops
-    appendEvent(tmp, makeEvent({
-      wave: 3,
-      actor: { kind: 'agent', id: 'ag-stopped', type: 'Explore' },
-      event: 'agent.stop',
-      payload: { summary: 'Done with exploration', confidence: 0.8, durationMs: 1000, toolCount: 5 },
-    }));
-
-    // Agent B starts in wave=3
-    appendEvent(tmp, makeEvent({
-      wave: 3,
-      actor: { kind: 'agent', id: 'ag-running', type: 'general-purpose' },
-      event: 'agent.start',
-      payload: { description: 'Still running agent', model: null },
-    }));
-
-    // Agent C starts (via SubagentStart)
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-new',
-      agent_type: 'general-purpose',
-      cwd: tmp,
-      session_id: 's-wave3-stopped',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0);
-    const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string');
-
-    // ag-running should be visible (still active)
-    assert.ok(
-      ctx.includes('ag-running') || ctx.includes('Still running'),
-      `active agent should be in context. Got: ${ctx}`
-    );
-
-    // ag-stopped should NOT appear in active agents section
-    // (it might appear in findings but not in the active-agents list)
-    // We check that "ag-stopped" and "Agent that will stop" is absent from the active agents line
-    // The actual check: the "Parallel Agents" block should not list the stopped agent
-    const parallelSection = ctx.match(/\[Parallel Agents[^\]]*\]([\s\S]*?)(?=\[|$)/);
-    if (parallelSection) {
-      assert.ok(
-        !parallelSection[1].includes('ag-stopped'),
-        `stopped agent should not appear in active agents list. Section: ${parallelSection[1]}`
-      );
-    }
-  });
-
-  it('fallback: when events.jsonl missing, still produces additionalContext from _index.json or empty', async () => {
-    // No events.jsonl written — should fall back to legacy _index.json (also missing)
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-fallback',
-      agent_type: 'Explore',
-      cwd: tmp,
-      session_id: 's-wave3-fallback',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, 'hook must exit 0 even without events.jsonl');
-    const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string', 'additionalContext should be present');
-    assert.ok(ctx.includes('[Tracker]'), 'base tracker message should always be present');
-  });
-});
+// NOTE: subagent-tracker.js was ported to the Rust `mustard-rt` `tracker`
+// module in b3 Wave 3. Its parallel-agent visibility and events.jsonl-fallback
+// parity now lives in packages/rt/src/hooks/tracker.rs.
 
 // ── Test 2: session-memory includes cross-session timeline ───────────────────
 
@@ -396,23 +264,6 @@ describe('Wave 3 — fallback: harness unavailable scenarios', () => {
   let tmp;
   beforeEach(() => { tmp = makeProjectDir(os.tmpdir()); });
   afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('subagent-tracker SubagentStart exits 0 when .harness/ dir is entirely missing', async () => {
-    // Remove the .harness directory that makeProjectDir created
-    try { fs.rmSync(path.join(tmp, '.claude', '.harness'), { recursive: true, force: true }); } catch (_) {}
-
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-noharnessdir',
-      agent_type: 'Explore',
-      cwd: tmp,
-      session_id: 's-noharnessdir',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, 'hook must exit 0 when .harness/ is missing');
-    const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string', 'should still emit additionalContext');
-  });
 
   it('session-memory exits 0 when .harness/ dir is entirely missing', async () => {
     try { fs.rmSync(path.join(tmp, '.claude', '.harness'), { recursive: true, force: true }); } catch (_) {}

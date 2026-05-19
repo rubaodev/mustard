@@ -313,88 +313,9 @@ describe('Wave 6 — invalid --view returns {error} and exit 0', () => {
   });
 });
 
-// ── Test 4: subagent-tracker hint presence and omission ──────────────────────
-
-describe('Wave 6 — subagent-tracker: escape-hatch hint', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('includes hint when budget has room (general-purpose with small finding)', async () => {
-    // Write a small finding — budget=800, hint is ~80 chars, combined should fit
-    appendEvent(tmp, makeEvent({
-      event: 'finding',
-      actor: { kind: 'agent', id: 'ag-small', type: 'general-purpose' },
-      payload: { kind: 'pattern', content: 'Small finding', confidence: 0.9, refs: [] },
-    }));
-
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-gp',
-      agent_type: 'general-purpose',
-      cwd: tmp,
-      session_id: 's-hint-test',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, `must exit 0. stderr: ${result.stderr}`);
-    const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string', 'additionalContext must be string');
-
-    // When there's a finding, the hint should appear
-    if (ctx.includes('[Prior Findings]')) {
-      assert.ok(
-        ctx.includes('event-projections.js'),
-        `hint must appear when findings present and budget allows. Got: ${ctx}`
-      );
-    }
-  });
-
-  it('omits hint when visText already fills budget (Explore budget = 400)', async () => {
-    // Fill the Explore budget with a large finding so hint cannot fit
-    appendEvent(tmp, makeEvent({
-      event: 'finding',
-      actor: { kind: 'agent', id: 'ag-large', type: 'Explore' },
-      payload: { kind: 'pattern', content: 'X'.repeat(390), confidence: 0.9, refs: [] },
-    }));
-
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-explore',
-      agent_type: 'Explore',
-      cwd: tmp,
-      session_id: 's-nohint-test',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, `must exit 0. stderr: ${result.stderr}`);
-    const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string', 'additionalContext must be string');
-
-    // With budget=400 and a 390-char finding, the hint (~80 chars) cannot fit
-    // The combined visText before hint is already at ~420+ chars (after truncation to 397)
-    // So the context must not contain the hint.
-    // Note: the budget truncation slices visText to budget-3 chars, so if hint didn't fit
-    // it simply won't be there.
-    // We check that the total additionalContext is within reasonable bounds.
-    assert.ok(ctx.length <= 600, `Explore additionalContext must be within bounds. Got: ${ctx.length}`);
-  });
-
-  it('no crash when events.jsonl is missing (hint omitted gracefully)', async () => {
-    const result = await runHook('subagent-tracker.js', {
-      hook_event_name: 'SubagentStart',
-      agent_id: 'ag-nofile',
-      agent_type: 'general-purpose',
-      cwd: tmp,
-      session_id: 's-nofile',
-    }, { projectDir: tmp });
-
-    assert.equal(result.code, 0, 'must exit 0 when events.jsonl is missing');
-    const ctx = result.parsed && result.parsed.hookSpecificOutput && result.parsed.hookSpecificOutput.additionalContext;
-    assert.ok(typeof ctx === 'string', 'additionalContext must be string');
-    // No findings → no hint
-    assert.ok(!ctx.includes('event-projections.js'),
-      'hint must not appear when there are no findings');
-  });
-});
+// NOTE: subagent-tracker.js was ported to the Rust `mustard-rt` `tracker`
+// module in b3 Wave 3. Its escape-hatch hint presence/omission parity now
+// lives in packages/rt/src/hooks/tracker.rs.
 
 // ── Test 5: settings.json contains event-projections.js Bash permission ───────────
 

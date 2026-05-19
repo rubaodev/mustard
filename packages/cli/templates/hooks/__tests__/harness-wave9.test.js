@@ -10,9 +10,8 @@
  * 4.  close-gate mode warn: test fail → allow + stderr
  * 5.  close-gate mode off: test fail → passthrough, no commands run
  * 6.  close-gate does NOT trigger on phase != CLOSE
- * 7.  review-gate strict + secrets staged → deny
- * 8.  review-gate strict + build broken → deny
- * 9.  review-gate warn (default) + secrets → allow with warning
+ * 7-9. review-gate — ported to the Rust `bash_guard` module (b3 Wave 2);
+ *      parity tests now live in `packages/rt/src/hooks/bash_guard.rs`.
  * 10. close-gate.check event emitted in harness log with correct payload
  *
  * Run with: bun test templates/hooks/__tests__/harness-wave9.test.js
@@ -27,7 +26,8 @@ const { spawn } = require('node:child_process');
 
 const HOOKS_DIR = path.resolve(__dirname, '..');
 const CLOSE_GATE = path.join(HOOKS_DIR, 'close-gate.js');
-const REVIEW_GATE = path.join(HOOKS_DIR, 'review-gate.js');
+// review-gate.js was ported to the Rust `bash_guard` module (b3 Wave 2);
+// its parity tests now live in `packages/rt/src/hooks/bash_guard.rs`.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -319,156 +319,8 @@ describe('Wave 9 — close-gate: does not trigger for phases other than CLOSE', 
   });
 });
 
-// ── Test 7: review-gate strict + secrets staged → deny ───────────────────────
-
-describe('Wave 9 — review-gate strict mode: secrets staged → deny', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('returns permissionDecision=deny when .env file is staged (strict mode)', async () => {
-    // We simulate git diff by having review-gate detect the .env pattern.
-    // Since we can't control git in a tmp dir easily, we mock by stubbing
-    // git diff output via a wrapper script that writes the staged file list.
-    // Simpler: run in a temp git repo with an actual staged .env file.
-
-    // Initialize a git repo
-    try {
-      const { execSync } = require('child_process');
-      execSync('git init', { cwd: tmp, stdio: 'pipe' });
-      execSync('git config user.email "test@test.com"', { cwd: tmp, stdio: 'pipe' });
-      execSync('git config user.name "Test"', { cwd: tmp, stdio: 'pipe' });
-      // Create and stage a .env file
-      fs.writeFileSync(path.join(tmp, '.env'), 'SECRET=abc123', 'utf8');
-      execSync('git add .env', { cwd: tmp, stdio: 'pipe' });
-    } catch (e) {
-      // If git is not available, skip this test gracefully
-      console.log('  [skip] git not available in test env');
-      return;
-    }
-
-    const input = {
-      tool: 'Bash',
-      tool_input: { command: 'git commit -m "feat: add feature"' },
-      cwd: tmp,
-    };
-
-    const result = await runHook(REVIEW_GATE, input, {
-      projectDir: tmp,
-      env: { MUSTARD_COMMIT_GATE_MODE: 'strict' },
-    });
-
-    assert.equal(result.code, 0);
-    assert.ok(result.response, `expected hookSpecificOutput, stdout: ${result.stdout}`);
-    assert.equal(result.response.permissionDecision, 'deny',
-      `expected deny for staged .env, got: ${result.response.permissionDecision}`);
-    assert.ok(
-      result.response.permissionDecisionReason &&
-      result.response.permissionDecisionReason.toLowerCase().includes('sensitive'),
-      `reason should mention sensitive: ${result.response.permissionDecisionReason}`
-    );
-  });
-});
-
-// ── Test 8: review-gate strict + build broken → deny ─────────────────────────
-
-describe('Wave 9 — review-gate strict mode: build broken → deny', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('returns permissionDecision=deny when buildCommand fails (strict mode)', async () => {
-    // Initialize a git repo with a non-sensitive staged file and broken build
-    try {
-      const { execSync } = require('child_process');
-      execSync('git init', { cwd: tmp, stdio: 'pipe' });
-      execSync('git config user.email "test@test.com"', { cwd: tmp, stdio: 'pipe' });
-      execSync('git config user.name "Test"', { cwd: tmp, stdio: 'pipe' });
-      // Stage a non-sensitive file
-      fs.writeFileSync(path.join(tmp, 'src.js'), 'console.log("hello")', 'utf8');
-      execSync('git add src.js', { cwd: tmp, stdio: 'pipe' });
-    } catch (e) {
-      console.log('  [skip] git not available in test env');
-      return;
-    }
-
-    writeMustardJson(tmp, { buildCommand: EXIT_FAIL });
-
-    const input = {
-      tool: 'Bash',
-      tool_input: { command: 'git commit -m "feat: add feature"' },
-      cwd: tmp,
-    };
-
-    const result = await runHook(REVIEW_GATE, input, {
-      projectDir: tmp,
-      env: { MUSTARD_COMMIT_GATE_MODE: 'strict' },
-    });
-
-    assert.equal(result.code, 0);
-    assert.ok(result.response, `expected hookSpecificOutput, stdout: ${result.stdout}`);
-    assert.equal(result.response.permissionDecision, 'deny',
-      `expected deny for broken build, got: ${result.response.permissionDecision}`);
-    assert.ok(
-      result.response.permissionDecisionReason &&
-      result.response.permissionDecisionReason.toLowerCase().includes('build'),
-      `reason should mention build: ${result.response.permissionDecisionReason}`
-    );
-  });
-});
-
-// ── Test 9: review-gate warn (default) → allow + warning ─────────────────────
-
-describe('Wave 9 — review-gate: default mode=warn → allow with warning advisory', () => {
-  let tmp;
-  beforeEach(() => { tmp = makeProjectDir(); });
-  afterEach(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} });
-
-  it('allows (no deny) when mode=warn even if .env is staged', async () => {
-    try {
-      const { execSync } = require('child_process');
-      execSync('git init', { cwd: tmp, stdio: 'pipe' });
-      execSync('git config user.email "test@test.com"', { cwd: tmp, stdio: 'pipe' });
-      execSync('git config user.name "Test"', { cwd: tmp, stdio: 'pipe' });
-      fs.writeFileSync(path.join(tmp, '.env'), 'SECRET=abc123', 'utf8');
-      execSync('git add .env', { cwd: tmp, stdio: 'pipe' });
-    } catch (e) {
-      console.log('  [skip] git not available in test env');
-      return;
-    }
-
-    const input = {
-      tool: 'Bash',
-      tool_input: { command: 'git commit -m "feat: add feature"' },
-      cwd: tmp,
-    };
-
-    // Default mode = warn (no MUSTARD_COMMIT_GATE_MODE set → defaults to warn)
-    const result = await runHook(REVIEW_GATE, input, {
-      projectDir: tmp,
-      env: { MUSTARD_COMMIT_GATE_MODE: 'warn' },
-    });
-
-    assert.equal(result.code, 0);
-    // Should NOT deny
-    const decision = result.response ? result.response.permissionDecision : null;
-    assert.notEqual(decision, 'deny',
-      `mode=warn must not deny, got: ${decision}`);
-    // Should provide advisory (allow with warning text)
-    if (result.response) {
-      assert.ok(
-        result.response.permissionDecision === 'allow' ||
-        result.response.permissionDecision == null,
-        `expected allow or no decision, got: ${result.response.permissionDecision}`
-      );
-      assert.ok(
-        result.response.permissionDecisionReason &&
-        result.response.permissionDecisionReason.includes('[Review Gate]'),
-        `expected advisory reason, got: ${result.response.permissionDecisionReason}`
-      );
-    }
-  });
-});
+// Tests 7-9 (review-gate) moved to the Rust `bash_guard` parity suite in
+// b3 Wave 2 — see `packages/rt/src/hooks/bash_guard.rs` (`review_gate_*` tests).
 
 // ── Test 10: close-gate.check event emitted in harness log ───────────────────
 

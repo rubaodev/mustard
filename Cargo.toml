@@ -1,3 +1,35 @@
 [workspace]
 resolver = "2"
-members = ["apps/dashboard/src-tauri"]
+members = ["apps/dashboard/src-tauri", "packages/core", "packages/rt"]
+
+# Single source of dependency-version truth for every Mustard crate. A crate
+# opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
+# inline deps (Tauri-pinned, edition 2021) and does not consume this table.
+# Versions verified against crates.io, May 2026 (see spec b2 § Stack Rust).
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.18"
+anyhow = "1.0.102"
+clap = { version = "4.6", features = ["derive"] }
+jiff = "0.2"
+insta = "1.47"
+tempfile = "3"
+
+# Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
+# Only `mustard-core` opts in today; the dashboard crate is intentionally
+# excluded so its edition-2021 / rust-1.77 build is unaffected.
+[workspace.lints.rust]
+# A hook on the critical path must never reach for `unsafe`.
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Pedantic is advisory: it surfaces style issues without failing the build,
+# so a frozen module (model/contract.rs) may carry a few warnings. It is a
+# lint *group*, so it needs an explicit lower `priority` than the individual
+# lints below — otherwise Cargo rejects the equal-priority ambiguity.
+pedantic = { level = "warn", priority = -1 }
+# `.unwrap()` panics — a panic in a hook breaks the fail-open contract. Deny
+# it crate-wide. Clippy already exempts `#[cfg(test)]` code from this lint, so
+# test modules may still use `.unwrap()`.
+unwrap_used = "deny"

@@ -54,7 +54,10 @@ function runHook(hookFile, inputObj, opts = {}) {
 describe('Suite 1: fail-open on malformed input', () => {
   const malformed = ['', 'not-json', '{"tool_name":}', '{}', '{"x":1}'];
 
-  for (const hook of ['context-budget.js', 'pre-compact.js', 'subagent-tracker.js']) {
+  // context-budget.js and subagent-tracker.js were ported to the Rust
+  // `mustard-rt` modules (`budget` / `tracker`) in b3 Wave 3 — their fail-open
+  // parity now lives in packages/rt/src/hooks/{budget,tracker}.rs.
+  for (const hook of ['pre-compact.js']) {
     for (const bad of malformed) {
       it(`${hook} exits 0 on malformed stdin: ${JSON.stringify(bad).slice(0, 30)}`, async () => {
         const result = await runHook(hook, bad);
@@ -67,154 +70,6 @@ describe('Suite 1: fail-open on malformed input', () => {
   it('spec-hygiene.js exits 0 on empty stdin', async () => {
     const result = await runHook('spec-hygiene.js', '');
     assert.equal(result.code, 0);
-  });
-});
-
-// ─── Suite 2: context-budget edge cases ─────────────────────────────────────
-
-describe('Suite 2: context-budget edge cases', () => {
-  function taskPayload(subagent_type, promptLen, description = '') {
-    return {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Task',
-      tool_input: {
-        subagent_type,
-        description,
-        prompt: 'A'.repeat(promptLen),
-      },
-    };
-  }
-
-  it('Explore prompt at exactly 10000 chars → allow', async () => {
-    const r = await runHook('context-budget.js', taskPayload('Explore', 10000));
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'allow');
-  });
-
-  it('Explore prompt at 10001 chars → deny', async () => {
-    const r = await runHook('context-budget.js', taskPayload('Explore', 10001));
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'deny');
-  });
-
-  it('Empty prompt → allow (advisory path, no block)', async () => {
-    const r = await runHook('context-budget.js', taskPayload('Explore', 0));
-    assert.equal(r.code, 0);
-    // no deny
-    assert.notEqual(r.parsed?.permissionDecision, 'deny');
-  });
-
-  it('Unicode emoji prompt counted by .length (4-byte chars count as 2 in JS)', async () => {
-    // 🎯 is a surrogate pair — .length === 2 in JS
-    // Fill to 10002 chars using emoji + padding so it exceeds 10000
-    const emoji = '🎯'; // length === 2
-    const padding = 'A'.repeat(9999);
-    const prompt = emoji + padding; // length = 10001 → deny
-    const payload = {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Task',
-      tool_input: { subagent_type: 'Explore', description: '', prompt },
-    };
-    const r = await runHook('context-budget.js', payload);
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'deny');
-  });
-
-  it('subagent_type undefined → fail-open allow (no hard budget for unknown types)', async () => {
-    const r = await runHook('context-budget.js', taskPayload(undefined, 50000));
-    assert.equal(r.code, 0);
-    assert.notEqual(r.parsed?.permissionDecision, 'deny');
-  });
-
-  it('general-purpose at 30000 chars → allow', async () => {
-    const r = await runHook('context-budget.js', taskPayload('general-purpose', 30000, 'implement feature'));
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'allow');
-  });
-
-  it('general-purpose at 30001 chars → deny', async () => {
-    const r = await runHook('context-budget.js', taskPayload('general-purpose', 30001, 'implement feature'));
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'deny');
-  });
-
-  it('general-purpose with "review" in description at 12000 chars → allow', async () => {
-    const r = await runHook('context-budget.js', taskPayload('general-purpose', 12000, 'review pull request'));
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'allow');
-  });
-
-  it('general-purpose with "review" in description at 12001 chars → deny', async () => {
-    const r = await runHook('context-budget.js', taskPayload('general-purpose', 12001, 'review pull request'));
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'deny');
-  });
-
-  it('Plan type at 50000 chars → advisory only (no deny)', async () => {
-    const r = await runHook('context-budget.js', taskPayload('Plan', 50000, 'plan architecture'));
-    assert.equal(r.code, 0);
-    assert.notEqual(r.parsed?.permissionDecision, 'deny');
-  });
-});
-
-// ─── Suite 2.1: Dumb Zone advisory (% of model window) ──────────────────────
-// Reference: Liu et al. 2023 (arXiv:2307.03172) + Dex Horthy "Dumb Zone" 40%
-
-describe('Suite 2.1: Dumb Zone advisory', () => {
-  function planPayload(promptLen, model) {
-    // Use Plan type so per-role hard block is skipped (advisory-only path)
-    const payload = {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Task',
-      tool_input: {
-        subagent_type: 'Plan',
-        description: 'plan architecture',
-        prompt: 'A'.repeat(promptLen),
-      },
-    };
-    if (model) payload.model = model;
-    return payload;
-  }
-
-  it('Plan with 40K-token prompt + sonnet (200K window) = 20% → no advisory', async () => {
-    // 40K tokens × 4 chars = 160K chars; 160K/200K = 20% < 40%
-    const r = await runHook('context-budget.js', planPayload(160000, 'claude-sonnet-4-5'));
-    assert.equal(r.code, 0);
-    const txt = JSON.stringify(r.parsed || {});
-    assert.ok(!/Dumb Zone/.test(txt), 'Should not warn at 20% window');
-  });
-
-  it('Plan with 90K-token prompt + sonnet (200K window) = 45% → Dumb Zone advisory', async () => {
-    // 90K tokens × 4 = 360K chars; 360K/200K = ~45% ≥ 40%
-    const r = await runHook('context-budget.js', planPayload(360000, 'claude-sonnet-4-5'));
-    assert.equal(r.code, 0);
-    const txt = JSON.stringify(r.parsed || {});
-    assert.ok(/Dumb Zone/.test(txt), `Expected Dumb Zone advisory at ~45%; got: ${txt.slice(0, 200)}`);
-    assert.ok(!/Compact Now/.test(txt), 'Should NOT trigger Compact at 45% (only ≥65%)');
-  });
-
-  it('Plan with 140K-token prompt + sonnet (200K window) = 70% → Compact Now advisory', async () => {
-    // 140K tokens × 4 = 560K chars; 560K/200K = 70% ≥ 65%
-    const r = await runHook('context-budget.js', planPayload(560000, 'claude-sonnet-4-5'));
-    assert.equal(r.code, 0);
-    const txt = JSON.stringify(r.parsed || {});
-    assert.ok(/Compact Now/.test(txt), `Expected Compact Now advisory at 70%; got: ${txt.slice(0, 200)}`);
-  });
-
-  it('Plan with 90K-token prompt + opus-1m (1M window) = 9% → no advisory', async () => {
-    // 90K tokens / 1M = 9% — well below 40% even though absolute is large
-    const r = await runHook('context-budget.js', planPayload(360000, 'claude-opus-4-7-1m'));
-    assert.equal(r.code, 0);
-    const txt = JSON.stringify(r.parsed || {});
-    assert.ok(!/Dumb Zone/.test(txt), 'Should not warn at 9% of 1M window');
-    assert.ok(!/Compact Now/.test(txt), 'Should not advise compact at 9%');
-  });
-
-  it('Plan with no model hint and small prompt → no advisory', async () => {
-    const r = await runHook('context-budget.js', planPayload(8000)); // 2K tokens, no model
-    assert.equal(r.code, 0);
-    const txt = JSON.stringify(r.parsed || {});
-    assert.ok(!/Dumb Zone/.test(txt), 'Should not warn for tiny prompt');
   });
 });
 
@@ -326,52 +181,9 @@ describe('Suite 4: hook sequence (simulated session)', () => {
     }
   });
 
-  it('PreToolUse(Task) → context-budget.js allows valid payload', async () => {
-    const payload = {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Task',
-      tool_input: {
-        subagent_type: 'general-purpose',
-        description: 'implement user service',
-        prompt: 'A'.repeat(1000),
-      },
-    };
-    const r = await runHook('context-budget.js', payload);
-    assert.equal(r.code, 0);
-    assert.equal(r.parsed?.permissionDecision, 'allow');
-  });
-
-  it('PostToolUse(Task) → subagent-tracker.js exits 0 with valid payload', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mustard-seq2-'));
-    fs.mkdirSync(path.join(tmpDir, '.claude', '.agent-state'), { recursive: true });
-    try {
-      const r = await runHook('subagent-tracker.js', {
-        hook_event_name: 'SubagentStart',
-        agent_id: 'seq-agent-1',
-        agent_type: 'general-purpose',
-        session_id: 'seq-session',
-        cwd: tmpDir,
-      }, { cwd: tmpDir, projectDir: tmpDir });
-      assert.equal(r.code, 0);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it('No shared state leaks between hook invocations', async () => {
-    // Run context-budget twice with different roles — each must return independently
-    const exploreResult = await runHook('context-budget.js', {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Task',
-      tool_input: { subagent_type: 'Explore', description: '', prompt: 'A'.repeat(10001) },
-    });
-    const gpResult = await runHook('context-budget.js', {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Task',
-      tool_input: { subagent_type: 'general-purpose', description: 'implement', prompt: 'A'.repeat(1000) },
-    });
-
-    assert.equal(exploreResult.parsed?.permissionDecision, 'deny', 'Explore over-budget should deny');
-    assert.equal(gpResult.parsed?.permissionDecision, 'allow', 'GP under-budget should allow independently');
-  });
+  // The PreToolUse(Task) / PostToolUse(Task) / shared-state cases below this
+  // point exercised context-budget.js and subagent-tracker.js, both ported to
+  // the Rust `mustard-rt` modules (`budget` / `tracker`) in b3 Wave 3. Their
+  // parity now lives in the Rust test suites — see
+  // packages/rt/src/hooks/{budget,tracker}.rs.
 });

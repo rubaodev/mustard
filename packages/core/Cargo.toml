@@ -1,0 +1,26 @@
+[package]
+name = "mustard-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Shared foundation crate for the Mustard hook/script/CLI Rust migration: event model, hook contract, and pipeline-state types."
+license = "MIT"
+publish = false
+
+# Dependency versions are declared once in the workspace `[workspace.dependencies]`
+# table (root Cargo.toml); each crate references them with `{ workspace = true }`.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+# Temp directories for io-layer round-trip tests (event store, pipeline repo,
+# atomic fs) and config/env tests. Test-only — never compiled into the library.
+tempfile = { workspace = true }
+
+# Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
+# unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.
+[lints]
+workspace = true
