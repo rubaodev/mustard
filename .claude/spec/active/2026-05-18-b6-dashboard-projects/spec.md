@@ -1,10 +1,10 @@
 # Feature: b6-dashboard-projects
 
 ### Status: draft | Phase: PLAN | Scope: full
-### Checkpoint: 2026-05-18T00:00:00Z
+### Checkpoint: 2026-05-18T18:00:00Z
 ### Lang: pt
 
-> Spec de backlog (Parte B, item B6). Rascunho grosso — criada em lote. Depende de B1 (monorepo) e do carimbo de versão de B5. Inclui trabalho de UI.
+> Spec de backlog (Parte B, item B6). Rascunho grosso — criada em lote. Depende de B1 (monorepo) e do carimbo de versão de B5. Inclui trabalho de UI. Revisada 2026-05-18: linka os relatórios HTML gerados por B4.
 
 ## Contexto
 
@@ -23,6 +23,7 @@ Reformular o `apps/dashboard`: substituir o mapeamento de um workspace por um re
 - **Project list / sidebar** — lista de projetos adicionados; cada item mostra nome, status (instalado / não instalado / update disponível) e versão. Estados: vazio (nenhum projeto), carregando, erro de path.
 - **Add-project flow** — botão → `plugin-dialog` seletor de pasta → adiciona ao registro → dispara detecção.
 - **Install/update action** — por projeto sem Mustard ou desatualizado: ação que invoca o `init`/`update` nativo e reflete progresso/resultado.
+- **Per-project reports (light)** — por projeto, link para os relatórios HTML que B4 gera (`qa-run`, `metrics`, `event-projections`), abertos no browser. É um link, não um viewer embutido.
 - Estética atual (dark-first, Linear + Notion) preservada — muda o modelo de dados, não o visual.
 
 ## Arquivos
@@ -53,6 +54,7 @@ Reformular o `apps/dashboard`: substituir o mapeamento de um workspace por um re
 
 - B1 (monorepo) — o dashboard vive em `apps/dashboard`.
 - B5 — o carimbo de versão e o `init`/`update` nativo invocável.
+- B4 (opcional) — os relatórios HTML que o dashboard linka; sem B4, o link apenas não aparece.
 
 ## Preocupações
 
@@ -70,3 +72,4 @@ Reformular o `apps/dashboard`: substituir o mapeamento de um workspace por um re
 - Não reescrever a estética do dashboard — só o modelo de dados e os fluxos.
 - Não construir editor de glossário nem painel de harness (eventuais escopos futuros).
 - Não suportar projetos remotos — só pastas locais.
+- Não construir um viewer de relatórios embutido — o dashboard apenas linka os HTML que B4 gera.

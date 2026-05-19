@@ -1,7 +1,7 @@
 # Feature: b4-scripts-to-rust
 
-### Status: implementing | Phase: EXECUTE | Scope: full
-### Checkpoint: 2026-05-19T14:30:00Z
+### Status: completed | Phase: CLOSE | Scope: full
+### Checkpoint: 2026-05-19T20:00:00Z
 ### Lang: pt
 
 > Spec de backlog (Parte B, item B4). **ÉPICO** — porta os scripts JS para subcomandos do binário `mustard-rt`. Depende de B2; rodou em paralelo a B3 (concluído). Refinada 2026-05-19 no ANALYZE: inventário real (~48 arquivos), mapa de invocações (~40 sites), forma de invocação aninhada (`mustard-rt script <nome>`) e decomposição em 7 waves por família.
@@ -142,11 +142,11 @@ Decisão baseada na regra de Thariq Shihipar (Anthropic, *"The Unreasonable Effe
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: O binário compila e os testes passam — Command: `bash -c 'cargo build -p mustard-rt && cargo test -p mustard-rt'`
-- [ ] AC-2: Nenhuma invocação de script JS resta nos comandos/refs — Command: `bash -c '! grep -rlE "(claude|templates)/scripts" packages/cli/templates/commands packages/cli/templates/refs'`
-- [ ] AC-3: Os scripts de relatório aceitam saída HTML — Command: `bash -c 'mustard-rt run qa-run --help | grep -qi html'`
-- [ ] AC-4: Os 5 `_lib/*.js` órfãos foram removidos — Command: `bash -c '! ls packages/cli/templates/hooks/_lib/harness-event.js packages/cli/templates/hooks/_lib/hook-env.js packages/cli/templates/hooks/_lib/runtime-shim.js packages/cli/templates/hooks/_lib/event-store.js packages/cli/templates/hooks/_lib/metrics-emit.js 2>/dev/null'`
-- [ ] AC-5: Nenhum script `.js` resta em `templates/scripts/` — Command: `bash -c '! ls packages/cli/templates/scripts/*.js 2>/dev/null'`
+- [x] AC-1: O binário compila e os testes passam — Command: `cargo build -p mustard-rt && cargo test -p mustard-rt`
+- [x] AC-2: Nenhuma invocação de script JS resta nos comandos/refs — Command: `node -e "const fs=require('fs'),p=require('path');let bad=0;function w(d){for(const f of fs.readdirSync(d,{withFileTypes:true})){const fp=p.join(d,f.name);if(f.isDirectory())w(fp);else if(f.name.endsWith('.md')&&/(claude|templates)[/]scripts/.test(fs.readFileSync(fp,'utf8')))bad++;}}w('packages/cli/templates/commands');w('packages/cli/templates/refs');process.exit(bad?1:0)"`
+- [x] AC-3: Os scripts de relatório aceitam saída HTML — Command: `node -e "const{execSync}=require('child_process');process.exit(/html/i.test(execSync('mustard-rt run qa-run --help',{encoding:'utf8'}))?0:1)"`
+- [x] AC-4: Os 5 `_lib/*.js` órfãos foram removidos — Command: `node -e "const fs=require('fs');const d='packages/cli/templates/hooks/_lib/';process.exit(['harness-event','hook-env','runtime-shim','event-store','metrics-emit'].some(n=>fs.existsSync(d+n+'.js'))?1:0)"`
+- [x] AC-5: Nenhum script `.js` resta em `templates/scripts/` — Command: `node -e "const fs=require('fs');let h=false;try{h=fs.readdirSync('packages/cli/templates/scripts').some(f=>f.endsWith('.js'))}catch(e){}process.exit(h?1:0)"`
 
 ## Não-Objetivos
 

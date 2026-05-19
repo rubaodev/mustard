@@ -2,97 +2,89 @@
   "_meta": {
     "version": "4.0",
     "generated": "2026-05-19",
-    "generator": "sync-registry.js"
+    "generator": "mustard-rt run sync-registry"
   },
   "_patterns": {
     "typescript": {
-      "orm": "none",
-      "framework": "none",
-      "entity": {
-        "folder": null,
-        "defStyle": "none",
-        "namingConvention": "PascalCase"
-      },
-      "enum": {
-        "folder": null,
-        "defStyle": "ts-enum",
-        "separateFiles": false,
-        "valueConvention": "unknown"
-      },
-      "routes": {
-        "style": "none",
-        "prefix": "/",
-        "namingPattern": "unknown"
-      },
-      "dto": {
-        "folder": "src/lib/",
-        "validationTool": "none"
-      },
       "architecture": "atomic",
+      "conventions": {
+        "naming": {
+          "distribution": {
+            "camelCase": 9,
+            "kebab-case": 4,
+            "lowercase": 12,
+            "mixed": 3
+          },
+          "dominant": null,
+          "total": 28
+        }
+      },
       "discovered": [
         {
-          "kind": "function-prefix-cluster",
-          "prefix": "use",
-          "suffix": "use",
+          "declarationKeywords": null,
+          "declarationSuffix": null,
           "ext": ".ts",
           "fileCount": 8,
+          "folderPattern": "**/src/",
           "folders": [
             "src/hooks",
             "src/lib"
           ],
-          "folderPattern": "**/src/",
+          "kind": "function-prefix-cluster",
+          "label": "use",
+          "memberSuffixes": null,
+          "namingPattern": "suffix-before",
+          "prefix": "use",
           "samples": [
             "useActivityFeed.ts",
             "useAggregate.ts",
             "useKnowledgeSearch.ts"
           ],
-          "label": "use",
-          "namingPattern": "suffix-before",
-          "declarationKeywords": [
-            "export function"
-          ],
-          "declarationSuffix": [
-            "(projects: Project[]): AggregateResult"
-          ],
+          "subprojectName": "dashboard",
+          "suffix": "use",
           "topOfFileLines": [
-            "import { useQueries } from \"@tanstack/react-query\";",
             "import type { Project } from \"@/api/discovery\";",
+            "import { useQueries } from \"@tanstack/react-query\";",
             "projectId: string;",
             "projectName: string;",
             "}"
-          ],
-          "memberSuffixes": [
-            "Ms",
-            "Queries",
-            "Each"
-          ],
-          "subprojectName": "dashboard"
+          ]
         }
       ],
+      "dto": {
+        "folder": "src/lib/",
+        "validationTool": "none"
+      },
+      "entity": {
+        "defStyle": "none",
+        "folder": null,
+        "namingConvention": "PascalCase"
+      },
+      "enum": {
+        "defStyle": "ts-enum",
+        "folder": null,
+        "separateFiles": false,
+        "valueConvention": "unknown"
+      },
       "folderFrequency": {
-        "totalFolders": 7,
         "segments": {
-          "src": 6,
+          ".": 1,
           "api": 1,
           "components": 1,
-          "page": 1,
           "data": 1,
           "hooks": 1,
           "lib": 1,
-          ".": 1
-        }
+          "page": 1,
+          "src": 6
+        },
+        "totalFolders": 7
       },
-      "conventions": {
-        "naming": {
-          "dominant": null,
-          "distribution": {
-            "lowercase": 12,
-            "camelCase": 9,
-            "kebab-case": 4,
-            "mixed": 3
-          },
-          "total": 28
-        }
+      "framework": "none",
+      "orm": "none",
+      "routes": {
+        "namingPattern": "unknown",
+        "prefix": "/",
+        "style": "none"
       }
     }
   },
