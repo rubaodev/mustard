@@ -29,6 +29,7 @@ pub use event_projections::{pipeline_state_for_spec, PipelineStateView, Pipeline
 mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;
+mod memory_ingest;
 mod metrics;
 mod otel;
 mod pipeline_summary;
@@ -161,6 +162,17 @@ pub enum RunCmd {
         /// Input JSON (Windows-friendly form; stdin is the POSIX fallback).
         #[arg(long)]
         json: Option<String>,
+    },
+    /// One-shot ingest of legacy JSON files into the SQLite Wave 6a tables.
+    ///
+    /// Reads `.claude/knowledge.json`, `.claude/memory/decisions.json`, and
+    /// `.claude/memory/lessons.json` (if present) and inserts their entries
+    /// into `knowledge_patterns`, `memory_decisions`, `memory_lessons`.
+    /// Prints a JSON summary. Fail-open per file.
+    MemoryIngest {
+        /// Remove the source JSON files after a successful ingest.
+        #[arg(long)]
+        delete: bool,
     },
     /// Detect or fold a completed epic.
     EpicFold {
@@ -477,6 +489,7 @@ pub fn dispatch(cmd: RunCmd) {
             max_lines,
         } => context_slice::run(&context, spec.as_deref(), max_lines),
         RunCmd::Memory { subcommand, json } => memory::run(&subcommand, json.as_deref()),
+        RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
         RunCmd::EpicFold { detect, epic } => epic_fold::run(detect, epic.as_deref()),
         RunCmd::SpecExtract {
             spec,

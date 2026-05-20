@@ -46,6 +46,7 @@ use mustard_core::io::event_store::EventSink;
 use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use rusqlite::params;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -321,141 +322,109 @@ fn run_spec_hygiene(cwd: &str) {
 }
 
 // ===========================================================================
-// session-memory — persistent-memory injection
+// session-memory — persistent-memory injection (Wave 6b: reads from SQLite)
 // ===========================================================================
 
-/// Load up to `KB_MAX_ENTRIES` knowledge entries, ranked by confidence ×
-/// recency. Port of `loadKnowledge`.
-fn load_knowledge(kb_path: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(kb_path) else {
+/// Load up to `KB_MAX_ENTRIES` knowledge patterns from `knowledge_patterns`,
+/// ordered by confidence DESC, last_seen DESC. Patterns below `KB_MIN_CONFIDENCE`
+/// are excluded at the SQL layer.
+///
+/// Wave 6b: reads from the `knowledge_patterns` SQLite table instead of
+/// `knowledge.json`. The `verifiedAt` column does not exist in the new table
+/// (it was a legacy JSON field only); all SQL-backed entries are treated as
+/// unverified to preserve the AC-4 prefix logic until a future wave adds the
+/// column.
+fn load_knowledge_sql(db_path: &Path) -> Vec<String> {
+    let Ok(conn) = rusqlite::Connection::open(db_path) else {
         return Vec::new();
     };
-    let Ok(kb) = serde_json::from_str::<Value>(&text) else {
+    let sql = "SELECT pattern, confidence FROM knowledge_patterns \
+               WHERE confidence >= ?1 \
+               ORDER BY confidence DESC, last_seen DESC \
+               LIMIT ?2";
+    let Ok(mut stmt) = conn.prepare(sql) else {
         return Vec::new();
     };
-    let Some(entries) = kb.get("entries").and_then(Value::as_array) else {
+    let rows = stmt.query_map(
+        params![KB_MIN_CONFIDENCE, KB_MAX_ENTRIES as i64],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+    );
+    let Ok(rows) = rows else {
         return Vec::new();
     };
-    let now = now_millis();
-    let mut scored: Vec<(f64, String)> = Vec::new();
-    for e in entries {
-        let confidence = e.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
-        if confidence < KB_MIN_CONFIDENCE {
-            continue;
-        }
-        let updated = e
-            .get("updatedAt")
-            .or_else(|| e.get("createdAt"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let age_ms = now.saturating_sub(parse_iso_millis(updated));
-        #[allow(clippy::cast_precision_loss)]
-        let age_days = age_ms as f64 / (24.0 * 60.0 * 60.0 * 1000.0);
-        let recency = (1.0 - (age_days / 30.0) * 0.9).max(0.1);
-        let score = confidence * recency;
-        let ty = e.get("type").and_then(|v| v.as_str()).unwrap_or("note");
-        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-        let desc = e
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        // Prefix entries whose verifiedAt is missing or null so the agent
-        // knows to verify before recommending (AC-4).
-        let is_verified = e
-            .get("verifiedAt")
-            .and_then(Value::as_str)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        let prefix = if !is_verified {
-            "(unverified — verify before recommending) "
-        } else {
-            ""
-        };
-        scored.push((score, format!("- [{ty}] {name}: {prefix}{desc}")));
-    }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(KB_MAX_ENTRIES).map(|(_, s)| s).collect()
-}
-
-/// Load the last `max` entries of a `memory/*.json` file's `entries` array,
-/// formatted as `- [source] content`. Port of `loadEntries`.
-fn load_memory_entries(path: &Path, max: usize) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(data) = serde_json::from_str::<Value>(&text) else {
-        return Vec::new();
-    };
-    let Some(entries) = data.get("entries").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let start = entries.len().saturating_sub(max);
-    entries[start..]
-        .iter()
-        .map(|e| {
-            let source = e.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-            let content = e.get("content").and_then(|v| v.as_str()).unwrap_or_default();
-            format!("- [{source}] {content}")
+    // All SQL-backed entries are prefixed as unverified (verifiedAt not in schema yet).
+    rows.filter_map(std::result::Result::ok)
+        .map(|(pattern, _confidence)| {
+            format!("- [pattern] (unverified — verify before recommending) {pattern}")
         })
         .collect()
 }
 
-/// Parse the `YYYY-MM-DDThh:mm:ss` prefix of an ISO-8601 string into epoch
-/// millis; `0` on any failure (matching JS `new Date(x || 0).getTime()`).
-fn parse_iso_millis(iso: &str) -> u128 {
-    let bytes = iso.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return 0;
-    }
-    let num = |s: &str| -> Option<i64> { s.parse().ok() };
-    let (Some(year), Some(month), Some(day), Some(hh), Some(mm), Some(ss)) = (
-        num(&iso[0..4]),
-        num(&iso[5..7]),
-        num(&iso[8..10]),
-        num(&iso[11..13]),
-        num(&iso[14..16]),
-        num(&iso[17..19]),
-    ) else {
-        return 0;
+/// Load the `max` most-recent rows from `memory_decisions` or `memory_lessons`,
+/// formatted as `- [source] content`. Ordered by `at DESC`.
+fn load_memory_sql(db_path: &Path, table: &str, max: usize) -> Vec<String> {
+    let Ok(conn) = rusqlite::Connection::open(db_path) else {
+        return Vec::new();
     };
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + hh * 3600 + mm * 60 + ss;
-    if secs < 0 {
-        0
-    } else {
-        u128::try_from(secs).unwrap_or(0) * 1000
-    }
+    // Table name is controlled by this module (never from user input) so
+    // format! interpolation is safe here.
+    let sql = format!(
+        "SELECT content, source FROM {table} ORDER BY at DESC LIMIT ?1"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return Vec::new();
+    };
+    let rows =
+        stmt.query_map(params![max as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        });
+    let Ok(rows) = rows else {
+        return Vec::new();
+    };
+    rows.filter_map(std::result::Result::ok)
+        .map(|(content, source)| {
+            let src = source.as_deref().unwrap_or("?");
+            format!("- [{src}] {content}")
+        })
+        .collect()
 }
 
 /// Build the persistent-memory `additionalContext` payload, or `None` when no
-/// source has any content. Port of the `session-memory.js` body.
+/// source has any content.
 ///
-/// The cross-session timeline (Priority 2 in the JS) depended on
-/// `event-projections.js` (B4 script, out of bounds); it is omitted — the JS
-/// already wrapped it in a fail-open `try` that yields nothing when the script
-/// is absent, so an empty timeline is parity-equivalent.
+/// Wave 6b: reads all three data sources from SQLite tables
+/// (`knowledge_patterns`, `memory_decisions`, `memory_lessons`) instead of
+/// JSON files. Injection cap of [`MEMORY_MAX_CHARS`] is preserved unchanged.
 fn build_memory_context(cwd: &str) -> Option<String> {
-    let claude = Path::new(cwd).join(".claude");
-    let mem = claude.join("memory");
+    // Resolve the DB path the same way SqliteEventStore::for_project does,
+    // so we hit the same file. We open a second connection to avoid borrow
+    // complications with SqliteEventStore (which holds a private Connection).
+    let db_path = match std::env::var("MUSTARD_DB_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => Path::new(cwd)
+            .join(".claude")
+            .join(".harness")
+            .join("mustard.db"),
+    };
+
+    // DB might not exist yet on a fresh project — fail-open to empty.
+    if !db_path.exists() {
+        return None;
+    }
+
     let mut parts: Vec<String> = Vec::new();
 
-    let kb = load_knowledge(&claude.join("knowledge.json"));
+    let kb = load_knowledge_sql(&db_path);
     if !kb.is_empty() {
         parts.push("## Project Knowledge".to_string());
         parts.extend(kb);
     }
-    let decisions = load_memory_entries(&mem.join("decisions.json"), 5);
+    let decisions = load_memory_sql(&db_path, "memory_decisions", 5);
     if !decisions.is_empty() {
         parts.push("## Recent Decisions".to_string());
         parts.extend(decisions);
     }
-    let lessons = load_memory_entries(&mem.join("lessons.json"), 5);
+    let lessons = load_memory_sql(&db_path, "memory_lessons", 5);
     if !lessons.is_empty() {
         parts.push("## Lessons Learned".to_string());
         parts.extend(lessons);
@@ -627,26 +596,32 @@ mod tests {
         assert_eq!(classify_spec("# Spec\nno header here\n"), SpecClass::Silent);
     }
 
-    // --- session-memory parity ---------------------------------------------
+    // --- session-memory parity (Wave 6b: reads from SQLite) ---------------
+
+    /// Seed the `knowledge_patterns` table directly so `build_memory_context`
+    /// can load it without going through the `memory` run subcommand.
+    fn seed_knowledge(db_path: &std::path::Path, pattern: &str, confidence: f64) {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let now = now_iso8601();
+        conn.execute(
+            "INSERT INTO knowledge_patterns (pattern, confidence, count, last_seen, source, created_at) \
+             VALUES (?1, ?2, 1, ?3, NULL, ?3)",
+            rusqlite::params![pattern, confidence, now],
+        )
+        .unwrap();
+    }
 
     #[test]
     fn memory_injection_surfaces_knowledge_as_inject() {
         let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(
-            claude.join("knowledge.json"),
-            json!({
-                "entries": [
-                    { "type": "pattern", "name": "Foo", "description": "use bar",
-                      "confidence": 0.9, "updatedAt": now_iso8601() }
-                ]
-            })
-            .to_string(),
-        )
-        .unwrap();
+        // Run SessionStart once to create the DB + schema.
+        let project = dir.path().to_str().unwrap();
+        SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
+        // Now seed the knowledge table.
+        let db_path = dir.path().join(".claude/.harness/mustard.db");
+        seed_knowledge(&db_path, "Foo: use bar", 0.9);
         let verdict = SessionStart
-            .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
+            .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
         match verdict {
             Verdict::Inject { context } => {
@@ -665,82 +640,56 @@ mod tests {
         let verdict = SessionStart
             .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
+        // No DB yet → build_memory_context returns None → Allow.
         assert_eq!(verdict, Verdict::Allow);
     }
 
     #[test]
     fn low_confidence_knowledge_is_filtered() {
         let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(
-            claude.join("knowledge.json"),
-            json!({
-                "entries": [
-                    { "type": "pattern", "name": "Weak", "description": "x",
-                      "confidence": 0.2, "updatedAt": now_iso8601() }
-                ]
-            })
-            .to_string(),
-        )
-        .unwrap();
+        let project = dir.path().to_str().unwrap();
+        // Initialise DB.
+        SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
+        let db_path = dir.path().join(".claude/.harness/mustard.db");
+        // confidence 0.2 < KB_MIN_CONFIDENCE 0.5 → must be excluded by SQL WHERE.
+        seed_knowledge(&db_path, "Weak: x", 0.2);
         // Below KB_MIN_CONFIDENCE → no Project Knowledge section → Allow.
-        assert_eq!(
-            SessionStart
-                .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
-                .unwrap(),
-            Verdict::Allow
-        );
+        let verdict = SessionStart
+            .evaluate(&session_input("s"), &ctx(project))
+            .unwrap();
+        // May return Inject (session.start event already emitted) but must NOT
+        // surface "Weak" in context.
+        match &verdict {
+            Verdict::Inject { context } => {
+                assert!(
+                    !context.contains("Weak"),
+                    "low-confidence entry must not appear; context: {context}"
+                );
+            }
+            Verdict::Allow => {} // also acceptable — no knowledge injected
+            other => panic!("unexpected verdict: {other:?}"),
+        }
     }
 
     #[test]
-    fn session_start_injection_marks_unverified_knowledge() {
+    fn session_start_injection_marks_knowledge_as_unverified() {
+        // Wave 6b: all knowledge_patterns entries are unverified (no verifiedAt
+        // column in the schema). Both entries must carry the unverified prefix.
         let dir = tempdir().unwrap();
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        // Entry A: verifiedAt = null → should be prefixed.
-        // Entry B: verifiedAt = ISO string → should NOT be prefixed.
-        std::fs::write(
-            claude.join("knowledge.json"),
-            json!({
-                "entries": [
-                    {
-                        "type": "pattern",
-                        "name": "unverified-entry",
-                        "description": "alpha",
-                        "confidence": 0.9,
-                        "verifiedAt": null,
-                        "updatedAt": now_iso8601()
-                    },
-                    {
-                        "type": "pattern",
-                        "name": "verified-entry",
-                        "description": "beta",
-                        "confidence": 0.9,
-                        "verifiedAt": "2026-05-19T00:00:00Z",
-                        "updatedAt": now_iso8601()
-                    }
-                ]
-            })
-            .to_string(),
-        )
-        .unwrap();
+        let project = dir.path().to_str().unwrap();
+        SessionStart.evaluate(&session_input("s-init"), &ctx(project)).unwrap();
+        let db_path = dir.path().join(".claude/.harness/mustard.db");
+        seed_knowledge(&db_path, "alpha-entry: some description", 0.9);
         let verdict = SessionStart
-            .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
+            .evaluate(&session_input("s"), &ctx(project))
             .unwrap();
         let context = match verdict {
             Verdict::Inject { context } => context,
             other => panic!("expected Inject, got {other:?}"),
         };
         assert!(
-            context.contains("(unverified — verify before recommending) alpha"),
-            "unverified entry must carry the prefix; got: {context}"
-        );
-        // "beta" must appear but NOT preceded by the unverified prefix.
-        assert!(context.contains("beta"), "verified entry must appear in context");
-        assert!(
-            !context.contains("(unverified — verify before recommending) beta"),
-            "verified entry must NOT carry the prefix; got: {context}"
+            context.contains("(unverified — verify before recommending) alpha-entry"),
+            "SQL-backed knowledge must carry the unverified prefix; got: {context}"
         );
     }
 }

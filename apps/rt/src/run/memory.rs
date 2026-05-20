@@ -2,34 +2,31 @@
 //!
 //! A unified persistence CLI with three subcommands:
 //!
-//! - `agent`     → `.claude/.agent-memory/`        (rolling cap 20)
-//! - `decision`  → `.claude/memory/{decisions,lessons}.json` (cap 50)
-//! - `knowledge` → `.claude/knowledge.json`        (cap 200 / 80 per type)
+//! - `agent`     → `.claude/.agent-memory/`                    (rolling cap 20)
+//! - `decision`  → `memory_decisions` / `memory_lessons` SQLite (cap 50)
+//! - `knowledge` → `knowledge_patterns` SQLite                 (cap 200 / 80 per type)
 //!
 //! Input JSON arrives either via `--json '<JSON>'` (the Windows-friendly form)
 //! or piped on stdin (the POSIX fallback). Exit is always `0` (fail-open).
 //!
-//! Port note: the `decision` subcommand emits a `decision` / `lesson` harness
-//! event. The JS version shelled to `_lib/harness-event.js`; this port appends
-//! the event directly through `mustard_core`.
+//! Wave 6b: `decision` and `knowledge` subcommands write to the Wave 6a SQLite
+//! tables (`memory_decisions`, `memory_lessons`, `knowledge_patterns`).  The
+//! JSON files (`.claude/memory/decisions.json`, `.claude/memory/lessons.json`,
+//! `.claude/knowledge.json`) are no longer written.  Wave 6c migrates the
+//! dashboard reader.
 
 use crate::run::env::{project_dir, session_id};
 use crate::util::{now_iso8601, now_millis};
 use mustard_core::io::event_store::EventSink;
 use mustard_core::io::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::{json, Value};
+use rusqlite::params;
+use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
 
 /// `.agent-memory/` rolling cap.
 const AGENT_CAP: usize = 20;
-/// `decisions.json` / `lessons.json` cap.
-const DECISION_CAP: usize = 50;
-/// `knowledge.json` global cap.
-const KNOWLEDGE_CAP: usize = 200;
-/// `knowledge.json` per-type cap.
-const KNOWLEDGE_CAP_CAT: usize = 80;
 
 /// Read the input JSON text — `--json <text>` argument, else piped stdin.
 fn read_input(json_arg: Option<&str>) -> String {
@@ -95,6 +92,7 @@ fn resolve_session_prefix(project_dir: &Path) -> String {
 }
 
 /// `agent` subcommand — write an agent-memory entry, prune to [`AGENT_CAP`].
+/// Unchanged from Wave 5: still writes to `.claude/.agent-memory/` JSON files.
 fn run_agent(input: &Value) {
     let project_dir = input_cwd(input);
     let project_dir = Path::new(&project_dir);
@@ -205,7 +203,64 @@ fn emit_decision_event(entry_type: &str, content: &str, context: &str, source: &
     let _ = SqliteEventStore::for_project(dir).and_then(|store| store.append(&ev));
 }
 
-/// `decision` subcommand — append to `decisions.json` / `lessons.json`.
+/// Insert a decision row into `memory_decisions`. Fail-open — errors are
+/// silently discarded so a store failure never aborts the caller.
+pub(crate) fn insert_decision(
+    conn: &rusqlite::Connection,
+    content: &str,
+    source: Option<&str>,
+    context: Option<&str>,
+    at: Option<&str>,
+) -> rusqlite::Result<()> {
+    let at_val = at.map(str::to_string).unwrap_or_else(now_iso8601);
+    conn.execute(
+        "INSERT INTO memory_decisions (content, source, context, at) VALUES (?1, ?2, ?3, ?4)",
+        params![content, source, context, at_val],
+    )?;
+    Ok(())
+}
+
+/// Insert a lesson row into `memory_lessons`. Fail-open.
+pub(crate) fn insert_lesson(
+    conn: &rusqlite::Connection,
+    content: &str,
+    source: Option<&str>,
+    context: Option<&str>,
+    at: Option<&str>,
+) -> rusqlite::Result<()> {
+    let at_val = at.map(str::to_string).unwrap_or_else(now_iso8601);
+    conn.execute(
+        "INSERT INTO memory_lessons (content, source, context, at) VALUES (?1, ?2, ?3, ?4)",
+        params![content, source, context, at_val],
+    )?;
+    Ok(())
+}
+
+/// Upsert a knowledge pattern row into `knowledge_patterns`.
+/// ON CONFLICT(pattern): increments count, refreshes confidence + last_seen.
+pub(crate) fn upsert_knowledge_pattern(
+    conn: &rusqlite::Connection,
+    pattern: &str,
+    confidence: f64,
+    source: Option<&str>,
+    last_seen: &str,
+    created_at: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO knowledge_patterns (pattern, confidence, count, last_seen, source, created_at) \
+         VALUES (?1, ?2, 1, ?3, ?4, ?5) \
+         ON CONFLICT(pattern) DO UPDATE SET \
+           confidence = excluded.confidence, \
+           count = count + 1, \
+           last_seen = excluded.last_seen, \
+           source = COALESCE(excluded.source, source)",
+        params![pattern, confidence, last_seen, source, created_at],
+    )?;
+    Ok(())
+}
+
+/// `decision` subcommand — insert into `memory_decisions` / `memory_lessons`
+/// via SQLite. No longer writes `decisions.json` / `lessons.json`.
 fn run_decision(input: &Value) {
     let entry_type = input
         .get("type")
@@ -220,66 +275,49 @@ fn run_decision(input: &Value) {
         return;
     }
     let project_dir = input_cwd(input);
-    let mem_dir = Path::new(&project_dir).join(".claude").join("memory");
-    if std::fs::create_dir_all(&mem_dir).is_err() {
-        return;
-    }
-    let file_name = if entry_type == "decision" {
-        "decisions.json"
-    } else {
-        "lessons.json"
-    };
-    let file_path = mem_dir.join(file_name);
-
-    let mut data = std::fs::read_to_string(&file_path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .filter(|v| v.get("entries").map(Value::is_array).unwrap_or(false))
-        .unwrap_or_else(|| json!({ "entries": [] }));
-
     let content = input.get("content").and_then(Value::as_str).unwrap_or("").to_string();
     let context = input.get("context").and_then(Value::as_str).unwrap_or("").to_string();
     let source = input.get("source").and_then(Value::as_str).unwrap_or("").to_string();
-    let entry = json!({
-        "id": format!("{entry_type}-{}", now_millis()),
-        "timestamp": now_iso8601(),
-        "content": content,
-        "source": source,
-        "context": context,
-    });
+    let at = input.get("at").and_then(Value::as_str).map(str::to_string);
 
-    if let Some(entries) = data.get_mut("entries").and_then(Value::as_array_mut) {
-        entries.push(entry);
-        if entries.len() > DECISION_CAP {
-            let excess = entries.len() - DECISION_CAP;
-            entries.drain(..excess);
+    // Write to SQLite — fail-open.
+    let store_result = SqliteEventStore::for_project(&project_dir);
+    if let Ok(store) = store_result {
+        // SqliteEventStore wraps a private Connection. We open a second
+        // direct rusqlite connection to the same DB file for the INSERT.
+        let db_path = store.path().to_path_buf();
+        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+            let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+            let result = if entry_type == "decision" {
+                insert_decision(
+                    &conn,
+                    &content,
+                    if source.is_empty() { None } else { Some(&source) },
+                    if context.is_empty() { None } else { Some(&context) },
+                    at.as_deref(),
+                )
+            } else {
+                insert_lesson(
+                    &conn,
+                    &content,
+                    if source.is_empty() { None } else { Some(&source) },
+                    if context.is_empty() { None } else { Some(&context) },
+                    at.as_deref(),
+                )
+            };
+            if let Err(e) = result {
+                eprintln!("[memory] SQLite write failed (fail-open): {e}");
+            }
         }
     }
 
     emit_decision_event(&entry_type, &content, &context, &source, &project_dir);
-
-    if let Ok(text) = serde_json::to_string_pretty(&data) {
-        let _ = std::fs::write(&file_path, format!("{text}\n"));
-    }
 }
 
-/// `knowledge` subcommand — upsert into `knowledge.json` with dedup + pruning.
+/// `knowledge` subcommand — upsert into `knowledge_patterns` SQLite table.
+/// No longer writes `knowledge.json`.
 fn run_knowledge(input: &Value) {
     let cwd = input_cwd(input);
-    let kb_path = Path::new(&cwd).join(".claude").join("knowledge.json");
-
-    let mut kb = std::fs::read_to_string(&kb_path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| json!({ "version": 1, "entries": [] }));
-    if kb.get("entries").is_none() {
-        if let Some(obj) = kb.as_object_mut() {
-            obj.insert("entries".to_string(), json!([]));
-        }
-    }
-
-    let entry_type = input.get("type").and_then(Value::as_str).unwrap_or("pattern").to_string();
     let name = input.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
     let description = input
         .get("description")
@@ -287,9 +325,8 @@ fn run_knowledge(input: &Value) {
         .unwrap_or("")
         .trim()
         .to_string();
-    let source = input.get("source").and_then(Value::as_str).unwrap_or("unknown").to_string();
-    let tags = input.get("tags").cloned().filter(Value::is_array).unwrap_or_else(|| json!([]));
-    let initial_confidence = input
+    let source = input.get("source").and_then(Value::as_str).map(str::to_string);
+    let confidence = input
         .get("confidence")
         .and_then(Value::as_f64)
         .filter(|&c| (0.0..=1.0).contains(&c))
@@ -300,91 +337,23 @@ fn run_knowledge(input: &Value) {
         return;
     }
 
-    let timestamp = now_iso8601();
-    // `entries` was ensured to be an array above; bail fail-open if not.
-    let Some(entries) = kb.get_mut("entries").and_then(Value::as_array_mut) else {
-        return;
-    };
+    // The pattern stored is `"name: description"` to preserve the semantic used
+    // by session_start's injection rendering.
+    let pattern = format!("{name}: {description}");
+    let now = now_iso8601();
 
-    let existing_idx = entries.iter().position(|e| {
-        e.get("name").and_then(Value::as_str) == Some(name.as_str())
-            && e.get("type").and_then(Value::as_str) == Some(entry_type.as_str())
-    });
-
-    if let Some(idx) = existing_idx {
-        let e = &mut entries[idx];
-        if let Some(obj) = e.as_object_mut() {
-            let prev_occ = obj
-                .get("occurrences")
-                .and_then(Value::as_i64)
-                .unwrap_or(1);
-            let occ = prev_occ + 1;
-            obj.insert("description".to_string(), json!(description));
-            obj.insert("source".to_string(), json!(source));
-            obj.insert("tags".to_string(), tags);
-            obj.insert("updatedAt".to_string(), json!(timestamp));
-            obj.insert("occurrences".to_string(), json!(occ));
-            obj.insert(
-                "confidence".to_string(),
-                json!(f64::min(1.0, 0.3 + (occ as f64) * 0.1)),
-            );
-            obj.insert("lastSeen".to_string(), json!(timestamp));
+    let store_result = SqliteEventStore::for_project(&cwd);
+    if let Ok(store) = store_result {
+        let db_path = store.path().to_path_buf();
+        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+            let _ = conn.busy_timeout(std::time::Duration::from_millis(5_000));
+            if let Err(e) =
+                upsert_knowledge_pattern(&conn, &pattern, confidence, source.as_deref(), &now, &now)
+            {
+                eprintln!("[memory] SQLite knowledge upsert failed (fail-open): {e}");
+            }
         }
-    } else {
-        entries.push(json!({
-            "id": format!("{entry_type}-{}", now_millis()),
-            "type": entry_type,
-            "name": name,
-            "description": description,
-            "source": source,
-            "tags": tags,
-            "confidence": initial_confidence,
-            "occurrences": 1,
-            "createdAt": timestamp,
-            "updatedAt": timestamp,
-            "lastSeen": timestamp,
-            "verifiedAt": null,
-            "sourceFiles": [],
-        }));
     }
-
-    prune_knowledge(entries);
-
-    if let Some(parent) = kb_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(text) = serde_json::to_string_pretty(&kb) {
-        let _ = std::fs::write(&kb_path, text);
-    }
-}
-
-/// Sort key for a knowledge entry — `updatedAt` else `createdAt`.
-fn entry_sort_key(e: &Value) -> String {
-    e.get("updatedAt")
-        .and_then(Value::as_str)
-        .or_else(|| e.get("createdAt").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string()
-}
-
-/// Prune `entries` per type to [`KNOWLEDGE_CAP_CAT`] then globally to
-/// [`KNOWLEDGE_CAP`], newest first.
-fn prune_knowledge(entries: &mut Vec<Value>) {
-    use std::collections::BTreeMap;
-    let mut by_type: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for e in entries.drain(..) {
-        let t = e.get("type").and_then(Value::as_str).unwrap_or("").to_string();
-        by_type.entry(t).or_default().push(e);
-    }
-    let mut pruned: Vec<Value> = Vec::new();
-    for (_, mut group) in by_type {
-        group.sort_by(|a, b| entry_sort_key(b).cmp(&entry_sort_key(a)));
-        group.truncate(KNOWLEDGE_CAP_CAT);
-        pruned.extend(group);
-    }
-    pruned.sort_by(|a, b| entry_sort_key(b).cmp(&entry_sort_key(a)));
-    pruned.truncate(KNOWLEDGE_CAP);
-    *entries = pruned;
 }
 
 /// Dispatch `mustard-rt run memory <subcommand>`.
@@ -434,14 +403,66 @@ mod tests {
         });
         run_agent(&input);
         let index = dir.path().join(".claude").join(".agent-memory").join("_index.json");
-        let parsed: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(index).unwrap()).unwrap();
+        let parsed: Vec<Value> =
+            serde_json::from_str(&std::fs::read_to_string(index).unwrap()).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["agent_type"], json!("backend"));
     }
 
     #[test]
-    fn decision_appends_to_decisions_json() {
+    fn decision_inserts_to_sqlite() {
         let dir = tempdir().unwrap();
+        // Open the store so the schema is initialised.
+        let store = SqliteEventStore::for_project(dir.path()).unwrap();
+        let db_path = store.path().to_path_buf();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        insert_decision(&conn, "chose X over Y", Some("spec-1"), None, None).unwrap();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memory_decisions", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn lesson_inserts_to_sqlite() {
+        let dir = tempdir().unwrap();
+        let store = SqliteEventStore::for_project(dir.path()).unwrap();
+        let db_path = store.path().to_path_buf();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        insert_lesson(&conn, "always test fail-open paths", Some("retro"), None, None).unwrap();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memory_lessons", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn knowledge_upsert_bumps_count() {
+        let dir = tempdir().unwrap();
+        let store = SqliteEventStore::for_project(dir.path()).unwrap();
+        let db_path = store.path().to_path_buf();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let now = now_iso8601();
+        upsert_knowledge_pattern(&conn, "repo-pattern: use a repository", 0.5, None, &now, &now)
+            .unwrap();
+        upsert_knowledge_pattern(&conn, "repo-pattern: use a repository", 0.6, None, &now, &now)
+            .unwrap();
+        let (count, confidence): (i64, f64) = conn
+            .query_row(
+                "SELECT count, confidence FROM knowledge_patterns WHERE pattern = ?1",
+                ["repo-pattern: use a repository"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        // confidence is updated to the latest value.
+        assert!((confidence - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn run_decision_no_json_file_written() {
+        // run_decision must NOT write decisions.json any more.
+        let dir = tempdir().unwrap();
+        // Ensure the store is initialised (schema).
+        let _ = SqliteEventStore::for_project(dir.path()).unwrap();
         let input = json!({
             "cwd": dir.path().to_string_lossy(),
             "type": "decision",
@@ -449,35 +470,8 @@ mod tests {
             "source": "spec-1",
         });
         run_decision(&input);
-        let p = dir.path().join(".claude").join("memory").join("decisions.json");
-        let data: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
-        assert_eq!(data["entries"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn knowledge_upsert_bumps_occurrences() {
-        let dir = tempdir().unwrap();
-        let mk = || json!({
-            "cwd": dir.path().to_string_lossy(),
-            "type": "pattern",
-            "name": "repo-pattern",
-            "description": "use a repository",
-        });
-        run_knowledge(&mk());
-        run_knowledge(&mk());
-        let p = dir.path().join(".claude").join("knowledge.json");
-        let kb: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
-        let entries = kb["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["occurrences"], json!(2));
-    }
-
-    #[test]
-    fn prune_knowledge_caps_per_type() {
-        let mut entries: Vec<Value> = (0..KNOWLEDGE_CAP_CAT + 10)
-            .map(|i| json!({ "type": "pattern", "name": format!("p{i}"), "createdAt": format!("2026-01-{:02}", i % 28 + 1) }))
-            .collect();
-        prune_knowledge(&mut entries);
-        assert_eq!(entries.len(), KNOWLEDGE_CAP_CAT);
+        let json_path =
+            dir.path().join(".claude").join("memory").join("decisions.json");
+        assert!(!json_path.exists(), "decisions.json must NOT be written in Wave 6b+");
     }
 }

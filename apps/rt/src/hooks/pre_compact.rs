@@ -25,6 +25,7 @@
 
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use rusqlite::params;
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -93,12 +94,27 @@ fn has_active_pipeline(claude_dir: &Path) -> bool {
     false
 }
 
-/// Count the `entries` array of a `memory/*.json` file.
-fn count_memory_entries(path: &Path) -> usize {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v.get("entries").and_then(Value::as_array).map(Vec::len))
+/// Count rows in a Wave 6a SQLite table (`memory_decisions` or
+/// `memory_lessons`). Resolves the DB path the same way
+/// `SqliteEventStore::for_project` does. Fail-open: returns 0 on any error.
+fn count_memory_rows(cwd: &str, table: &str) -> usize {
+    let db_path = match std::env::var("MUSTARD_DB_PATH") {
+        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => Path::new(cwd)
+            .join(".claude")
+            .join(".harness")
+            .join("mustard.db"),
+    };
+    if !db_path.exists() {
+        return 0;
+    }
+    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
+        return 0;
+    };
+    // Table name is an internal constant — no injection risk.
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    conn.query_row(&sql, params![], |r| r.get::<_, i64>(0))
+        .map(|n| n as usize)
         .unwrap_or(0)
 }
 
@@ -157,10 +173,9 @@ fn build_snapshot(input: &HookInput, cwd: &str) -> String {
         }
     }
 
-    // Persistent memory.
-    let mem = claude.join("memory");
-    let decisions = count_memory_entries(&mem.join("decisions.json"));
-    let lessons = count_memory_entries(&mem.join("lessons.json"));
+    // Persistent memory — counts from Wave 6a SQLite tables.
+    let decisions = count_memory_rows(cwd, "memory_decisions");
+    let lessons = count_memory_rows(cwd, "memory_lessons");
     if decisions > 0 || lessons > 0 {
         parts.push(format!(
             "Persistent memory: {decisions} decisions, {lessons} lessons"
