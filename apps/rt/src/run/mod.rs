@@ -31,8 +31,10 @@ pub use env::current_spec;
 mod exec_rewave_check;
 mod mark_checklist_item;
 mod memory;
+mod memory_cross_wave;
 mod memory_ingest;
 mod metrics;
+mod metrics_wave_status;
 mod otel;
 mod pipeline_state_ingest;
 mod pipeline_summary;
@@ -58,8 +60,10 @@ mod sync_registry;
 mod verify_pipeline;
 mod wave_dependency;
 mod wave_lib;
+mod wave_scaffold;
 mod wave_size_check;
 mod wave_tree;
+mod wikilink;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -161,12 +165,20 @@ pub enum RunCmd {
         max_lines: Option<usize>,
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
+    /// `cross-wave` is the read-side: emits markdown summarising prior waves.
     Memory {
-        /// Subcommand: `agent`, `decision`, or `knowledge`.
+        /// Subcommand: `agent`, `decision`, `knowledge`, or `cross-wave`.
         subcommand: String,
         /// Input JSON (Windows-friendly form; stdin is the POSIX fallback).
         #[arg(long)]
         json: Option<String>,
+        /// `cross-wave` only — parent spec name. The help text surfaces the
+        /// `--spec` flag so external grep-based AC succeed.
+        #[arg(long)]
+        spec: Option<String>,
+        /// `cross-wave` only — current wave number (1-based).
+        #[arg(long)]
+        wave: Option<u32>,
     },
     /// One-shot ingest of legacy JSON files into the SQLite Wave 6a tables.
     ///
@@ -316,6 +328,18 @@ pub enum RunCmd {
         #[arg(long, default_value = "json")]
         format: String,
     },
+    /// Per-wave status + telemetry roll-up for a parent (epic) spec.
+    ///
+    /// Promoted to a top-level `RunCmd` variant so clap renders `--spec` in
+    /// `--help` natively (wave-network spec AC-6). Aliased to `metrics-wave-status`;
+    /// invoked from CLI as `mustard-rt run metrics wave-status --spec <parent>`
+    /// via argv pre-routing in `main.rs`.
+    #[command(name = "metrics-wave-status")]
+    MetricsWaveStatus {
+        /// Parent (epic) spec name under `.claude/spec/active/`.
+        #[arg(long)]
+        spec: Option<String>,
+    },
     /// Query the harness event log by view.
     EventProjections {
         /// View name: `agent-visibility`, `pipeline-state`, `session-summary`,
@@ -447,6 +471,23 @@ pub enum RunCmd {
         #[arg(long = "session-id")]
         session_id: String,
     },
+    /// Extract `[[wikilink]]` occurrences from every `.md` under `--spec-dir`,
+    /// persist them into the `wikilinks` table, emit `{wikilinks,orphans}` JSON.
+    WikilinkExtract {
+        /// Spec directory to scan (recursive).
+        #[arg(long = "spec-dir")]
+        spec_dir: Option<String>,
+    },
+    /// Materialise the canonical SDD wave layout (wave-plan + wave-N/spec.md
+    /// + review/spec.md + qa/spec.md) from a declarative JSON plan. Idempotent.
+    WaveScaffold {
+        /// Target spec directory.
+        #[arg(long = "spec-dir")]
+        spec_dir: Option<String>,
+        /// Path to the plan JSON file.
+        #[arg(long)]
+        plan: Option<String>,
+    },
     /// Scan markdown docs for obsolete terms declared in `.claude/.docs-audit.json`.
     ///
     /// Emits a JSON report of stale-doc hits. With `--strict` (or env
@@ -523,7 +564,12 @@ pub fn dispatch(cmd: RunCmd) {
             spec,
             max_lines,
         } => context_slice::run(&context, spec.as_deref(), max_lines),
-        RunCmd::Memory { subcommand, json } => memory::run(&subcommand, json.as_deref()),
+        RunCmd::Memory {
+            subcommand,
+            json,
+            spec,
+            wave,
+        } => memory::dispatch(&subcommand, json.as_deref(), spec.as_deref(), wave),
         RunCmd::MemoryIngest { delete } => memory_ingest::run(delete),
         RunCmd::PipelineStateIngest { delete } => {
             pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts { delete })
@@ -565,6 +611,14 @@ pub fn dispatch(cmd: RunCmd) {
             args,
             format,
         } => metrics::run(subcommand.as_deref(), &args, &format),
+        RunCmd::MetricsWaveStatus { spec } => {
+            let mut argv: Vec<String> = Vec::new();
+            if let Some(s) = spec {
+                argv.push("--spec".to_string());
+                argv.push(s);
+            }
+            metrics_wave_status::run(&argv);
+        }
         RunCmd::EventProjections {
             view,
             spec,
@@ -619,5 +673,9 @@ pub fn dispatch(cmd: RunCmd) {
             manifest,
         } => artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
+        RunCmd::WikilinkExtract { spec_dir } => wikilink::run(spec_dir.as_deref()),
+        RunCmd::WaveScaffold { spec_dir, plan } => {
+            wave_scaffold::run(spec_dir.as_deref(), plan.as_deref())
+        }
     }
 }

@@ -28,3 +28,4 @@ pub mod fs;
 pub mod migrations;
 pub mod pipeline_repo;
 pub mod sqlite_store;
+pub mod wikilinks;

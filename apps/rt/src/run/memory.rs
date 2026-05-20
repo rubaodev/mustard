@@ -364,9 +364,26 @@ fn run_knowledge(input: &Value) {
 }
 
 /// Dispatch `mustard-rt run memory <subcommand>`.
-pub fn run(subcommand: &str, json_arg: Option<&str>) {
+///
+/// `agent`, `decision`, `knowledge` are the write subcommands fed by JSON via
+/// `--json`/stdin. `cross-wave` is the read subcommand; clap parses its
+/// `--spec` / `--wave` flags into the dedicated arguments threaded through
+/// from `RunCmd::Memory`.
+pub fn dispatch(
+    subcommand: &str,
+    json_arg: Option<&str>,
+    spec: Option<&str>,
+    wave: Option<u32>,
+) {
+    if subcommand == "cross-wave" || subcommand == "cross_wave" {
+        crate::run::memory_cross_wave::run(spec, wave);
+        return;
+    }
     if !matches!(subcommand, "agent" | "decision" | "knowledge") {
-        println!("Usage: memory <agent|decision|knowledge> [--json '<JSON>']");
+        println!(
+            "Usage: memory <agent|decision|knowledge|cross-wave> [--json '<JSON>']"
+        );
+        println!("  cross-wave: --spec <name> --wave <N>");
         return;
     }
     let raw = read_input(json_arg);

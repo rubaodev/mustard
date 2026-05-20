@@ -431,6 +431,13 @@ fn write_html_report(cwd: &Path, subcommand: &str, doc: &Value) -> Option<PathBu
 
 /// Dispatch `mustard-rt run metrics`.
 pub fn run(subcommand: Option<&str>, args: &[String], format: &str) {
+    // `metrics wave-status` is a sibling subcommand owned by the wave-network
+    // spec; delegate to its module rather than threading it through the
+    // collect/report data path.
+    if subcommand == Some("wave-status") {
+        crate::run::metrics_wave_status::run(args);
+        return;
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let (doc, sub) = match subcommand {
         Some("collect") => {
@@ -486,6 +493,7 @@ pub fn run(subcommand: Option<&str>, args: &[String], format: &str) {
             eprintln!("Usage:");
             eprintln!("  metrics collect [--hooks-only] [--format json|html]");
             eprintln!("  metrics report [--since <ISO>] [--event <type>] [--compare <from> <to>] [--format json|html]");
+            eprintln!("  metrics wave-status --spec <parent>");
             return;
         }
     };
