@@ -106,12 +106,17 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
         return None;
     }
     let after_ac = &rest[3..];
-    let digits_end = after_ac.find(|c: char| !c.is_ascii_digit()).unwrap_or(after_ac.len());
-    if digits_end == 0 {
+    // Accept any alphanumeric suffix after `AC-` — wave-plans use `AC-G1`,
+    // `AC-G2` (the `G` modifier marks GLOBAL ACs that span every wave), while
+    // single specs keep `AC-1`, `AC-2`. The id pattern is `AC-[A-Za-z0-9]+`.
+    let id_end = after_ac
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(after_ac.len());
+    if id_end == 0 {
         return None;
     }
-    let id = format!("AC-{}", &after_ac[..digits_end]);
-    let after_id = after_ac[digits_end..].trim_start();
+    let id = format!("AC-{}", &after_ac[..id_end]);
+    let after_id = after_ac[id_end..].trim_start();
     let after_colon = after_id.strip_prefix(':')?;
     // Find a `Command:` segment after an em-dash / hyphen separator.
     let lower_seg = after_colon.to_lowercase();
@@ -592,6 +597,33 @@ mod tests {
         assert_eq!(b.id, "AC-2");
         assert_eq!(b.command, "cargo test");
         assert!(parse_ac_line("- just a bullet").is_none());
+    }
+
+    /// Wave-plans use `AC-G1`, `AC-G2` (the `G` modifier marks global ACs that
+    /// span every wave). The id parser must accept any alphanumeric suffix
+    /// after `AC-`, not just digits — otherwise `qa-run` finds the section but
+    /// returns zero parseable items (the bug found while closing
+    /// `2026-05-20-mustard-wave-network-standard`).
+    #[test]
+    fn parses_ac_id_with_alphanumeric_suffix() {
+        let a = parse_ac_line("- [ ] AC-G1: flag exposed — Command: `mustard-rt --version`").unwrap();
+        assert_eq!(a.id, "AC-G1");
+        assert_eq!(a.command, "mustard-rt --version");
+        let b = parse_ac_line("- [x] AC-G7: skill reads modelo — Command: `grep -q Modelo SKILL.md`").unwrap();
+        assert_eq!(b.id, "AC-G7");
+        assert_eq!(b.command, "grep -q Modelo SKILL.md");
+    }
+
+    /// PT heading "Critérios de Aceitação globais" (suffix word after the
+    /// canonical name) must still resolve — `is_heading` matches with a
+    /// word-boundary tolerance after the variant. Regression guard for
+    /// language-agnostic parsing.
+    #[test]
+    fn extracts_ac_section_pt_heading_with_suffix() {
+        let md = "# Spec\n\n## Critérios de Aceitação globais\n- [ ] AC-G1: x — Command: `true`\n\n## Files\n- a.rs\n";
+        let section = extract_ac_section(md).unwrap();
+        assert!(section.contains("AC-G1"));
+        assert!(!section.contains("Files"));
     }
 
     #[test]

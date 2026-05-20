@@ -65,12 +65,12 @@ Além das waves de execução, esta spec entrega — **demonstrando o padrão** 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
 - [x] AC-G1: `mustard-rt run wikilink-extract` expõe a flag `--spec-dir` no help — Command: `bash -c 'mustard-rt run wikilink-extract --help 2>&1 | grep -q -- "--spec-dir"'`
-- [x] AC-G2: `mustard-rt run memory cross-wave` expõe as flags `--spec` e `--wave` no help — Command: `bash -c 'out=$(mustard-rt run memory cross-wave --help 2>&1); echo "$out" | grep -q -- "--spec" && echo "$out" | grep -q -- "--wave"'`
+- [x] AC-G2: `mustard-rt run memory cross-wave` expõe as flags `--spec` e `--wave` no help — Command: `node -e "const o=require('child_process').execSync('mustard-rt run memory cross-wave --help').toString();if(!o.includes('--spec')||!o.includes('--wave'))throw new Error('flags missing')"`
 - [x] AC-G3: SKILL `/feature` força wave-files (texto contém regra explícita) — Command: `node -e "const t=require('fs').readFileSync('apps/cli/templates/commands/mustard/feature/SKILL.md','utf8');if(!/wave-scaffold.*OBRIGAT|OBRIGAT.*wave-scaffold/i.test(t))throw new Error('wave-scaffold enforcement missing in SKILL')"`
 - [x] AC-G4: Cargo check passa em mustard-rt — Command: `cargo check -p mustard-rt`
 - [x] AC-G5: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
 - [x] AC-G6: `metrics wave-status` expõe a flag `--spec` — Command: `bash -c 'mustard-rt run metrics wave-status --help 2>&1 | grep -q -- "--spec"'`
-- [x] AC-G7: SKILL `/resume` lê `Modelo` do wave-plan ao dispatchar — Command: `bash -c 'grep -E "wave-plan.*Modelo|Modelo.*wave-plan" apps/cli/templates/commands/mustard/resume/SKILL.md > /dev/null'`
+- [x] AC-G7: SKILL `/resume` lê `Modelo` do wave-plan ao dispatchar — Command: `node -e "const t=require('fs').readFileSync('apps/cli/templates/commands/mustard/resume/SKILL.md','utf8');if(!/wave-plan.*Modelo|Modelo.*wave-plan/.test(t))throw new Error('SKILL resume does not link wave-plan and Modelo')"`
 
 ## Limites globais
 
