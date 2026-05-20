@@ -133,7 +133,7 @@ When `scope-decompose` returns `reason: "roadmap-signal"` and `roadmapMatches` c
    - `wave-plan.md` (table copied/adapted from the plans file, status column initialized to `queued` for all)
    - `wave-1-{role}/spec.md` — full detail (Status: draft, narrative copied)
    - `wave-N-{role}/spec.md` for N=2..total — skeleton only (Status: queued, Title + 1-line summary)
-4. **Create `.claude/.pipeline-states/{spec-name}.json`** — a wave plan has no root `spec.md`, so this scaffold is the only place its pipeline state is born. Fields: `specName`, `status: "draft"`, `phase: 2`, `scope: "full"`, `isWavePlan: true`, `currentWave: 1`, `totalWaves: <wave count>`, `completedWaves: []`, `failedWaves: []`. `/mustard:approve` § Step 3b expects this file to already exist. Phase is derived from `pipeline.phase` events in SQLite (spec `2026-05-19-dashboard-phase-from-sqlite`); do not persist a phase name field in the JSON.
+4. **Emit initial pipeline state event** — a wave plan has no root `spec.md`, so this is the only point its pipeline state is born. Run: `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"draft","scope":"full","isWavePlan":true,"currentWave":1,"totalWaves":<N>,"completedWaves":[],"failedWaves":[]}'`. `/mustard:approve` § Step 3b reads state via `event-projections --view pipeline-state`. Phase is derived from `pipeline.phase` events in SQLite via `pipeline_state_for_spec`; do not persist a phase name field.
 5. **No AskUserQuestion** — proceed silently per the agnostic auto-detection contract.
 
 #### Full Scope
@@ -175,7 +175,7 @@ The spec is a **SINGLE file** organized in two named layers — `## PRD` (the *w
      - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
    - **CONDITIONAL: `## Component Contract` section (UI specs only)** — append between `## Arquivos` and `## Tarefas` (inside the Plano layer) when ANALYZE detects component creation/refactoring (new `*.tsx|*.vue|*.svelte|*.dart|*.swift` widget/View, or props/variants change). Template + rationale at `../../../refs/feature/spec-language.md § Component Contract`. **Skip for non-UI work** — adding this section to backend/database specs is bloat.
 2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
-3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "full"` (phase is sourced from `pipeline.phase` events in SQLite; do not persist a phase name field in the JSON)
+3. Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"active","scope":"full"}'` (phase is sourced from `pipeline.phase` events in SQLite via `pipeline_state_for_spec`; do not persist a phase name field)
 4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
 5. **Present full spec to user:** Read spec file and print ENTIRE contents verbatim in a fenced markdown block. Add 1-line change summary (WHAT + WHY). Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
@@ -190,7 +190,7 @@ Light keeps the same two-layer shape but **lean** — a thin PRD layer and a thi
 1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `### Lang: {pt|en}`, then:
    - **PRD layer** — `## PRD` divider, then `## Contexto` (Lang=pt) or `## Context` (Lang=en) — heading EXACT, body **narrative prose 3-6 lines** (how the system should work + what's the gap + user/business impact; NO line numbers/method names/tables — see `../../../refs/feature/spec-language.md § Contexto Narrative Rules`), then `## Métrica de sucesso` (1 line — the single observable outcome that proves it worked), then `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``; at least AC-1 must verify the feature works).
    - **Plano layer** — `## Plano` divider, then `## Summary` (1-2 lines, technical synthesis), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths).
-2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
+2. Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"active","scope":"light"}'`
 3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
 
 #### Spec Boundaries

@@ -16,7 +16,7 @@ Before writing the single spec in Full scope, check whether the work should be d
 
    Decomposition reasons emitted: `history-match:{id}`, `multi-layer`, `wide-and-new-entities`. Single-layer specs return `decompose: false` with reason `single-layer`.
 
-2. **Read knowledge matches:** Read `.claude/knowledge.json` (if it exists). Extract entries whose `id` starts with `heavy-pipeline` or `high-hook-retry`. Each entry's scope signals represent a historical pipeline that cost a lot.
+2. **Read knowledge matches:** Query `mustard-rt run event-projections --view knowledge-list` and filter entries whose `id` starts with `heavy-pipeline` or `high-hook-retry`. Each entry's scope signals represent a historical pipeline that cost a lot.
 
 3. **Run decomposition decision:**
    ```bash
@@ -101,4 +101,4 @@ Before writing the single spec in Full scope, check whether the work should be d
 
 #### COORDINATE phase (parent specs)
 
-A spec with `children_specs.length > 0` may enter `COORDINATE`. In this phase the orchestrator tracks children progress — it does NOT implement. Update `.claude/.pipeline-states/{epic}.json` to `phase: "COORDINATE"` after linking. When all children = CLOSE, update parent to `phase: "CLOSE"`.
+A spec with `children_specs.length > 0` may enter `COORDINATE`. In this phase the orchestrator tracks children progress — it does NOT implement. Emit `mustard-rt run emit-phase --spec {epic} --to COORDINATE` after linking. When all children = CLOSE, emit `mustard-rt run emit-phase --spec {epic} --to CLOSE`.

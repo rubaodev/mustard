@@ -82,7 +82,7 @@
 - **Test the absent-value path**: most FE bugs are unhandled null/empty/undefined — add a test for that exact input.
 - **Keyboard test if interactive**: ensure fix works for keyboard users too.
 - **Update spec `## Concerns`** if root cause exposes a structural issue worth a follow-up.
-- **Add to knowledge.json** via session-knowledge if pattern likely to recur (`mustard:knowledge add ...`).
+- **Add to knowledge base** via `/mustard:knowledge add` if pattern likely to recur — stored in `knowledge_patterns` SQLite table.
 
 ---
 

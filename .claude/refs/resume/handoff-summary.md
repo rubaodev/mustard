@@ -51,4 +51,4 @@ Started:  {timestamp} | Elapsed: {duration}
 mustard-rt run event-projections --view pipeline-state --spec {spec-name}
 ```
 
-If the command succeeds, merge its `phase`, `decisions`, and `lessons` into the Handoff Summary. If it fails or is absent, proceed with `.pipeline-states/{spec-name}.json` alone — never block on this.
+If the command succeeds, merge its `phase`, `decisions`, and `lessons` into the Handoff Summary. If it fails or is absent, proceed with the `pipeline_state_for_spec` projection alone — never block on this.

@@ -314,7 +314,7 @@ Enforcement runs as the single Rust binary `mustard-rt` (the `bash_guard`,
 
 | Module (`mustard-rt`) | Matcher | Mode env | Blocks on |
 |------|---------|----------|-----------|
-| `close_gate` | Write/Edit `.pipeline-states/*.json` with phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
+| `close_gate` | `mustard-rt run emit-pipeline` with phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
 | `close_gate` (Wave 10 QA) | same trigger | `MUSTARD_QA_GATE_MODE` (default strict) | no qa.result or qa.result=fail |
 | `bash_guard` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged or build broken |
 
@@ -325,7 +325,7 @@ Bug in the hook itself (I/O error, timeout outside child process) still fails op
 | Hook | Mode env | Heuristic |
 |---|---|---|
 | `duplication-check.js` | `MUSTARD_DUPLICATION_MODE` (default off) | Levenshtein ≥0.85 vs entity-registry |
-| `convention-check.js` | `MUSTARD_CONVENTION_MODE` (default off) | Rules derived from knowledge.json conf≥0.8 |
+| `convention-check.js` | `MUSTARD_CONVENTION_MODE` (default off) | Rules derived from `knowledge_patterns` table (conf≥0.8) |
 
 All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 
@@ -362,14 +362,13 @@ Each rule has a stable ID that appears in the deny reason (`[bash-safety BGnn]`)
 ### Truth source
 `.claude/.harness/events.jsonl` — append-only NDJSON log. All hooks emit events here.
 
-### Persistent projections
-| File | Writer | Purpose |
-|------|--------|---------|
-| `knowledge.json` | `mustard-rt` `knowledge` module — INSERT direto em SQLite (tabela `knowledge_patterns` com FTS5) | Confidence-ranked patterns across sessions |
-| `memory/decisions.json` | `mustard-rt run memory decision` — INSERT direto em SQLite (tabela `memory_decisions`) | Architectural decisions |
-| `memory/lessons.json` | `mustard-rt run memory decision` — INSERT direto em SQLite (tabela `memory_lessons`) | Operational lessons |
-
-Pipeline state é derivado integralmente de eventos via `pipeline_state_for_spec` — não existe mais `.pipeline-states/{spec}.json` como fonte de escrita de status. Comandos emitem `mustard-rt run emit-pipeline --kind <kind> --spec <name>` para cada transição; leitores consomem a projeção SQLite.
+### Persistent projections (SQLite tables in `.claude/.harness/mustard.db`)
+| Table | Writer | Purpose |
+|-------|--------|---------|
+| `knowledge_patterns` (FTS5: `knowledge_patterns_fts`) | `mustard-rt` `knowledge` module — INSERT direto em SQLite | Confidence-ranked patterns across sessions |
+| `memory_decisions` (FTS5: `memory_decisions_fts`) | `mustard-rt run memory decision` | Architectural decisions |
+| `memory_lessons` (FTS5: `memory_lessons_fts`) | `mustard-rt run memory decision` | Operational lessons |
+| SQLite event store (`pipeline_state_for_spec` projection) | `mustard-rt run emit-pipeline --kind <kind> --spec <name>` | Pipeline state — derived integralmente de eventos; leitores consomem via `pipeline_state_for_spec` |
 
 ### How agents read context
 Via **views** in `mustard-rt run event-projections --view <name>`:
@@ -383,7 +382,8 @@ Via **views** in `mustard-rt run event-projections --view <name>`:
 - `.agent-memory/` (was: per-agent summaries → now: `agent.stop` events in log)
 - `.agent-state/_queue.json` (was: description relay → now: `agent.start` event in log)
 - `.agent-state/{id}.json` (was: active agent tracking → now: `agent.start`/`agent.stop` in log)
-- `.pipeline-states/*.metrics.json` (was: cumulative counters → now: `tool.use` events folded by `buildPipelineState`)
+- `pipeline-states/` metrics sidecars (was: cumulative counters → now: `tool.use` events folded by `pipeline_state_for_spec`)
+- `pipeline-states/` spec state files (was: live state → now: `pipeline_state_for_spec` projection over SQLite event store)
 
 ### Log rotation
 The `mustard-rt` `session_start` module (SessionStart) rotates `.harness/events.jsonl` → `.harness/sessions/{sessionId}.jsonl` and prunes sessions >30 days.
@@ -412,5 +412,5 @@ mustard-rt run event-projections --view agent-visibility
 - Resuming work on a spec after session gap
 
 **When NOT to use:**
-- For patterns already in `knowledge.json` (that's auto-injected)
+- For patterns already in `knowledge_patterns` (that's auto-injected via SQLite query at SessionStart)
 - As first action of every task (injection already gives you the top)

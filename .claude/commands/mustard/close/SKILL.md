@@ -105,7 +105,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
      - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
      - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
 6. **Pipeline State — note:**
-   - The `closed-followup` state intentionally stays around so follow-up edits get linked. Do NOT delete `.claude/.pipeline-states/{spec-name}.json` here — the `--archive` stage handles that.
+   - The `closed-followup` state intentionally stays around so follow-up edits get linked. The `--archive` stage emits the terminal pipeline event; no JSON file to delete.
 6b. **Knowledge Capture:**
    - Review patterns discovered during this pipeline
    - For each significant pattern/convention/entity discovered:
@@ -129,7 +129,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - If RTK available: extract `saved_tokens` and `savings_pct`
    - Include in output block below
 6d. **Metrics Archive:**
-   - Read metrics from `.claude/.pipeline-states/{spec-name}.json`
+   - Read metrics from `mustard-rt run event-projections --view pipeline-state --spec {spec-name}`
    - If metrics exist, ensure `.claude/metrics/` directory exists
    - Save to `.claude/metrics/{spec-name}.json`:
      ```json
@@ -184,7 +184,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 If the user wants to cancel (not complete):
 - Update spec: `### Status: cancelled`
 - Move to `completed/` anyway (for history)
-- Delete `.claude/.pipeline-states/{spec-name}.json`
+- Emit `mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload '{"status":"cancelled"}'`
 - Output: "Pipeline cancelled. Spec archived in completed/."
 
 ## Results Documentation
@@ -203,7 +203,7 @@ If output lists epics ready to fold:
 ```bash
 mustard-rt run epic-fold --epic <name>
 ```
-This consolidates learning into knowledge.json and marks granular events compactable.
+This consolidates learning into the `knowledge_patterns` SQLite table and marks granular events compactable.
 
 ## When to Use
 

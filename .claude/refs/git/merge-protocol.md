@@ -252,7 +252,7 @@ echo "=== $(basename "$PWD") (branch: $(rtk git rev-parse --abbrev-ref HEAD)) ==
 rtk git status --short | while IFS= read -r line; do
   path=$(echo "$line" | awk '{print $NF}')
   case "$path" in
-    .claude/.agent-state/*|.claude/.metrics/*|.claude/.pipeline-states/*|.claude/.detect-cache.json|.claude/.knowledge-seen.json)
+    .claude/.agent-state/*|.claude/.metrics/*|.claude/.detect-cache.json|.claude/.knowledge-seen.json)
       echo "  [ephemeral] $line" ;;
     *)
       if [ "${line:0:2}" = "??" ]; then

@@ -94,10 +94,10 @@ When an agent fails:
 
 When a pipeline is paused (user leaves session or requests pause):
 
-1. Update pipeline state JSON (`.claude/.pipeline-states/{spec-name}.json`):
-   - Set `pausedAt` to current ISO timestamp
-   - Set `pauseReason` to user-provided reason (or "session ended")
-   - Set `nextAction` to the specific next step (ONE sentence)
+1. Emit pause event to pipeline event store:
+   ```bash
+   mustard-rt run emit-pipeline --kind pipeline.pause --spec {spec-name} --payload '{"pausedAt":"<ISO>","pauseReason":"<reason or session ended>","nextAction":"<ONE sentence>"}'
+   ```
 2. Write agent memory for carry-over:
    ```bash
    mustard-rt run memory agent --json '{"agent_type":"orchestrator","wave":0,"pipeline":"{spec-name}","summary":"Paused at {phase}. Next: {nextAction}"}'

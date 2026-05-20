@@ -202,8 +202,8 @@ Enforcement runs as the single Rust binary `mustard-rt` (the `apps/rt` crate): `
 | `size_gate` | `Write\|Edit` | **WARNS** specs >500 lines (strict block opt-in); validates skill YAML frontmatter |
 | `path_guard` | `Read\|Write\|Edit` | **BLOCKS** sensitive-file access; flags edits outside spec boundaries |
 | `post_edit` | `Write\|Edit` (PostToolUse) | Auto-formats by extension; auto-marks Checklist items; guard-verify; pipeline-phase events |
-| `knowledge` | `SessionEnd` / `PostToolUse(Task)` | **EXTRACTS** Decisões não-óbvias → `memory/decisions.json`; friction telemetry; `retry.attempt` events |
-| `session_start` | `SessionStart` | Bootstraps the harness event bus; runs spec-hygiene; **INJECTS** knowledge.json + memory |
+| `knowledge` | `SessionEnd` / `PostToolUse(Task)` | **EXTRACTS** Decisões não-óbvias → `memory_decisions` table (SQLite); friction telemetry; `retry.attempt` events |
+| `session_start` | `SessionStart` | Bootstraps the harness event bus; runs spec-hygiene; **INJECTS** top-N from `knowledge_patterns` + `memory_decisions` tables |
 | `session_cleanup` | `SessionEnd` | Removes terminal pipeline-states + stale state files |
 | `pre_compact` | `PreCompact` | **INJECTS** a working-state snapshot before compaction |
 | `prompt_gate` | `UserPromptSubmit` | Archives pending `closed-followup` specs on a new pipeline command |

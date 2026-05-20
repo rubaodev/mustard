@@ -273,7 +273,7 @@ Three enforcement hooks reduce token waste across all projects:
 
 | Hook | Matcher | Mode env | Blocks on |
 |------|---------|----------|-----------|
-| `close-gate.js` | Write/Edit `.pipeline-states/*.json` with phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
+| `close_gate` | `mustard-rt run emit-pipeline` with phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
 | `close-gate.js` (Wave 10 QA) | same trigger | `MUSTARD_QA_GATE_MODE` (default strict) | no qa.result or qa.result=fail |
 | `review-gate.js` | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged or build broken |
 
@@ -284,7 +284,7 @@ Bug in the hook itself (I/O error, timeout outside child process) still fails op
 | Hook | Mode env | Heuristic |
 |---|---|---|
 | `duplication-check.js` | `MUSTARD_DUPLICATION_MODE` (default off) | Levenshtein ≥0.85 vs entity-registry |
-| `convention-check.js` | `MUSTARD_CONVENTION_MODE` (default off) | Rules derived from knowledge.json conf≥0.8 |
+| `convention-check.js` | `MUSTARD_CONVENTION_MODE` (default off) | Rules derived from `knowledge_patterns` table (conf≥0.8) |
 
 All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 
@@ -301,13 +301,13 @@ All anti-slope hooks fail-open on bug. Only real signal triggers warn/block.
 ### Truth source
 `.claude/.harness/mustard.db` (SQLite) — consolidado pela spec `eliminate-bun` 2026-05-19. Todos os módulos Rust de hook/run emitem via `mustard_core::io::sqlite_store::SqliteEventStore::append()`. `events.jsonl` no mesmo diretório é log legacy e não é mais autoritativo.
 
-### Persistent projections
-| File | Writer | Purpose |
-|------|--------|---------|
-| `knowledge.json` | `knowledge` hook module + `mustard-rt run memory knowledge` | Confidence-ranked patterns across sessions |
-| `memory/decisions.json` | `mustard-rt run memory decision` | Architectural decisions |
-| `memory/lessons.json` | `mustard-rt run memory <agent\|lesson>` | Operational lessons |
-| `.pipeline-states/{spec}.json` | Pipeline commands | Status, scope, tasks, wave bookkeeping (phase no longer persisted here — derived from `pipeline.phase` events in SQLite via `mustard-rt run emit-phase` / `event_projections`) |
+### Persistent projections (SQLite tables in `.claude/.harness/mustard.db`)
+| Table | Writer | Purpose |
+|-------|--------|---------|
+| `knowledge_patterns` (FTS5: `knowledge_patterns_fts`) | `mustard-rt` `knowledge` module — INSERT direto em SQLite | Confidence-ranked patterns across sessions |
+| `memory_decisions` (FTS5: `memory_decisions_fts`) | `mustard-rt run memory decision` | Architectural decisions |
+| `memory_lessons` (FTS5: `memory_lessons_fts`) | `mustard-rt run memory <agent\|lesson>` | Operational lessons |
+| SQLite event store (`pipeline_state_for_spec` projection) | `mustard-rt run emit-pipeline` | Status, scope, tasks, wave bookkeeping — derived integralmente de eventos via `pipeline_state_for_spec` |
 
 ### How agents read context
 Via **run subcommands** that fold events from `SqliteEventStore`:
@@ -320,7 +320,8 @@ Via **run subcommands** that fold events from `SqliteEventStore`:
 - `.agent-memory/` (was: per-agent summaries → now: `agent.stop` events in log)
 - `.agent-state/_queue.json` (was: description relay → now: `agent.start` event in log)
 - `.agent-state/{id}.json` (was: active agent tracking → now: `agent.start`/`agent.stop` in log)
-- `.pipeline-states/*.metrics.json` (was: cumulative counters → now: `tool.use` events folded by `buildPipelineState`)
+- `pipeline-states/` metrics sidecars (was: cumulative counters → now: `tool.use` events folded by `pipeline_state_for_spec`)
+- `pipeline-states/` spec state files (was: live state → now: `pipeline_state_for_spec` projection over SQLite event store)
 
 ### Log rotation
 Event history lives in `.claude/.harness/mustard.db` (SQLite). The `session_start` hook module (SessionStart) bootstraps the harness event bus; pruning of stale per-session artifacts is handled by `session_cleanup` (SessionEnd). The legacy `events.jsonl` is no longer rotated — it is non-authoritative log output.
@@ -349,5 +350,5 @@ mustard-rt run emit-phase --spec auth-login --query
 - Resuming work on a spec after session gap
 
 **When NOT to use:**
-- For patterns already in `knowledge.json` (that's auto-injected)
+- For patterns already in `knowledge_patterns` (that's auto-injected via SQLite query at SessionStart)
 - As first action of every task (injection already gives you the top)

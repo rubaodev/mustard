@@ -32,7 +32,7 @@ At the **start of every write-touching action** (`commit`, `push`, `merge`, `mer
 
 ```bash
 EXCLUDE=$(rtk git rev-parse --git-path info/exclude)
-for p in ".claude/.agent-state/" ".claude/.metrics/" ".claude/.pipeline-states/" ".claude/.detect-cache.json" ".claude/.knowledge-seen.json"; do
+for p in ".claude/.agent-state/" ".claude/.metrics/" ".claude/.detect-cache.json" ".claude/.knowledge-seen.json"; do
   grep -qxF "$p" "$EXCLUDE" 2>/dev/null || echo "$p" >> "$EXCLUDE"
 done
 ```
@@ -44,7 +44,7 @@ This is **idempotent** (grep guard before append). No commit, no worktree change
 After ensure-excluded, check if any ephemeral is already tracked:
 
 ```bash
-TRACKED_EPH=$(rtk git ls-files -- .claude/.agent-state/ .claude/.metrics/ .claude/.pipeline-states/ .claude/.detect-cache.json .claude/.knowledge-seen.json 2>/dev/null)
+TRACKED_EPH=$(rtk git ls-files -- .claude/.agent-state/ .claude/.metrics/ .claude/.detect-cache.json .claude/.knowledge-seen.json 2>/dev/null)
 ```
 
 If `$TRACKED_EPH` is non-empty → trigger **Ephemeral Tracked Sub-flow** (see merge-protocol.md) BEFORE the action's main commit.

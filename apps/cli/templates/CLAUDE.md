@@ -66,7 +66,7 @@ Rust (mustard-cli, mustard-rt). Enforcement runs as the single Rust binary `must
 
 ## Memory Layout — Substitution vs Harness Engineering Book
 
-The Harness Engineering book (§5.3) treats `MEMORY.md` as an entry index with a hard cap (200 lines / 25 KB). Mustard substitutes this with structured `memory/decisions.json` and `memory/lessons.json` ranked by confidence × recency. Same goal (index, not body), different mechanism — structured ranking lets `SessionStart` inject only the top-N relevant entries within a capped budget, rather than a fixed line-limit on a plain-text file. The `MEMORY.md` you may see at `~/.claude/projects/<project>/memory/MEMORY.md` is your user-global memory (managed by Claude Code), not the project memory layer.
+The Harness Engineering book (§5.3) treats `MEMORY.md` as an entry index with a hard cap (200 lines / 25 KB). Mustard substitutes this with structured SQLite tables (`memory_decisions` and `memory_lessons`) ranked by confidence × recency. Same goal (index, not body), different mechanism — structured ranking lets `SessionStart` inject only the top-N relevant entries within a capped budget via `SELECT … ORDER BY confidence*recency LIMIT N`, rather than a fixed line-limit on a plain-text file. The `MEMORY.md` you may see at `~/.claude/projects/<project>/memory/MEMORY.md` is your user-global memory (managed by Claude Code), not the project memory layer.
 
 ## Commands
 
@@ -112,11 +112,6 @@ mustard-rt run skills validate --json
 **Directive:** Before first `Edit`/`Write` in code-altering tasks (implement/refactor/bugfix), agent SHOULD invoke `Skill(karpathy-guidelines)` once. Skip for read-only/review/Explore work. Content stays cached for the rest of the agent's context.
 
 - `karpathy-guidelines` — 4 princípios anti-slop (carrega em toda alteração de código)
-- `templates-hook-protocol` — Hook stdin/stdout JSON protocol
-- `templates-settings-wiring` — settings.json hook registration
-- `templates-sync-detect` — Subproject discovery and role detection
-- `templates-command-authoring` — Slash command SKILL.md structure
-- `templates-skill-authoring` — Foundation/subproject skill creation
 - `commit-workflow` — Standardized commit message + body format
 
 **Engineering/productivity skills (verbatim from `github.com/mattpocock/skills` — not Mustard-generated):**
