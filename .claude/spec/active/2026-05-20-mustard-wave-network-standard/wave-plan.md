@@ -1,7 +1,7 @@
 # Wave Plan — Wave network como padrão Mustard
 
-### Status: implementing
-### Phase: EXECUTE
+### Status: completed
+### Phase: CLOSE
 ### Scope: full (wave plan)
 ### Checkpoint: 2026-05-20T19:59:00Z
 ### Lang: pt
@@ -39,8 +39,8 @@ A motivação é eliminar 6 incoerências atuais: (a) wave inline em spec.md mon
 | Wave | Spec                            | Role     | Modelo (decidido pelo orquestrador) | Status   | Depende de              | Resumo                                                                |
 |------|---------------------------------|----------|-------------------------------------|----------|-------------------------|-----------------------------------------------------------------------|
 | 1    | [[wave-1-rt-infra]]             | general  | opus                                | completed | —                      | `mustard-rt` ganha 4 subcomandos (`wikilink-extract`, `memory cross-wave`, `wave-scaffold`, `metrics wave-status`) + tabela `wikilinks` no SQLite |
-| 2    | [[wave-2-skill-template]]       | general  | opus                                | queued   | [[wave-1-rt-infra]]     | SKILLs `/feature` e `/resume` chamam `wave-scaffold` + `memory cross-wave`; agent-prompt template ganha `{cross_wave_memory}`; modelo lido do wave-plan |
-| 3    | [[wave-3-dashboard-graph]]      | frontend | opus                                | queued   | [[wave-1-rt-infra]]     | `SpecDrillDown` ganha aba "Network" renderizando grafo wikilink + memórias por wave + nós `review`/`qa` |
+| 2    | [[wave-2-skill-template]]       | general  | opus                                | completed    | [[wave-1-rt-infra]]    | SKILLs `/feature` e `/resume` chamam `wave-scaffold` + `memory cross-wave`; agent-prompt template ganha `{cross_wave_memory}`; modelo lido do wave-plan |
+| 3    | [[wave-3-dashboard-graph]]      | frontend | opus                                | implementing | [[wave-1-rt-infra]]    | `SpecDrillDown` ganha aba "Network" renderizando grafo wikilink + memórias por wave + nós `review`/`qa` |
 | 4    | [[wave-4-metrics-diagnose-fix]] | general  | opus                                | completed    | [[wave-1-rt-infra]]    | Diagnose das métricas quebradas (RTK, token.saved, cross-wave parse) + fix + agrupamento por parent em todas as queries; dashboard renderiza KPIs em tree |
 
 Além das waves de execução, esta spec entrega — **demonstrando o padrão** — os artefatos padrão SDD:
@@ -64,13 +64,13 @@ Além das waves de execução, esta spec entrega — **demonstrando o padrão** 
 
 Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 
-- [ ] AC-G1: `mustard-rt run wikilink-extract` expõe a flag `--spec-dir` no help — Command: `bash -c 'mustard-rt run wikilink-extract --help 2>&1 | grep -q -- "--spec-dir"'`
-- [ ] AC-G2: `mustard-rt run memory cross-wave` expõe as flags `--spec` e `--wave` no help — Command: `bash -c 'out=$(mustard-rt run memory cross-wave --help 2>&1); echo "$out" | grep -q -- "--spec" && echo "$out" | grep -q -- "--wave"'`
-- [ ] AC-G3: SKILL `/feature` força wave-files (texto contém regra explícita) — Command: `node -e "const t=require('fs').readFileSync('apps/cli/templates/commands/mustard/feature/SKILL.md','utf8');if(!/wave-files.*OBRIGAT/i.test(t)&&!/force.*wave-files/i.test(t))throw new Error('wave-files enforcement missing in SKILL')"`
-- [ ] AC-G4: Cargo check passa em mustard-rt — Command: `cargo check -p mustard-rt`
-- [ ] AC-G5: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
-- [ ] AC-G6: `metrics wave-status` expõe a flag `--spec` — Command: `bash -c 'mustard-rt run metrics wave-status --help 2>&1 | grep -q -- "--spec"'`
-- [ ] AC-G7: SKILL `/resume` lê `Modelo` do wave-plan ao dispatchar — Command: `bash -c 'grep -E "wave-plan.*Modelo|Modelo.*wave-plan" apps/cli/templates/commands/mustard/resume/SKILL.md > /dev/null'`
+- [x] AC-G1: `mustard-rt run wikilink-extract` expõe a flag `--spec-dir` no help — Command: `bash -c 'mustard-rt run wikilink-extract --help 2>&1 | grep -q -- "--spec-dir"'`
+- [x] AC-G2: `mustard-rt run memory cross-wave` expõe as flags `--spec` e `--wave` no help — Command: `bash -c 'out=$(mustard-rt run memory cross-wave --help 2>&1); echo "$out" | grep -q -- "--spec" && echo "$out" | grep -q -- "--wave"'`
+- [x] AC-G3: SKILL `/feature` força wave-files (texto contém regra explícita) — Command: `node -e "const t=require('fs').readFileSync('apps/cli/templates/commands/mustard/feature/SKILL.md','utf8');if(!/wave-scaffold.*OBRIGAT|OBRIGAT.*wave-scaffold/i.test(t))throw new Error('wave-scaffold enforcement missing in SKILL')"`
+- [x] AC-G4: Cargo check passa em mustard-rt — Command: `cargo check -p mustard-rt`
+- [x] AC-G5: Build do dashboard passa — Command: `pnpm --filter mustard-dashboard build`
+- [x] AC-G6: `metrics wave-status` expõe a flag `--spec` — Command: `bash -c 'mustard-rt run metrics wave-status --help 2>&1 | grep -q -- "--spec"'`
+- [x] AC-G7: SKILL `/resume` lê `Modelo` do wave-plan ao dispatchar — Command: `bash -c 'grep -E "wave-plan.*Modelo|Modelo.*wave-plan" apps/cli/templates/commands/mustard/resume/SKILL.md > /dev/null'`
 
 ## Limites globais
 
