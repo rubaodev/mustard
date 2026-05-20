@@ -120,3 +120,126 @@ CREATE TABLE IF NOT EXISTS claude_code_otel (
 CREATE INDEX IF NOT EXISTS idx_cco_metric ON claude_code_otel(metric);
 CREATE INDEX IF NOT EXISTS idx_cco_session ON claude_code_otel(session_id);
 CREATE INDEX IF NOT EXISTS idx_cco_bucket ON claude_code_otel(ts_bucket);
+
+-- ============================================================================
+-- Wave 6a — knowledge + memory tables (2026-05-20)
+-- Backing store for knowledge.json (knowledge_patterns) and
+-- memory/decisions.json + memory/lessons.json migration.
+-- All CREATEs use IF NOT EXISTS — idempotent on every open().
+-- ============================================================================
+
+-- knowledge_patterns: structured patterns extracted from sessions, replacing
+-- the flat-array knowledge.json. Distinct from the legacy `knowledge` table
+-- (which stores named/typed knowledge entries from the JS harness); this table
+-- holds confidence-scored patterns with a last-seen timestamp.
+CREATE TABLE IF NOT EXISTS knowledge_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL UNIQUE,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    count INTEGER NOT NULL DEFAULT 1,
+    last_seen TEXT NOT NULL,
+    source TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_pattern ON knowledge_patterns(pattern);
+CREATE INDEX IF NOT EXISTS idx_knowledge_patterns_last_seen ON knowledge_patterns(last_seen);
+
+-- memory_decisions: persistent architectural decisions (replaces
+-- memory/decisions.json). One row per decision entry.
+CREATE TABLE IF NOT EXISTS memory_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    source TEXT,
+    context TEXT,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_decisions_at ON memory_decisions(at);
+
+-- memory_lessons: lessons learned entries (replaces memory/lessons.json).
+CREATE TABLE IF NOT EXISTS memory_lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    source TEXT,
+    context TEXT,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_lessons_at ON memory_lessons(at);
+
+-- FTS5 virtual tables (external content, kept in sync by triggers below).
+-- Named `knowledge_patterns_fts` to avoid collision with the standalone
+-- `knowledge_fts` table above (which serves the legacy `knowledge` table).
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_patterns_fts USING fts5(
+    pattern, source,
+    content='knowledge_patterns',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_decisions_fts USING fts5(
+    content, source, context,
+    content='memory_decisions',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_lessons_fts USING fts5(
+    content, source, context,
+    content='memory_lessons',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+-- Triggers: keep FTS5 external-content tables in sync (INSERT/UPDATE/DELETE).
+-- knowledge_patterns <-> knowledge_patterns_fts (9 triggers total across 3 tables)
+CREATE TRIGGER IF NOT EXISTS knowledge_patterns_ai AFTER INSERT ON knowledge_patterns BEGIN
+    INSERT INTO knowledge_patterns_fts(rowid, pattern, source)
+    VALUES (new.id, new.pattern, new.source);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_patterns_ad AFTER DELETE ON knowledge_patterns BEGIN
+    INSERT INTO knowledge_patterns_fts(knowledge_patterns_fts, rowid, pattern, source)
+    VALUES ('delete', old.id, old.pattern, old.source);
+END;
+
+CREATE TRIGGER IF NOT EXISTS knowledge_patterns_au AFTER UPDATE ON knowledge_patterns BEGIN
+    INSERT INTO knowledge_patterns_fts(knowledge_patterns_fts, rowid, pattern, source)
+    VALUES ('delete', old.id, old.pattern, old.source);
+    INSERT INTO knowledge_patterns_fts(rowid, pattern, source)
+    VALUES (new.id, new.pattern, new.source);
+END;
+
+-- memory_decisions <-> memory_decisions_fts
+CREATE TRIGGER IF NOT EXISTS memory_decisions_ai AFTER INSERT ON memory_decisions BEGIN
+    INSERT INTO memory_decisions_fts(rowid, content, source, context)
+    VALUES (new.id, new.content, new.source, new.context);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_decisions_ad AFTER DELETE ON memory_decisions BEGIN
+    INSERT INTO memory_decisions_fts(memory_decisions_fts, rowid, content, source, context)
+    VALUES ('delete', old.id, old.content, old.source, old.context);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_decisions_au AFTER UPDATE ON memory_decisions BEGIN
+    INSERT INTO memory_decisions_fts(memory_decisions_fts, rowid, content, source, context)
+    VALUES ('delete', old.id, old.content, old.source, old.context);
+    INSERT INTO memory_decisions_fts(rowid, content, source, context)
+    VALUES (new.id, new.content, new.source, new.context);
+END;
+
+-- memory_lessons <-> memory_lessons_fts
+CREATE TRIGGER IF NOT EXISTS memory_lessons_ai AFTER INSERT ON memory_lessons BEGIN
+    INSERT INTO memory_lessons_fts(rowid, content, source, context)
+    VALUES (new.id, new.content, new.source, new.context);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_lessons_ad AFTER DELETE ON memory_lessons BEGIN
+    INSERT INTO memory_lessons_fts(memory_lessons_fts, rowid, content, source, context)
+    VALUES ('delete', old.id, old.content, old.source, old.context);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_lessons_au AFTER UPDATE ON memory_lessons BEGIN
+    INSERT INTO memory_lessons_fts(memory_lessons_fts, rowid, content, source, context)
+    VALUES ('delete', old.id, old.content, old.source, old.context);
+    INSERT INTO memory_lessons_fts(rowid, content, source, context)
+    VALUES (new.id, new.content, new.source, new.context);
+END;
