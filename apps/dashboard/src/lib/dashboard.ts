@@ -640,3 +640,39 @@ export function dashboardWorkspaceSummary(
 ): Promise<import("@/lib/types/specs").WorkspaceSummary> {
   return invoke("dashboard_workspace_summary", { repoPath });
 }
+
+// --- Wave-4 metrics wave-status (spec mustard-wave-network-standard) ---
+
+/** One per-wave row returned by `mustard-rt run metrics wave-status`. */
+export interface MetricsWaveRow {
+  name: string;
+  status: string | null;
+  tokens_saved: number;
+  duration_ms: number;
+  retries: number;
+  cross_wave_memory_bytes: number;
+  model: string | null;
+}
+
+/** Parent → waves rollup. `parent` is null when the rt binary failed to spawn. */
+export interface MetricsWaveStatus {
+  parent: string | null;
+  waves: MetricsWaveRow[];
+}
+
+/**
+ * Wave-4 wrapper for the new `dashboard_metrics_wave_status` Tauri command.
+ * Shells out to `mustard-rt run metrics wave-status --spec <name>` on the
+ * backend and returns the parsed JSON. Always resolves — the backend swallows
+ * subprocess/parse failures into an empty `waves` vec so the UI can render
+ * "sem ondas" instead of throwing.
+ */
+export function dashboardMetricsWaveStatus(
+  repoPath: string,
+  specName: string,
+): Promise<MetricsWaveStatus> {
+  return invoke<MetricsWaveStatus>("dashboard_metrics_wave_status", {
+    repoPath,
+    specName,
+  });
+}

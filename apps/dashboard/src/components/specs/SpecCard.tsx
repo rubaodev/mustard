@@ -1,7 +1,10 @@
+import { useState } from "react";
+import { FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PhaseChip } from "@/components/page";
 import { PipelineTimeline } from "@/components/telemetry/PipelineTimeline";
 import { SpecActionMenu } from "./SpecActionMenu";
+import { SpecMarkdownViewer } from "./SpecMarkdownViewer";
 import type { SpecCard as SpecCardData } from "@/lib/types/specs";
 
 interface SpecCardProps {
@@ -9,6 +12,15 @@ interface SpecCardProps {
   repoPath: string | null;
   /** When true, render the expanded drill-down area instead. */
   expanded?: boolean;
+  /**
+   * Wave-4 (2026-05-20, spec mustard-wave-network-standard): when the spec is
+   * a wave-plan parent, this is the count of child wave specs. The card then
+   * renders a `+N waves` badge that links to the Network tab of the drill-
+   * down. Undefined / 0 → no badge (back-compatible default).
+   */
+  childWaves?: number;
+  /** Optional Network-tab href. Falls back to the spec's drill-down URL. */
+  networkHref?: string;
   className?: string;
 }
 
@@ -118,7 +130,28 @@ function MiniTimeline({ card }: { card: SpecCardData }) {
   );
 }
 
-export function SpecCard({ data, repoPath, className }: SpecCardProps) {
+export function SpecCard({
+  data,
+  repoPath,
+  childWaves,
+  networkHref,
+  className,
+}: SpecCardProps) {
+  const [viewerOpen, setViewerOpen] = useState(false);
+  // Wave-4: a spec is a "parent" when it has any child waves. Render the
+  // `+N waves` badge that takes the user to the Network tab of the drill-
+  // down. We use an anchor (not router) so callers without a Router context
+  // (e.g. Storybook) still render — `networkHref` may be absent in tests.
+  const hasChildren = typeof childWaves === "number" && childWaves > 0;
+
+  // Derive likely wave numbers from `total_waves` so the markdown viewer
+  // can offer "Onda N" tabs without re-fetching the wave list. Falls back
+  // to no waves when the count is unknown.
+  const waveNumbers =
+    data.total_waves && data.total_waves > 0
+      ? Array.from({ length: data.total_waves }, (_, i) => i + 1)
+      : [];
+
   return (
     <div
       className={cn(
@@ -138,6 +171,25 @@ export function SpecCard({ data, repoPath, className }: SpecCardProps) {
         </span>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {hasChildren && (
+            networkHref ? (
+              <a
+                href={networkHref}
+                onClick={(e) => e.stopPropagation()}
+                title={`${childWaves} waves — abrir aba Network`}
+                className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                +{childWaves} waves
+              </a>
+            ) : (
+              <span
+                title={`${childWaves} waves`}
+                className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded uppercase tracking-wide bg-muted/60 text-muted-foreground"
+              >
+                +{childWaves} waves
+              </span>
+            )
+          )}
           <StatusPill status={data.status} />
           <PhaseChip phase={data.phase} />
           <span
@@ -148,10 +200,34 @@ export function SpecCard({ data, repoPath, className }: SpecCardProps) {
             {formatDuration(data.duration_ms)}
           </span>
 
+          {/* Markdown viewer trigger — keeps the card clickable for drill-down
+              but stops propagation so opening the markdown doesn't toggle
+              the card's expanded state. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setViewerOpen(true);
+            }}
+            aria-label={`Ver markdown de ${data.spec}`}
+            title="Ver markdown"
+            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
+          >
+            <FileText className="h-3.5 w-3.5" aria-hidden />
+          </button>
+
           {/* Kebab action menu — visible on hover/focus */}
           <SpecActionMenu repoPath={repoPath} spec={data.spec} status={data.status} />
         </div>
       </div>
+
+      <SpecMarkdownViewer
+        open={viewerOpen}
+        onOpenChange={setViewerOpen}
+        repoPath={repoPath}
+        spec={data.spec}
+        waves={waveNumbers}
+      />
 
       {/* Mini pipeline timeline */}
       <MiniTimeline card={data} />

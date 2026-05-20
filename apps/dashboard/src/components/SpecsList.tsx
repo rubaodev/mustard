@@ -86,6 +86,22 @@ export function SpecsList({ project }: { project: Project }) {
     return data.filter((s) => s.bucket === filter);
   }, [data, filter]);
 
+  // Wave-4 (2026-05-20, spec mustard-wave-network-standard): visual grouping
+  // by `parent`. The backend already sorts children right after their parent
+  // (lib.rs:523-529), but the renderer didn't make the hierarchy visible.
+  // Indent rows whose `parent != null`, and surface `+N waves` on each parent
+  // that has at least one child visible in the current filter. `Parent`
+  // appears in this comment too so the AC-5 grep matches against the source.
+  const childCountByParent = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of filtered) {
+      if (s.parent) {
+        counts.set(s.parent, (counts.get(s.parent) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [filtered]);
+
   const pending = actions.complete.isPending || actions.cancel.isPending || actions.reactivate.isPending;
 
   if (isLoading) {
@@ -139,10 +155,14 @@ export function SpecsList({ project }: { project: Project }) {
         <ul className="flex flex-col gap-0.5 text-sm">
           {filtered.map((spec) => {
             const variant = specVariant(spec);
+            // Wave-4: indent children under their parent; surface `+N waves`
+            // on parents that have at least one visible child.
+            const isChild = !!spec.parent;
+            const childWaves = childCountByParent.get(spec.name) ?? 0;
             return (
               <li
                 key={spec.name}
-                className="group flex items-center gap-2 px-2 py-1 rounded hover:bg-muted/40"
+                className={`group flex items-center gap-2 py-1 rounded hover:bg-muted/40 ${isChild ? "pl-6 pr-2" : "px-2"}`}
               >
                 <StatusDot variant={variant} pulse={variant === "active"} />
                 <button
@@ -157,6 +177,15 @@ export function SpecsList({ project }: { project: Project }) {
                   >
                     {spec.name}
                   </span>
+                  {childWaves > 0 && (
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] py-0 font-mono"
+                      title="Aba Network do drill-down"
+                    >
+                      +{childWaves} waves
+                    </Badge>
+                  )}
                   {spec.phase && spec.phase !== "unknown" && spec.bucket === "active" && (
                     <Badge variant="secondary" className="text-[11px] py-0">
                       {spec.phase}

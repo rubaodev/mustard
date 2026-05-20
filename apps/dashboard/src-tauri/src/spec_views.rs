@@ -146,11 +146,41 @@ pub struct FileCount {
     pub count: i64,
 }
 
+/// Wave-4 (2026-05-20) — JSON shape for `mustard-rt run metrics wave-status`.
+/// Mirrors `apps/rt/src/run/metrics_wave_status.rs::WaveStatus` so the
+/// dashboard can deserialise the subprocess stdout straight into a typed
+/// struct instead of `serde_json::Value`. Optional fields (`status`, `model`)
+/// stay `Option` because the rt side serialises with `skip_serializing_if`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct MetricsWaveRow {
+    pub name: String,
+    pub status: Option<String>,
+    pub tokens_saved: i64,
+    pub duration_ms: i64,
+    pub retries: i64,
+    pub cross_wave_memory_bytes: i64,
+    pub model: Option<String>,
+}
+
+/// Result of `dashboard_metrics_wave_status` — parent name plus per-wave rows.
+/// Empty `waves` vec when the spec has no wave-plan or the subprocess fails;
+/// the dashboard renders an empty state in that case.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct MetricsWaveStatus {
+    pub parent: Option<String>,
+    pub waves: Vec<MetricsWaveRow>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkspaceSummary {
     pub events_per_minute: f64,
-    pub tokens_saved_today: i64,
+    /// `None` when the underlying projection has no token-savings data
+    /// (e.g. RTK absent, no `rtk.savings` events emitted). The frontend
+    /// renders "—" for `null` instead of silently presenting "0".
+    pub tokens_saved_today: Option<i64>,
     pub specs_active_count: i64,
     pub spec_tracks: Vec<SpecTrack>,
     pub alerts: Vec<WorkspaceAlert>,
@@ -506,6 +536,81 @@ pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineN
     Ok(nodes.iter().map(timeline_node_from_view).collect())
 }
 
+/// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — invoke
+/// `mustard-rt run metrics wave-status --spec <name>` and parse stdout into a
+/// typed [`MetricsWaveStatus`]. Audit-2 in `metrics-audit.md` documents why
+/// this exists; Audit-1 explains why the numbers may currently be all zeros
+/// (writer/aggregator mismatch in `apps/rt/src/run/metrics_wave_status.rs`).
+///
+/// Subprocess invocation matches the project's existing convention:
+/// `cmd /C mustard-rt ...` on Windows, `sh -c` elsewhere. The function never
+/// returns an `Err` for "process failed" or "JSON garbage" — the dashboard
+/// always gets *something* renderable (empty waves vec). The `Err` arm is
+/// reserved for spawn errors so the frontend can show "mustard-rt not on
+/// PATH" without crashing the page.
+pub fn dashboard_metrics_wave_status_run(
+    repo_path: &str,
+    spec_name: &str,
+) -> Result<MetricsWaveStatus, String> {
+    use std::process::Command;
+    // Reject obvious traversal — spec_name is a single directory under
+    // .claude/spec/active/, never a path. Mirrors `dashboard_spec_markdown`.
+    if spec_name.is_empty()
+        || spec_name.contains('/')
+        || spec_name.contains('\\')
+        || spec_name.contains("..")
+    {
+        return Err(format!("invalid spec name: {spec_name}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args([
+            "/C",
+            "mustard-rt",
+            "run",
+            "metrics",
+            "wave-status",
+            "--spec",
+            spec_name,
+        ]);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = Command::new("mustard-rt");
+        c.args(["run", "metrics", "wave-status", "--spec", spec_name]);
+        c
+    };
+
+    cmd.current_dir(repo_path);
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The rt binary prints the JSON document at the end of stdout. Some hook
+    // installations also print a leading `[rtk] ...` banner; trim everything
+    // before the first `{` so the parse is robust to that prefix.
+    let json_start = stdout.find('{').unwrap_or(0);
+    let json_slice = &stdout[json_start..];
+    match serde_json::from_str::<MetricsWaveStatus>(json_slice) {
+        Ok(parsed) => Ok(parsed),
+        Err(_) => {
+            // Subprocess emitted unparseable output (binary missing, panic,
+            // schema drift). Surface an empty result so the dashboard renders
+            // the empty state instead of throwing. The frontend's `parent`
+            // null + empty waves combo is the agreed empty contract.
+            Ok(MetricsWaveStatus {
+                parent: Some(spec_name.to_string()),
+                waves: Vec::new(),
+            })
+        }
+    }
+}
+
 /// Wave 4 adapter: workspace summary via `mustard-core`. Replaces the
 /// broken `events_per_minute` and `tokens_saved_today` SQL with the
 /// projection from `project_workspace`.
@@ -593,11 +698,11 @@ fn timeline_node_from_view(view: &mustard_core::TimelineNode) -> SpecTimelineNod
 fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> WorkspaceSummary {
     WorkspaceSummary {
         events_per_minute: view.events_per_minute,
-        // The legacy dashboard shape carries a plain `i64`. The new view
-        // distinguishes "no data" via `Option<i64>`; for the legacy shape we
-        // surface `0` when the source is unavailable. The UI fix in Wave 5
-        // upgrades the JSON shape to `Option<i64>` and renders "—" for None.
-        tokens_saved_today: view.tokens_saved_today.unwrap_or(0),
+        // Preserve `None` end-to-end so the frontend can render "—" when
+        // token-savings data is unavailable instead of misrepresenting it
+        // as a literal "0 tokens economizados". Spec
+        // `2026-05-20-dashboard-ux-honest` Wave 1.
+        tokens_saved_today: view.tokens_saved_today,
         specs_active_count: i64::from(view.specs_active_count),
         spec_tracks: view.spec_tracks.iter().map(spec_track_from_view).collect(),
         alerts: view.alerts.iter().map(workspace_alert_from_view).collect(),

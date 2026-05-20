@@ -1412,6 +1412,18 @@ fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Res
     }
 }
 
+/// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — shell out to
+/// `mustard-rt run metrics wave-status --spec <name>` and return the typed
+/// `MetricsWaveStatus`. Audit-2 in this wave's `metrics-audit.md` documents
+/// why this exists (the page was never wired to the wave-status output).
+#[tauri::command]
+fn dashboard_metrics_wave_status(
+    repo_path: String,
+    spec_name: String,
+) -> Result<spec_views::MetricsWaveStatus, String> {
+    spec_views::dashboard_metrics_wave_status_run(&repo_path, &spec_name)
+}
+
 /// Wave 4 (2026-05-20) — delegate to `mustard-core::workspace_summary`.
 /// Fixes the previous `events_per_minute` SQL filter that silently
 /// short-circuited (returned the all-time count → `2904.0` in the audit) and
@@ -1569,7 +1581,8 @@ pub fn run() {
             dashboard_spec_timeline,
             dashboard_spec_events,
             dashboard_spec_action,
-            dashboard_workspace_summary
+            dashboard_workspace_summary,
+            dashboard_metrics_wave_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
