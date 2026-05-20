@@ -725,3 +725,58 @@ export function dashboardMemoryCrossWave(
 ): Promise<string> {
   return invoke<string>("dashboard_memory_cross_wave", { repoPath, spec, wave });
 }
+
+// --- Wave-2 dashboard visual overview (spec 2026-05-20-dashboard-visual-overview) ---
+
+/** Per-pipeline token savings entry returned in `TokenSummary.top_pipelines`. */
+export interface TopPipeline {
+  spec: string;
+  saved: number;
+}
+
+/**
+ * Aggregate token-savings payload for the workspace overview cards. Mirrors
+ * the Rust `TokenSummary` struct (`serde(rename_all = "snake_case")`).
+ */
+export interface TokenSummary {
+  total_saved: number;
+  top_pipelines: TopPipeline[];
+}
+
+/** One calendar-day bucket in the monthly activity heatmap. */
+export interface DayActivity {
+  /** YYYY-MM-DD */
+  date: string;
+  event_count: number;
+  /** Phase with the most events that day, when any phase was tagged. */
+  top_phase: string | null;
+}
+
+/** One event row in the live workspace feed. */
+export interface FeedEvent {
+  id: string;
+  /** ISO-8601 timestamp. */
+  ts: string;
+  kind: string;
+  spec: string | null;
+  payload_summary: string;
+}
+
+/** Aggregate token-savings totals + top-N pipelines for the active workspace. */
+export function dashboardTokenSummary(projectPath: string): Promise<TokenSummary> {
+  return invoke<TokenSummary>("dashboard_token_summary", { projectPath });
+}
+
+/** Per-day activity counts for the given month (1..12). */
+export function dashboardMonthActivity(
+  projectPath: string,
+  year: number,
+  month: number,
+): Promise<DayActivity[]> {
+  return invoke<DayActivity[]>("dashboard_month_activity", { projectPath, year, month });
+}
+
+/** Most-recent feed events (newest first), capped by `limit`. */
+export function dashboardEventsFeed(projectPath: string, limit: number): Promise<FeedEvent[]> {
+  return invoke<FeedEvent[]>("dashboard_events_feed", { projectPath, limit });
+}
