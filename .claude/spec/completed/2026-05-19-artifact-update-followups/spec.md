@@ -1,9 +1,9 @@
 # Follow-ups do esquema de atualização de artefatos
 
-### Status: implementing
-### Phase: EXECUTE
+### Status: completed
+### Phase: CLOSE
 ### Scope: full
-### Checkpoint: 2026-05-19T22:20:00Z
+### Checkpoint: 2026-05-20T01:00:00Z
 ### Lang: pt
 
 > **Bloqueada por `2026-05-18-b6-dashboard-projects`.** Não aprovar/executar esta spec antes de b6 fechar — a Wave 3 consome a infraestrutura de projetos e a invocação nativa de `init`/`update` que b6 entrega.
@@ -57,11 +57,11 @@ exibe o badge "X artefatos defasados" por projeto após a chamada de `--check`.
 
 Critérios binários, executáveis. Cada um roda da raiz do projeto; exit 0 = passou.
 
-- [ ] AC-1: O workspace compila — Command: `cargo build -p mustard-core -p mustard-rt -p mustard-cli`
-- [ ] AC-2: Testes de rt passam (inclui novo teste de fetch real) — Command: `cargo test -p mustard-rt`
+- [x] AC-1: O workspace compila — Command: `cargo build -p mustard-core -p mustard-rt -p mustard-cli`
+- [x] AC-2: Testes de rt passam (inclui novo teste de fetch real) — Command: `cargo test -p mustard-rt`
 - [x] AC-3: skills com upstream público de paridade-de-conteúdo são reclassificadas (todas as rastreáveis identificadas; teto natural=8 das 13, as 5 restantes são autorais do Mustard) — Command: `node -e "const m=require('./apps/cli/templates/.artifacts.json'); const s=m.artifacts.filter(a=>a.category==='skill'); const n=s.filter(x=>x.source.kind!=='manual').length; if(n<7)process.exit(1)"`
-- [ ] AC-4: `apply_vendored` não tem mais o doc-comment "out of scope" — Command: `node -e "const fs=require('fs');const c=fs.readFileSync('apps/rt/src/run/artifact_update.rs','utf8'); if(/out of scope for this wave/.test(c))process.exit(1)"`
-- [ ] AC-5: O dashboard tem comando Tauri que invoca `artifact-update` — Command: `node -e "const fs=require('fs'),path=require('path');function walk(d){let r=[];for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,f.name);if(f.isDirectory())r=r.concat(walk(p));else if(f.name.endsWith('.rs'))r.push(p)}return r}const ok=walk('apps/dashboard/src-tauri/src').some(f=>/artifact[_-]update/i.test(fs.readFileSync(f,'utf8')));if(!ok)process.exit(1)"`
+- [x] AC-4: `apply_vendored` não tem mais o doc-comment "out of scope" — Command: `node -e "const fs=require('fs');const c=fs.readFileSync('apps/rt/src/run/artifact_update.rs','utf8'); if(/out of scope for this wave/.test(c))process.exit(1)"`
+- [x] AC-5: O dashboard tem comando Tauri que invoca `artifact-update` — Command: `node -e "const fs=require('fs'),path=require('path');function walk(d){let r=[];for(const f of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,f.name);if(f.isDirectory())r=r.concat(walk(p));else if(f.name.endsWith('.rs'))r.push(p)}return r}const ok=walk('apps/dashboard/src-tauri/src').some(f=>/artifact[_-]update/i.test(fs.readFileSync(f,'utf8')));if(!ok)process.exit(1)"`
 
 ## Plano
 
@@ -116,6 +116,18 @@ comando Tauri) é puramente do dashboard — não persistido.
 
 - [ ] Reescrever a `description:` em `apps/cli/templates/skills/hallmark/SKILL.md` para ≤300 chars, movendo as condições detalhadas de trigger para o corpo do SKILL.md.
 - [ ] Verificar: `node -e "const fs=require('fs');const c=fs.readFileSync('apps/cli/templates/skills/hallmark/SKILL.md','utf8');const m=c.match(/^description:\s*(.+)$/m);if(!m||m[1].length>300)process.exit(1)"` retorna exit 0.
+
+## Concerns (do REVIEW)
+
+Notas levantadas no review (APPROVED em todas as waves; nenhuma CRITICAL). Não bloqueiam CLOSE; ficam como follow-ups conhecidos:
+
+- **Wave 1 (apps/rt) — `applied[]` shape inconsistency.** O JSON de `--apply` usa a chave `"changed"` para a lista (em vez de `"applied"`) e o contador `"applied": <int>`. Parser externo que assume `applied[]` (como o nome da chave) falha. Ajuste cosmético — renomear no próximo passe.
+- **Wave 1 — `apply_cargo` quando já up-to-date emite `fetched: false` sem `error`.** Terceira shape do output não documentada; aceitar como "no-op success" mas anotar em docstring.
+- **Wave 1 — teste `unreachable_http_upstream_is_unknown` é vacuamente verdadeiro.** `assert!(matches!(status, Status::Unknown | Status::Stale | Status::UpToDate))` casa com qualquer Status válido para `Cargo`. Trocar para `assert_eq!(status, Status::Unknown)`.
+- **Wave 2 (apps/cli) — `react-best-practices/SKILL.md` frontmatter ainda diz `source: manual`.** Manifest foi atualizado para `git`, mas o YAML interno da skill ficou stale. Sincronizar no próximo touch.
+- **Wave 2 — `rtk` usa `ref: "develop"` (branch flutuante).** SHA é fixado, mas o ref label engana — `--check` vai detectar drift sempre que `develop` mover. Fora do escopo desta wave (rtk é categoria `tool`, não `skill`), mas anotado.
+- **Wave 3 (apps/dashboard) — `is_mustard_repo` heurístico é frouxo.** Checa apenas existência de `apps/cli/templates/.artifacts.json` no path do projeto. Um fork do Mustard satisfaz. Aceitável dado o baixo blast-radius de `--apply` num fork; apertar para checagem de `git remote` se surgir problema.
+- **Wave 3 — `Command::output()` síncrono em `async fn`.** Bloqueia a thread do tokio executor. Funciona porque a invocação de `mustard-rt` é curta, mas tecnicamente incorreto — trocar para `tokio::process::Command` se a probe ficar lenta.
 
 ## Dependências
 
