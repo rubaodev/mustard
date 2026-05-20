@@ -21,6 +21,7 @@ mod diff_context;
 mod docs_stale_check;
 mod emit_event;
 pub mod emit_phase;
+mod emit_pipeline;
 mod env;
 mod epic_fold;
 mod event_projections;
@@ -113,6 +114,18 @@ pub enum RunCmd {
         /// Prior phase (optional; defaults to the spec's last known phase).
         #[arg(long)]
         from: Option<String>,
+    },
+    /// Append a typed pipeline event (`pipeline.scope`, `pipeline.status`, etc.).
+    EmitPipeline {
+        /// Pipeline event kind, e.g. `pipeline.scope`. Must be one of the 8 known kinds.
+        #[arg(long)]
+        kind: String,
+        /// Spec the event is attributed to.
+        #[arg(long)]
+        spec: String,
+        /// Optional JSON payload string.
+        #[arg(long)]
+        payload: Option<String>,
     },
     /// Finalize a pipeline spec (followup mark, archive, or stale sweep).
     CompleteSpec {
@@ -447,6 +460,9 @@ pub fn dispatch(cmd: RunCmd) {
         } => emit_event::run(event.as_deref(), &payload, spec.as_deref(), wave),
         RunCmd::EmitPhase { spec, to, from } => {
             emit_phase::run(&spec, &to, from.as_deref())
+        }
+        RunCmd::EmitPipeline { kind, spec, payload } => {
+            emit_pipeline::run(emit_pipeline::EmitPipelineOpts { kind, spec, payload })
         }
         RunCmd::CompleteSpec {
             spec,

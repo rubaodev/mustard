@@ -100,6 +100,163 @@ pub struct HarnessEvent {
 /// consumers can refer to it as `HookEvent`.
 pub type HookEvent = HarnessEvent;
 
+// ---------------------------------------------------------------------------
+// Pipeline event name constants
+// ---------------------------------------------------------------------------
+
+/// Records the scope and model selected for a pipeline run.
+pub const EVENT_PIPELINE_SCOPE: &str = "pipeline.scope";
+/// Records a lifecycle status transition (e.g. `active` → `closed`).
+pub const EVENT_PIPELINE_STATUS: &str = "pipeline.status";
+/// Records that an agent task was dispatched for a wave.
+pub const EVENT_PIPELINE_TASK_DISPATCH: &str = "pipeline.task.dispatch";
+/// Records that a dispatched agent task completed.
+pub const EVENT_PIPELINE_TASK_COMPLETE: &str = "pipeline.task.complete";
+/// Records that an entire wave finished.
+pub const EVENT_PIPELINE_WAVE_COMPLETE: &str = "pipeline.wave.complete";
+/// Records a task-dispatch failure (the agent could not be started).
+pub const EVENT_PIPELINE_DISPATCH_FAILURE: &str = "pipeline.dispatch_failure";
+/// Records a voluntary pipeline pause.
+pub const EVENT_PIPELINE_PAUSE: &str = "pipeline.pause";
+/// Records how a paused pipeline is being resumed.
+pub const EVENT_PIPELINE_RESUME_MODE: &str = "pipeline.resume_mode";
+
+// ---------------------------------------------------------------------------
+// Typed payload structs — typed views over `HarnessEvent::payload: Value`.
+//
+// Each struct mirrors one of the pipeline event constants above. All optional
+// fields use `Option<T>` and carry `#[serde(default)]` so unknown-field
+// absence never fails deserialization. Do NOT touch `HarnessEvent` itself —
+// these are helpers for callers that want a typed lens, not schema changes.
+// ---------------------------------------------------------------------------
+
+/// Payload for [`EVENT_PIPELINE_SCOPE`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineScopePayload {
+    /// Pipeline scope token, e.g. `"full"` or `"wave"`.
+    pub scope: String,
+    /// Spec language override (e.g. `"pt"` or `"en"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    /// Model routed to for this pipeline run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `true` when the spec uses a wave plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_wave_plan: Option<bool>,
+    /// Total wave count declared in the spec (when wave-plan).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_waves: Option<u32>,
+}
+
+/// Payload for [`EVENT_PIPELINE_STATUS`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineStatusPayload {
+    /// Previous status (absent on the first recorded transition).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// New status value.
+    pub to: String,
+}
+
+/// Payload for [`EVENT_PIPELINE_TASK_DISPATCH`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineTaskDispatchPayload {
+    /// Wave number the task belongs to (`None` outside a wave plan).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave: Option<u32>,
+    /// Human-readable task name (matches the wave-plan heading).
+    pub name: String,
+    /// Agent sub-type used for this dispatch (e.g. `"general-purpose"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Role label (e.g. `"implement"` or `"plan"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Files listed in the wave's scope at dispatch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
+    /// Retry attempt number (`0` on first attempt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<u32>,
+}
+
+/// Payload for [`EVENT_PIPELINE_TASK_COMPLETE`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineTaskCompletePayload {
+    /// Wave number the task belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave: Option<u32>,
+    /// Human-readable task name.
+    pub name: String,
+    /// Agent sub-type that ran the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Wall-clock task duration in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Files the agent reported as modified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_modified: Option<Vec<String>>,
+    /// Non-obvious architectural decisions recorded by the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<Vec<String>>,
+    /// Escalation message, present when the agent requested human review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_WAVE_COMPLETE`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineWaveCompletePayload {
+    /// Wave number that finished.
+    pub wave: u32,
+    /// Wall-clock wave duration in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Payload for [`EVENT_PIPELINE_DISPATCH_FAILURE`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineDispatchFailurePayload {
+    /// Agent sub-type that could not be started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// One-line description of the task that failed to dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The prompt that was passed to the agent (truncated if large).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Human-readable reason the dispatch was rejected or failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// ISO-8601 timestamp of the failure (when the caller provides one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_PAUSE`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelinePausePayload {
+    /// Human-readable reason the pipeline was paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Suggested next step for the human operator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+}
+
+/// Payload for [`EVENT_PIPELINE_RESUME_MODE`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineResumeModePayload {
+    /// Resume mode selected (e.g. `"continue"`, `"rewave"`, `"abort"`).
+    pub mode: String,
+    /// Escalation context passed to the next wave, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
