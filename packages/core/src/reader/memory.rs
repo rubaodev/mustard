@@ -7,14 +7,16 @@
 
 use crate::reader::error::Result;
 use crate::model::view::{
-    QualityRollup, SpecFilter, SpecStatusFilter, SpecSummary, SpecView, TimeWindow, TimelineNode,
-    WaveView, WorkspaceSummary,
+    QualityRollup, SpecChild, SpecFilter, SpecStatusFilter, SpecStatus, SpecSummary, SpecView,
+    TimeWindow, TimelineNode, WaveView, WorkspaceSummary,
 };
 use crate::projection::{
-    project_quality, project_spec_view, project_timeline, project_waves, project_workspace,
+    project_quality, project_spec_view, project_spec_view_with_header, project_timeline,
+    project_waves, project_workspace,
 };
 use crate::reader::SpecReader;
 use crate::model::event::HarnessEvent;
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 /// Test double for [`SpecReader`]. Holds the event vector behind an
@@ -27,6 +29,14 @@ pub struct InMemorySpecReader {
     /// deterministic. `None` falls back to `SystemTime::now()` — same as the
     /// SQLite reader.
     now_ms_override: RwLock<Option<i64>>,
+    /// Optional root directory under which `{root}/{spec}/spec.md` lives.
+    ///
+    /// Mirrors [`super::sqlite::SqliteSpecReader`]'s `project_dir` +
+    /// `.claude/spec/` resolution: when this is set and the event log for a
+    /// spec is empty, the projection falls back to parsing the on-disk
+    /// `spec.md` header. `None` disables the fallback — most tests do not
+    /// need it.
+    spec_md_root: RwLock<Option<PathBuf>>,
 }
 
 impl InMemorySpecReader {
@@ -42,7 +52,21 @@ impl InMemorySpecReader {
         Self {
             events: RwLock::new(events),
             now_ms_override: RwLock::new(None),
+            spec_md_root: RwLock::new(None),
         }
+    }
+
+    /// Pin a root directory under which `{root}/{spec}/spec.md` lives, so the
+    /// header fallback (Wave 1) can be exercised in tests without standing up
+    /// a SQLite store. `None` (default) keeps the fallback off.
+    ///
+    /// # Panics
+    /// Only on lock poisoning.
+    pub fn set_spec_md_root(&self, root: impl Into<PathBuf>) {
+        *self
+            .spec_md_root
+            .write()
+            .expect("spec-md-root lock poisoned") = Some(root.into());
     }
 
     /// Push a single event. Useful for incremental test builds.
@@ -81,6 +105,58 @@ impl InMemorySpecReader {
                     .unwrap_or(0)
             })
     }
+
+    /// Build a [`SpecSummary`] without populating `children_count`.
+    ///
+    /// Mirrors [`super::sqlite::SqliteSpecReader`]: the recursion-safe entry
+    /// point used by `children_of` to resolve each child's status without
+    /// re-entering itself.
+    fn spec_summary_core(&self, spec: &str) -> Result<Option<SpecSummary>> {
+        Ok(self.spec_view(spec)?.as_ref().map(SpecSummary::from))
+    }
+
+    /// Fold all in-memory `spec.link` events into the children of `parent`.
+    ///
+    /// First-seen reason wins per child.
+    fn link_payloads_for(&self, parent: &str) -> Vec<(String, Option<String>)> {
+        let events = self.snapshot();
+        let mut seen: std::collections::BTreeMap<String, Option<String>> =
+            std::collections::BTreeMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for ev in &events {
+            if ev.event != "spec.link" {
+                continue;
+            }
+            let Some(payload_parent) =
+                ev.payload.get("parent").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if payload_parent != parent {
+                continue;
+            }
+            let Some(child) = ev.payload.get("child").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let reason = ev
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            if !seen.contains_key(child) {
+                seen.insert(child.to_string(), reason);
+                order.push(child.to_string());
+            }
+        }
+        order
+            .into_iter()
+            .map(|name| {
+                let reason = seen.remove(&name).unwrap_or(None);
+                (name, reason)
+            })
+            .collect()
+    }
 }
 
 impl SpecReader for InMemorySpecReader {
@@ -94,14 +170,37 @@ impl SpecReader for InMemorySpecReader {
             .filter(|e| e.spec.as_deref() == Some(spec))
             .cloned()
             .collect();
-        if scoped.is_empty() {
-            return Ok(None);
+        if !scoped.is_empty() {
+            return Ok(Some(project_spec_view(spec, &scoped)));
         }
-        Ok(Some(project_spec_view(spec, &scoped)))
+        // Mirror SqliteSpecReader: when the event log is empty, try the
+        // on-disk spec.md header. Only fires when the test has pinned a root
+        // via `set_spec_md_root` — otherwise the reader stays purely
+        // in-memory and returns `Ok(None)` as before.
+        let maybe_path = self
+            .spec_md_root
+            .read()
+            .expect("spec-md-root lock poisoned")
+            .as_ref()
+            .map(|root| root.join(spec).join("spec.md"));
+        if let Some(path) = maybe_path {
+            let view = project_spec_view_with_header(spec, &scoped, Some(path.as_path()), None);
+            if view.status != SpecStatus::NoEvents
+                || view.phase.is_some()
+                || view.scope.is_some()
+            {
+                return Ok(Some(view));
+            }
+        }
+        Ok(None)
     }
 
     fn spec_summary(&self, spec: &str) -> Result<Option<SpecSummary>> {
-        Ok(self.spec_view(spec)?.as_ref().map(SpecSummary::from))
+        let Some(mut summary) = self.spec_summary_core(spec)? else {
+            return Ok(None);
+        };
+        summary.children_count = u32::try_from(self.children_of(spec)?.len()).unwrap_or(u32::MAX);
+        Ok(Some(summary))
     }
 
     fn list_specs(&self, filter: &SpecFilter) -> Result<Vec<SpecSummary>> {
@@ -112,14 +211,33 @@ impl SpecReader for InMemorySpecReader {
             .map(str::to_lowercase)
             .filter(|s| !s.is_empty());
 
-        // Discover distinct non-orphan specs in the in-memory log.
+        // Discover distinct non-orphan specs in the in-memory log and, in the
+        // same pass, fold `spec.link` events into a parent→child-set map.
+        // Mirrors `link_payloads_for`'s dedupe; one snapshot, not N replays.
         let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut counts: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
         for ev in &events {
             if let Some(spec) = &ev.spec {
                 if spec != "__orphan__" {
                     names.insert(spec.clone());
                 }
             }
+            if ev.event != "spec.link" {
+                continue;
+            }
+            let Some(parent) = ev.payload.get("parent").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(child) = ev.payload.get("child").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            counts
+                .entry(parent.to_string())
+                .or_default()
+                .insert(child.to_string());
         }
 
         let mut summaries: Vec<SpecSummary> = Vec::with_capacity(names.len());
@@ -132,7 +250,10 @@ impl SpecReader for InMemorySpecReader {
             let Some(view) = self.spec_view(&name)? else {
                 continue;
             };
-            let summary: SpecSummary = (&view).into();
+            let mut summary: SpecSummary = (&view).into();
+            summary.children_count = counts
+                .get(&name)
+                .map_or(0, |set| u32::try_from(set.len()).unwrap_or(u32::MAX));
             let keep = match filter.status.as_ref().unwrap_or(&SpecStatusFilter::Any) {
                 SpecStatusFilter::Any => true,
                 SpecStatusFilter::Active => summary.status.is_active(),
@@ -173,6 +294,38 @@ impl SpecReader for InMemorySpecReader {
     fn workspace_summary(&self) -> Result<WorkspaceSummary> {
         let events = self.snapshot();
         Ok(project_workspace(&events, self.now_ms()))
+    }
+
+    fn children_of(&self, parent: &str) -> Result<Vec<SpecChild>> {
+        if parent.is_empty() {
+            return Err(crate::reader::error::ReadError::invalid(
+                "parent spec name cannot be empty",
+            ));
+        }
+        let links = self.link_payloads_for(parent);
+        let mut children: Vec<SpecChild> = Vec::with_capacity(links.len());
+        for (child, reason) in links {
+            let (status, started_at, completed_at) = match self.spec_summary_core(&child)? {
+                Some(sum) => (
+                    sum.status,
+                    sum.started_at.clone(),
+                    if sum.status.is_terminal() {
+                        sum.last_event_at.clone()
+                    } else {
+                        None
+                    },
+                ),
+                None => (SpecStatus::NoEvents, None, None),
+            };
+            children.push(SpecChild {
+                spec: child,
+                status,
+                started_at,
+                completed_at,
+                reason,
+            });
+        }
+        Ok(children)
     }
 }
 

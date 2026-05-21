@@ -20,22 +20,87 @@
 //!
 //! Events with `spec != Some(spec_name)` are filtered out before the fold —
 //! callers that pre-filtered (e.g. `store.query(Some(name))`) pay zero cost.
+//!
+//! ## Header fallback (Wave 1, 2026-05-21)
+//!
+//! When the event stream is empty and a `spec.md` path is supplied, the fold
+//! parses the `### Status:` / `### Phase:` / `### Scope:` / `### Lang:` lines
+//! from the header and seeds the [`SpecView`] from them. This is the
+//! cross-collaborator path: the SQLite event log is per-machine and never
+//! versioned, but the `spec.md` header *is* checked into git. A teammate who
+//! pulls the repo sees a populated dashboard without re-emitting any events.
+//!
+//! The fallback is opt-in (`spec_md_path = None` disables it). Timestamps stay
+//! `None` because the header alone cannot prove when work started or last
+//! happened.
 
-use crate::model::view::{Scope, SpecStatus, SpecView};
+use crate::model::view::{Phase, Scope, SpecStatus, SpecView};
 use crate::model::event::{
-    HarnessEvent, PipelineScopePayload, PipelineTaskCompletePayload, PipelineWaveCompletePayload,
+    Actor, ActorKind, HarnessEvent, PipelineScopePayload, PipelineTaskCompletePayload,
+    PipelineWaveCompletePayload, SCHEMA_VERSION,
 };
+use crate::store::event_store::EventSink;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use super::{extract_to_phase, iso_diff_ms};
 
 /// Fold `events` into a [`SpecView`] for `spec_name`.
 ///
-/// Events that don't belong to `spec_name` are skipped. Order matters: the
-/// projection assumes chronological order (oldest first), which matches
-/// `SqliteEventStore::query` semantics.
+/// Thin wrapper around [`project_spec_view_with_header`] that disables the
+/// header fallback. Kept for callers (workspace projection, tests) that have
+/// no `spec.md` path to resolve and never want the synthetic-emit side effect.
 #[must_use]
 pub fn project_spec_view(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
+    project_spec_view_with_header(spec_name, events, None, None)
+}
+
+/// Fold `events` into a [`SpecView`] for `spec_name`, with an optional
+/// `spec.md` header fallback when the event stream is empty.
+///
+/// `spec_md_path` is the on-disk path to the spec's `spec.md`. When supplied
+/// **and** `events` is empty, the fold reads the file, parses the `###
+/// Status:`, `### Phase:`, `### Scope:`, `### Lang:` header lines, and seeds
+/// the view from them. `started_at` and `last_event_at` stay `None` — the
+/// header alone is not evidence of *when* work happened.
+///
+/// `emit_sink`, when supplied, receives a single synthetic
+/// `pipeline.status` event when the header fallback fires with a parseable
+/// status. This is the Wave 5 backfill hook: the next read becomes O(1)
+/// because the event log no longer needs a re-parse. The emit is fail-open;
+/// a sink error is swallowed so the projection still returns a usable view.
+///
+/// When `events` is non-empty the path and sink are ignored — the event log
+/// is authoritative.
+#[must_use]
+pub fn project_spec_view_with_header(
+    spec_name: &str,
+    events: &[HarnessEvent],
+    spec_md_path: Option<&Path>,
+    emit_sink: Option<&dyn EventSink>,
+) -> SpecView {
+    // Event stream wins whenever it has anything for this spec. Filter first
+    // so a stream full of other-spec noise still triggers the fallback.
+    let scoped_count = events
+        .iter()
+        .filter(|e| e.spec.as_deref() == Some(spec_name))
+        .count();
+    if scoped_count == 0 {
+        if let Some(path) = spec_md_path {
+            if let Some(view) = view_from_header(spec_name, path, emit_sink) {
+                return view;
+            }
+        }
+        return SpecView::empty(spec_name);
+    }
+    project_from_events(spec_name, events)
+}
+
+/// Core event-stream fold — assumes `events` has at least one row scoped to
+/// `spec_name`. Extracted from [`project_spec_view_with_header`] so the
+/// fallback path can stay readable.
+#[must_use]
+fn project_from_events(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
     let mut view = SpecView::empty(spec_name);
     let mut files: BTreeSet<String> = BTreeSet::new();
 
@@ -55,7 +120,15 @@ pub fn project_spec_view(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
             "pipeline.task.complete" => apply_task_complete(ev, &mut files),
             "pipeline.wave.complete" => apply_wave_complete(&mut view, ev),
             "pipeline.wave.failed" => apply_wave_failed(&mut view, ev),
-            "pipeline.complete" => view.status = SpecStatus::Completed,
+            // `pipeline.complete` is a temporal audit marker emitted by
+            // `complete_spec::mark_followup` alongside `pipeline.status:
+            // closed-followup`. Treating it as a status transition to
+            // `Completed` would clobber the ClosedFollowup state set by the
+            // paired status event and bury follow-up specs in the wrong
+            // dashboard bucket. The authoritative status source is
+            // `pipeline.status` — `pipeline.complete` only carries `closedAt`
+            // and the affected files list. Leave the status alone here.
+            "pipeline.complete" => {}
             "qa.result" => apply_qa_result(&mut view, ev),
             "tool.use" => view.tools_used = view.tools_used.saturating_add(1),
             "agent.start" => view.agents_dispatched = view.agents_dispatched.saturating_add(1),
@@ -210,11 +283,162 @@ fn apply_qa_result(view: &mut SpecView, ev: &HarnessEvent) {
     }
 }
 
+/// Parse the spec.md header (the first contiguous block of `### Key: value`
+/// lines after the leading `# Title`) and build a [`SpecView`] from whatever
+/// values are recognised. Returns `None` when the file is missing or every
+/// header field is unrecognised — the caller falls back to [`SpecView::empty`].
+///
+/// When a status is parsed and `emit_sink` is provided, a single synthetic
+/// `pipeline.status` event is appended. Failures are swallowed: telemetry is
+/// never load-bearing.
+fn view_from_header(
+    spec_name: &str,
+    path: &Path,
+    emit_sink: Option<&dyn EventSink>,
+) -> Option<SpecView> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let header = parse_header_fields(&raw);
+    if header.is_empty() {
+        return None;
+    }
+
+    let mut view = SpecView::empty(spec_name);
+
+    if let Some(status_raw) = header.get("status") {
+        if let Some(status) = SpecStatus::parse(status_raw) {
+            view.status = status;
+            // Opt-in synthetic emit. Backfills the local SQLite log so the
+            // next read is O(1) — see Wave 5 in
+            // 2026-05-21-flatten-spec-layout-and-multi-collab.
+            if let Some(sink) = emit_sink {
+                let synthetic = HarnessEvent {
+                    v: SCHEMA_VERSION,
+                    ts: header_emit_timestamp(),
+                    session_id: "header-fallback".to_string(),
+                    wave: 0,
+                    actor: Actor {
+                        kind: ActorKind::Hook,
+                        id: Some("card-projection".to_string()),
+                        actor_type: None,
+                    },
+                    event: "pipeline.status".to_string(),
+                    payload: serde_json::json!({ "from": null, "to": status_raw }),
+                    spec: Some(spec_name.to_string()),
+                };
+                // Fail-open: a failing sink must not break the projection.
+                let _ = sink.append(&synthetic);
+            }
+        }
+    }
+    if let Some(phase_raw) = header.get("phase") {
+        if let Some(phase) = Phase::parse(phase_raw) {
+            view.phase = Some(phase);
+        }
+    }
+    if let Some(scope_raw) = header.get("scope") {
+        if let Some(scope) = Scope::parse(scope_raw) {
+            view.scope = Some(scope);
+        }
+    }
+    if let Some(lang_raw) = header.get("lang") {
+        let trimmed = lang_raw.trim();
+        if !trimmed.is_empty() {
+            view.lang = Some(trimmed.to_string());
+        }
+    }
+
+    Some(view)
+}
+
+/// Walk the file and collect `### Key: value` pairs from the leading header
+/// block. Stops at the first non-header content (a `##` line, plain prose,
+/// fenced block, etc.) so a `### …` heading deep inside the PRD is never
+/// mistaken for status metadata.
+///
+/// Keys are lowercased so the caller can look them up without worrying about
+/// the original case (`### Status:` vs `### status:`).
+fn parse_header_fields(raw: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut seen_first_header_line = false;
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        // Skip the title and blank prelude before the first `### Key:` line.
+        if !seen_first_header_line {
+            if trimmed.starts_with("# ") || trimmed.is_empty() {
+                continue;
+            }
+            // Any `## Section` heading or non-empty prose before a `### Key:`
+            // line means the spec has no header block at all.
+            if trimmed.starts_with("## ") || !trimmed.starts_with("### ") {
+                if trimmed.starts_with("### ") {
+                    // Fall through to the parse arm below.
+                } else {
+                    return out;
+                }
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            if let Some((key, value)) = rest.split_once(':') {
+                seen_first_header_line = true;
+                out.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                continue;
+            }
+            // A `### …` line without a colon ends the header block.
+            if seen_first_header_line {
+                break;
+            }
+            continue;
+        }
+        // First non-header line after we entered the header block → stop.
+        if seen_first_header_line {
+            break;
+        }
+    }
+    out
+}
+
+/// Wall-clock now in ISO-8601 second precision for the synthetic emit.
+///
+/// Falls back to the Unix epoch (`1970-01-01T00:00:00Z`) on the rare
+/// clock-error case so the emit still passes the store's schema validation.
+/// Mirrors the formatting helper in `economy::sources::time::now_iso` — kept
+/// inline because that helper is `pub(super)` to its module.
+#[allow(clippy::cast_possible_truncation)]
+fn header_emit_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Howard Hinnant's days-from-civil, inverted. Same algorithm used in
+    // `economy::sources::time` — duplicated rather than re-exported because
+    // the only other consumer keeps the helper module-private.
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    let h = (tod / 3600) as u32;
+    let mi = ((tod % 3600) / 60) as u32;
+    let s = (tod % 60) as u32;
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::view::Phase;
-    use crate::model::event::{Actor, ActorKind, SCHEMA_VERSION};
+    use crate::store::event_store::EventSink;
+    use crate::error::Result as CoreResult;
+    use std::cell::RefCell;
+    use std::io::Write;
     use serde_json::json;
 
     /// Build a minimal event with given kind and payload, scoped to `spec`.
@@ -420,7 +644,10 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_complete_transitions_to_completed_status() {
+    fn pipeline_complete_does_not_clobber_explicit_status() {
+        // `pipeline.complete` is a temporal audit marker, not a status
+        // transition. With only this event the status stays at NoEvents —
+        // the authoritative source is `pipeline.status`.
         let events = vec![event(
             "auth",
             "2026-05-20T10:00:00Z",
@@ -428,6 +655,58 @@ mod tests {
             json!({ "closedAt": "2026-05-20T10:00:00Z" }),
         )];
         let view = project_spec_view("auth", &events);
+        assert_eq!(view.status, SpecStatus::NoEvents);
+    }
+
+    #[test]
+    fn mark_followup_pair_leaves_status_at_closed_followup() {
+        // Mirrors `complete_spec::mark_followup`: pipeline.status:
+        // closed-followup followed by pipeline.complete. The status must
+        // remain ClosedFollowup so the dashboard's Follow-up bucket sees it.
+        let events = vec![
+            event(
+                "feature-x",
+                "2026-05-20T10:00:00Z",
+                "pipeline.status",
+                json!({ "from": "implementing", "to": "closed-followup" }),
+            ),
+            event(
+                "feature-x",
+                "2026-05-20T10:00:00.500Z",
+                "pipeline.complete",
+                json!({ "closedAt": "2026-05-20T10:00:00.500Z", "affectedFiles": [] }),
+            ),
+        ];
+        let view = project_spec_view("feature-x", &events);
+        assert_eq!(view.status, SpecStatus::ClosedFollowup);
+    }
+
+    #[test]
+    fn pipeline_status_completed_after_followup_archives_to_completed() {
+        // Stage-2 archive path: `pipeline.complete` lands first (during
+        // mark_followup), then `pipeline.status: completed` arrives when
+        // `archive()` runs. The later status event wins, as it should.
+        let events = vec![
+            event(
+                "feature-x",
+                "2026-05-20T10:00:00Z",
+                "pipeline.status",
+                json!({ "to": "closed-followup" }),
+            ),
+            event(
+                "feature-x",
+                "2026-05-20T10:00:00.500Z",
+                "pipeline.complete",
+                json!({ "closedAt": "2026-05-20T10:00:00.500Z" }),
+            ),
+            event(
+                "feature-x",
+                "2026-05-21T10:00:00Z",
+                "pipeline.status",
+                json!({ "to": "completed" }),
+            ),
+        ];
+        let view = project_spec_view("feature-x", &events);
         assert_eq!(view.status, SpecStatus::Completed);
     }
 
@@ -442,5 +721,141 @@ mod tests {
         let view = project_spec_view("auth", &events);
         assert_eq!(view.status, SpecStatus::WaveFailed);
         assert_eq!(view.failed_waves, vec![3]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Header fallback (Wave 1 of 2026-05-21-flatten-spec-layout-and-multi-collab)
+    // ---------------------------------------------------------------------------
+
+    /// In-memory [`EventSink`] for the synthetic-emit assertions.
+    struct CapturingSink {
+        collected: RefCell<Vec<HarnessEvent>>,
+    }
+
+    impl CapturingSink {
+        fn new() -> Self {
+            Self {
+                collected: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl EventSink for CapturingSink {
+        fn append(&self, ev: &HarnessEvent) -> CoreResult<()> {
+            self.collected.borrow_mut().push(ev.clone());
+            Ok(())
+        }
+    }
+
+    /// Write `body` to `path.join(file_name)` and return the full path.
+    fn write_spec_md(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let path = dir.join("spec.md");
+        let mut f = std::fs::File::create(&path).expect("temp spec.md create");
+        f.write_all(body.as_bytes()).expect("temp spec.md write");
+        path
+    }
+
+    #[test]
+    fn project_spec_view_falls_back_to_header_when_events_empty() {
+        // No events at all — the header is the only signal.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spec_md(
+            tmp.path(),
+            "# Achatamento\n\n### Status: completed\n### Phase: close\n### Scope: full\n### Lang: pt\n\n## Resumo\n…",
+        );
+        let view = project_spec_view_with_header("flatten", &[], Some(path.as_path()), None);
+        assert_eq!(view.spec, "flatten");
+        assert_eq!(view.status, SpecStatus::Completed);
+        assert_eq!(view.phase, Some(Phase::Close));
+        assert_eq!(view.scope, Some(Scope::Full));
+        assert_eq!(view.lang.as_deref(), Some("pt"));
+        // Header alone cannot prove WHEN work happened.
+        assert!(view.started_at.is_none());
+        assert!(view.last_event_at.is_none());
+    }
+
+    #[test]
+    fn project_spec_view_prefers_events_over_header() {
+        // Header says `completed` but the event log says `implementing` — the
+        // event log wins because it is the per-machine source of truth.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spec_md(
+            tmp.path(),
+            "# Auth\n\n### Status: completed\n### Phase: close\n",
+        );
+        let events = vec![event(
+            "auth",
+            "2026-05-20T10:00:00Z",
+            "pipeline.status",
+            json!({ "to": "implementing" }),
+        )];
+        let view = project_spec_view_with_header("auth", &events, Some(path.as_path()), None);
+        assert_eq!(view.status, SpecStatus::Implementing);
+        // Timestamps come from the event row, not the header.
+        assert_eq!(view.started_at.as_deref(), Some("2026-05-20T10:00:00Z"));
+    }
+
+    #[test]
+    fn project_spec_view_handles_missing_header_file() {
+        // Events empty AND the supplied `spec.md` path does not exist → the
+        // fallback degrades to the empty view rather than panicking.
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist").join("spec.md");
+        let view =
+            project_spec_view_with_header("ghost", &[], Some(missing.as_path()), None);
+        assert_eq!(view.spec, "ghost");
+        assert_eq!(view.status, SpecStatus::NoEvents);
+        assert!(view.phase.is_none());
+    }
+
+    #[test]
+    fn header_fallback_emits_synthetic_pipeline_status_when_sink_supplied() {
+        // Wave 5 backfill hook: the optional sink receives one synthetic
+        // event so the next read can fold from SQLite directly.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spec_md(
+            tmp.path(),
+            "# X\n\n### Status: completed\n",
+        );
+        let sink = CapturingSink::new();
+        let view =
+            project_spec_view_with_header("x", &[], Some(path.as_path()), Some(&sink));
+        assert_eq!(view.status, SpecStatus::Completed);
+        let captured = sink.collected.borrow();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].event, "pipeline.status");
+        assert_eq!(captured[0].spec.as_deref(), Some("x"));
+        assert_eq!(
+            captured[0]
+                .payload
+                .get("to")
+                .and_then(serde_json::Value::as_str),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn header_fallback_skips_synthetic_emit_when_events_present() {
+        // The sink must NOT be called when the event log already wins — only
+        // the fallback path may emit.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spec_md(tmp.path(), "# X\n\n### Status: completed\n");
+        let sink = CapturingSink::new();
+        let events = vec![event(
+            "x",
+            "2026-05-20T10:00:00Z",
+            "pipeline.status",
+            json!({ "to": "implementing" }),
+        )];
+        let view = project_spec_view_with_header("x", &events, Some(path.as_path()), Some(&sink));
+        assert_eq!(view.status, SpecStatus::Implementing);
+        assert!(sink.collected.borrow().is_empty(), "no synthetic emit on event-log win");
+    }
+
+    #[test]
+    fn header_fallback_returns_empty_when_path_is_none() {
+        // The opt-in shape: without a path the fallback is fully disabled.
+        let view = project_spec_view_with_header("nobody", &[], None, None);
+        assert_eq!(view.status, SpecStatus::NoEvents);
     }
 }

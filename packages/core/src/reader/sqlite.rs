@@ -7,11 +7,12 @@
 
 use crate::reader::error::Result;
 use crate::model::view::{
-    QualityRollup, SpecFilter, SpecStatusFilter, SpecSummary, SpecView, TimeWindow, TimelineNode,
-    WaveView, WorkspaceSummary,
+    QualityRollup, SpecChild, SpecFilter, SpecStatusFilter, SpecStatus, SpecSummary, SpecView,
+    TimeWindow, TimelineNode, WaveView, WorkspaceSummary,
 };
 use crate::projection::{
-    project_quality, project_spec_view, project_timeline, project_waves, project_workspace,
+    project_quality, project_spec_view, project_spec_view_with_header, project_timeline,
+    project_waves, project_workspace,
 };
 use crate::reader::SpecReader;
 use crate::store::sqlite_store::SqliteEventStore;
@@ -71,6 +72,82 @@ impl SqliteSpecReader {
         specs.retain(|s| s != "__orphan__");
         Ok(specs)
     }
+
+    /// Build a [`SpecSummary`] without populating `children_count`.
+    ///
+    /// [`SpecReader::children_of`] resolves each child's status by calling
+    /// back into the reader — and the public [`Self::spec_summary`] populates
+    /// `children_count` by calling `children_of`. Sharing a single entry
+    /// point would recurse forever when a child has its own link events. This
+    /// internal variant breaks the cycle: it produces the lean summary
+    /// directly from the rich view and leaves `children_count = 0`.
+    fn spec_summary_core(&self, spec: &str) -> Result<Option<SpecSummary>> {
+        Ok(self.spec_view(spec)?.as_ref().map(SpecSummary::from))
+    }
+
+    /// Fold all `spec.link` events into the children of `parent`.
+    ///
+    /// Returns one `(child_name, reason)` tuple per distinct child, with the
+    /// first-seen reason winning when the same pair is linked more than once.
+    /// Reads via [`SqliteEventStore::replay`] and filters in Rust — keeps the
+    /// store's public surface untouched at the cost of a full event scan,
+    /// which is fine for the harness's event volumes.
+    fn link_payloads_for(&self, parent: &str) -> Result<Vec<(String, Option<String>)>> {
+        let events = self.store()?.replay()?;
+        let mut seen: std::collections::BTreeMap<String, Option<String>> =
+            std::collections::BTreeMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for ev in &events {
+            if ev.event != "spec.link" {
+                continue;
+            }
+            let Some(payload_parent) =
+                ev.payload.get("parent").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if payload_parent != parent {
+                continue;
+            }
+            let Some(child) = ev.payload.get("child").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let reason = ev
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            if !seen.contains_key(child) {
+                seen.insert(child.to_string(), reason);
+                order.push(child.to_string());
+            }
+        }
+        Ok(order
+            .into_iter()
+            .map(|name| {
+                let reason = seen.remove(&name).unwrap_or(None);
+                (name, reason)
+            })
+            .collect())
+    }
+}
+
+impl SqliteSpecReader {
+    /// Resolve the on-disk `spec.md` path for `spec` under this project.
+    ///
+    /// The path is flat — no `active/`, `completed/`, or `superseded/`
+    /// sub-buckets — because Wave 2 / Wave 5 of
+    /// `2026-05-21-flatten-spec-layout-and-multi-collab` removes those buckets
+    /// from the repo. Returns the path unconditionally; the projection itself
+    /// fails open (`std::fs::read_to_string` → `None`) when the file is missing.
+    fn spec_md_path(&self, spec: &str) -> std::path::PathBuf {
+        self.project_dir
+            .join(".claude")
+            .join("spec")
+            .join(spec)
+            .join("spec.md")
+    }
 }
 
 impl SpecReader for SqliteSpecReader {
@@ -79,14 +156,33 @@ impl SpecReader for SqliteSpecReader {
             return Err(crate::reader::error::ReadError::invalid("spec name cannot be empty"));
         }
         let events = self.store()?.query(Some(spec))?;
-        if events.is_empty() {
+        if !events.is_empty() {
+            return Ok(Some(project_spec_view(spec, &events)));
+        }
+        // Empty event log: fall back to the spec.md header (Wave 1 of
+        // 2026-05-21-flatten-spec-layout-and-multi-collab). A teammate who
+        // pulled the repo sees the canonical status without re-emitting
+        // events. The synthetic-emit hook stays off here — the dashboard
+        // only reads; the backfill path is driven by `mustard-rt run
+        // rebuild-specs` (Wave 5).
+        let path = self.spec_md_path(spec);
+        let view = project_spec_view_with_header(spec, &events, Some(path.as_path()), None);
+        if view.status == SpecStatus::NoEvents && view.phase.is_none() && view.scope.is_none() {
+            // Header was missing or empty — the spec is genuinely unknown.
             return Ok(None);
         }
-        Ok(Some(project_spec_view(spec, &events)))
+        Ok(Some(view))
     }
 
     fn spec_summary(&self, spec: &str) -> Result<Option<SpecSummary>> {
-        Ok(self.spec_view(spec)?.as_ref().map(SpecSummary::from))
+        let Some(mut summary) = self.spec_summary_core(spec)? else {
+            return Ok(None);
+        };
+        // Populate the sub-spec count by replaying the link log. `children_of`
+        // routes through `spec_summary_core` for each child, so this stays
+        // recursion-free.
+        summary.children_count = u32::try_from(self.children_of(spec)?.len()).unwrap_or(u32::MAX);
+        Ok(Some(summary))
     }
 
     fn list_specs(&self, filter: &SpecFilter) -> Result<Vec<SpecSummary>> {
@@ -96,6 +192,31 @@ impl SpecReader for SqliteSpecReader {
             .as_deref()
             .map(str::to_lowercase)
             .filter(|s| !s.is_empty());
+
+        // Hoist the link-event replay out of the per-spec loop: one full scan
+        // builds a parent→child-set map, mirroring the dedupe semantics of
+        // `link_payloads_for`. Avoids O(N) replays for N specs.
+        let events = self.store()?.replay()?;
+        let mut counts: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for ev in &events {
+            if ev.event != "spec.link" {
+                continue;
+            }
+            let Some(parent) = ev.payload.get("parent").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(child) = ev.payload.get("child").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            counts
+                .entry(parent.to_string())
+                .or_default()
+                .insert(child.to_string());
+        }
+
         let mut summaries: Vec<SpecSummary> = Vec::with_capacity(names.len());
         for name in names {
             if let Some(n) = &needle {
@@ -106,7 +227,10 @@ impl SpecReader for SqliteSpecReader {
             let Some(view) = self.spec_view(&name)? else {
                 continue;
             };
-            let summary: SpecSummary = (&view).into();
+            let mut summary: SpecSummary = (&view).into();
+            summary.children_count = counts
+                .get(&name)
+                .map_or(0, |set| u32::try_from(set.len()).unwrap_or(u32::MAX));
             // Filter by status bucket if requested.
             let keep = match filter.status.as_ref().unwrap_or(&SpecStatusFilter::Any) {
                 SpecStatusFilter::Any => true,
@@ -150,6 +274,40 @@ impl SpecReader for SqliteSpecReader {
         let events = self.store()?.replay()?;
         let now_ms = now_epoch_ms();
         Ok(project_workspace(&events, now_ms))
+    }
+
+    fn children_of(&self, parent: &str) -> Result<Vec<SpecChild>> {
+        if parent.is_empty() {
+            return Err(crate::reader::error::ReadError::invalid(
+                "parent spec name cannot be empty",
+            ));
+        }
+        let links = self.link_payloads_for(parent)?;
+        let mut children: Vec<SpecChild> = Vec::with_capacity(links.len());
+        for (child, reason) in links {
+            // Look up the child's own status; `spec_summary_core` returns the
+            // base summary without re-entering `children_of`.
+            let (status, started_at, completed_at) = match self.spec_summary_core(&child)? {
+                Some(sum) => (
+                    sum.status,
+                    sum.started_at.clone(),
+                    if sum.status.is_terminal() {
+                        sum.last_event_at.clone()
+                    } else {
+                        None
+                    },
+                ),
+                None => (SpecStatus::NoEvents, None, None),
+            };
+            children.push(SpecChild {
+                spec: child,
+                status,
+                started_at,
+                completed_at,
+                reason,
+            });
+        }
+        Ok(children)
     }
 }
 

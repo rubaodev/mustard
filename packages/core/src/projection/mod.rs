@@ -15,7 +15,7 @@ mod timeline;
 mod waves;
 mod workspace;
 
-pub use card::project_spec_view;
+pub use card::{project_spec_view, project_spec_view_with_header};
 pub use quality::project_quality;
 pub use timeline::project_timeline;
 pub use waves::project_waves;
