@@ -20,7 +20,7 @@ This is Wave 10 of the Mustard pipeline — the formal Dev/QA contract.
 ### Step 1 — Identify spec
 
 If `--spec <name>` provided: use that spec name.
-Otherwise: Glob `.claude/spec/active/*/spec.md` and pick the most recently modified.
+Otherwise: Glob `.claude/spec/*/spec.md`, filter by `Status:` header (skip `completed`/`cancelled`), and pick the most recently modified.
 
 ### Step 2 — Validate spec has AC
 
@@ -65,7 +65,22 @@ If `mustard-rt` not found: dispatch Task(general-purpose) with QA agent context 
 - Warn user: "No Acceptance Criteria in spec — QA skipped. Consider adding AC before CLOSE."
 - Pipeline may proceed (QA is advisory when no AC exists).
 
-### Step 6 — CLOSE check
+### Step 6 — Tactical Fix Discovery após QA Pass (advisory)
+
+Quando o overall é `pass`, antes de avançar para o CLOSE: olhar o retorno do QA agent (ou a saída do `qa-run` quando o agent gerou notas adjacentes) por uma seção `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. Cada item é um fix tático que passou nos AC mas merece sub-spec própria — critérios de qualificação em `pipeline-config.md § Tactical Fix Discovery` (≤100 LOC, sem mudança de contrato público, sem decisão pendente, sem nova dependência).
+
+Para cada candidato, o orquestrador imprime uma linha de sugestão:
+
+```
+Tactical fix candidate (post-QA): <descrição>
+Run: /mustard:tactical-fix <parent-spec> "<descrição>"
+```
+
+**Advisory.** NÃO bloqueia o CLOSE, NÃO força fix-loop, NÃO segura a transição de fase. O user decide se cria a sub-spec antes do CLOSE, depois, ou nunca. Se não há seção de candidatos no retorno, pular silenciosamente.
+
+QA `fail` mantém o fluxo do Step 5 (não chega aqui). Tactical-fix é para *fixes adjacentes* descobertos durante QA — nunca para um AC que falhou.
+
+### Step 7 — CLOSE check
 
 Before proceeding to CLOSE (either here or in `/mustard:close`), close-gate will verify `qa.result` event with `overall=pass` exists in harness log.
 

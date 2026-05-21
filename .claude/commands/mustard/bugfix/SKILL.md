@@ -14,22 +14,22 @@ Autonomous pipeline to diagnose and fix bugs. Zero context-switch — never ask 
 
 ### Spec Hygiene (automatic, before ANALYZE)
 
-Before starting a new pipeline, audit specs in `active/`:
+Before starting a new pipeline, audit specs in `.claude/spec/`:
 
-1. **Scan** all specs in `.claude/spec/active/*/spec.md`
-2. **For each spec**, read the full header and checklist to extract `Status:`, `Phase:`, and checkbox completion (`[x]` vs `[ ]`)
-3. **Verify completed/cancelled specs before moving:**
+1. **Scan** all specs in `.claude/spec/*/spec.md`
+2. **For each spec**, read the full header and checklist to extract `Status:`, `Phase:`, and checkbox completion (`[x]` vs `[ ]`). Filter by `Status:` (and/or SQLite `pipeline_state_for_spec`) — specs already `Status: completed` are skipped.
+3. **Verify completed/cancelled specs:**
    - If `Status: completed` or `Status: cancelled`:
      - **Analyze first**: check that ALL checklist items are `[x]`, no `## Concerns` with unresolved `BLOCKED` items, and build/type-check references are satisfied
-     - If analysis confirms done → move from `.claude/spec/active/{name}/` to `.claude/spec/completed/{name}/`, delete `.claude/.pipeline-states/{name}.json` and `.diff.md` if they exist, log: `[HYGIENE] Verified and moved {name} → completed/`
+     - If analysis confirms done → flip status via `mustard-rt run complete-spec {name} --archive`, delete the `.diff.md` if it exists (pipeline phase is derived from `pipeline.phase` events in SQLite — there is no JSON state file to delete; no filesystem move happens, the spec dir stays at `.claude/spec/{name}/`), log: `[HYGIENE] Verified and archived {name}`
      - If analysis finds incomplete items → update `Status: implementing`, log: `[HYGIENE] {name} marked completed but has {N} unchecked items — reverted to implementing`, then treat as in-progress (step 4)
 4. **In-progress specs** (`Status: draft` or `Status: implementing`):
    - Use `AskUserQuestion`: _"Found spec in progress: **{name}** (Status: {status}, Phase: {phase}, {done}/{total} tasks done). Do you want to continue this spec before starting a new one?"_
    - If **yes** → stop, suggest `/resume` to continue the existing spec
-   - If **no** → proceed to ANALYZE for the new pipeline (existing spec stays in `active/`)
+   - If **no** → proceed to ANALYZE for the new pipeline (existing spec stays in `.claude/spec/{name}/`)
 5. **No active specs** → proceed to ANALYZE normally
 
-This step is silent when there's nothing to audit — no output if `active/` is empty.
+This step is silent when there's nothing to audit — no output if no active specs are found.
 
 ### ANALYZE (diagnose + assess)
 
@@ -80,7 +80,7 @@ For Full Path, keep the root-cause cache in-memory during the session (the retry
    - 3+ files, unclear impact, cross-layer → **Full Path** (brief spec via PLAN)
 
 **Fast Path:** Go directly to EXECUTE. No spec, no approval gate (Zero Context-Switch Protocol). If you want to review the fix plan before EXECUTE, force Full Path by listing >5 files in the ANALYZE return.
-**Full Path:** Write brief spec in `.claude/spec/active/{date}-{name}/spec.md`.
+**Full Path:** Write brief spec in `.claude/spec/{date}-{name}/spec.md`.
 
 **Resolve spec language first** (cascade, stop at first hit):
 1. existing `### Lang: pt|en` in any spec.md being reused → use it;

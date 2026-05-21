@@ -90,6 +90,23 @@ Then present the review results as returned by the skill/agent.
 
 ---
 
+## Step 5 — Tactical Fix Discovery (advisory)
+
+After the verdict is presented (APPROVED or REJECTED), scan the review agent's return for a `## Tactical Fix Candidates` (or `## Candidatos a Tactical Fix`) section. Each entry there is a small adjacent fix the reviewer flagged — by the qualification criteria in `pipeline-config.md § Tactical Fix Discovery` (≤100 LOC, no public contract change, no pending design decision, no new dependency).
+
+For each candidate, the orchestrator (parent context) prints a suggestion line of the form:
+
+```
+Tactical fix candidate: <descrição>
+Run: /mustard:tactical-fix <parent-spec> "<descrição>"
+```
+
+**This step is advisory.** It does NOT block APPROVED, does NOT force a fix-loop, does NOT keep the pipeline open. The user decides whether to create the sub-spec(s) now, later, or never. A REJECTED verdict still routes through the normal fix-loop (see `resume/SKILL.md § Fix Loop Dispatch Protocol`); tactical-fix is for *adjacent* findings, not for the REJECTED root cause.
+
+If the review agent returned no such section, skip this step silently.
+
+---
+
 ## Provider Support
 
 | Provider | Auto-detect | Manual URL |

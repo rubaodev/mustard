@@ -42,7 +42,7 @@ When in doubt → `AskUserQuestion`: "Which layers?"
 
 ### PLAN Phase (collapses old SPEC)
 
-Create `.claude/spec/active/{date}-{name}/spec.md`:
+Create `.claude/spec/{date}-{name}/spec.md`:
 
 - **Full scope:** Summary, Entity Info, Files, Tasks (by wave), Dependencies. Header: `Scope: full`.
 - **Light scope:** Summary (1-2 lines), Checklist (tasks by agent, no waves). Header: `Scope: light`.
@@ -106,7 +106,7 @@ APPROVED (zero CRITICAL) → CLOSE. REJECTED (any CRITICAL) → fix agent dispat
 
 1. `mustard-rt run sync-registry`
 2. Update spec: `Status: completed`, `Phase: CLOSE`. Checklist must already be fully `[x]` from EXECUTE — `close-gate.js` blocks CLOSE if any `[ ]` remains in the Checklist section.
-3. Move spec to `.claude/spec/completed/`
+3. Update spec header via `emit-pipeline --kind pipeline.status` (header sync is automatic; no fs move)
 4. **Delete** `.claude/.pipeline-states/{spec-name}.json`
 5. Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══`
 
