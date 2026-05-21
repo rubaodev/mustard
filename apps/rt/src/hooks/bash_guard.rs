@@ -26,18 +26,56 @@
 
 use crate::run::current_spec;
 use mustard_core::config::Mode;
+use mustard_core::economy::estimator;
+use mustard_core::economy::writer;
+use mustard_core::economy::{
+    AgentId, ProjectPath, SavingsRecord, SavingsSource, SpecId, WaveId,
+};
 use mustard_core::error::Error;
 use mustard_core::process::rtk_command;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::json;
-use std::path::Path;
+use rusqlite::Connection;
+use serde_json::{Map, json};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::util::{format_gate_message, now_iso8601};
+
+/// Resolve the SQLite store path for `project_dir`, mirroring
+/// [`SqliteEventStore::for_project`]'s private resolver. The env override
+/// `MUSTARD_DB_PATH` wins; otherwise `{project_dir}/.claude/.harness/mustard.db`.
+///
+/// The economy writer functions take a borrowed [`Connection`]; opening one
+/// here avoids extending `mustard-core`'s public surface for W2 and keeps the
+/// hook fail-open even if the store cannot be created.
+fn economy_db_path(project_dir: &str) -> PathBuf {
+    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    Path::new(project_dir)
+        .join(".claude")
+        .join(".harness")
+        .join("mustard.db")
+}
+
+/// Open a raw [`Connection`] to the harness DB for `project_dir`.
+///
+/// Goes through [`SqliteEventStore::for_project`] first so the schema +
+/// migrations are applied (the v3 migration installs the `savings_records`
+/// and `context_cost_frames` tables W1 wrote). Returns `None` on any error —
+/// callers must treat economy emission as best-effort and never block on it.
+fn open_economy_conn(project_dir: &str) -> Option<Connection> {
+    // Ensure schema is present (idempotent — re-opening only re-applies
+    // `CREATE IF NOT EXISTS` statements).
+    let _ = SqliteEventStore::for_project(project_dir).ok()?;
+    Connection::open(economy_db_path(project_dir)).ok()
+}
 
 /// The consolidated Bash-tool enforcement module.
 pub struct BashGuard;
@@ -626,7 +664,9 @@ fn rtk_rewrite_with<F: FnOnce(&str) -> Option<String>>(
     }
 
     // Short-circuit: already wrapped — never double-prefix, never deny.
-    if cmd.split_whitespace().next().is_some_and(|t| t == "rtk") {
+    // Any segment of a pipeline/chain that starts with `rtk` counts as
+    // wrapped — the user has demonstrated rtk awareness.
+    if has_rtk_in_any_segment(cmd) {
         return None;
     }
 
@@ -816,6 +856,23 @@ fn blanket_prefix(cmd: &str) -> Option<String> {
         let env_part = trimmed[..trimmed.len() - after_env.len()].trim_end();
         Some(format!("{env_part} rtk {after_env}"))
     }
+}
+
+/// Returns `true` when any `&&`/`||`/`;`/`|` segment of `cmd` has `rtk`
+/// as its first executable token (after stripping `VAR=value` env
+/// assignments).
+///
+/// Used as the "already wrapped" short-circuit for the rtk gate: when
+/// the user has piped to or chained an `rtk`-prefixed stage (e.g.
+/// `echo '{...}' | rtk mustard-rt run memory decision`), neither
+/// denying nor blanket-prefixing is correct — the user has already
+/// demonstrated rtk awareness and chosen where the wrap applies.
+fn has_rtk_in_any_segment(cmd: &str) -> bool {
+    cmd.split(|c| c == '&' || c == '|' || c == ';')
+        .any(|seg| {
+            let after_env = strip_env_prefix(seg.trim());
+            after_env.split_whitespace().next() == Some("rtk")
+        })
 }
 
 #[cfg(test)]
@@ -1400,6 +1457,33 @@ impl Check for BashGuard {
                     .get("command")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let spec_slug = current_spec(&ctx.project_dir);
+                // Typed savings record (W2): tokens we did NOT have to ship as a
+                // verbose Bash response because `rtk` summarised the command.
+                // `BashGuardBlock` is the closest source enum today — a future
+                // `RtkRewrite` variant would let the dashboard split the two.
+                if let Some(conn) = open_economy_conn(&ctx.project_dir) {
+                    let saved = estimator::estimate_input_tokens(&cmd, "") as i64;
+                    let saved = saved.max(1);
+                    let rec = SavingsRecord {
+                        ts: now_iso8601(),
+                        source: SavingsSource::BashGuardBlock,
+                        tokens_saved: saved,
+                        model_target: None,
+                        project_path: ProjectPath::new(&ctx.project_dir),
+                        spec_id: spec_slug.clone().map(SpecId::new),
+                        wave_id: std::env::var("MUSTARD_ACTIVE_WAVE")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                            .map(WaveId::new),
+                        agent_id: Some(AgentId::new("bash_guard")),
+                        extra: Map::new(),
+                    };
+                    let _ = writer::record_savings(&conn, rec);
+                }
+                // Keep the legacy harness event for downstream readers — but
+                // drop the `tokens_saved` field; the typed writer is now the
+                // source of truth.
                 let event = HarnessEvent {
                     v: SCHEMA_VERSION,
                     ts: now_iso8601(),
@@ -1414,13 +1498,12 @@ impl Check for BashGuard {
                     payload: json!({
                         "event": "rtk-rewrite",
                         "tokens_affected": i64::try_from(cmd.len()).unwrap_or(i64::MAX),
-                        "tokens_saved": 0,
                         "note": "rewritten via rtk",
                         "coverage": coverage,
                         "command_head": &cmd[..cmd.len().min(60)],
                         "rewritten_head": &rewritten[..rewritten.len().min(60)],
                     }),
-                    spec: current_spec(&ctx.project_dir),
+                    spec: spec_slug,
                 };
                 let _ = SqliteEventStore::for_project(&ctx.project_dir)
                     .and_then(|store| store.append(&event));
@@ -2258,6 +2341,24 @@ mod rtk_rewrite_tests {
             result.is_none(),
             "expected None for already-prefixed command; got {result:?}"
         );
+    }
+
+    /// Bug-fix regression (2026-05-20): a pipeline whose first stage is not
+    /// `rtk` but whose second stage IS `rtk` must short-circuit, never deny.
+    #[test]
+    fn rtk_rewrite_pipe_with_rtk_in_second_segment_no_op() {
+        let cmd = "echo '{\"type\":\"decision\"}' | rtk mustard-rt run memory decision";
+        let result = rtk_rewrite_with(cmd, |_| panic!("should not be called"), Mode::Strict);
+        assert!(result.is_none(), "rtk in second pipe segment must short-circuit, got {result:?}");
+    }
+
+    /// Compound command: first stage prefixed with rtk, second not.
+    /// Either segment having rtk counts as wrapped — do not deny.
+    #[test]
+    fn rtk_rewrite_compound_with_rtk_first_no_op() {
+        let cmd = "rtk cargo build && cargo test";
+        let result = rtk_rewrite_with(cmd, |_| panic!("should not be called"), Mode::Strict);
+        assert!(result.is_none(), "rtk in first compound segment must short-circuit, got {result:?}");
     }
 
     // -----------------------------------------------------------------------

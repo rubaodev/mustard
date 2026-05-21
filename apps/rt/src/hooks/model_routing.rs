@@ -20,13 +20,89 @@
 //! resolves this itself (it is *not* the dispatcher's module-level mode), and
 //! the dispatcher repasses the verdict without downgrade.
 
+use mustard_core::economy::estimator;
+use mustard_core::economy::writer;
+use mustard_core::economy::{
+    AgentId, ProjectPath, SavingsRecord, SavingsSource, SpecId, WaveId,
+};
 use mustard_core::error::Error;
 use mustard_core::metrics::{MetricLine, emit_metric};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use serde_json::{Value, json};
-use std::path::Path;
+use mustard_core::store::sqlite_store::SqliteEventStore;
+use rusqlite::Connection;
+use serde_json::{Map, Value, json};
+use std::path::{Path, PathBuf};
 
+use crate::run::current_spec;
 use crate::util::now_iso8601;
+
+/// Resolve the harness SQLite path the same way [`SqliteEventStore::for_project`]
+/// does internally — env override `MUSTARD_DB_PATH` wins, else
+/// `{project_dir}/.claude/.harness/mustard.db`. Kept private here so the
+/// `mustard-core` surface need not grow a public connection accessor for W2.
+fn economy_db_path(project_dir: &str) -> PathBuf {
+    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    Path::new(project_dir)
+        .join(".claude")
+        .join(".harness")
+        .join("mustard.db")
+}
+
+/// Open a raw [`Connection`] to the harness DB, applying schema/migrations
+/// via [`SqliteEventStore::for_project`] first. Returns `None` on failure;
+/// the routing gate must remain fail-open.
+fn open_economy_conn(project_dir: &str) -> Option<Connection> {
+    let _ = SqliteEventStore::for_project(project_dir).ok()?;
+    Connection::open(economy_db_path(project_dir)).ok()
+}
+
+/// Record a `ModelRoutingDowngrade` savings event for a Task dispatch that the
+/// gate rerouted from a more expensive model to a cheaper one. `from_model`
+/// and `to_model` are the normalised tier names (`"opus"`, `"sonnet"`,
+/// `"haiku"`); `prompt` is the dispatch text the cheaper model will receive.
+/// Fail-open on every error path — telemetry never blocks the verdict.
+fn record_routing_downgrade(
+    project_dir: &str,
+    from_model: &str,
+    to_model: &str,
+    prompt: &str,
+    subagent_type: &str,
+) {
+    if from_model == to_model || prompt.is_empty() {
+        return;
+    }
+    let Some(conn) = open_economy_conn(project_dir) else {
+        return;
+    };
+    // Approximate savings as the input-token count we would have spent on the
+    // more expensive tier — the dashboard can re-price via the pricing table.
+    let tokens = estimator::estimate_input_tokens(prompt, from_model) as i64;
+    let tokens = tokens.max(1);
+    let agent_id = if subagent_type.is_empty() {
+        "model_routing".to_string()
+    } else {
+        subagent_type.to_string()
+    };
+    let rec = SavingsRecord {
+        ts: now_iso8601(),
+        source: SavingsSource::ModelRoutingDowngrade,
+        tokens_saved: tokens,
+        model_target: Some(to_model.to_string()),
+        project_path: ProjectPath::new(project_dir),
+        spec_id: current_spec(project_dir).map(SpecId::new),
+        wave_id: std::env::var("MUSTARD_ACTIVE_WAVE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(WaveId::new),
+        agent_id: Some(AgentId::new(agent_id)),
+        extra: Map::new(),
+    };
+    let _ = writer::record_savings(&conn, rec);
+}
 
 /// The model-routing enforcement module.
 pub struct ModelRoutingGate;
@@ -358,7 +434,16 @@ fn model_routing_gate(input: &HookInput, project_dir: &str, mode: GateMode) -> V
         return Verdict::Allow;
     }
 
-    // ── Violation ──────────────────────────────────────────────────────────
+    // ── Violation: a more expensive model was selected than required ──────
+    // The dispatch will be denied (strict) or advised (warn) to use the
+    // cheaper `expected.model` instead — that delta is the savings we record
+    // for the W5 dashboard. Best-effort; never blocks the verdict.
+    let prompt = tool_input
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    record_routing_downgrade(project_dir, model, expected.model, prompt, subagent_type);
+
     if mode == GateMode::Warn {
         return Verdict::Inject {
             context: format!(

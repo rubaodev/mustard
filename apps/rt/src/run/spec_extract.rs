@@ -11,9 +11,76 @@
 //!
 //! `--measure` prints a JSON line describing the counterfactual omission.
 
+use crate::run::current_spec;
 use crate::run::spec_sections::is_heading;
-use serde_json::json;
-use std::path::Path;
+use crate::util::now_iso8601;
+use mustard_core::economy::writer;
+use mustard_core::economy::{AgentId, ContextCostFrame, ProjectPath, SpecId, WaveId};
+use mustard_core::store::sqlite_store::SqliteEventStore;
+use rusqlite::Connection;
+use serde_json::{Map, json};
+use std::path::{Path, PathBuf};
+
+/// Resolve the harness SQLite path (mirrors `SqliteEventStore::for_project`'s
+/// private resolver). Env override `MUSTARD_DB_PATH` wins, else the standard
+/// `.claude/.harness/mustard.db` under the project root.
+fn economy_db_path(project_dir: &str) -> PathBuf {
+    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    Path::new(project_dir)
+        .join(".claude")
+        .join(".harness")
+        .join("mustard.db")
+}
+
+/// Open a raw [`Connection`] to the harness DB, applying schema/migrations
+/// via [`SqliteEventStore::for_project`] first. Returns `None` on any
+/// failure — `spec-extract` must remain fail-open even if the store cannot
+/// be reached.
+fn open_economy_conn(project_dir: &str) -> Option<Connection> {
+    let _ = SqliteEventStore::for_project(project_dir).ok()?;
+    Connection::open(economy_db_path(project_dir)).ok()
+}
+
+/// Record one [`ContextCostFrame`] for the wave-slice the caller just cut.
+/// `full_bytes` is the unsliced spec body; `slice_bytes` is what survived;
+/// the omission is implied (the dashboard subtracts). Fail-open: every
+/// error path is silenced — the JSON `measure` line is still printed and is
+/// the contract a script consumer reads.
+fn record_extract_frame(
+    project_dir: &str,
+    full_bytes: usize,
+    slice_bytes: usize,
+    spec_slug: Option<&str>,
+    wave_id: Option<&str>,
+) {
+    let Some(conn) = open_economy_conn(project_dir) else {
+        return;
+    };
+    let agent = std::env::var("MUSTARD_AGENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "spec-extract".to_string());
+    let frame = ContextCostFrame {
+        ts: now_iso8601(),
+        agent_id: AgentId::new(agent),
+        wave_id: wave_id.map(WaveId::new),
+        spec_id: spec_slug.map(SpecId::new),
+        project_path: ProjectPath::new(project_dir),
+        prompt_size_bytes: i64::try_from(full_bytes).ok(),
+        prefix_stable_bytes: None,
+        slice_bytes: i64::try_from(slice_bytes).ok(),
+        recipe_bytes: None,
+        wave_slice_bytes: i64::try_from(slice_bytes).ok(),
+        return_size_bytes: Some(0),
+        retry_overhead_bytes: Some(0),
+        extra: Map::new(),
+    };
+    let _ = writer::record_context_cost(&conn, frame);
+}
 
 /// Monolithic wave section cap (one section).
 const MAX_CHARS: usize = 4000;
@@ -205,6 +272,23 @@ pub fn run(spec: &str, wave: Option<u32>, ac: bool, measure_flag: bool) {
     if measure_flag {
         match measure(spec, wave) {
             Some(m) => {
+                // W2: record the wave-slice into `context_cost_frames` using
+                // the same bytes the JSON measure line already reports — that
+                // way dashboard queries align with the script's stdout.
+                let project_dir = crate::run::env::project_dir();
+                let full_bytes =
+                    m.get("full_bytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let slice_bytes =
+                    m.get("slice_bytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let spec_slug = current_spec(&project_dir);
+                let wave_id_str = wave.map(|n| format!("wave-{n}"));
+                record_extract_frame(
+                    &project_dir,
+                    full_bytes,
+                    slice_bytes,
+                    spec_slug.as_deref(),
+                    wave_id_str.as_deref(),
+                );
                 println!("{m}");
             }
             None => {
@@ -239,6 +323,21 @@ pub fn run(spec: &str, wave: Option<u32>, ac: bool, measure_flag: bool) {
     };
 
     let Some(out) = out else { return };
+    // W2: record the wave-slice into `context_cost_frames` whenever we cut a
+    // wave (the AC branch does not measure a wave so it is skipped here).
+    if !ac {
+        let project_dir = crate::run::env::project_dir();
+        let full_bytes = std::fs::metadata(spec).map(|m| m.len() as usize).unwrap_or(out.len());
+        let spec_slug = current_spec(&project_dir);
+        let wave_id_str = wave.map(|n| format!("wave-{n}"));
+        record_extract_frame(
+            &project_dir,
+            full_bytes,
+            out.len(),
+            spec_slug.as_deref(),
+            wave_id_str.as_deref(),
+        );
+    }
     if mode == Mode::WavePlan {
         if out.len() > WAVE_PLAN_SOFT_LIMIT {
             eprintln!(

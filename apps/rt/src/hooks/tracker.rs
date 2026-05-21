@@ -38,14 +38,102 @@
 
 use crate::run::current_spec;
 use crate::util::now_iso8601;
+use mustard_core::economy::estimator;
+use mustard_core::economy::writer;
+use mustard_core::economy::{ApiCostFrame, SpanRecord};
 use mustard_core::error::Error;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::{Value, json};
-use std::path::Path;
+use rusqlite::Connection;
+use serde_json::{Map, Value, json};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Resolve the harness SQLite path the same way [`SqliteEventStore::for_project`]
+/// does internally — env override `MUSTARD_DB_PATH` wins, else
+/// `{project_dir}/.claude/.harness/mustard.db`. Mirrored privately here to
+/// keep the `mustard-core` surface unchanged for W2.
+fn economy_db_path(project_dir: &str) -> PathBuf {
+    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    Path::new(project_dir)
+        .join(".claude")
+        .join(".harness")
+        .join("mustard.db")
+}
+
+/// Open a raw [`Connection`] to the harness DB, applying schema/migrations
+/// via [`SqliteEventStore::for_project`] first. Returns `None` on failure;
+/// tracker telemetry is best-effort.
+fn open_economy_conn(project_dir: &str) -> Option<Connection> {
+    let _ = SqliteEventStore::for_project(project_dir).ok()?;
+    Connection::open(economy_db_path(project_dir)).ok()
+}
+
+/// Finalise an agent's Task dispatch as one `spans` row + one `api_cost`
+/// frame, derived from the PostToolUse(Task) payload. `model` is the model id
+/// the dispatch ran under (may be empty — pricing falls through to `(0, 0)`).
+/// `input_bytes` and `output_bytes` are the byte sizes of `tool_input` /
+/// `tool_response`; `input_tokens` / `output_tokens` come from the API usage
+/// payload when present, else estimated from the byte size. Fail-open.
+fn record_task_span(
+    project_dir: &str,
+    session_id: Option<&str>,
+    span_id: String,
+    model: &str,
+    spec: Option<String>,
+    input_text: &str,
+    output_text: &str,
+    api_input_tokens: Option<i64>,
+    api_output_tokens: Option<i64>,
+    is_error: bool,
+) {
+    let Some(conn) = open_economy_conn(project_dir) else {
+        return;
+    };
+    let input_tokens = api_input_tokens
+        .unwrap_or_else(|| i64::from(estimator::estimate_input_tokens(input_text, model)));
+    let output_tokens = api_output_tokens
+        .unwrap_or_else(|| i64::from(estimator::estimate_output_tokens(output_text, model)));
+    let (in_micros_per_m, out_micros_per_m) =
+        estimator::model_pricing_usd_micros_per_million(model);
+    // Saturating arithmetic — keeps the writer safe even when an adapter
+    // ships an absurd token count (`i64::MAX`).
+    let cost_usd_micros = in_micros_per_m
+        .saturating_mul(input_tokens)
+        .saturating_add(out_micros_per_m.saturating_mul(output_tokens))
+        / 1_000_000;
+    let ts = now_iso8601();
+    let rec = SpanRecord {
+        ts: ts.clone(),
+        session_id: session_id.map(str::to_string),
+        span_id,
+        model: if model.is_empty() {
+            None
+        } else {
+            Some(model.to_string())
+        },
+        spec,
+        phase: None,
+        input_tokens: Some(input_tokens),
+        output_tokens: Some(output_tokens),
+        cache_read_input_tokens: None,
+        cache_creation_input_tokens: None,
+        cost_usd_micros: Some(cost_usd_micros),
+        is_error,
+        extra: Map::new(),
+    };
+    // Writer side: one `spans` insert (the internal estimator path), then a
+    // second alias call to mark provenance — they share the same row via
+    // `INSERT OR REPLACE` on `span_id`.
+    let _ = writer::record_span(&conn, rec.clone());
+    let _ = writer::record_api_cost(&conn, rec as ApiCostFrame);
+}
 
 // ===========================================================================
 // Shared helpers
@@ -638,6 +726,54 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     "subagent-tracker",
                     "agent.stop",
                     json!({ "summary": summary }),
+                );
+                // Finalise the dispatch into the economy spans table (W2):
+                // one `record_span` + one `record_api_cost` derived from the
+                // payload. Token counts come from the Anthropic `usage`
+                // payload when the harness forwards it, else are estimated
+                // from byte sizes. Best-effort — never blocks the verdict.
+                let tool_input_text = serde_json::to_string(tool_input).unwrap_or_default();
+                let model_str = match tool_input.get("model").unwrap_or(&Value::Null) {
+                    Value::String(s) => s.clone(),
+                    Value::Null => String::new(),
+                    other => other.to_string(),
+                };
+                let usage = input.raw.get("tool_response").and_then(|r| r.get("usage"));
+                let api_input_tokens = usage
+                    .and_then(|u| u.get("input_tokens"))
+                    .and_then(serde_json::Value::as_i64);
+                let api_output_tokens = usage
+                    .and_then(|u| u.get("output_tokens"))
+                    .and_then(serde_json::Value::as_i64);
+                let is_error = input
+                    .raw
+                    .get("tool_response")
+                    .and_then(|r| r.get("is_error"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                // Synthesise a span id when the harness doesn't supply one —
+                // `request_id` is preferred, then a `{session}-{ts}-task`
+                // composite that stays unique under `INSERT OR REPLACE`.
+                let span_id = input
+                    .raw
+                    .get("request_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        let sid = input.session_id.as_deref().unwrap_or("unknown");
+                        format!("{sid}-{}-task", now_iso8601())
+                    });
+                record_task_span(
+                    &project,
+                    input.session_id.as_deref(),
+                    span_id,
+                    &model_str,
+                    current_spec(&project),
+                    &tool_input_text,
+                    &tool_response,
+                    api_input_tokens,
+                    api_output_tokens,
+                    is_error,
                 );
             }
             _ => {}

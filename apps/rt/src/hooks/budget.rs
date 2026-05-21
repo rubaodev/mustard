@@ -49,12 +49,80 @@
 //! dispatcher's module-level mode. The dispatcher repasses the verdict without
 //! downgrade.
 
+use mustard_core::economy::estimator;
+use mustard_core::economy::writer;
+use mustard_core::economy::{
+    AgentId, ProjectPath, SavingsRecord, SavingsSource, SpecId, WaveId,
+};
 use mustard_core::error::Error;
 use mustard_core::metrics::{MetricLine, emit_metric};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use serde_json::json;
+use mustard_core::store::sqlite_store::SqliteEventStore;
+use rusqlite::Connection;
+use serde_json::{Map, json};
+use std::path::{Path, PathBuf};
 
+use crate::run::current_spec;
 use crate::util::{format_gate_message, now_iso8601};
+
+/// Resolve the harness SQLite path (mirrors `SqliteEventStore::for_project`'s
+/// private resolver). Env override `MUSTARD_DB_PATH` wins, else the standard
+/// `.claude/.harness/mustard.db` under the project root.
+fn economy_db_path(project_dir: &str) -> PathBuf {
+    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    Path::new(project_dir)
+        .join(".claude")
+        .join(".harness")
+        .join("mustard.db")
+}
+
+/// Open a raw [`Connection`] to the harness DB, applying schema/migrations
+/// via [`SqliteEventStore::for_project`] first. Returns `None` on any
+/// failure — budget telemetry stays best-effort.
+fn open_economy_conn(project_dir: &str) -> Option<Connection> {
+    let _ = SqliteEventStore::for_project(project_dir).ok()?;
+    Connection::open(economy_db_path(project_dir)).ok()
+}
+
+/// Record a `BudgetOutputCut` savings event for an over-budget agent return.
+/// `over_by_lines * average_line_bytes` underestimates a long-tail return, so
+/// we score by the full `dropped_tail` byte count instead — the count we
+/// would have paid for had the agent re-injected the verbose tail into the
+/// parent context. Fail-open on every error path.
+fn record_output_cut(
+    project_dir: &str,
+    dropped_tail: &str,
+    role_label: &str,
+    model_hint: Option<&str>,
+) {
+    if dropped_tail.is_empty() {
+        return;
+    }
+    let Some(conn) = open_economy_conn(project_dir) else {
+        return;
+    };
+    let saved = estimator::estimate_output_tokens(dropped_tail, model_hint.unwrap_or("")) as i64;
+    let saved = saved.max(1);
+    let rec = SavingsRecord {
+        ts: now_iso8601(),
+        source: SavingsSource::BudgetOutputCut,
+        tokens_saved: saved,
+        model_target: model_hint.map(str::to_string),
+        project_path: ProjectPath::new(project_dir),
+        spec_id: current_spec(project_dir).map(SpecId::new),
+        wave_id: std::env::var("MUSTARD_ACTIVE_WAVE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(WaveId::new),
+        agent_id: Some(AgentId::new(role_label)),
+        extra: Map::new(),
+    };
+    let _ = writer::record_savings(&conn, rec);
+}
 
 // ---------------------------------------------------------------------------
 // Shared role classification
@@ -473,6 +541,30 @@ fn evaluate_output_budget(input: &HookInput) -> Option<OutputBudgetResult> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// Recompute the over-budget tail of a Task's `tool_response`, i.e. the
+/// lines past the per-role limit that the advisory is asking the agent to
+/// stop emitting next time. Returns `None` when the return is within budget
+/// or non-string. Mirrors the segmentation [`evaluate_output_budget`] uses.
+fn over_budget_tail(input: &HookInput) -> Option<String> {
+    let tool_response = input.raw.get("tool_response").and_then(|v| v.as_str())?;
+    let tool_input = &input.tool_input;
+    let subagent_type = tool_input
+        .get("subagent_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let description = tool_input
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let role = classify_role(subagent_type, description);
+    let limit = output_budget(role);
+    let lines: Vec<&str> = tool_response.split('\n').collect();
+    if lines.len() <= limit {
+        return None;
+    }
+    Some(lines[limit..].join("\n"))
+}
+
 /// Resolve the cwd a metric write should be rooted at: the harness `cwd`,
 /// falling back to `.` (the JS uses `process.cwd()`).
 fn metric_cwd(input: &HookInput) -> &str {
@@ -515,8 +607,38 @@ impl Check for BudgetGuard {
                 };
                 // Emit the return-size metric (fail-silent).
                 let _ = emit_metric(std::path::Path::new(metric_cwd(input)), &result.metric);
-                // Over budget → surface the advisory through the Outcome,
-                // never via a raw stdout write.
+                // Over budget → record the savings frame (typed writer) +
+                // surface the advisory through the Outcome. Never a raw
+                // stdout write.
+                if result.advisory.is_some() {
+                    let project_dir = if ctx.project_dir.is_empty() {
+                        metric_cwd(input).to_string()
+                    } else {
+                        ctx.project_dir.clone()
+                    };
+                    // Recompute the dropped tail and labels so the writer call
+                    // stays a pure side-effect of an over-budget verdict.
+                    if let Some(tail) = over_budget_tail(input) {
+                        let subagent_type = input
+                            .tool_input
+                            .get("subagent_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let description = input
+                            .tool_input
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let role = classify_role(subagent_type, description);
+                        let role_label = output_role_label(role, subagent_type);
+                        let model_hint = input
+                            .tool_input
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty());
+                        record_output_cut(&project_dir, &tail, &role_label, model_hint);
+                    }
+                }
                 Ok(match result.advisory {
                     Some(advisory) => Verdict::Inject { context: advisory },
                     None => Verdict::Allow,
