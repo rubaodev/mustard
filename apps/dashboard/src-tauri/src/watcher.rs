@@ -35,7 +35,9 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
         Some("events")
     } else if s.contains(".pipeline-states") {
         Some("pipeline-state")
-    } else if s.contains("spec") && (s.contains("spec/active") || s.contains("spec\\active")) {
+    } else if (s.contains("/spec/") || s.contains("\\spec\\")) && !s.contains(".pipeline-states") {
+        // Flat layout: .claude/spec/{name}/spec.md — any write inside the
+        // spec directory (regardless of bucket) is a spec-change event.
         Some("spec")
     } else {
         // Wave 6c: knowledge.json and memory/decisions.json / memory/lessons.json

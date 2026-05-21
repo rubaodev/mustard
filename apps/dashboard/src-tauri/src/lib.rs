@@ -880,56 +880,94 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
     Err(format!("spec markdown not found: {}", spec_name))
 }
 
-fn move_spec_dir(repo_path: &str, spec_name: &str, target: &str) -> Result<String, String> {
-    if !matches!(target, "active" | "completed" | "cancelled") {
-        return Err(format!("invalid target bucket: {}", target));
+// ── spec status helpers (emit-only, flat layout) ─────────────────────────────
+//
+// Flat spec layout (spec `2026-05-21-flatten-spec-layout-and-multi-collab`):
+// specs live at `.claude/spec/{name}/` for their entire lifecycle; there are
+// no bucket subdirectories (active/completed/cancelled). Status is canonical
+// in the SQLite event store. These helpers mirror the private functions in
+// `spec_views.rs` — duplicated rather than re-exported to avoid splitting the
+// module's privacy boundary.
+
+/// Emit `pipeline.status: <to>` via the SQLite event store. Fail-open.
+fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
+    use mustard_core::model::event::{
+        Actor, ActorKind, EVENT_PIPELINE_STATUS, HarnessEvent, PipelineStatusPayload,
+        SCHEMA_VERSION,
+    };
+    use mustard_core::store::event_store::EventSink;
+    use mustard_core::store::sqlite_store::SqliteEventStore;
+
+    let store = match SqliteEventStore::for_project(repo_path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("lib_emit_pipeline_status: open store: {e}"); return; }
+    };
+    let payload = serde_json::to_value(PipelineStatusPayload {
+        from: None,
+        to: to.to_string(),
+    }).unwrap_or(serde_json::Value::Null);
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        session_id: String::new(),
+        wave: 0,
+        actor: Actor { kind: ActorKind::Cli, id: Some("dashboard-spec-status".to_string()), actor_type: None },
+        event: EVENT_PIPELINE_STATUS.to_string(),
+        payload,
+        spec: Some(spec.to_string()),
+    };
+    if let Err(e) = store.append(&event) {
+        eprintln!("lib_emit_pipeline_status: append: {e}");
     }
-    if spec_name.is_empty()
-        || spec_name.contains('/')
-        || spec_name.contains('\\')
-        || spec_name.contains("..")
-    {
-        return Err(format!("invalid spec name: {}", spec_name));
-    }
-    let spec_root = PathBuf::from(repo_path).join(".claude").join("spec");
-    let dest_dir = spec_root.join(target).join(spec_name);
-    if dest_dir.is_dir() {
-        return Ok(target.to_string());
-    }
-    let mut source: Option<PathBuf> = None;
-    for sub in ["active", "completed", "cancelled"] {
-        if sub == target {
-            continue;
-        }
-        let candidate = spec_root.join(sub).join(spec_name);
-        if candidate.is_dir() {
-            source = Some(candidate);
+}
+
+/// Rewrite `### Status:` header in `.claude/spec/{spec}/spec.md`. Fail-open.
+fn lib_sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
+    let path = std::path::Path::new(repo_path)
+        .join(".claude").join("spec").join(spec).join("spec.md");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("lib_sync_spec_status_header: read {}: {e}", path.display()); return; }
+    };
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let mut rewrote = false;
+    for line in lines.iter_mut() {
+        if line.trim_start().to_lowercase().starts_with("### status:") {
+            *line = format!("### Status: {to}");
+            rewrote = true;
             break;
         }
     }
-    let from = source.ok_or_else(|| format!("spec not found: {}", spec_name))?;
-    if let Some(parent) = dest_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    if !rewrote {
+        eprintln!("lib_sync_spec_status_header: no `### Status:` in {}", path.display());
+        return;
     }
-    std::fs::rename(&from, &dest_dir).map_err(|e| {
-        format!("failed to move {} → {}: {}", from.display(), dest_dir.display(), e)
-    })?;
-    Ok(target.to_string())
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') { out.push('\n'); }
+    if let Err(e) = std::fs::write(&path, out) {
+        eprintln!("lib_sync_spec_status_header: write {}: {e}", path.display());
+    }
 }
 
 #[tauri::command]
 fn dashboard_spec_complete(repo_path: String, spec_name: String) -> Result<String, String> {
-    move_spec_dir(&repo_path, &spec_name, "completed")
+    lib_emit_pipeline_status(&repo_path, &spec_name, "completed");
+    lib_sync_spec_status_header(&repo_path, &spec_name, "completed");
+    Ok("completed".to_string())
 }
 
 #[tauri::command]
 fn dashboard_spec_cancel(repo_path: String, spec_name: String) -> Result<String, String> {
-    move_spec_dir(&repo_path, &spec_name, "cancelled")
+    lib_emit_pipeline_status(&repo_path, &spec_name, "cancelled");
+    lib_sync_spec_status_header(&repo_path, &spec_name, "cancelled");
+    Ok("cancelled".to_string())
 }
 
 #[tauri::command]
 fn dashboard_spec_reactivate(repo_path: String, spec_name: String) -> Result<String, String> {
-    move_spec_dir(&repo_path, &spec_name, "active")
+    lib_emit_pipeline_status(&repo_path, &spec_name, "implementing");
+    lib_sync_spec_status_header(&repo_path, &spec_name, "implementing");
+    Ok("implementing".to_string())
 }
 
 #[tauri::command]
