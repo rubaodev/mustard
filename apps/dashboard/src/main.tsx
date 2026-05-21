@@ -7,6 +7,7 @@ import { queryClient } from "./lib/query-client";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./style.css";
+import "./styles/theme.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
