@@ -9,6 +9,8 @@ import "@fontsource-variable/jetbrains-mono";
 import "./style.css";
 import "./styles/theme.css";
 
+window.addEventListener("contextmenu", (e) => e.preventDefault());
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>

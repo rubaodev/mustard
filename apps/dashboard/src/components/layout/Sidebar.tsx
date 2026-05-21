@@ -40,6 +40,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
+import { useT } from "@/lib/i18n";
 import { Separator } from "@/components/ui/separator";
 import {
   DropdownMenu,
@@ -166,6 +167,12 @@ function ProjectTreeNode({
   driftReport,
 }: ProjectTreeNodeProps) {
   const { t } = useTranslation();
+  // `tLib` is the W2-audit canonical surface from `@/lib/i18n`. We keep the
+  // i18next `t` (above) for the project-card namespace (`projects.*`,
+  // `sidebar.status.*`, `artifact.*`, etc.) and use `tLib` for the leaf nav
+  // labels added by the i18n audit so "Knowledge" flips to "Conhecimento" in
+  // PT mode without polluting the existing i18next dictionary.
+  const tLib = useT();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -284,13 +291,15 @@ function ProjectTreeNode({
   }
 
   // Build leaves locally so the active-leaf style only fires when both the
-  // path matches AND the project itself is the active workspace.
+  // path matches AND the project itself is the active workspace. Labels read
+  // from `tLib` (`@/lib/i18n`) so PT/EN flips at runtime — see comment on
+  // `tLib` above for why two `t` functions coexist in this component.
   const leaves: { to: string; icon: typeof Home; label: string; end?: boolean }[] = [
-    { to: "/workspace", icon: Home, label: "Visão Geral" },
-    { to: "/specs", icon: FileText, label: "Specs" },
-    { to: "/economy", icon: Gauge, label: "Economia" },
-    { to: "/knowledge", icon: BookOpen, label: "Knowledge" },
-    { to: "/settings", icon: SettingsIcon, label: "Configurações" },
+    { to: "/workspace", icon: Home, label: tLib("sidebar.overview") },
+    { to: "/specs", icon: FileText, label: tLib("sidebar.specs") },
+    { to: "/economy", icon: Gauge, label: tLib("sidebar.economy") },
+    { to: "/knowledge", icon: BookOpen, label: tLib("sidebar.knowledge") },
+    { to: "/settings", icon: SettingsIcon, label: tLib("sidebar.settings") },
   ];
 
   return (
@@ -461,6 +470,11 @@ function ProjectTreeNode({
 
 export function Sidebar() {
   const { t } = useTranslation();
+  // `tLib` powers W2-audit keys (`sidebar.add_project`, `sidebar.tools`,
+  // `sidebar.commands`, `sidebar.prd`, `sidebar.preferences`). The i18next
+  // `t` still drives project-detection toasts, empty states, and the
+  // `projects.addDialogTitle` Tauri dialog title (keys not duplicated here).
+  const tLib = useT();
   const projects = useProjectsStore((s) => s.projects);
   const addProject = useProjectsStore((s) => s.addProject);
   const activeProjectsRoot = useStore((s) => s.projectsRoot);
@@ -520,7 +534,7 @@ export function Sidebar() {
           ) : (
             <FolderPlus className="h-3.5 w-3.5" />
           )}
-          <span>{t("sidebar.addProject")}</span>
+          <span>{tLib("sidebar.add_project")}</span>
         </button>
 
         <div className="mt-2 flex flex-col gap-0.5 overflow-y-auto">
@@ -560,18 +574,18 @@ export function Sidebar() {
 
         <Separator className="my-3" />
 
-        <div className={groupHeaderClass}>{t("sidebar.tools")}</div>
+        <div className={groupHeaderClass}>{tLib("sidebar.tools")}</div>
         <NavLink to="/commands" className={toolNavItemClass}>
-          <Terminal className="h-3.5 w-3.5" /> {t("nav.commands")}
+          <Terminal className="h-3.5 w-3.5" /> {tLib("sidebar.commands")}
         </NavLink>
         <NavLink to="/prd" className={toolNavItemClass}>
-          <FileText className="h-3.5 w-3.5" /> {t("nav.prd")}
+          <FileText className="h-3.5 w-3.5" /> {tLib("sidebar.prd")}
         </NavLink>
 
         <div className="mt-auto" />
         <Separator className="my-3" />
         <NavLink to="/preferences" className={toolNavItemClass}>
-          <Cog className="h-3.5 w-3.5" /> {t("nav.preferences")}
+          <Cog className="h-3.5 w-3.5" /> {tLib("sidebar.preferences")}
         </NavLink>
       </div>
     </aside>

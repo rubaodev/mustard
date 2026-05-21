@@ -160,4 +160,19 @@ export function setLanguage(lng: "pt" | "en") {
   i18n.changeLanguage(lng);
 }
 
+// Keep `<html lang>` in sync with the active language so screen readers,
+// browser spellcheck and `:lang(pt)` CSS selectors all stay coherent. We
+// listen on i18next's `languageChanged` instead of plumbing into zustand
+// directly because `store.ts::setLanguage` already calls
+// `i18n.changeLanguage(...)`, so this single hook covers every code path
+// (interactive Preferences toggle, persisted-state rehydration, programmatic
+// calls). Guarded for SSR/test envs where `document` is undefined.
+if (typeof document !== "undefined") {
+  const apply = (lng: string) => {
+    document.documentElement.lang = lng;
+  };
+  apply(i18n.language);
+  i18n.on("languageChanged", apply);
+}
+
 export default i18n;

@@ -26,7 +26,7 @@
 //! Query's `staleTime` (60s) instead.
 
 use std::path::Path;
-use std::process::Command;
+use crate::process_util::no_window_command;
 
 use serde::Serialize;
 
@@ -85,7 +85,7 @@ pub struct ArtifactUpdateOutcome {
 pub async fn artifact_update_check(
     project_path: String,
 ) -> Result<ArtifactDriftReport, String> {
-    let output = Command::new("mustard-rt")
+    let output = no_window_command("mustard-rt")
         .args(["run", "artifact-update", "--check"])
         .current_dir(&project_path)
         .output()
@@ -171,7 +171,7 @@ pub async fn artifact_update_check(
 pub async fn artifact_update_apply(
     project_path: String,
 ) -> Result<ArtifactUpdateOutcome, String> {
-    let output = Command::new("mustard-rt")
+    let output = no_window_command("mustard-rt")
         .args(["run", "artifact-update", "--apply"])
         .current_dir(&project_path)
         .output()

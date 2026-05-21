@@ -6,13 +6,27 @@ import { useSpecChildren } from "@/hooks/useSpecChildren";
 import { SpecWavesTab } from "./SpecWavesTab";
 import { SpecQualityTab } from "./SpecQualityTab";
 import { SpecNetworkTab } from "./SpecNetworkTab";
-import { SpecChildrenTab } from "./SpecChildrenTab";
 import { ExecutionTrace } from "@/components/trace/ExecutionTrace";
 
 interface SpecDrillDownProps {
   repoPath: string | null;
   spec: string;
   className?: string;
+  /** Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — when set,
+   *  each wave row in the Ondas tab becomes clickable and invokes this with
+   *  the wave number so the parent can open the markdown drawer. */
+  onOpenWave?: (wave: number) => void;
+  /** Wave 2 (spec `2026-05-21-dashboard-spec-tabs-polish`): when set, the
+   *  Ondas tab renders the markdown drawer inline (pinned) instead of
+   *  overlaid. State is owned by `SpecDetailDashboard`. */
+  drawerPinned?: boolean;
+  /** Toggle for `drawerPinned`. Forwarded to the inline drawer's pin button. */
+  onDrawerPinChange?: (pinned: boolean) => void;
+  /** Wave 2 (spec polish): wave currently shown in the inline drawer (so
+   *  `SpecWavesTab` can render it side-by-side when `drawerPinned`). */
+  openWave?: number | null;
+  /** Closer used by the inline drawer's close button. */
+  onCloseDrawer?: () => void;
 }
 
 // Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):
@@ -21,7 +35,13 @@ interface SpecDrillDownProps {
 // comment). The hierarchical view in `<ExecutionTrace>` carries the same
 // data those linear views surfaced (spec → wave → agent → tool with payload
 // previews), so the redundant tabs were removed to reduce drill-down noise.
-const TABS = ["Ondas", "Trace", "Qualidade", "Rede", "Sub-specs"] as const;
+//
+// Wave 2 (spec `2026-05-21-dashboard-spec-tabs-polish`): the "Sub-specs" tab
+// was REMOVED — sub-specs are now rendered as expandable children inside the
+// Ondas tab (each wave shows the tactical-fixes / children that started
+// during its execution window). The `SpecChildrenTab` component file stays
+// in the tree as a legacy reference but is no longer mounted here.
+const TABS = ["Ondas", "Trace", "Qualidade", "Rede"] as const;
 type Tab = (typeof TABS)[number];
 
 function LoadingRows() {
@@ -35,20 +55,29 @@ function LoadingRows() {
 }
 
 /**
- * SpecDrillDown — 5-tab expanded view for a spec.
+ * SpecDrillDown — 4-tab expanded view for a spec (Ondas / Trace / Qualidade /
+ * Rede). The 5th legacy tab ("Sub-specs") was removed in Wave 2 of spec
+ * `2026-05-21-dashboard-spec-tabs-polish`: sub-specs now nest under their
+ * owning wave inside the Ondas tab (correlated via `started_at`).
  */
-export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps) {
+export function SpecDrillDown({
+  repoPath,
+  spec,
+  className,
+  onOpenWave,
+  drawerPinned,
+  onDrawerPinChange,
+  openWave,
+  onCloseDrawer,
+}: SpecDrillDownProps) {
   const [activeTab, setActiveTab] = useState<Tab>("Ondas");
 
-  // All queries are always mounted so switching tabs is instant
+  // All queries are always mounted so switching tabs is instant. The
+  // sub-specs query also gets consumed by `SpecWavesTab` (same queryKey =
+  // React Query dedupes the invoke).
   const wavesQ = useSpecWaves(repoPath, spec);
   const qualityQ = useSpecQuality(repoPath, spec);
-  // Wave-3 (spec `2026-05-20-tactical-fix-via-sub-spec`): sub-specs query
-  // for the 5th tab label counter. The same hook is consumed inside
-  // `SpecChildrenTab` for the actual row list, and React Query dedupes by
-  // queryKey so we don't fire the invoke twice.
   const childrenQ = useSpecChildren(repoPath, spec);
-  const childrenCount = childrenQ.data?.length ?? 0;
 
   return (
     <Tabs
@@ -59,19 +88,7 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
       <TabsList>
         {TABS.map((tab) => (
           <TabsTrigger key={tab} value={tab}>
-            {tab === "Sub-specs" && childrenCount > 0 ? (
-              <>
-                Sub-specs{" "}
-                <span
-                  className="ml-1 tabular-nums text-muted-foreground"
-                  style={{ fontVariantNumeric: "tabular-nums" }}
-                >
-                  ({childrenCount})
-                </span>
-              </>
-            ) : (
-              tab
-            )}
+            {tab}
           </TabsTrigger>
         ))}
       </TabsList>
@@ -85,7 +102,17 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
             Erro ao carregar ondas: {wavesQ.error.message}
           </p>
         ) : (
-          <SpecWavesTab waves={wavesQ.data ?? []} />
+          <SpecWavesTab
+            waves={wavesQ.data ?? []}
+            onOpenWave={onOpenWave}
+            repoPath={repoPath}
+            spec={spec}
+            subSpecs={childrenQ.data ?? []}
+            drawerPinned={drawerPinned}
+            onDrawerPinChange={onDrawerPinChange}
+            openWave={openWave ?? null}
+            onCloseDrawer={onCloseDrawer}
+          />
         )}
       </TabsContent>
 
@@ -103,18 +130,13 @@ export function SpecDrillDown({ repoPath, spec, className }: SpecDrillDownProps)
             Erro ao carregar qualidade: {qualityQ.error.message}
           </p>
         ) : (
-          <SpecQualityTab items={qualityQ.data ?? []} />
+          <SpecQualityTab items={qualityQ.data ?? []} repoPath={repoPath} />
         )}
       </TabsContent>
 
       {/* Rede (Wave-3 wikilink graph) */}
       <TabsContent value="Rede" className="pt-3">
         <SpecNetworkTab repoPath={repoPath} specName={spec} />
-      </TabsContent>
-
-      {/* Sub-specs (Wave-3, spec 2026-05-20-tactical-fix-via-sub-spec) */}
-      <TabsContent value="Sub-specs" className="pt-3">
-        <SpecChildrenTab repoPath={repoPath} parent={spec} />
       </TabsContent>
     </Tabs>
   );

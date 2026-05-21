@@ -1,7 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useStore } from '@/lib/store';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { PageHeader } from '@/components/page';
 
 // TODO: future preferences (theme, telemetry opt-in) entram aqui.
 export function Preferences() {
@@ -11,11 +10,6 @@ export function Preferences() {
 
   return (
     <div className="flex flex-col gap-4 w-full">
-      <PageHeader
-        breadcrumb={["Mustard", t('preferences.title')]}
-        title={t('preferences.title')}
-        description={t('preferences.description')}
-      />
       <Card size="sm">
         <CardHeader>
           <CardTitle className="text-sm font-medium">{t('preferences.language')}</CardTitle>

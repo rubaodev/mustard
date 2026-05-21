@@ -1,25 +1,16 @@
-import { useState } from "react";
-import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
+import { extractTestLink } from "@/lib/quality-link";
+import { StatusPill } from "@/components/specs/spec-status";
 import type { SpecQualityItem } from "@/lib/types/specs";
 
 interface SpecQualityTabProps {
   items: SpecQualityItem[];
+  /** Absolute path to the project repo root. Required to build
+   *  `vscode://file/...` URLs for the "abrir arquivo de teste" link.
+   *  When `null` the button is omitted (we cannot resolve the absolute
+   *  path on Windows without it). */
+  repoPath: string | null;
 }
-
-const STATUS_CLS: Record<string, string> = {
-  pass:    "bg-[--color-ok]/15 text-[--color-ok]",
-  fail:    "bg-[--color-error]/15 text-[--color-error]",
-  skip:    "bg-muted text-muted-foreground/60",
-  unknown: "bg-muted text-muted-foreground/60",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  pass:    "passou",
-  fail:    "falhou",
-  skip:    "pulado",
-  unknown: "pendente",
-};
 
 function groupByWave(items: SpecQualityItem[]): [string, SpecQualityItem[]][] {
   const map = new Map<string, SpecQualityItem[]>();
@@ -32,63 +23,85 @@ function groupByWave(items: SpecQualityItem[]): [string, SpecQualityItem[]][] {
   return Array.from(map.entries());
 }
 
-function AcRow({ item }: { item: SpecQualityItem }) {
-  const [open, setOpen] = useState(false);
-  const hasFail = !!item.fail_reason;
+/**
+ * Build a `vscode://file/<absPath>` URL. VS Code's URL handler accepts both
+ * POSIX and Windows-style absolute paths; on Windows the path should be
+ * `C:/Atiz/...` style (forward slashes are tolerated). We normalize to
+ * forward slashes so the join works on both platforms.
+ */
+function buildEditorUrl(repoPath: string, relPath: string): string {
+  const repo = repoPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const rel = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  return `vscode://file/${repo}/${rel}`;
+}
+
+function AcRow({
+  item,
+  repoPath,
+}: {
+  item: SpecQualityItem;
+  repoPath: string | null;
+}) {
+  const testLink = extractTestLink(item.command);
+  const editorUrl = testLink && repoPath ? buildEditorUrl(repoPath, testLink) : null;
 
   return (
-    <li className="flex flex-col gap-1 py-2 border-b border-border/40 last:border-b-0">
-      <div className="flex items-start gap-2 flex-wrap">
-        <span
-          className={cn(
-            "text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wide shrink-0",
-            STATUS_CLS[item.status] ?? STATUS_CLS.unknown,
-          )}
-        >
-          {STATUS_LABEL[item.status] ?? item.status}
-        </span>
-
-        <span className="font-mono text-[12px] font-medium text-foreground/80 flex-1 min-w-0">
-          {item.ac_label ?? item.ac_id}
-        </span>
-
-        {item.last_run_at && (
-          <span className="text-[11px] text-muted-foreground/50 shrink-0 tabular-nums"
-            style={{ fontVariantNumeric: "tabular-nums" }}
-          >
-            {relativeTime(item.last_run_at)}
+    <li className="rounded border border-border bg-card/30 p-3 flex flex-col gap-1.5">
+      <div className="flex items-center gap-2 min-w-0">
+        <StatusPill status={item.status} />
+        <code className="text-[12px] font-mono font-medium shrink-0">
+          {item.ac_id}
+        </code>
+        {item.ac_label && (
+          <span className="text-[12px] text-foreground/80 truncate min-w-0">
+            {item.ac_label}
           </span>
         )}
       </div>
 
       {item.command && (
-        <code className="text-[11px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded font-mono block truncate"
-          title={item.command}
-        >
-          {item.command}
-        </code>
+        <div className="font-mono text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
+          <span className="text-muted-foreground/60">cmd:</span>{" "}
+          <code>{item.command}</code>
+        </div>
       )}
 
-      {hasFail && (
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="text-[11px] text-[--color-error]/80 hover:text-[--color-error] text-left transition-colors"
-          aria-expanded={open}
+      {item.last_run_at && (
+        <time
+          className="text-[11px] text-muted-foreground"
+          dateTime={item.last_run_at}
         >
-          {open ? "▾ ocultar motivo" : "▸ ver motivo"}
-        </button>
+          última execução: {relativeTime(item.last_run_at)}
+        </time>
       )}
-      {open && hasFail && (
-        <p className="text-[12px] text-muted-foreground leading-relaxed pl-2 border-l-2 border-[--color-error]/40">
+
+      {editorUrl && (
+        // We deliberately use a plain anchor instead of a Tauri shell-open
+        // call: the `vscode://` URL handler is registered by VS Code on
+        // install, and Tauri's webview hands `target="_blank"` anchors with
+        // unknown schemes to the OS shell, which routes them to VS Code.
+        // This keeps the dependency surface flat (no new npm deps).
+        <a
+          href={editorUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[11px] text-[--color-accent-mustard] hover:underline self-start"
+          title={testLink ?? undefined}
+        >
+          abrir arquivo de teste
+        </a>
+      )}
+
+      {item.status === "fail" && item.fail_reason && (
+        <pre className="text-[--color-error] text-[11px] whitespace-pre-wrap mt-1">
           {item.fail_reason}
-        </p>
+        </pre>
       )}
     </li>
   );
 }
 
-export function SpecQualityTab({ items }: SpecQualityTabProps) {
+export function SpecQualityTab({ items, repoPath }: SpecQualityTabProps) {
   if (items.length === 0) {
     return (
       <p className="text-[13px] text-muted-foreground py-4 text-center">
@@ -102,18 +115,20 @@ export function SpecQualityTab({ items }: SpecQualityTabProps) {
   return (
     <div className="flex flex-col gap-5">
       {groups.map(([wave, waveItems]) => (
-        <section key={wave} className="flex flex-col gap-1">
+        <section key={wave} className="flex flex-col gap-2">
           <h4 className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
             {wave}
-            <span className="text-muted-foreground/50 ml-1 tabular-nums"
+            <span
+              className="text-muted-foreground/50 ml-1 tabular-nums"
               style={{ fontVariantNumeric: "tabular-nums" }}
             >
-              {waveItems.filter((i) => i.status === "pass").length}/{waveItems.length}
+              {waveItems.filter((i) => i.status === "pass").length}/
+              {waveItems.length}
             </span>
           </h4>
-          <ul className="flex flex-col">
+          <ul className="flex flex-col gap-2">
             {waveItems.map((item) => (
-              <AcRow key={item.ac_id} item={item} />
+              <AcRow key={item.ac_id} item={item} repoPath={repoPath} />
             ))}
           </ul>
         </section>

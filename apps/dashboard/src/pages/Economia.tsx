@@ -4,10 +4,8 @@
 // scope picker (Projeto / Spec / Wave / Comparar projetos) lives in
 // `<ScopeBar>` and drives the same hook key — switching tab refetches.
 //
-// AC-5 contract: this page MUST contain the four literal labels — "Projeto",
-// "Spec", "Wave", "Comparar" — even when `<ScopeBar>` happens to render them
-// dynamically. They live in `SCOPE_LABELS` below so a future audit can grep
-// them without parsing JSX.
+// AC-5 contract: the four scope labels — "Projeto", "Spec", "Wave",
+// "Comparar projetos" — are rendered by `<ScopeBar>`.
 //
 // AC-6 contract: this file MUST NOT import the Tauri core API or call the
 // Tauri command bridge directly. Every IO call routes through
@@ -16,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "@/lib/store";
-import { PageHeader, EmptyState, KPICard } from "@/components/page";
+import { EmptyState, KPICard } from "@/components/page";
 import { MetricsPill, BaseRow } from "@/components/ds";
 import { useProjects } from "@/lib/dashboard";
 import {
@@ -30,10 +28,6 @@ import { SavingsBreakdownCard } from "@/components/economy/SavingsBreakdownCard"
 import type { EconomyScope } from "@/lib/types/economy";
 import { projectScope, formatTokens, formatUsd } from "@/lib/types/economy";
 
-// AC-5 anchor — every label rendered by `<ScopeBar>` is also referenced here
-// so a literal-string audit passes without parsing JSX:
-//   "Projeto" · "Spec" · "Wave" · "Comparar projetos"
-const SCOPE_LABELS = ["Projeto", "Spec", "Wave", "Comparar projetos"] as const;
 
 export function Economia() {
   const projectsRoot = useStore((s) => s.projectsRoot);
@@ -82,11 +76,6 @@ export function Economia() {
   if (!projectsRoot) {
     return (
       <div className="flex flex-col gap-6 w-full">
-        <PageHeader
-          breadcrumb={[{ label: "Workspace" }, { label: "Economia" }]}
-          title="Economia"
-          subtitle={SCOPE_LABELS.join(" · ")}
-        />
         <EmptyState
           title="Diretório de projetos não configurado"
           description="Vá em Configurações e aponte para a pasta onde estão seus repos."
@@ -98,11 +87,6 @@ export function Economia() {
   if (!activeWorkspaceId || !repoPath || !scope) {
     return (
       <div className="flex flex-col gap-6 w-full">
-        <PageHeader
-          breadcrumb={[{ label: "Workspace" }, { label: "Economia" }]}
-          title="Economia"
-          subtitle={SCOPE_LABELS.join(" · ")}
-        />
         <EmptyState
           title="Selecione um workspace"
           description="Use o seletor na sidebar para escolher um projeto."
@@ -124,12 +108,6 @@ export function Economia() {
 
   return (
     <div className="flex flex-col gap-6 w-full">
-      <PageHeader
-        breadcrumb={[{ label: "Workspace" }, { label: "Economia" }]}
-        title="Economia"
-        subtitle={`Escopo: ${describeScope(scope)} · ${SCOPE_LABELS.join(" · ")}`}
-      />
-
       <ScopeBar projectPath={repoPath} scope={scope} onScopeChange={setScope} />
 
       {/* ── KPI cards: custo, economia, cache hit ──────────────────────── */}
@@ -282,15 +260,3 @@ function scopeKey(scope: EconomyScope): string {
   }
 }
 
-function describeScope(scope: EconomyScope): string {
-  switch (scope.kind) {
-    case "project":
-      return "Projeto atual";
-    case "spec":
-      return scope.spec ? `Spec ${scope.spec}` : "Spec (selecione)";
-    case "wave":
-      return scope.wave ? `Wave ${scope.wave}` : "Wave (selecione)";
-    case "all_projects":
-      return `${scope.projects.length} projetos`;
-  }
-}

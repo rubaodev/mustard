@@ -14,7 +14,7 @@
 // merges into its `<details>` `open` prop, so users can also collapse /
 // expand individual sub-trees manually between bulk actions.
 
-import { memo, useState, type ReactNode } from "react";
+import { memo, useCallback, useState, type ReactNode } from "react";
 import {
   Square,
   Layers,
@@ -40,6 +40,14 @@ interface ExecutionTraceProps {
 /**
  * Top-level trace container. Renders the empty state when the query has no
  * inputs and delegates the rest to the recursive `TraceNodeRow`.
+ *
+ * Wave 1 polish (spec `2026-05-21-dashboard-spec-tabs-polish`) — the per-node
+ * `open` state was previously a `useState` inside the recursive `TraceNodeRow`,
+ * which meant every TanStack Query refetch (5 s cadence) remounted the leaves
+ * and silently reset their expansion. We now hold an `expanded: Set<string>`
+ * at the top level and pass a path-keyed `isOpen` + `toggle` pair to each row.
+ * Node ids are built from the recursion path (`${parentKey}/${kind}-${idx}`)
+ * so the Set survives across refetches without colliding between siblings.
  */
 export function ExecutionTrace({
   projectPath,
@@ -53,6 +61,33 @@ export function ExecutionTrace({
   const [forced, setForced] = useState<{ open: boolean; gen: number } | null>(
     null,
   );
+  // Path-keyed expansion state. Lives at the top so per-leaf re-mounts on
+  // refetch (TanStack Query swaps the data object) can't wipe it.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const isOpenById = useCallback(
+    (id: string, defaultOpen: boolean): boolean => {
+      // When the user has explicitly touched this node, honour that. Default
+      // (spec/wave open, agent/tool collapsed) only applies on first sight.
+      if (expanded.has(`+${id}`)) return true;
+      if (expanded.has(`-${id}`)) return false;
+      return defaultOpen;
+    },
+    [expanded],
+  );
+  const toggleById = useCallback((id: string, defaultOpen: boolean) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      const currentlyOpen = next.has(`+${id}`)
+        ? true
+        : next.has(`-${id}`)
+          ? false
+          : defaultOpen;
+      next.delete(`+${id}`);
+      next.delete(`-${id}`);
+      next.add(currentlyOpen ? `-${id}` : `+${id}`);
+      return next;
+    });
+  }, []);
 
   if (!projectPath || !specName) {
     return (
@@ -122,7 +157,15 @@ export function ExecutionTrace({
           Colapsar tudo
         </button>
       </div>
-      <TraceNodeRow node={data} depth={0} forced={forced} />
+      <TraceNodeRow
+        node={data}
+        depth={0}
+        nodeId="root"
+        forced={forced}
+        isOpenById={isOpenById}
+        toggleById={toggleById}
+        setExpanded={setExpanded}
+      />
     </div>
   );
 }
@@ -132,8 +175,16 @@ export function ExecutionTrace({
 interface TraceNodeRowProps {
   node: TraceNode;
   depth: number;
+  /** Path-keyed id of this node — built from the recursion ancestry. */
+  nodeId: string;
   /** Latest bulk expand/collapse intent (see `ExecutionTrace`). */
   forced: { open: boolean; gen: number } | null;
+  /** Top-level expansion lookup keyed by `nodeId`. */
+  isOpenById: (id: string, defaultOpen: boolean) => boolean;
+  /** Toggle helper keyed by `nodeId`. */
+  toggleById: (id: string, defaultOpen: boolean) => void;
+  /** Raw setter — used to swallow per-node state during bulk forced ops. */
+  setExpanded: React.Dispatch<React.SetStateAction<Set<string>>>;
 }
 
 const KIND_ICON: Record<TraceKind, typeof Square> = {
@@ -162,7 +213,11 @@ const KIND_LABEL: Record<TraceKind, string> = {
 const TraceNodeRow = memo(function TraceNodeRow({
   node,
   depth,
+  nodeId,
   forced,
+  isOpenById,
+  toggleById,
+  setExpanded,
 }: TraceNodeRowProps) {
   const Icon = KIND_ICON[node.kind];
   const iconColor = KIND_ICON_COLOR[node.kind];
@@ -171,15 +226,20 @@ const TraceNodeRow = memo(function TraceNodeRow({
   // initial view doesn't drown the reader.
   const defaultOpen = node.kind === "spec" || node.kind === "wave";
 
-  // Local open state — initialised from `defaultOpen`, overridden whenever a
-  // new bulk intent (`forced.gen`) lands. Users can still toggle individual
-  // nodes between bulk actions because we only consume `forced` on the
-  // generation change.
-  const [open, setOpen] = useState<boolean>(defaultOpen);
+  // Honour the top-level lookup. On bulk expand/collapse, an effect-free
+  // generation guard rewrites the explicit override so this row reflects the
+  // latest intent without losing other rows the user has manually touched.
+  const open = isOpenById(nodeId, defaultOpen);
   const [lastGen, setLastGen] = useState<number>(0);
   if (forced && forced.gen !== lastGen) {
     setLastGen(forced.gen);
-    setOpen(forced.open);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.delete(`+${nodeId}`);
+      next.delete(`-${nodeId}`);
+      next.add(forced.open ? `+${nodeId}` : `-${nodeId}`);
+      return next;
+    });
   }
 
   // Indentation is owned by the parent's `children` container, so each row
@@ -257,14 +317,21 @@ const TraceNodeRow = memo(function TraceNodeRow({
       )}
     >
       {hasChildren
-        ? node.children.map((child, idx) => (
-            <TraceNodeRow
-              key={`${child.kind}-${idx}-${child.label}`}
-              node={child}
-              depth={depth + 1}
-              forced={forced}
-            />
-          ))
+        ? node.children.map((child, idx) => {
+            const childId = `${nodeId}/${child.kind}-${idx}`;
+            return (
+              <TraceNodeRow
+                key={childId}
+                node={child}
+                depth={depth + 1}
+                nodeId={childId}
+                forced={forced}
+                isOpenById={isOpenById}
+                toggleById={toggleById}
+                setExpanded={setExpanded}
+              />
+            );
+          })
         : null}
       {node.kind === "tool" ? (
         <div className="rounded-[--ds-radius-md] overflow-hidden">
@@ -282,7 +349,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => toggleById(nodeId, defaultOpen)}
         aria-expanded={open}
         className={cn(
           "block w-full text-left rounded-[--ds-radius-md]",

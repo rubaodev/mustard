@@ -250,13 +250,14 @@ fn cross_wave_bytes_for(
     conn: &Connection,
     all_wave_names: &[String],
     n: u32,
+    spec: &str,
 ) -> usize {
     if n <= 1 {
         return 0;
     }
     let n_prior = (n as usize).saturating_sub(1).min(all_wave_names.len());
     let prior: Vec<String> = all_wave_names.iter().take(n_prior).cloned().collect();
-    memory_cross_wave::render(&prior, Some(conn)).len()
+    memory_cross_wave::render(&prior, Some(conn), spec).len()
 }
 
 /// Build the full result JSON for `--spec <parent>`.
@@ -294,7 +295,7 @@ fn build_result(project: &Path, parent: &str) -> Value {
                 let n = wave_number(name);
                 let n = if n == 0 { (idx + 1) as u32 } else { n };
                 let model = models.get(name).cloned().flatten();
-                let bytes = cross_wave_bytes_for(&conn, &wave_names, n);
+                let bytes = cross_wave_bytes_for(&conn, &wave_names, n, parent);
                 serde_json::to_value(aggregate_wave(&conn, name, model, bytes))
                     .unwrap_or(Value::Null)
             })

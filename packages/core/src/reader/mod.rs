@@ -22,8 +22,8 @@ pub use sqlite::SqliteSpecReader;
 
 use crate::reader::error::Result;
 use crate::model::view::{
-    QualityRollup, SpecFilter, SpecSummary, SpecView, TimeWindow, TimelineNode, WaveView,
-    WorkspaceSummary,
+    QualityRollup, SpecChild, SpecFilter, SpecSummary, SpecView, TimeWindow, TimelineNode,
+    WaveView, WorkspaceSummary,
 };
 
 /// Read-side contract for the SDD domain layer.
@@ -84,4 +84,20 @@ pub trait SpecReader: Send + Sync {
     /// # Errors
     /// Returns [`ReadError`] for IO or decode failures.
     fn workspace_summary(&self) -> Result<WorkspaceSummary>;
+
+    /// Children of a parent spec via fold of `spec.link` events.
+    ///
+    /// Returns one [`SpecChild`] per distinct child name attributed to
+    /// `parent` by a `spec.link` event payload. Each child's lifecycle status
+    /// is resolved by re-reading its own event stream — a child with no
+    /// events at all is reported with status [`SpecStatus::NoEvents`].
+    ///
+    /// Returns an empty `Vec` when `parent` has no linked children, never
+    /// `None`.
+    ///
+    /// [`SpecStatus::NoEvents`]: crate::model::view::SpecStatus::NoEvents
+    ///
+    /// # Errors
+    /// Returns [`ReadError`] for IO or decode failures.
+    fn children_of(&self, parent: &str) -> Result<Vec<SpecChild>>;
 }

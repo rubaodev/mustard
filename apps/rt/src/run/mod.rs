@@ -52,6 +52,7 @@ mod security_scan;
 mod skills;
 mod statusline;
 mod verify_emit;
+mod spec_children;
 mod spec_extract;
 mod spec_link;
 mod spec_sections;
@@ -60,6 +61,7 @@ mod sync_registry;
 mod transcript_watcher;
 mod verify_pipeline;
 mod wave_dependency;
+mod wave_files;
 mod wave_lib;
 mod wave_scaffold;
 mod wave_size_check;
@@ -249,6 +251,17 @@ pub enum RunCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// UNION of sub-specs linked to `--parent` via `spec.link` events AND via
+    /// filesystem `### Parent:` headers. Used by the dashboard "Sub-specs"
+    /// tab so sub-specs created on a teammate's machine (header present but
+    /// no `spec.link` event in this developer's SQLite) still surface.
+    /// Emits JSON `Vec<ChildEntry>` with a `source: event|header|both` tag
+    /// per row. Fail-open: any error degrades to `[]`.
+    SpecChildren {
+        /// Parent (epic) spec slug whose children to enumerate.
+        #[arg(long)]
+        parent: Option<String>,
+    },
     /// Validate a spec's structure (WARN-level — never blocks).
     AnalyzeValidation {
         /// Path to the spec file.
@@ -281,6 +294,19 @@ pub enum RunCmd {
     },
     /// Analyze file dependencies across waves (reads JSON from stdin).
     WaveDependency,
+    /// Return the declared-files count and full markdown body of a wave's
+    /// sub-spec (`.claude/spec/{spec}/wave-{wave}-*/spec.md`). Used by the
+    /// dashboard "Ondas" tab to show the canon `## Arquivos` count and pop
+    /// open a drawer with the wave markdown. Fail-open: missing files →
+    /// `{"count":0,"markdown":"","path":null}`.
+    WaveFiles {
+        /// Parent spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Wave number (1-based).
+        #[arg(long)]
+        wave: Option<u32>,
+    },
     /// Suggest wave decomposition by file/entity count (reads JSON from stdin).
     ScopeDecompose,
     /// Check whether a spec should be decomposed at EXECUTE entry.
@@ -623,6 +649,7 @@ pub fn dispatch(cmd: RunCmd) {
             child,
             reason,
         } => spec_link::run(parent.as_deref(), child.as_deref(), reason.as_deref()),
+        RunCmd::SpecChildren { parent } => spec_children::run(parent.as_deref()),
         RunCmd::AnalyzeValidation { spec } => analyze_validation::run(spec.as_deref()),
         RunCmd::MarkChecklistItem {
             spec,
@@ -632,6 +659,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
         RunCmd::WaveTree { spec_dir, format } => wave_tree::run(&spec_dir, &format),
         RunCmd::WaveDependency => wave_dependency::run(),
+        RunCmd::WaveFiles { spec, wave } => wave_files::run(spec.as_deref(), wave),
         RunCmd::ScopeDecompose => scope_decompose::run(),
         RunCmd::ExecRewaveCheck { spec } => exec_rewave_check::run(spec.as_deref()),
         RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),

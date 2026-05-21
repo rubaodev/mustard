@@ -3,6 +3,7 @@ pub mod amend_queries;
 mod discovery;
 pub mod db;
 mod prd_lapidator;
+pub mod process_util;
 mod projects;
 pub mod spec_views;
 pub mod telemetry;
@@ -278,7 +279,7 @@ pub struct QualityMetrics {
 #[tauri::command]
 fn dashboard_subprojects(repo_path: String) -> Result<Vec<SubprojectInfo>, String> {
     let base = PathBuf::from(&repo_path);
-    let output = std::process::Command::new("node")
+    let output = crate::process_util::no_window_command("node")
         .arg(".claude/scripts/sync-detect.js")
         .current_dir(&base)
         .output()
@@ -409,7 +410,7 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
     }
 
     // Walk subproject skills via sync-detect
-    let detect = std::process::Command::new("node")
+    let detect = crate::process_util::no_window_command("node")
         .arg(".claude/scripts/sync-detect.js")
         .current_dir(&base)
         .output();
@@ -1505,6 +1506,34 @@ fn dashboard_memory_cross_wave(
     spec_views::dashboard_memory_cross_wave_run(&repo_path, &spec, wave)
 }
 
+/// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — shell out to
+/// `mustard-rt run wave-files --spec <name> --wave <N>` and return the typed
+/// payload (real file count from the wave sub-spec's `## Arquivos` block plus
+/// the full markdown for the wave drawer). Mirrors the spawn pattern used by
+/// `dashboard_metrics_wave_status` / `dashboard_memory_cross_wave`.
+#[tauri::command]
+async fn dashboard_spec_wave_files(
+    repo_path: String,
+    spec: String,
+    wave: u32,
+) -> Result<spec_views::WaveFilesPayload, String> {
+    spec_views::dashboard_spec_wave_files_run(&repo_path, &spec, wave)
+}
+
+/// Wave 1 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs-polish`) — scan
+/// `<repo>/.claude/spec/{spec}/wave-N-{role}/` and return the wave structure
+/// declared on disk, independent of whether the SQLite event log has caught
+/// up. The `SpecWavesTab` unions this with the projection from
+/// `dashboard_spec_waves` so the tab shows the full wave plan during EXECUTE
+/// (waves declared but not yet emitting events render as `queued`).
+#[tauri::command]
+async fn dashboard_spec_waves_planned(
+    repo_path: String,
+    spec: String,
+) -> Result<Vec<spec_views::SpecWavePlanned>, String> {
+    spec_views::dashboard_spec_waves_planned_run(&repo_path, &spec)
+}
+
 /// Wave 4 (2026-05-20) — delegate to `mustard-core::workspace_summary`.
 /// Fixes the previous `events_per_minute` SQL filter that silently
 /// short-circuited (returned the all-time count → `2904.0` in the audit) and
@@ -1671,6 +1700,8 @@ pub fn run() {
             dashboard_metrics_wave_status,
             dashboard_wikilink_extract,
             dashboard_memory_cross_wave,
+            dashboard_spec_wave_files,
+            dashboard_spec_waves_planned,
             spec_views::dashboard_token_summary,
             spec_views::dashboard_month_activity,
             spec_views::dashboard_events_feed,

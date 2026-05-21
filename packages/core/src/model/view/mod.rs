@@ -15,7 +15,7 @@ mod workspace;
 
 pub use filter::{SpecFilter, SpecStatusFilter, TimeWindow};
 pub use quality::{AcStatus, AcceptanceCriterion, QualityRollup};
-pub use spec::{SpecStatus, SpecSummary, SpecView};
+pub use spec::{SpecChild, SpecStatus, SpecSummary, SpecView};
 pub use timeline::{TimelineKind, TimelineNode};
 pub use wave::{WaveStatus, WaveView};
 pub use workspace::{

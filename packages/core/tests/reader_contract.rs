@@ -15,6 +15,7 @@ use mustard_core::{
     AcStatus, InMemorySpecReader, Phase, SegmentState, SpecFilter, SpecReader, SpecStatus,
     SqliteSpecReader, TimeWindow, WaveStatus,
 };
+use mustard_core::model::view::SpecChild;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -297,6 +298,128 @@ fn empty_event_stream_yields_consistent_empties_across_readers() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// children_of contract — spec.link fold + status lookup of each child
+// ---------------------------------------------------------------------------
+
+/// Event stream exercising the parent → children link graph.
+///
+/// One parent (`parent-x`) with a pipeline event, two `spec.link` events
+/// attributing two children (`child-a`, `child-b`) to it, and one minimal
+/// event per child so each resolves to a real status. `child-a` carries a
+/// duplicate `spec.link` to confirm dedupe + first-reason-wins.
+fn link_stream() -> Vec<HarnessEvent> {
+    vec![
+        event(
+            "parent-x",
+            "2026-05-20T09:00:00Z",
+            "pipeline.scope",
+            json!({ "scope": "full", "lang": "pt", "model": "opus" }),
+        ),
+        event(
+            "parent-x",
+            "2026-05-20T09:00:01Z",
+            "spec.link",
+            json!({ "parent": "parent-x", "child": "child-a", "reason": "tactical-fix-1" }),
+        ),
+        event(
+            "parent-x",
+            "2026-05-20T09:00:02Z",
+            "spec.link",
+            json!({ "parent": "parent-x", "child": "child-b", "reason": "tactical-fix-2" }),
+        ),
+        // Duplicate link — must dedupe by child name; the first reason wins.
+        event(
+            "parent-x",
+            "2026-05-20T09:00:03Z",
+            "spec.link",
+            json!({ "parent": "parent-x", "child": "child-a", "reason": "second-reason-loses" }),
+        ),
+        event(
+            "child-a",
+            "2026-05-20T09:05:00Z",
+            "pipeline.scope",
+            json!({ "scope": "light" }),
+        ),
+        event(
+            "child-b",
+            "2026-05-20T09:06:00Z",
+            "pipeline.scope",
+            json!({ "scope": "light" }),
+        ),
+    ]
+}
+
+fn build_sqlite_reader_with_links() -> (SqliteSpecReader, TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteEventStore::for_project(dir.path()).unwrap();
+    for ev in link_stream() {
+        store.append(&ev).unwrap();
+    }
+    drop(store);
+    let reader = SqliteSpecReader::for_project(dir.path()).unwrap();
+    (reader, dir)
+}
+
+fn build_memory_reader_with_links() -> InMemorySpecReader {
+    InMemorySpecReader::with_events(link_stream())
+}
+
+fn assert_children_of_parent_x<R: SpecReader>(reader: &R) {
+    let children: Vec<SpecChild> = reader.children_of("parent-x").unwrap();
+    assert_eq!(children.len(), 2, "two distinct children expected (dedupe)");
+    let names: std::collections::BTreeSet<_> =
+        children.iter().map(|c| c.spec.clone()).collect();
+    assert!(names.contains("child-a"));
+    assert!(names.contains("child-b"));
+
+    // First-reason-wins: the duplicate link with "second-reason-loses" must
+    // not overwrite the original reason.
+    let child_a = children.iter().find(|c| c.spec == "child-a").unwrap();
+    assert_eq!(child_a.reason.as_deref(), Some("tactical-fix-1"));
+
+    let child_b = children.iter().find(|c| c.spec == "child-b").unwrap();
+    assert_eq!(child_b.reason.as_deref(), Some("tactical-fix-2"));
+
+    // Each child resolves through its own event stream — neither should be
+    // NoEvents because both have a pipeline.scope event.
+    assert_ne!(child_a.status, SpecStatus::NoEvents);
+    assert_ne!(child_b.status, SpecStatus::NoEvents);
+
+    // The parent's summary reports the same count, populated via children_of.
+    let parent_summary = reader.spec_summary("parent-x").unwrap().expect("parent summary");
+    assert_eq!(parent_summary.children_count, 2);
+}
+
+fn assert_children_of_unlinked_parent_is_empty<R: SpecReader>(reader: &R) {
+    let children = reader.children_of("not-a-parent").unwrap();
+    assert!(children.is_empty());
+}
+
+#[test]
+fn children_of_contract_sqlite() {
+    let (reader, _dir) = build_sqlite_reader_with_links();
+    assert_children_of_parent_x(&reader);
+}
+
+#[test]
+fn children_of_contract_memory() {
+    let reader = build_memory_reader_with_links();
+    assert_children_of_parent_x(&reader);
+}
+
+#[test]
+fn children_of_unlinked_parent_is_empty_sqlite() {
+    let (reader, _dir) = build_sqlite_reader_with_links();
+    assert_children_of_unlinked_parent_is_empty(&reader);
+}
+
+#[test]
+fn children_of_unlinked_parent_is_empty_memory() {
+    let reader = build_memory_reader_with_links();
+    assert_children_of_unlinked_parent_is_empty(&reader);
+}
+
 #[test]
 fn empty_spec_name_is_invalid_across_readers() {
     let (sqlite_reader, _dir) = {
@@ -315,5 +438,6 @@ fn empty_spec_name_is_invalid_across_readers() {
         assert!(reader.waves("").is_err());
         assert!(reader.quality("").is_err());
         assert!(reader.timeline("", TimeWindow::All).is_err());
+        assert!(reader.children_of("").is_err());
     }
 }

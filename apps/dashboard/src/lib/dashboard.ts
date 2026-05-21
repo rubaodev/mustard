@@ -777,6 +777,54 @@ export function dashboardMemoryCrossWave(
   return invoke<string>("dashboard_memory_cross_wave", { repoPath, spec, wave });
 }
 
+// --- Wave-2 (spec 2026-05-21-dashboard-spec-tabs): real file count + wave markdown ---
+
+/**
+ * Real file count for a wave + full wave-N markdown so the drawer can render
+ * it without a second round-trip. Backed by `mustard-rt run wave-files`.
+ * `path` is `null` when the wave sub-spec is missing on disk.
+ */
+export interface WaveFilesPayload {
+  count: number;
+  markdown: string;
+  path: string | null;
+}
+
+export function dashboardSpecWaveFiles(
+  path: string,
+  spec: string,
+  wave: number,
+): Promise<WaveFilesPayload> {
+  return invoke<WaveFilesPayload>("dashboard_spec_wave_files", {
+    repoPath: path,
+    spec,
+    wave,
+  });
+}
+
+// --- Wave 1 polish (spec 2026-05-21-dashboard-spec-tabs-polish): planned waves ---
+//
+// One wave declared on disk under `.claude/spec/{spec}/wave-N-{role}/`. The
+// Specs page unions this with the SpecWave[] projection from SQLite so the
+// "Ondas" tab can render the full wave plan during EXECUTE — even when the
+// SQLite event stream hasn't caught up with wave start/complete events yet.
+
+export interface SpecWavePlanned {
+  wave: number;
+  role: string | null;
+  declared_files_count: number;
+}
+
+export function dashboardSpecWavesPlanned(
+  repoPath: string,
+  spec: string,
+): Promise<SpecWavePlanned[]> {
+  return invoke<SpecWavePlanned[]>("dashboard_spec_waves_planned", {
+    repoPath,
+    spec,
+  });
+}
+
 // --- Wave-2 dashboard visual overview (spec 2026-05-20-dashboard-visual-overview) ---
 
 /** Per-pipeline token savings entry returned in `TokenSummary.top_pipelines`. */

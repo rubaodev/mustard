@@ -10,11 +10,11 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "lowercase": 34,
-            "snake_case": 7
+            "lowercase": 46,
+            "snake_case": 10
           },
           "dominant": "lowercase",
-          "total": 41
+          "total": 56
         }
       },
       "discovered": [
@@ -50,9 +50,11 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".rs",
-          "fileCount": 6,
+          "fileCount": 8,
           "folderPattern": "**/src/mod.rs",
           "folders": [
+            "src/economy",
+            "src/economy/sources",
             "src/model",
             "src/model/view",
             "src/process",
@@ -65,9 +67,9 @@
           "memberSuffixes": null,
           "namingPattern": null,
           "samples": [
-            "src/model/mod.rs",
-            "src/model/view/mod.rs",
-            "src/process/mod.rs"
+            "src/economy/mod.rs",
+            "src/economy/sources/mod.rs",
+            "src/model/mod.rs"
           ],
           "subprojectName": "core",
           "suffix": "mod",
@@ -76,16 +78,18 @@
       ],
       "folderFrequency": {
         "segments": {
+          "economy": 2,
           "model": 2,
           "process": 1,
           "projection": 1,
           "reader": 1,
-          "src": 7,
+          "sources": 1,
+          "src": 9,
           "store": 1,
           "tests": 1,
           "view": 1
         },
-        "totalFolders": 8
+        "totalFolders": 10
       }
     },
     "typescript": {
@@ -93,13 +97,13 @@
       "conventions": {
         "naming": {
           "distribution": {
-            "camelCase": 29,
+            "camelCase": 33,
             "kebab-case": 5,
-            "lowercase": 16,
+            "lowercase": 22,
             "mixed": 3
           },
           "dominant": null,
-          "total": 53
+          "total": 63
         }
       },
       "discovered": [
@@ -107,7 +111,7 @@
           "declarationKeywords": null,
           "declarationSuffix": null,
           "ext": ".ts",
-          "fileCount": 28,
+          "fileCount": 33,
           "folderPattern": "**/src/",
           "folders": [
             "src/hooks",
@@ -173,15 +177,16 @@
         "segments": {
           ".": 1,
           "api": 1,
-          "components": 1,
+          "components": 2,
           "data": 1,
+          "ds": 1,
           "hooks": 1,
           "lib": 2,
           "page": 1,
-          "src": 7,
+          "src": 8,
           "types": 1
         },
-        "totalFolders": 8
+        "totalFolders": 9
       },
       "framework": "none",
       "orm": "none",
@@ -267,6 +272,22 @@
       "values": [
         "FirstParty",
         "Manual"
+      ]
+    },
+    "EconomyScope": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/economy/scope.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "Project",
+        "AllProjects"
       ]
     },
     "Error": {
@@ -371,6 +392,27 @@
         "OtelCollector"
       ]
     },
+    "SavingsSource": {
+      "decorators": [
+        "Debug",
+        "Clone",
+        "Copy",
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Serialize",
+        "Deserialize"
+      ],
+      "file": "src/economy/model.rs",
+      "valueConvention": "PascalCase",
+      "values": [
+        "RtkRewrite",
+        "ModelRoutingDowngrade",
+        "BashGuardBlock",
+        "BudgetOutputCut",
+        "RecipeInjection"
+      ]
+    },
     "Scope": {
       "decorators": [
         "Debug",
@@ -427,7 +469,7 @@
         "Implementing",
         "Reviewing",
         "Qa",
-        "...(10 total)"
+        "...(11 total)"
       ]
     },
     "SpecStatusFilter": {

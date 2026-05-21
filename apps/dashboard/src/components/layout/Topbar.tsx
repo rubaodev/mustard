@@ -3,28 +3,35 @@ import { Sun, Moon, RefreshCw } from "lucide-react";
 import { useQueryClient, useQuery, useQueries } from "@tanstack/react-query";
 import { useTheme } from "@/hooks/useTheme";
 import { useStore } from "@/lib/store";
+import { useT } from "@/lib/i18n";
 import { discoverProjects } from "@/api/discovery";
 import { fetchActivePipelines } from "@/lib/dashboard";
 
-function pathLabel(pathname: string): string {
-  if (pathname === "/" || pathname === "/workspace") return "Visão Geral";
-  if (pathname === "/specs") return "Specs";
-  if (pathname === "/economy") return "Economia";
-  if (pathname === "/knowledge") return "Knowledge";
-  if (pathname === "/settings") return "Configurações";
-  if (pathname === "/preferences") return "Preferences";
-  if (pathname === "/activity") return "Atividade";
-  if (pathname === "/telemetry") return "Telemetria";
-  if (pathname === "/quality") return "Qualidade";
-  if (pathname === "/commands") return "Comandos";
-  if (pathname === "/prd") return "PRD";
-  if (pathname.startsWith("/project/")) return "Projeto";
+/**
+ * Map a route to its breadcrumb label. `t` is the resolver from `@/lib/i18n`,
+ * passed in so the Topbar re-renders whenever the Preferences language slice
+ * changes (the hook reads `useStore((s) => s.language)`).
+ */
+function pathLabel(pathname: string, t: (key: string, fallback?: string) => string): string {
+  if (pathname === "/" || pathname === "/workspace") return t("sidebar.overview");
+  if (pathname === "/specs") return t("sidebar.specs");
+  if (pathname === "/economy") return t("sidebar.economy");
+  if (pathname === "/knowledge") return t("sidebar.knowledge");
+  if (pathname === "/settings") return t("sidebar.settings");
+  if (pathname === "/preferences") return t("sidebar.preferences");
+  if (pathname === "/activity") return t("sidebar.activity");
+  if (pathname === "/telemetry") return t("sidebar.telemetry");
+  if (pathname === "/quality") return t("sidebar.quality");
+  if (pathname === "/commands") return t("sidebar.commands");
+  if (pathname === "/prd") return t("sidebar.prd");
+  if (pathname.startsWith("/project/")) return t("breadcrumb.workspace");
   return pathname.replace(/^\//, "").replace(/^./, (c) => c.toUpperCase());
 }
 
 export function Topbar() {
   const location = useLocation();
-  const label = pathLabel(location.pathname);
+  const t = useT();
+  const label = pathLabel(location.pathname, t);
   const { theme, toggle } = useTheme();
   const queryClient = useQueryClient();
   const projectsRoot = useStore((s) => s.projectsRoot);
@@ -65,8 +72,8 @@ export function Topbar() {
       <div className="flex items-center gap-1.5">
         <button
           type="button"
-          title="Reload projects"
-          aria-label="Reload projects"
+          title={t("action.reload_projects")}
+          aria-label={t("action.reload_projects")}
           disabled={!projectsRoot}
           onClick={() => {
             if (projectsRoot) {

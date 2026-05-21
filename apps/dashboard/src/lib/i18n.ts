@@ -1,22 +1,34 @@
-// Lightweight in-house i18n provider for the Visão Geral page.
+// Lightweight in-house i18n provider used across the dashboard.
 //
-// Why caseiro instead of reusing the existing `src/i18n.ts` (i18next):
+// Background — two i18n surfaces coexist in this repo:
 //
-// 1. Wave 8 (spec `2026-05-20-economia-moat-unification/wave-8-visao-geral-revamp`)
-//    asks for the Overview labels to be lazily migrable. A flat
-//    `Map<string, Record<'pt'|'en', string>>` keeps the dictionary inspectable
-//    and grep-able from the React side without dragging i18next options into
-//    each new component.
-// 2. The provider binds straight to the existing **Preferences** slice on the
-//    zustand store (`useStore((s) => s.language)`) so the only persisted
-//    setting that controls language lives in one place. There is no separate
-//    `usePreferences` slice — Preferences is the page that mutates the slice
-//    via `setLanguage`; the binding name in this module mirrors that mental
-//    model.
-// 3. Calling `setLanguage` on the zustand store already syncs `i18next` (see
-//    `src/lib/store.ts::setLanguage`), so legacy pages that still consume
-//    `useTranslation()` from `react-i18next` stay correct — this module just
-//    gives the Overview page a smaller, dependency-free surface.
+//   1. `src/i18n.ts` — i18next instance, namespace `common`. Older pages
+//      (Sidebar projects/menu, Settings, Preferences, projects toasts) consume
+//      it via `useTranslation()` from `react-i18next`.
+//   2. THIS module — a flat `Map<string, Record<'pt'|'en', string>>` bound to
+//      the same Preferences slice (`useStore((s) => s.language)`). It started
+//      life serving the Visão Geral revamp (Wave 8) and the W2 i18n-audit
+//      (spec `2026-05-21-dashboard-i18n-and-phase-unify`) generalized it: the
+//      Sidebar nav, route titles, Specs/Knowledge headers and shared
+//      action/phase/count vocab all live here now, with `t(key)` exported as
+//      the canonical surface from `@/lib/i18n`.
+//
+// We deliberately did NOT collapse the two — keeping `src/i18n.ts` intact
+// preserves the Settings/Preferences/projects strings and their interpolation
+// helpers (`{{name}}`, `_one` plurals) without rewriting consumers. The two
+// dictionaries stay in sync via the shared `useStore.language` slice.
+//
+// Reactivity model
+// ----------------
+// `useT()` is the React hook. It calls `useStore((s) => s.language)` so any
+// component that uses it re-renders on language change automatically. The
+// imperative `t()` reads `useStore.getState().language` synchronously — fine
+// for one-off callers outside the React tree (toast text, label maps) but
+// NOT reactive on its own; pair it with the hook in render paths.
+//
+// Resolution order: active language → PT fallback → EN fallback → key.
+// Surfacing the raw key in dev keeps missing translations visible instead of
+// collapsing to an empty string.
 
 import { useStore } from "@/lib/store";
 
@@ -27,9 +39,9 @@ export type Lang = "pt" | "en";
 export type TranslationRow = Record<Lang, string>;
 
 /**
- * Flat dictionary for the Visão Geral page. Keep entries grouped by surface
- * (`workspace.*`, `period.*`) so future migrations stay readable. New keys go
- * in this map — components consume them via `useTranslate()`.
+ * Flat dictionary. Entries are grouped by surface (`sidebar.*`, `route.*`,
+ * `action.*`, etc.) so future migrations stay grep-able. New keys live here —
+ * consumers reach them via `t(key)` or `useT()`.
  */
 const DICTIONARY = new Map<string, TranslationRow>([
   // Period segmented control (WorkspaceSpecsByStatus)
@@ -42,7 +54,7 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["common.viewDetails", { pt: "Ver detalhes →", en: "View details →" }],
   ["common.empty", { pt: "Sem dados disponíveis", en: "No data available" }],
 
-  // Section titles.
+  // Workspace / Visão Geral section titles.
   ["workspace.title", { pt: "Visão Geral", en: "Overview" }],
   ["workspace.subtitle", { pt: "Sala de operações multi-track", en: "Multi-track operations room" }],
   ["workspace.activePipelines", { pt: "Pipelines ativos", en: "Active pipelines" }],
@@ -61,19 +73,71 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["status.pending", { pt: "Pendentes", en: "Pending" }],
   ["status.blocked", { pt: "Bloqueadas", en: "Blocked" }],
   ["status.implementing", { pt: "Implementando", en: "Implementing" }],
+  ["status.no_data", { pt: "Sem dados", en: "No data" }],
 
   // Hero empty / labels.
   ["hero.empty", { pt: "Nenhum pipeline ativo", en: "No active pipeline" }],
   ["hero.emptyHint", { pt: "Inicie uma pipeline para vê-la aqui.", en: "Start a pipeline to see it here." }],
   ["hero.duration", { pt: "duração", en: "duration" }],
   ["hero.tokens", { pt: "tokens", en: "tokens" }],
+
+  // Sidebar nav (W2 audit). Aliases that mirror the i18next `nav.*` entries so
+  // both surfaces stay coherent under a single language switch.
+  ["sidebar.overview", { pt: "Visão Geral", en: "Overview" }],
+  ["sidebar.specs", { pt: "Specs", en: "Specs" }],
+  ["sidebar.economy", { pt: "Economia", en: "Economy" }],
+  ["sidebar.knowledge", { pt: "Conhecimento", en: "Knowledge" }],
+  ["sidebar.commands", { pt: "Comandos", en: "Commands" }],
+  ["sidebar.preferences", { pt: "Preferências", en: "Preferences" }],
+  ["sidebar.settings", { pt: "Configurações", en: "Settings" }],
+  ["sidebar.prd", { pt: "PRD", en: "PRD" }],
+  ["sidebar.activity", { pt: "Atividade", en: "Activity" }],
+  ["sidebar.telemetry", { pt: "Telemetria", en: "Telemetry" }],
+  ["sidebar.quality", { pt: "Qualidade", en: "Quality" }],
+  ["sidebar.add_project", { pt: "Adicionar projeto", en: "Add project" }],
+  ["sidebar.tools", { pt: "Ferramentas", en: "Tools" }],
+
+  // Route headers (PageHeader title/subtitle pairs).
+  ["route.specs.title", { pt: "Specs", en: "Specs" }],
+  ["route.specs.subtitle", { pt: "Lista e drill-down por spec", en: "List and per-spec drill-down" }],
+  ["route.knowledge.title", { pt: "Conhecimento", en: "Knowledge" }],
+  ["route.knowledge.subtitle", { pt: "O que o Mustard aprendeu neste workspace", en: "What Mustard learned in this workspace" }],
+
+  // Breadcrumb segments.
+  ["breadcrumb.workspace", { pt: "Workspace", en: "Workspace" }],
+  ["breadcrumb.mustard", { pt: "Mustard", en: "Mustard" }],
+
+  // Common actions.
+  ["action.add", { pt: "Adicionar", en: "Add" }],
+  ["action.refresh", { pt: "Atualizar", en: "Refresh" }],
+  ["action.close", { pt: "Fechar", en: "Close" }],
+  ["action.reload_projects", { pt: "Recarregar projetos", en: "Reload projects" }],
+
+  // Empty states / counts shared across pages.
+  ["empty.no_events", { pt: "Pipeline ainda sem eventos", en: "Pipeline has no events yet" }],
+  ["count.acs", { pt: "ACs", en: "ACs" }],
+  ["count.files", { pt: "arquivos", en: "files" }],
+  ["count.tools", { pt: "tools", en: "tools" }],
+
+  // Pipeline phases (canonical labels — single source of truth for any chip,
+  // breadcrumb or filter that renders a phase name).
+  ["phase.analyze", { pt: "Analisar", en: "Analyze" }],
+  ["phase.plan", { pt: "Planejar", en: "Plan" }],
+  ["phase.execute", { pt: "Executar", en: "Execute" }],
+  ["phase.review", { pt: "Revisar", en: "Review" }],
+  ["phase.qa", { pt: "QA", en: "QA" }],
+  ["phase.close", { pt: "Fechar", en: "Close" }],
+
+  // Drawer / panel affordances.
+  ["drawer.pin", { pt: "Fixar painel", en: "Pin panel" }],
+  ["drawer.unpin", { pt: "Soltar painel", en: "Unpin panel" }],
 ]);
 
 /**
  * Read the Preferences-controlled language via a zustand selector on the
  * shared `useStore`. Zustand handles subscription/re-render internally, so
- * this hook stays zero-context — any component can call `useTranslate()`
- * without wrapping the tree in a Provider.
+ * this hook stays zero-context — any component can call `useTranslate()` /
+ * `useT()` without wrapping the tree in a Provider.
  */
 function useLang(): Lang {
   // Selector pattern — single field of the store, mirroring the guardrail in
@@ -82,30 +146,50 @@ function useLang(): Lang {
 }
 
 /**
- * React hook used by Wave 8 components. Returns a `t(key, fallback?)` function
- * bound to the current `Preferences.language` value.
- *
- * Resolution order: dictionary entry for the active language → caller-supplied
- * fallback → the key itself (so missing entries surface visibly in dev rather
- * than collapsing to an empty string).
+ * Resolve a key against the dictionary for an explicit language. Falls back
+ * through: active language → PT → EN → caller fallback → key.
+ */
+function resolve(key: string, lang: Lang, fallback?: string): string {
+  const row = DICTIONARY.get(key);
+  if (!row) return fallback ?? key;
+  return row[lang] ?? row.pt ?? row.en ?? fallback ?? key;
+}
+
+/**
+ * React hook used by Wave 8 components and the W2 audit. Returns a
+ * `t(key, fallback?)` function bound to the current `Preferences.language`
+ * value — components re-render when the language slice changes.
  */
 export function useTranslate(): (key: string, fallback?: string) => string {
   const lang = useLang();
-  return (key, fallback) => {
-    const row = DICTIONARY.get(key);
-    if (row) return row[lang];
-    return fallback ?? key;
-  };
+  return (key, fallback) => resolve(key, lang, fallback);
+}
+
+/**
+ * Hook alias matching the W2 spec naming (`useT`). Same semantics as
+ * `useTranslate` — kept as a parallel export so new call sites can use the
+ * shorter name without breaking the older `useTranslate` consumers.
+ */
+export function useT(): (key: string, fallback?: string) => string {
+  return useTranslate();
 }
 
 /**
  * Imperative variant for callers outside a React component (e.g. building a
- * label inside a non-hook utility). Reads the latest language synchronously
- * from the zustand store.
+ * label inside a non-hook utility, toast bodies, route-label maps). Reads the
+ * latest language synchronously from the zustand store. NOT reactive on its
+ * own — pair with the hook in render paths.
  */
 export function translate(key: string, fallback?: string): string {
   const lang = useStore.getState().language;
-  const row = DICTIONARY.get(key);
-  if (row) return row[lang];
-  return fallback ?? key;
+  return resolve(key, lang, fallback);
+}
+
+/**
+ * Canonical `t(key)` export named by the W2 spec. Same behavior as
+ * `translate()` — alias kept for spec parity and to give the broader UI a
+ * single, short, idiomatic name to reach for.
+ */
+export function t(key: string, fallback?: string): string {
+  return translate(key, fallback);
 }

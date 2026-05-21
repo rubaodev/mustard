@@ -217,6 +217,7 @@ fn spec_status_string(status: SpecStatus) -> String {
         SpecStatus::ClosedFollowup => "closed-followup",
         SpecStatus::Completed => "completed",
         SpecStatus::Cancelled => "cancelled",
+        SpecStatus::Abandoned => "abandoned",
         SpecStatus::Blocked => "blocked",
         SpecStatus::WaveFailed => "wave-failed",
     }

@@ -4,7 +4,6 @@ import { useProjects } from "@/lib/dashboard";
 import { useWorkspaceSummarySingle } from "@/hooks/useWorkspaceSummary";
 import { useTranslate } from "@/lib/i18n";
 import {
-  PageHeader,
   EmptyState,
   DataCard,
 } from "@/components/page";
@@ -53,11 +52,6 @@ export function Workspace() {
   if (!projectsRoot) {
     return (
       <div className="flex flex-col gap-6 w-full">
-        <PageHeader
-          breadcrumb={[{ label: t("workspace.title") }]}
-          title={t("workspace.title")}
-          subtitle={t("workspace.subtitle")}
-        />
         <EmptyState
           title="Diretório de projetos não configurado"
           description="Vá em Configurações e aponte para a pasta onde estão seus repos."
@@ -69,11 +63,6 @@ export function Workspace() {
   if (!activeWorkspaceId || !activeProject) {
     return (
       <div className="flex flex-col gap-6 w-full">
-        <PageHeader
-          breadcrumb={[{ label: t("workspace.title") }]}
-          title={t("workspace.title")}
-          subtitle={t("workspace.subtitle")}
-        />
         <EmptyState
           title="Selecione um workspace"
           description="Use o seletor na sidebar para escolher um projeto."
@@ -85,11 +74,6 @@ export function Workspace() {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-6 w-full">
-        <PageHeader
-          breadcrumb={[{ label: t("workspace.title") }]}
-          title={t("workspace.title")}
-          subtitle={t("workspace.subtitle")}
-        />
         <p className="text-[13px] text-muted-foreground">{t("common.loading")}</p>
       </div>
     );
@@ -118,12 +102,6 @@ export function Workspace() {
 
   return (
     <div className="flex flex-col gap-6 w-full">
-      <PageHeader
-        breadcrumb={[{ label: t("workspace.title") }]}
-        title={t("workspace.title")}
-        subtitle={t("workspace.subtitle")}
-      />
-
       {/* Hero: multi-spec list (replaces single-pipeline StatusBar + Timeline). */}
       <WorkspaceHero summary={summary} />
 

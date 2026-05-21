@@ -6,10 +6,33 @@
 //! agent prompt of wave N so the agent inherits context from waves 1..N-1
 //! without re-reading their spec files.
 //!
-//! The wave names for the spec come from `<spec-dir>/wave-plan.md`'s
-//! `## Tabela de Waves` markdown table — the `Spec` column carries the
-//! wikilink `[[wave-N-{role}]]` from which we strip the brackets to get the
-//! exact `pipeline` value stored in events.
+//! ## Wave-name source — two-tier
+//!
+//! 1. `<spec-dir>/wave-plan.md`'s `## Tabela de Waves` markdown table. Rows
+//!    that begin with `|` and whose first cell parses as a wave number
+//!    contribute their `Spec` column (wikilink stripped).
+//! 2. **Filesystem fallback** — when the table is missing or empty (e.g. the
+//!    plan uses an ASCII code-fence diagram instead of a table), scan
+//!    `<spec-dir>` for child directories whose name matches `wave-(\d+)-`
+//!    and emit them ordered by number. See [`parse_wave_dirs_from_fs`].
+//!
+//! ## Memory-event schema
+//!
+//! `agent.memory` events are emitted with the following effective shape — this
+//! query matches *both* legacy and canonical attribution to be robust:
+//!
+//! - `HarnessEvent.spec = Some("{spec-slug}")` (envelope-level — column
+//!   `events.spec`). The canonical attribution used by every other emitter.
+//! - `HarnessEvent.wave = N` (envelope int — column `events.wave`).
+//! - `payload.spec = "{spec-slug}"` *and/or* `payload.wave = N` — present when
+//!   the writer is invoked with an explicit JSON payload that mirrors the
+//!   envelope fields. We OR these against the envelope columns so writers
+//!   that only set one source still match.
+//! - `payload.pipeline = "{spec-slug}"` — legacy attribution. The previous
+//!   query used `payload.pipeline = <wave-name>` (a different convention)
+//!   which never matched: the writer stores the *parent* spec slug there,
+//!   not the wave name. The new query no longer relies on `pipeline`.
+//! - `payload.summary = "..."` — rendered into the markdown bullet list.
 //!
 //! Output: markdown only (stdout). Empty string when there are no prior waves
 //! or no captured memory rows for them. Exit 0 always (fail-open).
@@ -88,22 +111,79 @@ fn open_conn(project: &Path) -> Option<Connection> {
     Some(conn)
 }
 
+/// Parse the wave number `N` from a wave name like `wave-3-frontend`. Returns
+/// `None` when the prefix does not start with `wave-<digits>-`.
+fn parse_wave_number(wave_name: &str) -> Option<i64> {
+    let rest = wave_name.strip_prefix("wave-")?;
+    let n_str: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if n_str.is_empty() {
+        return None;
+    }
+    n_str.parse::<i64>().ok()
+}
+
+/// Filesystem fallback: list wave directories under a spec dir, ordered by
+/// the numeric prefix `N` of their name (`wave-N-{role}`). Used when the
+/// `wave-plan.md` table is missing or empty.
+///
+/// I/O errors yield an empty `Vec` (fail-open).
+pub(crate) fn parse_wave_dirs_from_fs(spec_dir: &Path) -> Vec<String> {
+    let entries = match std::fs::read_dir(spec_dir) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+    let mut hits: Vec<(i64, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(n) = parse_wave_number(&name) else {
+            continue;
+        };
+        // Require `wave-<digits>-` (a trailing role token) — `wave-1` alone is
+        // not a canonical wave dir.
+        let prefix = format!("wave-{n}-");
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        hits.push((n, name));
+    }
+    hits.sort_by_key(|(n, _)| *n);
+    hits.into_iter().map(|(_, name)| name).collect()
+}
+
 /// Fetch up to [`MAX_MEMORIES_PER_WAVE`] `agent.memory` payloads for a single
-/// wave name, newest first. A wave name is the value persisted in
-/// `payload.pipeline` by `memory agent` writers.
-pub(crate) fn memories_for_wave(conn: &Connection, wave_name: &str) -> Vec<Value> {
+/// `(spec, wave)` pair, newest first.
+///
+/// Matches both attribution conventions described in the module docs:
+///
+/// - envelope-level: `events.spec = ?1 AND events.wave = ?2`
+/// - payload-level:  `payload.spec = ?1 AND payload.wave = ?2`
+///
+/// The two are OR'd so a writer that sets only one source still matches.
+pub(crate) fn memories_for_spec_wave(
+    conn: &Connection,
+    spec_slug: &str,
+    wave_n: i64,
+) -> Vec<Value> {
     let mut stmt = match conn.prepare(
         "SELECT payload FROM events \
          WHERE event = 'agent.memory' \
-           AND json_extract(payload, '$.pipeline') = ?1 \
+           AND (json_extract(payload, '$.spec') = ?1 OR spec = ?1) \
+           AND (json_extract(payload, '$.wave') = ?2 OR wave = ?2) \
          ORDER BY ts DESC \
-         LIMIT ?2",
+         LIMIT ?3",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
     let rows = match stmt.query_map(
-        params![wave_name, MAX_MEMORIES_PER_WAVE as i64],
+        params![spec_slug, wave_n, MAX_MEMORIES_PER_WAVE as i64],
         |row| {
             let text: Option<String> = row.get(0)?;
             Ok(text
@@ -121,7 +201,15 @@ pub(crate) fn memories_for_wave(conn: &Connection, wave_name: &str) -> Vec<Value
 
 /// Render the prior-wave memories block. Returns the empty string when there
 /// are no prior waves or no memory rows for any of them.
-pub(crate) fn render(wave_names: &[String], conn: Option<&Connection>) -> String {
+///
+/// `spec` is the parent spec slug (e.g. `2026-05-21-dashboard-spec-tabs`). For
+/// each `wave_name` we extract the wave number from its `wave-N-` prefix and
+/// query `(spec, wave_n)`. Wave names whose prefix does not parse are skipped.
+pub(crate) fn render(
+    wave_names: &[String],
+    conn: Option<&Connection>,
+    spec: &str,
+) -> String {
     if wave_names.is_empty() {
         return String::new();
     }
@@ -130,7 +218,10 @@ pub(crate) fn render(wave_names: &[String], conn: Option<&Connection>) -> String
     };
     let mut sections: Vec<String> = Vec::new();
     for name in wave_names {
-        let mems = memories_for_wave(conn, name);
+        let Some(wave_n) = parse_wave_number(name) else {
+            continue;
+        };
+        let mems = memories_for_spec_wave(conn, spec, wave_n);
         if mems.is_empty() {
             continue;
         }
@@ -178,20 +269,22 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
     }
 
     let project = PathBuf::from(project_dir());
-    let plan_path = project
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("wave-plan.md");
+    let spec_dir = project.join(".claude").join("spec").join(spec);
+    let plan_path = spec_dir.join("wave-plan.md");
 
     let plan_text = std::fs::read_to_string(&plan_path).unwrap_or_default();
-    let all_names = parse_wave_names(&plan_text);
+    let mut all_names = parse_wave_names(&plan_text);
+    // Filesystem fallback when the wave-plan table is missing/empty (e.g. the
+    // plan uses an ASCII code-fence diagram instead of the canonical table).
+    if all_names.is_empty() {
+        all_names = parse_wave_dirs_from_fs(&spec_dir);
+    }
     // Keep waves 1..N-1 (the first N-1 entries).
     let n_prior = (wave as usize).saturating_sub(1).min(all_names.len());
     let prior: Vec<String> = all_names.into_iter().take(n_prior).collect();
 
     let conn = open_conn(&project);
-    let rendered = render(&prior, conn.as_ref());
+    let rendered = render(&prior, conn.as_ref(), spec);
     if !rendered.is_empty() {
         print!("{rendered}");
     }
@@ -205,7 +298,31 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    fn mem_event(pipeline: &str, summary: &str) -> HarnessEvent {
+    /// Build an `agent.memory` fixture using the canonical envelope schema
+    /// (`HarnessEvent.spec` + `HarnessEvent.wave`). `payload.pipeline` is also
+    /// set to the spec slug to mirror the legacy attribution that writers
+    /// currently produce.
+    fn mem_event(spec: &str, wave: u32, summary: &str) -> HarnessEvent {
+        HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-05-20T10:00:00.000Z".to_string(),
+            session_id: "s-test".to_string(),
+            wave,
+            actor: Actor {
+                kind: ActorKind::Agent,
+                id: Some("test".to_string()),
+                actor_type: None,
+            },
+            event: "agent.memory".to_string(),
+            payload: json!({ "pipeline": spec, "summary": summary }),
+            spec: Some(spec.to_string()),
+        }
+    }
+
+    /// Build an `agent.memory` fixture using payload-level attribution only
+    /// (`payload.spec` + `payload.wave`). Used to assert the OR branch of the
+    /// query matches when the envelope columns are unset.
+    fn mem_event_payload_only(spec: &str, wave: u32, summary: &str) -> HarnessEvent {
         HarnessEvent {
             v: SCHEMA_VERSION,
             ts: "2026-05-20T10:00:00.000Z".to_string(),
@@ -217,7 +334,7 @@ mod tests {
                 actor_type: None,
             },
             event: "agent.memory".to_string(),
-            payload: json!({ "pipeline": pipeline, "summary": summary }),
+            payload: json!({ "spec": spec, "wave": wave, "summary": summary }),
             spec: None,
         }
     }
@@ -253,15 +370,19 @@ mod tests {
     fn reads_prior_waves() {
         let dir = tempdir().unwrap();
         let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
-        // Two memories for wave-1, one for wave-2.
+        // Two memories for wave 1, one for wave 2 — all under spec "foo".
         store
-            .append(&mem_event("wave-1-rt-infra", "rt infra delivered four subcommands"))
+            .append(&mem_event("foo", 1, "rt infra delivered four subcommands"))
             .unwrap();
         store
-            .append(&mem_event("wave-1-rt-infra", "wikilinks table created"))
+            .append(&mem_event("foo", 1, "wikilinks table created"))
             .unwrap();
         store
-            .append(&mem_event("wave-2-skill-template", "SKILLs updated"))
+            .append(&mem_event("foo", 2, "SKILLs updated"))
+            .unwrap();
+        // Noise: a different spec must not bleed into the rendered block.
+        store
+            .append(&mem_event("other", 1, "should not appear"))
             .unwrap();
 
         let conn = Connection::open(store.path()).unwrap();
@@ -269,13 +390,56 @@ mod tests {
             "wave-1-rt-infra".to_string(),
             "wave-2-skill-template".to_string(),
         ];
-        let md = render(&prior, Some(&conn));
+        let md = render(&prior, Some(&conn), "foo");
         assert!(md.starts_with("## Memórias de waves anteriores"));
         assert!(md.contains("### [[wave-1-rt-infra]]"));
         assert!(md.contains("### [[wave-2-skill-template]]"));
         assert!(md.contains("rt infra delivered four subcommands"));
         assert!(md.contains("wikilinks table created"));
         assert!(md.contains("SKILLs updated"));
+        assert!(!md.contains("should not appear"));
+    }
+
+    #[test]
+    fn reads_prior_waves_via_spec_and_wave() {
+        let dir = tempdir().unwrap();
+        let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
+        store
+            .append(&mem_event_payload_only("foo", 1, "bar"))
+            .unwrap();
+
+        let conn = Connection::open(store.path()).unwrap();
+        let mems = memories_for_spec_wave(&conn, "foo", 1);
+        assert_eq!(mems.len(), 1);
+        assert_eq!(
+            mems[0].get("summary").and_then(Value::as_str),
+            Some("bar")
+        );
+    }
+
+    #[test]
+    fn parses_wave_dirs_from_fs_when_table_missing() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path();
+        std::fs::create_dir_all(spec_dir.join("wave-1-bar")).unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-2-baz")).unwrap();
+        // Noise: non-wave dirs and a stray file must not appear in the result.
+        std::fs::create_dir_all(spec_dir.join("review")).unwrap();
+        std::fs::write(spec_dir.join("wave-plan.md"), "irrelevant").unwrap();
+
+        let names = parse_wave_dirs_from_fs(spec_dir);
+        assert_eq!(
+            names,
+            vec!["wave-1-bar".to_string(), "wave-2-baz".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_wave_number_extracts_leading_digits() {
+        assert_eq!(parse_wave_number("wave-1-rt-infra"), Some(1));
+        assert_eq!(parse_wave_number("wave-12-frontend"), Some(12));
+        assert_eq!(parse_wave_number("wave-bar"), None);
+        assert_eq!(parse_wave_number("review"), None);
     }
 
     #[test]
@@ -283,7 +447,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
         let conn = Connection::open(store.path()).unwrap();
-        let md = render(&[], Some(&conn));
+        let md = render(&[], Some(&conn), "foo");
         assert!(md.is_empty());
     }
 
@@ -292,7 +456,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = SqliteEventStore::new(dir.path().join("mustard.db")).unwrap();
         let conn = Connection::open(store.path()).unwrap();
-        let md = render(&["wave-1-rt-infra".to_string()], Some(&conn));
+        let md = render(&["wave-1-rt-infra".to_string()], Some(&conn), "foo");
         assert!(md.is_empty());
     }
 }

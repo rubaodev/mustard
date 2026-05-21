@@ -59,6 +59,21 @@ pub struct SpecChild {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub reason: Option<String>,
+    /// Wave-6 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`): provenance of
+    /// this child entry. `"event"` = found only in the SQLite `spec.link`
+    /// projection; `"header"` = found only via the filesystem `### Parent:`
+    /// header scan; `"both"` = present in both. Optional + serde default
+    /// keeps older payloads (and the legacy SQLite-only path) compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs-polish`):
+    /// the parent wave whose execution window contains this child's
+    /// `started_at`. `None` when the child has no `started_at` or its start
+    /// falls outside every wave window. The dashboard renders sub-specs
+    /// nested under the matching wave row in the Ondas tab; rows with
+    /// `wave == None` land in the "Sem onda correlacionada" bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -685,27 +700,90 @@ pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineN
     Ok(nodes.iter().map(timeline_node_from_view).collect())
 }
 
-/// Wave-3 adapter (spec `2026-05-20-tactical-fix-via-sub-spec`): list
-/// sub-specs linked to `parent` via `spec.link` events. Delegates to
-/// [`mustard_core::SpecReader::children_of`] and maps the typed view into
-/// the legacy JSON shape the dashboard consumes.
+/// Wave-6 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`): list sub-specs
+/// linked to `parent` via the **union** of two sources — the SQLite
+/// `spec.link` projection AND a filesystem scan for `### Parent: <slug>` in
+/// every `.claude/spec/*/spec.md` header. The union lives in `mustard-rt run
+/// spec-children` so the Tauri command stays a thin subprocess wrapper (same
+/// pattern as [`dashboard_spec_wave_files_run`] / [`dashboard_wikilink_extract_run`]).
+///
+/// Previously this delegated directly to [`mustard_core::SpecReader::children_of`],
+/// which queried only SQLite. Sub-specs created by `/mustard:tactical-fix`
+/// (which write the `### Parent:` header at create time but don't always
+/// have a `spec.link` event in the local store yet — e.g. another developer
+/// pulled the files but not the SQLite db) were invisible.
+///
+/// Fail-open: a spawn failure surfaces as `Err` so the frontend can show
+/// "mustard-rt not on PATH"; unparseable / empty stdout returns an empty
+/// `Vec` so the panel renders the empty state.
 pub fn spec_children_v2(repo_path: &str, parent: &str) -> Result<Vec<SpecChild>, String> {
-    use mustard_core::SpecReader;
-    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
-        .map_err(|e| format!("reader open: {e}"))?;
-    let children = reader
-        .children_of(parent)
-        .map_err(|e| format!("children_of: {e}"))?;
-    Ok(children
-        .iter()
-        .map(|c| SpecChild {
-            spec: c.spec.clone(),
-            status: spec_status_string(c.status).into(),
-            started_at: c.started_at.clone(),
-            completed_at: c.completed_at.clone(),
-            reason: c.reason.clone(),
+    // Reject obvious traversal — `parent` is a single spec slug.
+    if parent.is_empty()
+        || parent.contains('/')
+        || parent.contains('\\')
+        || parent.contains("..")
+    {
+        return Err(format!("invalid parent name: {parent}"));
+    }
+
+    let mut cmd = mustard_rt_command(&["run", "spec-children", "--parent", parent]);
+    cmd.current_dir(repo_path);
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output is a JSON array (`Vec<ChildEntryRaw>`). Trim any leading RTK
+    // banner / log noise so the parse is robust — find the first `[` or `{`,
+    // whichever comes first. `slice_json` (defined below) only handles `{`,
+    // so we slice locally.
+    let bracket = stdout.find('[');
+    let brace = stdout.find('{');
+    let json_start = match (bracket, brace) {
+        (Some(b), Some(c)) => b.min(c),
+        (Some(b), None) => b,
+        (None, Some(c)) => c,
+        (None, None) => return Ok(Vec::new()),
+    };
+    let json_slice = &stdout[json_start..];
+
+    let entries: Vec<ChildEntryRaw> = match serde_json::from_str(json_slice) {
+        Ok(v) => v,
+        Err(_) => return Ok(Vec::new()),
+    };
+    Ok(entries
+        .into_iter()
+        .map(|e| SpecChild {
+            spec: e.spec,
+            status: e.status,
+            started_at: e.started_at,
+            completed_at: e.completed_at,
+            reason: e.reason,
+            source: Some(e.source),
+            wave: e.wave,
         })
         .collect())
+}
+
+/// Raw row emitted by `mustard-rt run spec-children`. Kept private to this
+/// module because the public payload toward the React side is [`SpecChild`].
+#[derive(Deserialize)]
+struct ChildEntryRaw {
+    spec: String,
+    status: String,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    /// `"event" | "header" | "both"` — see [`SpecChild::source`].
+    source: String,
+    /// Wave 2 (spec `2026-05-21-dashboard-spec-tabs-polish`): parent wave
+    /// number containing this child's `started_at`. Optional + serde default
+    /// keeps older subprocess payloads (pre-Wave-2) compatible.
+    #[serde(default)]
+    wave: Option<u32>,
 }
 
 /// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — invoke
@@ -724,7 +802,6 @@ pub fn dashboard_metrics_wave_status_run(
     repo_path: &str,
     spec_name: &str,
 ) -> Result<MetricsWaveStatus, String> {
-    use std::process::Command;
     // Reject obvious traversal — spec_name is a single directory under
     // .claude/spec/, never a path. Mirrors `dashboard_spec_markdown`.
     if spec_name.is_empty()
@@ -737,7 +814,7 @@ pub fn dashboard_metrics_wave_status_run(
 
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = Command::new("cmd");
+        let mut c = crate::process_util::no_window_command("cmd");
         c.args([
             "/C",
             "mustard-rt",
@@ -751,7 +828,7 @@ pub fn dashboard_metrics_wave_status_run(
     };
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
-        let mut c = Command::new("mustard-rt");
+        let mut c = crate::process_util::no_window_command("mustard-rt");
         c.args(["run", "metrics", "wave-status", "--spec", spec_name]);
         c
     };
@@ -1172,7 +1249,7 @@ fn resolve_spec_dir(repo_path: &str, spec_name: &str) -> Option<std::path::PathB
 fn mustard_rt_command(args: &[&str]) -> std::process::Command {
     #[cfg(target_os = "windows")]
     {
-        let mut c = std::process::Command::new("cmd");
+        let mut c = crate::process_util::no_window_command("cmd");
         let mut full: Vec<&str> = vec!["/C", "mustard-rt"];
         full.extend_from_slice(args);
         c.args(&full);
@@ -1180,7 +1257,7 @@ fn mustard_rt_command(args: &[&str]) -> std::process::Command {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mut c = std::process::Command::new("mustard-rt");
+        let mut c = crate::process_util::no_window_command("mustard-rt");
         c.args(args);
         c
     }
@@ -1242,6 +1319,185 @@ pub fn dashboard_memory_cross_wave_run(
         Err(e) => return Err(format!("spawn mustard-rt: {e}")),
     };
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — payload for
+/// `dashboard_spec_wave_files`. `count` is the number of files declared in the
+/// wave sub-spec's `## Arquivos` section; `markdown` is the full wave-N spec
+/// markdown so the drawer can render it without a second round-trip; `path`
+/// is the resolved on-disk path or `None` when the wave sub-spec is missing.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WaveFilesPayload {
+    pub count: u32,
+    pub markdown: String,
+    pub path: Option<String>,
+}
+
+/// Wave 1 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs-polish`) — one
+/// wave declared on disk (a `wave-N-{role}/` subdir of the spec). Surfaces
+/// the structure the wave-plan declared, independent of whether the SQLite
+/// event stream has any `wave.*` events for it yet. The dashboard unions
+/// this with `SpecWave[]` from the SQLite projection so the "Ondas" tab
+/// shows the full plan during EXECUTE — waves only present here render as
+/// `status="queued"`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecWavePlanned {
+    pub wave: u32,
+    pub role: Option<String>,
+    pub declared_files_count: u32,
+}
+
+/// Local copy of `apps/rt/src/run/wave_files.rs::parse_arquivos_count`.
+/// Duplicated rather than imported because `mustard-rt` is a binary crate, not
+/// a lib, and pulling it in here would create a workspace dep cycle. Keep the
+/// counting rules in sync: bullet (`- ` / `* `) lines outside fenced code, or
+/// non-blank non-comment lines inside the fenced block following the `##
+/// Arquivos` / `## Files` heading; section ends at the next `## ` heading.
+fn parse_arquivos_count(text: &str) -> usize {
+    let mut in_section = false;
+    let mut in_fence = false;
+    let mut count: usize = 0;
+
+    for line in text.lines() {
+        let trimmed_start = line.trim_start();
+        if !in_section {
+            if line == "## Arquivos" || line == "## Files" {
+                in_section = true;
+            }
+            continue;
+        }
+        if !in_fence && line.starts_with("## ") {
+            // Re-entering the same heading is a no-op; any other `## ` ends.
+            if line == "## Arquivos" || line == "## Files" {
+                continue;
+            }
+            break;
+        }
+        if trimmed_start.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            let content = line.trim();
+            if content.is_empty() {
+                continue;
+            }
+            if content.starts_with("//") || content.starts_with('#') {
+                continue;
+            }
+            count += 1;
+            continue;
+        }
+        if trimmed_start.starts_with("- ") || trimmed_start.starts_with("* ") {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Wave 1 — scan `<repo>/.claude/spec/{spec}/` for `wave-N-{role}/` subdirs and
+/// return one [`SpecWavePlanned`] per match, sorted by wave number ascending.
+/// Resolves files in-process (no `mustard-rt` subprocess) because otherwise we
+/// would spawn once per wave per spec drawer open. Fail-open: any I/O hiccup
+/// degrades to an empty list; only an outright invalid spec name surfaces as
+/// `Err`.
+pub fn dashboard_spec_waves_planned_run(
+    repo_path: &str,
+    spec: &str,
+) -> Result<Vec<SpecWavePlanned>, String> {
+    if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
+        return Err(format!("invalid spec name: {spec}"));
+    }
+
+    let spec_dir = std::path::Path::new(repo_path)
+        .join(".claude")
+        .join("spec")
+        .join(spec);
+    if !spec_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let Ok(rd) = std::fs::read_dir(&spec_dir) else {
+        return Ok(Vec::new());
+    };
+
+    let mut out: Vec<SpecWavePlanned> = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = match entry.file_name().to_str().map(str::to_string) {
+            Some(n) => n,
+            None => continue,
+        };
+        // Match `wave-{digits}-{role}` exactly. Role is the remainder after
+        // the second dash; must be non-empty.
+        let Some(rest) = name.strip_prefix("wave-") else { continue };
+        let dash_idx = match rest.find('-') {
+            Some(i) if i > 0 => i,
+            _ => continue,
+        };
+        let (num_str, role_with_dash) = rest.split_at(dash_idx);
+        let role = &role_with_dash[1..]; // skip the '-'
+        if role.is_empty() {
+            continue;
+        }
+        let wave_num: u32 = match num_str.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        // Count declared files via the wave sub-spec's `## Arquivos` block.
+        // Missing / unreadable spec.md degrades to 0.
+        let spec_md = path.join("spec.md");
+        let declared = match std::fs::read_to_string(&spec_md) {
+            Ok(text) => u32::try_from(parse_arquivos_count(&text)).unwrap_or(u32::MAX),
+            Err(_) => 0,
+        };
+
+        out.push(SpecWavePlanned {
+            wave: wave_num,
+            role: Some(role.to_string()),
+            declared_files_count: declared,
+        });
+    }
+
+    out.sort_by_key(|w| w.wave);
+    Ok(out)
+}
+
+/// Wave 2 — invoke `mustard-rt run wave-files --spec <name> --wave <N>` and
+/// parse the JSON stdout into a typed [`WaveFilesPayload`]. Subprocess
+/// invocation mirrors `dashboard_metrics_wave_status_run` (Windows uses
+/// `cmd /C mustard-rt …`, POSIX uses the binary directly). Fail-open:
+/// missing wave sub-spec → `{count:0, markdown:"", path:null}`; subprocess
+/// JSON parse failure → same empty payload. `Err` is reserved for spawn
+/// failures so the frontend can surface "mustard-rt not on PATH".
+pub fn dashboard_spec_wave_files_run(
+    repo_path: &str,
+    spec: &str,
+    wave: u32,
+) -> Result<WaveFilesPayload, String> {
+    if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
+        return Err(format!("invalid spec name: {spec}"));
+    }
+    let wave_str = wave.to_string();
+    let mut cmd = mustard_rt_command(&[
+        "run", "wave-files", "--spec", spec, "--wave", &wave_str,
+    ]);
+    cmd.current_dir(repo_path);
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<WaveFilesPayload>(slice_json(&stdout)) {
+        Ok(parsed) => Ok(parsed),
+        Err(_) => Ok(WaveFilesPayload::default()),
+    }
 }
 
 // ===========================================================================

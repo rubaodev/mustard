@@ -196,7 +196,7 @@ fn rtk_unavailable() -> RtkBlock {
 /// the result. Returns `rtk_unavailable()` on any failure (binary missing,
 /// non-zero exit, malformed JSON).
 fn run_rtk_gain(repo_path: Option<&Path>) -> RtkBlock {
-    let mut cmd = std::process::Command::new("rtk");
+    let mut cmd = crate::process_util::no_window_command("rtk");
     cmd.arg("gain").arg("-f").arg("json").arg("--daily");
     if let Some(p) = repo_path {
         cmd.arg("-p").current_dir(p);

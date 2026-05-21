@@ -26,15 +26,28 @@
 
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/ds";
 import { cn } from "@/lib/utils";
+import { relativeTime } from "@/lib/time";
 import type {
   TraceNode,
   ToolUsePayload,
   ToolResultPayload,
   ToolUseTarget,
 } from "@/lib/types/trace";
+
+// Wave 3 (spec `2026-05-21-dashboard-spec-tabs`): every expanded tool card
+// surfaces a meta-strip with `actor.kind:actor.id · relativeTime(ts)`. The
+// actor is derived from the payload itself — `tool` is the kind, the
+// `tool_use_id` (or fallback `actor_id`) is the id — because the Tauri
+// `TraceNode` shape does not carry a separate `actor` object. We keep the
+// existing per-tool renderers (DiffViewer / CodeBlock) and add a raw `<pre>`
+// + Copy chip in the bottom drawer for the payload itself.
+interface TraceActor {
+  kind: string;
+  id?: string;
+}
 
 interface ToolEventRowProps {
   node: TraceNode;
@@ -58,10 +71,29 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
     strField(payload, "file_path") ??
     strField(payload, "path");
 
+  // Wave 3 — derive actor + ts + summary from data already on the node.
+  // `node.ts` is the canonical event timestamp; `node.payload.tool` doubles
+  // as the actor kind because there is no separate `actor` object on the
+  // Tauri-side `TraceNode`. We avoid inventing fields and just surface what
+  // the upstream already emits.
+  const actor: TraceActor = {
+    kind: toolName ? `Tool:${toolName}` : "Tool",
+    id: payload.tool_use_id ?? strField(payload, "actor_id") ?? undefined,
+  };
+  const ts = node.ts ?? "";
+  const summary =
+    target.description ??
+    target.command ??
+    target.file_path ??
+    target.file ??
+    undefined;
+
+  const meta: PayloadMeta = { actor, ts, summary };
+
   if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") {
     if (result?.file_before != null && result?.file_after != null) {
       return (
-        <PayloadCard toolName={toolName} subheader={filePath} payload={payload}>
+        <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta}>
           <DiffViewer
             before={result.file_before}
             after={result.file_after}
@@ -72,7 +104,7 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
       );
     }
     return (
-      <PayloadCard toolName={toolName} subheader={filePath} payload={payload}>
+      <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta}>
         <DiffPending description={target.description} />
       </PayloadCard>
     );
@@ -83,7 +115,7 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
     if (content) {
       const isMarkdown = (filePath ?? "").toLowerCase().endsWith(".md");
       return (
-        <PayloadCard toolName="Read" subheader={filePath} payload={payload}>
+        <PayloadCard toolName="Read" subheader={filePath} payload={payload} meta={meta}>
           {isMarkdown ? (
             <MarkdownBlock source={truncate(content, 200)} />
           ) : (
@@ -97,7 +129,7 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
       );
     }
     return (
-      <PayloadCard toolName="Read" subheader={filePath} payload={payload}>
+      <PayloadCard toolName="Read" subheader={filePath} payload={payload} meta={meta}>
         <EmptyHint text="Conteúdo não capturado (tool_result pendente)." />
       </PayloadCard>
     );
@@ -114,6 +146,7 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
         subheader={command ? `$ ${command}` : undefined}
         subheaderMono
         payload={payload}
+        meta={meta}
       >
         {stdout ? (
           <CodeBlock code={truncate(stdout, 200)} lang="plain" />
@@ -145,7 +178,12 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
 
   // Fallback — pretty-print whatever payload arrived.
   return (
-    <PayloadCard toolName={toolName || "tool.use"} subheader={filePath} payload={payload}>
+    <PayloadCard
+      toolName={toolName || "tool.use"}
+      subheader={filePath}
+      payload={payload}
+      meta={meta}
+    >
       <CodeBlock
         code={truncate(JSON.stringify(payload, null, 2), 200)}
         lang="json"
@@ -156,6 +194,12 @@ export const ToolEventRow = memo(function ToolEventRow({ node }: ToolEventRowPro
 
 // ── Card wrapper ───────────────────────────────────────────────────────────
 
+interface PayloadMeta {
+  actor: TraceActor;
+  ts: string;
+  summary?: string;
+}
+
 interface PayloadCardProps {
   toolName: string;
   subheader?: string;
@@ -164,6 +208,9 @@ interface PayloadCardProps {
   /** When provided, a small "Ver payload bruto" toggle appears in the
    *  header. Useful for debugging shape drift without leaving the row. */
   payload?: Record<string, unknown>;
+  /** Wave 3 (`2026-05-21-dashboard-spec-tabs`): meta-strip data —
+   *  `actor.kind:actor.id · relativeTime(ts)` + optional summary line. */
+  meta?: PayloadMeta;
 }
 
 /** Shared card frame so every tool variant has the same visual rhythm:
@@ -175,6 +222,7 @@ function PayloadCard({
   subheaderMono,
   children,
   payload,
+  meta,
 }: PayloadCardProps) {
   const [showRaw, setShowRaw] = useState(false);
   return (
@@ -227,15 +275,95 @@ function PayloadCard({
           </button>
         ) : null}
       </div>
+      {meta ? <MetaStrip meta={meta} /> : null}
       <div className="p-2">{children}</div>
       {payload && showRaw ? (
         <div className="px-2 pb-2">
-          <CodeBlock
-            code={truncate(JSON.stringify(payload, null, 2), 200)}
-            lang="json"
-          />
+          <RawPayloadBlock payload={payload} />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// ── Meta strip + raw payload block (Wave 3) ────────────────────────────────
+
+/** Inline panel header showing `actor.kind[:actor.id] · relativeTime(ts)`
+ *  plus an optional one-line summary. Rendered just below the tool-name
+ *  pill so every variant gets the same triage info without ginástica. */
+function MetaStrip({ meta }: { meta: PayloadMeta }) {
+  const { actor, ts, summary } = meta;
+  return (
+    <div className="ml-3 mt-1 mr-3 rounded-[--ds-radius-sm] border border-[--ds-surface-hover] bg-[--ds-surface-base]/40 p-2 text-[12px]">
+      <div className="flex items-center gap-2 text-[--ds-text-tertiary] text-[11px]">
+        <span className="font-mono">
+          {actor.kind}
+          {actor.id ? `:${actor.id}` : ""}
+        </span>
+        {ts ? (
+          <>
+            <span aria-hidden>·</span>
+            <time dateTime={ts} title={ts}>
+              {relativeTime(ts)}
+            </time>
+          </>
+        ) : null}
+      </div>
+      {summary ? (
+        <p className="mt-1 text-[--ds-text-secondary]">{summary}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Raw payload drawer — `<pre>` JSON pretty + Copy chip. We keep this even
+ *  when the variant already has a richer renderer above, because the user
+ *  asked for the timestamp + payload triade to be one click away on every
+ *  tool node (spec Wave 3). */
+function RawPayloadBlock({ payload }: { payload: Record<string, unknown> }) {
+  const [copied, setCopied] = useState(false);
+  const json = JSON.stringify(payload, null, 2);
+  const onCopy = () => {
+    try {
+      void navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Clipboard API can fail on locked-down builds; we don't surface an
+      // error because the user can still select + copy manually from <pre>.
+    }
+  };
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label="Copiar payload"
+        className={cn(
+          "absolute top-1 right-1 inline-flex items-center gap-1",
+          "px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+          "text-[10px] text-[--ds-text-tertiary]",
+          "bg-[--ds-surface-sunken]/80 hover:text-[--ds-text-secondary]",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+        )}
+      >
+        {copied ? (
+          <Check className="h-3 w-3" aria-hidden />
+        ) : (
+          <Copy className="h-3 w-3" aria-hidden />
+        )}
+        {copied ? "Copiado" : "Copiar"}
+      </button>
+      <pre
+        className={cn(
+          "max-h-72 overflow-auto rounded-[--ds-radius-sm]",
+          "bg-[--ds-surface-sunken]/60 p-2 pr-16",
+          "font-mono text-[11px] leading-tight",
+          "whitespace-pre-wrap break-words text-[--ds-text-secondary]",
+        )}
+      >
+        {truncate(json, 200)}
+      </pre>
     </div>
   );
 }

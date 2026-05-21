@@ -19,7 +19,6 @@ import {
   kindFromType,
 } from "@/components/knowledge/KnowledgeBadge";
 import {
-  PageHeader,
   SectionHeader,
   EmptyState,
   DataCard,
@@ -104,7 +103,6 @@ export function Knowledge() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const persistedQuery = useStore((s) => s.knowledgeQuery);
   const setKnowledgeQuery = useStore((s) => s.setKnowledgeQuery);
-
   const projects = useProjects();
   const activeProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
 
@@ -208,27 +206,6 @@ export function Knowledge() {
 
   return (
     <div className="flex flex-col gap-6 w-full">
-      <PageHeader
-        breadcrumb={[
-          "Mustard",
-          "Knowledge",
-          ...(activeProject ? [{ label: activeProject.name, mono: true }] : []),
-        ]}
-        title="Knowledge"
-        subtitle={activeProject?.name}
-        description={
-          <>
-            O que o Mustard aprendeu rodando pipelines neste workspace, dividido
-            em duas naturezas. <strong className="text-foreground/80">Padrões e
-            decisões</strong> são conhecimento reutilizável — convenções de
-            código, decisões de arquitetura e lições. <strong className="text-foreground/80">
-            Atrito</strong> é o oposto: telemetria de fricção (retries de hook,
-            pipelines pesadas) que indica onde o processo emperrou. Use a busca
-            para localizar uma entrada específica.
-          </>
-        }
-      />
-
       {/* Search */}
       <div className="relative w-full">
         <Search
