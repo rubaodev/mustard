@@ -531,18 +531,10 @@ fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
     Ok(rows)
 }
 
-#[allow(dead_code)] // kept for legacy callers that may still rely on it
-fn detect_bucket(spec_root: &PathBuf, spec_name: &str) -> Option<String> {
-    for sub in ["active", "completed", "cancelled"] {
-        if spec_root.join(sub).join(spec_name).is_dir() {
-            return Some(sub.to_string());
-        }
-    }
-    None
-}
-
-// Walk .claude/spec/{active,completed,cancelled}/*/spec.md (and wave-plan.md)
-// for spec existence and frontmatter metadata (title, lang, scope).
+// Walk .claude/spec/*/spec.md (and wave-plan.md) for spec existence and
+// frontmatter metadata (title, lang, scope). Flat layout: specs live directly
+// under .claude/spec/{name}/ for their entire lifecycle — no bucket
+// subdirectories (active/completed/cancelled).
 //
 // DB wins for: status, phase, tasks, wave counts — merged by `dashboard_specs`.
 // FS wins for: spec existence, title, narrative (### Lang: / ### Scope:).
@@ -551,140 +543,118 @@ fn detect_bucket(spec_root: &PathBuf, spec_name: &str) -> Option<String> {
 // 2026-05-19-pipeline-state-from-sqlite: the event log is canonical for all
 // pipeline fields; FS JSON files are stale artifacts.
 fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
-    let claude = base.join(".claude");
-    let spec_root = claude.join("spec");
-    let mut completed: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
-    let mut active: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
-    let mut cancelled: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
-    for sub in ["active", "completed", "cancelled"] {
-        let dir = spec_root.join(sub);
-        if !dir.exists() {
+    let spec_root = base.join(".claude").join("spec");
+    let mut rows: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
+
+    let rd = match std::fs::read_dir(&spec_root) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
         }
-        let rd = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
         };
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+        // Phase and status: parse spec.md / wave-plan.md frontmatter.
+        // Status and phase from the DB (pipeline.* events) take precedence
+        // in `dashboard_specs::merge` — these FS values are fallbacks only.
+        let from_spec = {
+            let parsed = parse_spec_md(&path.join("spec.md"));
+            if parsed.0.is_some() || parsed.1.is_some() {
+                parsed
+            } else {
+                // Wave-plan parents have no root spec.md — try wave-plan.md.
+                parse_spec_md(&path.join("wave-plan.md"))
             }
-            let name = match path.file_name().and_then(|s| s.to_str()) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            // Phase and status: parse spec.md / wave-plan.md frontmatter.
-            // Status and phase from the DB (pipeline.* events) take precedence
-            // in `dashboard_specs::merge` — these FS values are fallbacks only.
-            // The legacy state-file walk was removed (Wave 3b): DB is
-            // canonical for all pipeline fields.
-            let from_spec = {
-                let parsed = parse_spec_md(&path.join("spec.md"));
-                if parsed.0.is_some() || parsed.1.is_some() {
-                    parsed
-                } else {
-                    // Wave-plan parents have no root spec.md — try wave-plan.md.
-                    parse_spec_md(&path.join("wave-plan.md"))
-                }
-            };
-            let phase = from_spec.0;
-            let status = from_spec.1;
-            let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
-            let parent_row = SpecRow {
-                name: name.clone(),
-                status,
-                phase,
-                started_at: None,
-                completed_at: None,
-                affected_files: vec![],
-                bucket: Some(sub.to_string()),
-                parent: None,
-            };
-            let bucket = sub.to_string();
-            let target = match sub {
-                "completed" => &mut completed,
-                "cancelled" => &mut cancelled,
-                _ => &mut active,
-            };
-            target.push((parent_row, mtime));
+        };
+        // A directory must contain at least spec.md or wave-plan.md to be a spec.
+        let has_spec = path.join("spec.md").exists() || path.join("wave-plan.md").exists();
+        if !has_spec {
+            continue;
+        }
+        let phase = from_spec.0;
+        let status = from_spec.1;
+        let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
+        let parent_row = SpecRow {
+            name: name.clone(),
+            status,
+            phase,
+            started_at: None,
+            completed_at: None,
+            affected_files: vec![],
+            bucket: None,
+            parent: None,
+        };
+        rows.push((parent_row, mtime));
 
-            // Wave plan: walk wave-N-*/spec.md children. Each child becomes a
-            // SpecRow with parent set to the wave plan's name. The dashboard
-            // groups them visually.
-            let wave_plan = path.join("wave-plan.md");
-            if wave_plan.exists() {
-                if let Ok(child_rd) = std::fs::read_dir(&path) {
-                    for child in child_rd.flatten() {
-                        let cpath = child.path();
-                        if !cpath.is_dir() {
-                            continue;
-                        }
-                        let cname = match cpath.file_name().and_then(|s| s.to_str()) {
-                            Some(s) => s.to_string(),
-                            None => continue,
-                        };
-                        // Only walk dirs that look like wave-N-something
-                        if !cname.starts_with("wave-") {
-                            continue;
-                        }
-                        let cspec = cpath.join("spec.md");
-                        if !cspec.exists() {
-                            continue;
-                        }
-                        let (cphase, cstatus) = parse_spec_md(&cspec);
-                        let cmtime = child.metadata().ok().and_then(|m| m.modified().ok());
-                        let child_row = SpecRow {
-                            name: cname,
-                            status: cstatus,
-                            phase: cphase,
-                            started_at: None,
-                            completed_at: None,
-                            affected_files: vec![],
-                            bucket: Some(bucket.clone()),
-                            parent: Some(name.clone()),
-                        };
-                        target.push((child_row, cmtime));
+        // Wave plan: walk wave-N-*/spec.md children. Each child becomes a
+        // SpecRow with parent set to the wave plan's name. The dashboard
+        // groups them visually.
+        let wave_plan = path.join("wave-plan.md");
+        if wave_plan.exists() {
+            if let Ok(child_rd) = std::fs::read_dir(&path) {
+                for child in child_rd.flatten() {
+                    let cpath = child.path();
+                    if !cpath.is_dir() {
+                        continue;
                     }
+                    let cname = match cpath.file_name().and_then(|s| s.to_str()) {
+                        Some(s) => s.to_string(),
+                        None => continue,
+                    };
+                    // Only walk dirs that look like wave-N-something
+                    if !cname.starts_with("wave-") {
+                        continue;
+                    }
+                    let cspec = cpath.join("spec.md");
+                    if !cspec.exists() {
+                        continue;
+                    }
+                    let (cphase, cstatus) = parse_spec_md(&cspec);
+                    let cmtime = child.metadata().ok().and_then(|m| m.modified().ok());
+                    let child_row = SpecRow {
+                        name: cname,
+                        status: cstatus,
+                        phase: cphase,
+                        started_at: None,
+                        completed_at: None,
+                        affected_files: vec![],
+                        bucket: None,
+                        parent: Some(name.clone()),
+                    };
+                    rows.push((child_row, cmtime));
                 }
             }
         }
     }
-    let sort_recent = |a: &(SpecRow, Option<std::time::SystemTime>), b: &(SpecRow, Option<std::time::SystemTime>)| match (a.1, b.1) {
+
+    rows.sort_by(|a, b| match (a.1, b.1) {
         (Some(x), Some(y)) => y.cmp(&x),
         _ => b.0.name.cmp(&a.0.name),
-    };
-    active.sort_by(sort_recent);
-    completed.sort_by(sort_recent);
-    cancelled.sort_by(sort_recent);
-    let mut out: Vec<SpecRow> = Vec::with_capacity(active.len() + completed.len() + cancelled.len());
-    out.extend(active.into_iter().map(|(r, _)| r));
-    out.extend(completed.into_iter().map(|(r, _)| r));
-    out.extend(cancelled.into_iter().map(|(r, _)| r));
-    out
+    });
+    rows.into_iter().map(|(r, _)| r).collect()
 }
 
-/// Check whether a spec directory still exists on disk under
-/// .claude/spec/{bucket}/{name}/ or as a wave child under any parent.
-/// Returns Some(bucket) when found, None when historical/missing.
+/// Check whether a spec directory still exists on disk under the flat layout
+/// .claude/spec/{name}/ or as a wave child under any parent spec dir.
+/// Returns Some("flat") when found, None when historical/missing.
 fn detect_spec_existence(spec_root: &PathBuf, name: &str) -> Option<String> {
-    for sub in ["active", "completed", "cancelled"] {
-        if spec_root.join(sub).join(name).is_dir() {
-            return Some(sub.to_string());
-        }
+    // Flat layout: spec lives directly at .claude/spec/{name}/
+    if spec_root.join(name).is_dir() {
+        return Some("flat".to_string());
     }
-    // Could also be a wave child — scan one level deeper for `wave-{n}-...` dirs.
-    for sub in ["active", "completed", "cancelled"] {
-        let dir = spec_root.join(sub);
-        if !dir.exists() {
-            continue;
-        }
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for entry in rd.flatten() {
-                let p = entry.path();
-                if p.is_dir() && p.join(name).is_dir() {
-                    return Some(sub.to_string());
-                }
+    // Could also be a wave child — scan one level for parent dirs that contain
+    // a {name}/ subdir (wave-N-something under a wave-plan parent).
+    if let Ok(rd) = std::fs::read_dir(spec_root) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join(name).is_dir() {
+                return Some("flat".to_string());
             }
         }
     }
@@ -823,58 +793,47 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
     {
         return Err(format!("invalid spec name: {}", spec_name));
     }
-    // 1. Standalone spec: .claude/spec/{bucket}/{spec_name}/spec.md
-    for sub in ["active", "completed", "cancelled"] {
-        let path = base.join(sub).join(&spec_name).join("spec.md");
-        if path.exists() {
-            return std::fs::read_to_string(&path).map_err(|e| e.to_string());
-        }
+    // 1. Standalone spec — flat layout: .claude/spec/{spec_name}/spec.md
+    let path = base.join(&spec_name).join("spec.md");
+    if path.exists() {
+        return std::fs::read_to_string(&path).map_err(|e| e.to_string());
     }
     // 2. Wave-plan child: dashboard_specs emits children with a bare name
     //    (e.g. "wave-2-frontend") and parent set, but the file actually lives
-    //    one level down at .claude/spec/{bucket}/{parent}/{spec_name}/spec.md.
-    //    Without the parent, search every wave-plan dir for a matching child.
-    for sub in ["active", "completed", "cancelled"] {
-        let bucket = base.join(sub);
-        let Ok(rd) = std::fs::read_dir(&bucket) else {
+    //    one level down at .claude/spec/{parent}/{spec_name}/spec.md.
+    //    Without the parent, search every spec dir for a matching child.
+    let Ok(rd) = std::fs::read_dir(&base) else {
+        return Err(format!("spec markdown not found: {}", spec_name));
+    };
+    for entry in rd.flatten() {
+        let parent_dir = entry.path();
+        if !parent_dir.is_dir() {
             continue;
-        };
-        for entry in rd.flatten() {
-            let parent_dir = entry.path();
-            if !parent_dir.is_dir() {
-                continue;
-            }
-            let child = parent_dir.join(&spec_name).join("spec.md");
-            if child.exists() {
-                return std::fs::read_to_string(&child).map_err(|e| e.to_string());
-            }
+        }
+        let child = parent_dir.join(&spec_name).join("spec.md");
+        if child.exists() {
+            return std::fs::read_to_string(&child).map_err(|e| e.to_string());
         }
     }
-    // 3. Wave-plan parent: roadmap specs (e.g. "...-contract-plan-roadmap-w2-w12")
-    //    carry only a `wave-plan.md` at their root plus `wave-N-*/spec.md`
-    //    subdirs — no top-level `spec.md`. Fall back to the wave-plan file so
-    //    the side panel renders the plan instead of an error.
-    for sub in ["active", "completed", "cancelled"] {
-        let path = base.join(sub).join(&spec_name).join("wave-plan.md");
-        if path.exists() {
-            return std::fs::read_to_string(&path).map_err(|e| e.to_string());
-        }
+    // 3. Wave-plan parent: roadmap specs carry only a `wave-plan.md` at their
+    //    root plus `wave-N-*/spec.md` subdirs — no top-level `spec.md`. Fall
+    //    back to the wave-plan file so the side panel renders the plan.
+    let wplan = base.join(&spec_name).join("wave-plan.md");
+    if wplan.exists() {
+        return std::fs::read_to_string(&wplan).map_err(|e| e.to_string());
     }
-    // Symmetry with case 2: a wave-plan parent nested under another bucket dir.
-    for sub in ["active", "completed", "cancelled"] {
-        let bucket = base.join(sub);
-        let Ok(rd) = std::fs::read_dir(&bucket) else {
+    // 4. Symmetry with case 2: a wave-plan parent nested under another spec dir.
+    let Ok(rd2) = std::fs::read_dir(&base) else {
+        return Err(format!("spec markdown not found: {}", spec_name));
+    };
+    for entry in rd2.flatten() {
+        let parent_dir = entry.path();
+        if !parent_dir.is_dir() {
             continue;
-        };
-        for entry in rd.flatten() {
-            let parent_dir = entry.path();
-            if !parent_dir.is_dir() {
-                continue;
-            }
-            let child = parent_dir.join(&spec_name).join("wave-plan.md");
-            if child.exists() {
-                return std::fs::read_to_string(&child).map_err(|e| e.to_string());
-            }
+        }
+        let child = parent_dir.join(&spec_name).join("wave-plan.md");
+        if child.exists() {
+            return std::fs::read_to_string(&child).map_err(|e| e.to_string());
         }
     }
     Err(format!("spec markdown not found: {}", spec_name))

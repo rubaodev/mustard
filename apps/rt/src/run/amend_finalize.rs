@@ -136,26 +136,22 @@ fn decide_status(window: &AmendWindow) -> &'static str {
     "resolved"
 }
 
-/// Locate the spec directory under `project_root/.claude/spec/`.
-/// Returns `(path, in_active)`.
-fn locate_spec_dir(project_root: &Path, spec_id: &str) -> Option<(PathBuf, bool)> {
-    let active = project_root
+/// Locate the spec directory under `project_root/.claude/spec/{spec_id}/`.
+///
+/// Wave-2 (2026-05-21-flatten-spec-layout-and-multi-collab) removed the
+/// `active/`/`archived/` buckets. Specs now live at a single flat path for
+/// their entire lifetime; the `### Status:` header and the event store are
+/// the canonical status record.
+fn locate_spec_dir(project_root: &Path, spec_id: &str) -> Option<PathBuf> {
+    let flat = project_root
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec_id);
-    if active.exists() {
-        return Some((active, true));
+    if flat.exists() {
+        Some(flat)
+    } else {
+        None
     }
-    let archived = project_root
-        .join(".claude")
-        .join("spec")
-        .join("archived")
-        .join(spec_id);
-    if archived.exists() {
-        return Some((archived, false));
-    }
-    None
 }
 
 /// Build the `## Amendments` markdown block for the given window and events.
@@ -254,27 +250,6 @@ fn append_to_spec(spec_dir: &Path, block: &str) -> std::result::Result<(), Strin
     std::fs::write(&spec_file, updated).map_err(|e| format!("write spec.md: {e}"))
 }
 
-/// Move `active/{spec_id}` to `archived/{spec_id}`. Creates `archived/` if needed.
-fn move_to_archived(project_root: &Path, spec_id: &str) -> std::result::Result<(), String> {
-    let src = project_root
-        .join(".claude")
-        .join("spec")
-        .join("active")
-        .join(spec_id);
-    let dst_parent = project_root
-        .join(".claude")
-        .join("spec")
-        .join("archived");
-    let dst = dst_parent.join(spec_id);
-
-    if !src.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(&dst_parent)
-        .map_err(|e| format!("create archived/: {e}"))?;
-    std::fs::rename(&src, &dst).map_err(|e| format!("rename {src:?} → {dst:?}: {e}"))
-}
-
 /// Emit a [`EVENT_PIPELINE_AMEND_CLOSE`] harness event.
 fn emit_amend_close(
     store: &SqliteEventStore,
@@ -345,17 +320,11 @@ fn finalize_window(
     // Build the amendments block.
     let block = build_amendments_block(window, &window_events, status, &lang, &now);
 
-    // Locate the spec dir.
-    if let Some((spec_dir, in_active)) = locate_spec_dir(project_root, &window.spec_id) {
+    // Locate the spec dir (flat layout: .claude/spec/{spec_id}/).
+    if let Some(spec_dir) = locate_spec_dir(project_root, &window.spec_id) {
         // Append to spec.md (best-effort — report error but continue).
         if let Err(e) = append_to_spec(&spec_dir, &block) {
             eprintln!("[amend-finalize] WARN: could not append to spec.md: {e}");
-        }
-        // Move to archived if status == "archived" and still in active/.
-        if status == "archived" && in_active {
-            if let Err(e) = move_to_archived(project_root, &window.spec_id) {
-                eprintln!("[amend-finalize] WARN: could not move spec to archived/: {e}");
-            }
         }
     } else {
         eprintln!(

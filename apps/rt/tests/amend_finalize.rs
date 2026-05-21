@@ -122,10 +122,11 @@ fn seed_window(
 }
 
 fn create_spec_md(project_root: &Path, spec_id: &str) {
+    // Wave-2 flat layout: specs live at .claude/spec/{spec_id}/ for their
+    // entire lifetime; no active/ or archived/ buckets.
     let spec_dir = project_root
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec_id);
     std::fs::create_dir_all(&spec_dir).unwrap();
     std::fs::write(
@@ -135,24 +136,14 @@ fn create_spec_md(project_root: &Path, spec_id: &str) {
     .unwrap();
 }
 
-/// Returns `(content, is_in_active)`.
-fn read_spec_md(project_root: &Path, spec_id: &str) -> (String, bool) {
-    let active = project_root
+/// Returns the spec.md content from the flat layout path.
+fn read_spec_md(project_root: &Path, spec_id: &str) -> String {
+    let path = project_root
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec_id)
         .join("spec.md");
-    if active.exists() {
-        return (std::fs::read_to_string(&active).unwrap(), true);
-    }
-    let archived = project_root
-        .join(".claude")
-        .join("spec")
-        .join("archived")
-        .join(spec_id)
-        .join("spec.md");
-    (std::fs::read_to_string(&archived).unwrap(), false)
+    std::fs::read_to_string(&path).unwrap()
 }
 
 /// Run `mustard-rt run amend-finalize --session-id <id>` against the temp project.
@@ -204,7 +195,7 @@ fn amend_session_end_archived() {
     assert!(windows[0]["error"].is_null(), "unexpected error: {}", windows[0]["error"]);
 
     // spec.md must contain the PT-language ## Amendments block.
-    let (content, in_active) = read_spec_md(root, spec_id);
+    let content = read_spec_md(root, spec_id);
     assert!(content.contains("## Amendments"), "## Amendments missing from spec.md:\n{content}");
     // PT lang: the block contains "build verde" (not "build green").
     assert!(
@@ -212,8 +203,9 @@ fn amend_session_end_archived() {
         "expected PT markers in spec.md:\n{content}"
     );
 
-    // Dir must have moved to archived/.
-    assert!(!in_active, "spec dir must be in archived/, not active/");
+    // Flat layout: spec dir stays at .claude/spec/{spec_id}/ — no move.
+    let flat_dir = root.join(".claude").join("spec").join(spec_id);
+    assert!(flat_dir.exists(), "spec dir must remain at flat path .claude/spec/{spec_id}/");
 
     // EVENT_PIPELINE_AMEND_CLOSE must be present with status="archived".
     let close_events: Vec<_> = store
@@ -251,9 +243,9 @@ fn amend_session_end_pending() {
     assert_eq!(windows[0]["status"], json!("closed-amend-pending"), "{result}");
     assert!(windows[0]["error"].is_null(), "unexpected error: {}", windows[0]["error"]);
 
-    // Dir must NOT have moved — still in active/.
-    let active_dir = root.join(".claude").join("spec").join("active").join(spec_id);
-    assert!(active_dir.exists(), "spec dir must remain in active/ for pending");
+    // Flat layout: spec dir stays at .claude/spec/{spec_id}/ — no move.
+    let flat_dir = root.join(".claude").join("spec").join(spec_id);
+    assert!(flat_dir.exists(), "spec dir must remain at flat path .claude/spec/{spec_id}/ for pending");
 }
 
 // ---------------------------------------------------------------------------
@@ -287,9 +279,9 @@ fn amend_session_end_drift() {
     assert_eq!(windows[0]["status"], json!("closed-amend-drift"), "{result}");
     assert!(windows[0]["error"].is_null(), "unexpected error: {}", windows[0]["error"]);
 
-    // Dir must NOT have moved.
-    let active_dir = root.join(".claude").join("spec").join("active").join(spec_id);
-    assert!(active_dir.exists(), "spec dir must remain in active/ for drift");
+    // Flat layout: spec dir stays at .claude/spec/{spec_id}/ — no move.
+    let flat_dir = root.join(".claude").join("spec").join(spec_id);
+    assert!(flat_dir.exists(), "spec dir must remain at flat path .claude/spec/{spec_id}/ for drift");
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +312,7 @@ fn amend_writer_lang_pt() {
     assert!(result.get("parse_error").is_none(), "JSON parse failed: {result}");
     assert_eq!(result["windows"][0]["status"], json!("archived"));
 
-    let (content, _) = read_spec_md(root, spec_id);
+    let content = read_spec_md(root, spec_id);
     assert!(
         content.contains("prompt do usuário"),
         "expected PT 'prompt do usuário' in spec.md:\n{content}"
@@ -360,7 +352,7 @@ fn amend_writer_lang_default_en() {
     assert!(result.get("parse_error").is_none(), "JSON parse failed: {result}");
     assert_eq!(result["windows"][0]["status"], json!("archived"));
 
-    let (content, _) = read_spec_md(root, spec_id);
+    let content = read_spec_md(root, spec_id);
     assert!(
         content.contains("user prompt:"),
         "expected EN 'user prompt:' in spec.md:\n{content}"
@@ -399,7 +391,7 @@ fn amend_writer_lang_en() {
     assert!(result.get("parse_error").is_none(), "JSON parse failed: {result}");
     assert_eq!(result["windows"][0]["status"], json!("archived"));
 
-    let (content, _) = read_spec_md(root, spec_id);
+    let content = read_spec_md(root, spec_id);
     assert!(
         content.contains("user prompt:"),
         "expected EN 'user prompt:' in spec.md:\n{content}"
