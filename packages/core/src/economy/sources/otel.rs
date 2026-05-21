@@ -138,6 +138,16 @@ fn translate_span(span: &Value, ctx: &IngestContext) -> Option<SpanRecord> {
         cache_read,
     );
 
+    // W4 attribution: collectors that wire `gen_ai.tool_use_id` as a span
+    // attribute let the reader join this span to the originating `agent.start`
+    // event without falling back to the temporal window. The Anthropic-vendored
+    // exporter doesn't emit this today, but downstream collectors (e.g. an
+    // OTLP processor that decorates spans from the Bedrock proxy) do.
+    let mut extra = serde_json::Map::new();
+    if let Some(tool_use_id) = attrs.get_string("gen_ai.tool_use_id") {
+        extra.insert("tool_use_id".to_owned(), Value::String(tool_use_id));
+    }
+
     Some(SpanRecord {
         ts,
         session_id,
@@ -151,7 +161,7 @@ fn translate_span(span: &Value, ctx: &IngestContext) -> Option<SpanRecord> {
         cache_creation_input_tokens: cache_creation,
         cost_usd_micros,
         is_error,
-        extra: serde_json::Map::new(),
+        extra,
     })
 }
 

@@ -12,10 +12,12 @@
 //! }
 //! ```
 //!
-//! The single-project SQL stays *minimal* — no joins beyond what is
-//! strictly necessary, no projection beyond what the aggregate needs. The
-//! intent is that hooks, dashboards, and tests all call the same six entry
-//! points; UI-specific shaping happens on the consumer side.
+//! The single-project SQL stays *minimal* — no projection beyond what the
+//! aggregate needs. The intent is that hooks, dashboards, and tests all call
+//! the same six entry points; UI-specific shaping happens on the consumer
+//! side. The per-agent / per-spec / per-wave roll-ups share the W4
+//! attribution CTE ([`attribution_cte`]) so the spans↔`agent.start` join is
+//! defined exactly once.
 
 use rusqlite::{Connection, params};
 
@@ -101,10 +103,12 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
 
 /// Per-agent cost roll-up, ordered by cost descending.
 ///
-/// Agents are derived from `context_cost_frames.agent_id` joined back to spans
-/// by `(spec, wave, ts)`. In W1 we keep the join naive — spans and frames are
-/// not yet linked by a hard FK; aggregation is at the agent_id level using
-/// the same scope filter.
+/// W4 attribution: each in-scope `spans` row is joined to the originating
+/// `agent.start` event by [`ATTRIBUTION_CTE`] — primary key is the Anthropic
+/// `tool_use_id` (when both sides expose it), with a temporal-window fallback
+/// keyed on `session_id` + the most-recent `agent.start.ts <= spans.ts_iso`.
+/// Spans that fail both legs are excluded from the roll-up (they have no
+/// agent to attribute to).
 ///
 /// # Errors
 ///
@@ -137,64 +141,43 @@ pub fn per_agent_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Age
             Ok(out)
         }
         _ => {
-            let (where_sql, spec_param, wave_param) = scope_where(&scope);
-            // Aggregate over context_cost_frames as the agent attribution source;
-            // join nothing — cost lives on spans and is derived per-frame using
-            // the same scope filter (broad approximation; W2 tightens this).
-            let frame_sql = format!(
-                "SELECT agent_id, \
-                        COUNT(*) AS frame_count \
-                 FROM context_cost_frames {where_sql} \
-                 GROUP BY agent_id",
-                where_sql = where_sql.replace("spec = ?1", "spec_id = ?1")
-                    .replace("wave_id = ?2", "wave_id = ?2"),
+            // The W4 attribution flips ordering: span row's `spec` is no
+            // longer authoritative (the joined agent.start is). So the CTE
+            // walks every span; the scope filter runs post-attribution.
+            let span_where = "WHERE 1=1";
+            let (wave_filter, scope_params) = wave_filter_for(&scope);
+            // CTE-based join: every span is attributed once, then we GROUP BY
+            // agent_id in the outer select. The CTE keeps the read path
+            // O(N spans × log N events) with the `idx_events_event` +
+            // `idx_spans_tool_use_id` indices doing the heavy lifting.
+            let sql = format!(
+                "{cte} \
+                 SELECT attr_agent_id, \
+                        COALESCE(SUM(cost_usd_micros), 0) AS cost, \
+                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, \
+                        COUNT(*) AS span_count \
+                 FROM attributed_spans \
+                 WHERE attr_agent_id IS NOT NULL AND attr_agent_id != '' {wave_filter} \
+                 GROUP BY attr_agent_id \
+                 ORDER BY cost DESC",
+                cte = attribution_cte(span_where),
             );
-            let mut stmt = conn.prepare(&frame_sql)?;
-            let agent_rows = stmt
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
                 .query_map(
-                    params![spec_param.as_deref(), wave_param.as_deref()],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    rusqlite::params_from_iter(scope_params.iter()),
+                    |r| {
+                        Ok(AgentCost {
+                            agent_id: AgentId(r.get(0)?),
+                            cost_usd_micros: r.get(1)?,
+                            tokens: r.get(2)?,
+                            span_count: r.get(3)?,
+                        })
+                    },
                 )?
                 .filter_map(std::result::Result::ok)
-                .collect::<Vec<_>>();
-
-            // For each agent, sum spans cost where the wider scope filter
-            // applies. Spans are not directly attributed to an agent in W1, so
-            // we proportionally distribute the in-scope span total by frame
-            // share (W2 instruments per-dispatch span ids and removes this).
-            let span_sql = format!(
-                "SELECT COALESCE(SUM(cost_usd_micros), 0), \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                        COUNT(*) \
-                 FROM spans {where_sql}"
-            );
-            let (total_cost, total_tokens, total_span_count): (i64, i64, i64) = conn
-                .query_row(
-                    &span_sql,
-                    params![spec_param.as_deref(), wave_param.as_deref()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .map_err(Error::from)?;
-            let total_frames: i64 = agent_rows.iter().map(|(_, c)| *c).sum();
-            let mut out: Vec<AgentCost> = agent_rows
-                .into_iter()
-                .map(|(agent_id, frame_count)| {
-                    let share = if total_frames > 0 {
-                        f64::from(i32::try_from(frame_count).unwrap_or(0))
-                            / f64::from(i32::try_from(total_frames).unwrap_or(1))
-                    } else {
-                        0.0
-                    };
-                    AgentCost {
-                        agent_id: AgentId(agent_id),
-                        cost_usd_micros: ((total_cost as f64) * share) as i64,
-                        tokens: ((total_tokens as f64) * share) as i64,
-                        span_count: ((total_span_count as f64) * share) as i64,
-                    }
-                })
                 .collect();
-            out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
-            Ok(out)
+            Ok(rows)
         }
     }
 }
@@ -233,20 +216,29 @@ pub fn per_spec_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Spec
             Ok(out)
         }
         _ => {
-            let (where_sql, spec_param, wave_param) = scope_where(&scope);
+            // W4 attribution: aggregate by the spec_id resolved through the
+            // attribution CTE (favours the `agent.start` payload's spec over
+            // the span's own column — they differ in parent-spec/child-wave
+            // dispatches where the span carries the parent and the agent was
+            // launched against the child).
+            let span_where = "WHERE 1=1";
+            let (wave_filter, scope_params) = wave_filter_for(&scope);
             let sql = format!(
-                "SELECT COALESCE(spec, '') AS s, \
-                        COALESCE(SUM(cost_usd_micros), 0), \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0), \
-                        COUNT(*) \
-                 FROM spans {where_sql} \
-                 GROUP BY s \
-                 ORDER BY 2 DESC"
+                "{cte} \
+                 SELECT COALESCE(attr_spec_id, '') AS spec, \
+                        COALESCE(SUM(cost_usd_micros), 0) AS cost, \
+                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, \
+                        COUNT(*) AS span_count \
+                 FROM attributed_spans \
+                 WHERE 1=1 {wave_filter} \
+                 GROUP BY spec \
+                 ORDER BY cost DESC",
+                cte = attribution_cte(span_where),
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
                 .query_map(
-                    params![spec_param.as_deref(), wave_param.as_deref()],
+                    rusqlite::params_from_iter(scope_params.iter()),
                     |r| {
                         Ok(SpecCost {
                             spec_id: SpecId(r.get(0)?),
@@ -263,9 +255,13 @@ pub fn per_spec_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Spec
     }
 }
 
-/// Per-wave cost roll-up. Sourced from `context_cost_frames.wave_id`; spans
-/// alone do not carry a wave id, so the join is by `spec_id` + frame's
-/// wave bucket.
+/// Per-wave cost roll-up. W4 attribution: the wave id comes from the joined
+/// `agent.start` event payload, not from the span — so spans dispatched into a
+/// child wave from a parent-spec context are correctly bucketed.
+///
+/// Regression-tested by `parent_spec_child_wave_attribution` in
+/// `tests/economy_attribution.rs` (AC-6, absorbed from the superseded
+/// `metrics-writers-pipeline-key` spec).
 ///
 /// # Errors
 ///
@@ -299,62 +295,42 @@ pub fn per_wave_costs(conn: &Connection, scope: EconomyScope) -> Result<Vec<Wave
             Ok(out)
         }
         _ => {
-            let (frame_where, spec_param, wave_param) = scope_where_frames(&scope);
+            // W4 attribution: aggregate by (spec_id, wave_id) resolved through
+            // the attribution CTE. Spans that join cleanly to an `agent.start`
+            // carry the wave it was dispatched against — which is the answer
+            // the "parent-spec/child-wave" regression case needs.
+            let span_where = "WHERE 1=1";
+            let (wave_filter, scope_params) = wave_filter_for(&scope);
             let sql = format!(
-                "SELECT COALESCE(spec_id, '') AS s, COALESCE(wave_id, '') AS w, \
-                        COUNT(*) AS frame_count \
-                 FROM context_cost_frames {frame_where} \
-                 GROUP BY s, w \
-                 ORDER BY frame_count DESC"
+                "{cte} \
+                 SELECT COALESCE(attr_spec_id, '') AS spec, \
+                        COALESCE(attr_wave_id, '') AS wave, \
+                        COALESCE(SUM(cost_usd_micros), 0) AS cost, \
+                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, \
+                        COUNT(*) AS span_count \
+                 FROM attributed_spans \
+                 WHERE 1=1 {wave_filter} \
+                 GROUP BY spec, wave \
+                 ORDER BY cost DESC",
+                cte = attribution_cte(span_where),
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
                 .query_map(
-                    params![spec_param.as_deref(), wave_param.as_deref()],
+                    rusqlite::params_from_iter(scope_params.iter()),
                     |r| {
                         Ok(WaveCost {
                             spec_id: SpecId(r.get(0)?),
                             wave_id: WaveId(r.get(1)?),
-                            cost_usd_micros: 0, // populated below.
-                            tokens: 0,
-                            span_count: r.get(2)?,
+                            cost_usd_micros: r.get(2)?,
+                            tokens: r.get(3)?,
+                            span_count: r.get(4)?,
                         })
                     },
                 )?
                 .filter_map(std::result::Result::ok)
-                .collect::<Vec<_>>();
-            // Per-wave cost is approximated from the share of frames in the
-            // wave times the in-scope span total — same approximation
-            // documented in `per_agent_costs`.
-            let (span_where, spec_param2, wave_param2) = scope_where(&scope);
-            let span_sql = format!(
-                "SELECT COALESCE(SUM(cost_usd_micros), 0), \
-                        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) \
-                 FROM spans {span_where}"
-            );
-            let (total_cost, total_tokens): (i64, i64) = conn
-                .query_row(
-                    &span_sql,
-                    params![spec_param2.as_deref(), wave_param2.as_deref()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(Error::from)?;
-            let total_frames: i64 = rows.iter().map(|r| r.span_count).sum();
-            let mut out: Vec<WaveCost> = rows
-                .into_iter()
-                .map(|mut w| {
-                    let share = if total_frames > 0 {
-                        (w.span_count as f64) / (total_frames as f64)
-                    } else {
-                        0.0
-                    };
-                    w.cost_usd_micros = ((total_cost as f64) * share) as i64;
-                    w.tokens = ((total_tokens as f64) * share) as i64;
-                    w
-                })
                 .collect();
-            out.sort_by(|a, b| b.cost_usd_micros.cmp(&a.cost_usd_micros));
-            Ok(out)
+            Ok(rows)
         }
     }
 }
@@ -512,6 +488,141 @@ pub fn context_routing_quality(
             })
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// W4 attribution CTE — single source of truth for the spans↔agent.start join.
+//
+// Build via [`attribution_cte`] with a `spans` WHERE clause (currently always
+// `WHERE 1=1` — scope filtering moved to the outer query, see
+// [`wave_filter_for`]). Three columns are projected for downstream GROUP BY:
+//
+// - `attr_agent_id` — `agent.start.payload.agent_id` ?? `subagentType` ?? `actor_id`
+// - `attr_spec_id`  — `agent.start.payload.spec_id`  ?? `events.spec` ?? `spans.spec`
+// - `attr_wave_id`  — `agent.start.payload.wave_id`  ?? `CAST(events.wave AS TEXT)` ?? `spans.wave_id`
+//
+// The final `spans.*` legs keep W1 backward compatibility: a span recorded
+// without an `agent.start` (legacy ingest, fixture tests) still attributes
+// via its own columns instead of bucketing into the empty-string sentinel.
+//
+// The two correlated subqueries walk the join legs in priority order — the
+// primary one keys on `tool_use_id` (an Anthropic-issued block id present
+// when the W3 adapter could harvest it), the fallback walks the temporal
+// window (most-recent `agent.start.ts <= spans.ts_iso` in the same session).
+// Both are bounded by indices: `idx_spans_tool_use_id` (v4) for the primary,
+// `idx_events_event` for the fallback's event-kind filter.
+// ---------------------------------------------------------------------------
+
+/// Build the outer-query filter that constrains attributed spans to the scope.
+///
+/// The W4 attribution flips the W1 ordering: spans no longer carry the
+/// authoritative spec/wave (that lives on the joined `agent.start`), so the
+/// scope filter applies *after* the CTE resolves attribution rather than
+/// before it on the raw `spans` rows.
+///
+/// Returns the WHERE fragment plus the matching positional params, so the
+/// caller passes exactly as many binds as the SQL references — rusqlite
+/// rejects extra binds with `"Wrong number of parameters"`.
+///
+/// - Project / AllProjects → no filter, no params.
+/// - Spec → `AND attr_spec_id = ?1` + `[spec]`.
+/// - Wave → `AND attr_spec_id = ?1 AND attr_wave_id = ?2` + `[spec, wave]`.
+fn wave_filter_for(scope: &EconomyScope) -> (&'static str, Vec<String>) {
+    match scope {
+        EconomyScope::Wave { spec, wave, .. } => (
+            "AND attr_spec_id = ?1 AND attr_wave_id = ?2",
+            vec![spec.0.clone(), wave.0.clone()],
+        ),
+        EconomyScope::Spec { spec, .. } => {
+            ("AND attr_spec_id = ?1", vec![spec.0.clone()])
+        }
+        _ => ("", vec![]),
+    }
+}
+
+/// Build the `WITH attributed_spans AS (...)` CTE prefix for the W4 join.
+///
+/// `span_where` is the scope filter as built by [`scope_where`] — it gets
+/// inlined into the spans-side of the CTE so the join only walks rows the
+/// caller actually wants. The two attribution legs (primary tool_use_id,
+/// fallback temporal window) live as correlated subqueries — `COALESCE`
+/// short-circuits to the second when the first is `NULL`.
+fn attribution_cte(span_where: &str) -> String {
+    // The primary leg joins on `JSON_EXTRACT(events.payload, '$.tool_use_id')`,
+    // gated by `s.tool_use_id IS NOT NULL` so the index range scan does not
+    // touch every event row for spans that have no id to match on.
+    //
+    // The fallback leg picks the most-recent `agent.start` in the same session
+    // whose `ts` is on-or-before `spans.ts_iso`. `events.ts` is an ISO-8601
+    // TEXT column — string sort matches chronological sort for that format,
+    // so `ORDER BY ev.ts DESC LIMIT 1` is the temporal window upper bound.
+    // A future `agent.stop` upper bound is not required: a later `agent.start`
+    // in the same session already moves the window forward (the DESC + LIMIT 1
+    // selects the most-recent ancestor, which is the active agent).
+    format!(
+        "WITH attributed_spans AS (\
+            SELECT s.cost_usd_micros, s.input_tokens, s.output_tokens, \
+                   COALESCE( \
+                     (SELECT COALESCE( \
+                                JSON_EXTRACT(ev.payload, '$.agent_id'), \
+                                JSON_EXTRACT(ev.payload, '$.subagentType'), \
+                                ev.actor_id) \
+                      FROM events ev \
+                      WHERE ev.event = 'agent.start' \
+                        AND s.tool_use_id IS NOT NULL \
+                        AND JSON_EXTRACT(ev.payload, '$.tool_use_id') = s.tool_use_id \
+                      LIMIT 1), \
+                     (SELECT COALESCE( \
+                                JSON_EXTRACT(ev.payload, '$.agent_id'), \
+                                JSON_EXTRACT(ev.payload, '$.subagentType'), \
+                                ev.actor_id) \
+                      FROM events ev \
+                      WHERE ev.event = 'agent.start' \
+                        AND ev.session_id IS NOT NULL \
+                        AND s.session_id IS NOT NULL \
+                        AND ev.session_id = s.session_id \
+                        AND ev.ts <= s.ts_iso \
+                      ORDER BY ev.ts DESC LIMIT 1) \
+                   ) AS attr_agent_id, \
+                   COALESCE( \
+                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.spec_id'), ev.spec) \
+                      FROM events ev \
+                      WHERE ev.event = 'agent.start' \
+                        AND s.tool_use_id IS NOT NULL \
+                        AND JSON_EXTRACT(ev.payload, '$.tool_use_id') = s.tool_use_id \
+                      LIMIT 1), \
+                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.spec_id'), ev.spec) \
+                      FROM events ev \
+                      WHERE ev.event = 'agent.start' \
+                        AND ev.session_id IS NOT NULL \
+                        AND s.session_id IS NOT NULL \
+                        AND ev.session_id = s.session_id \
+                        AND ev.ts <= s.ts_iso \
+                      ORDER BY ev.ts DESC LIMIT 1), \
+                     s.spec \
+                   ) AS attr_spec_id, \
+                   COALESCE( \
+                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.wave_id'), \
+                                      CAST(ev.wave AS TEXT)) \
+                      FROM events ev \
+                      WHERE ev.event = 'agent.start' \
+                        AND s.tool_use_id IS NOT NULL \
+                        AND JSON_EXTRACT(ev.payload, '$.tool_use_id') = s.tool_use_id \
+                      LIMIT 1), \
+                     (SELECT COALESCE(JSON_EXTRACT(ev.payload, '$.wave_id'), \
+                                      CAST(ev.wave AS TEXT)) \
+                      FROM events ev \
+                      WHERE ev.event = 'agent.start' \
+                        AND ev.session_id IS NOT NULL \
+                        AND s.session_id IS NOT NULL \
+                        AND ev.session_id = s.session_id \
+                        AND ev.ts <= s.ts_iso \
+                      ORDER BY ev.ts DESC LIMIT 1), \
+                     s.wave_id \
+                   ) AS attr_wave_id \
+            FROM spans s {span_where} \
+         )"
+    )
 }
 
 // ---------------------------------------------------------------------------

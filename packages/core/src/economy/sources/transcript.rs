@@ -152,6 +152,17 @@ fn translate_line(value: &Value, ctx: &IngestContext) -> Option<ApiCostFrame> {
         cache_read,
     );
 
+    // W4 attribution: when the assistant turn carries a `tool_use` content
+    // block, surface its `id` so the writer can persist it into
+    // `spans.tool_use_id`. The reader joins this against the matching
+    // `agent.start` event payload. The first tool_use block wins — assistant
+    // turns rarely emit more than one Task dispatch per message, and the
+    // reader's fallback temporal window covers the multi-dispatch edge.
+    let mut extra = serde_json::Map::new();
+    if let Some(tool_use_id) = extract_tool_use_id(value) {
+        extra.insert("tool_use_id".to_owned(), Value::String(tool_use_id));
+    }
+
     Some(ApiCostFrame {
         ts,
         session_id,
@@ -165,8 +176,30 @@ fn translate_line(value: &Value, ctx: &IngestContext) -> Option<ApiCostFrame> {
         cache_creation_input_tokens: cache_creation,
         cost_usd_micros,
         is_error: false,
-        extra: serde_json::Map::new(),
+        extra,
     })
+}
+
+/// Walk `message.content[]` and return the first `tool_use` block's id.
+///
+/// Claude Code's transcript shape:
+///
+/// ```json
+/// { "message": { "content": [
+///     {"type": "text", "text": "..."},
+///     {"type": "tool_use", "id": "toolu_01ABC...", "name": "Task", "input": {...}}
+/// ] } }
+/// ```
+fn extract_tool_use_id(value: &Value) -> Option<String> {
+    value
+        .get("message")?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .find(|c| c.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .and_then(|c| c.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn price_frame(

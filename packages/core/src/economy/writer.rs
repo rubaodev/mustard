@@ -133,15 +133,26 @@ pub fn record_context_cost(conn: &Connection, rec: ContextCostFrame) -> Result<(
 /// constraint violation that fails the whole batch.
 fn insert_span_row(conn: &Connection, rec: SpanRecord) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
+    // W4 attribution channel: extract `tool_use_id` from the lenient `extra`
+    // map (set by W3 adapters when the upstream payload exposes Anthropic's
+    // tool_use id). Keeping the field in `extra` rather than bumping the
+    // SpanRecord struct shape preserves the W1-frozen API surface that
+    // downstream crates struct-init against.
+    let tool_use_id = rec
+        .extra
+        .get("tool_use_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     tx.execute(
         "INSERT OR REPLACE INTO spans \
             (trace_id, span_id, parent_span_id, name, started_at, \
              ended_at, duration_ms, attributes, spec, phase, model, \
              input_tokens, output_tokens, is_error, \
              cache_read_input_tokens, cache_creation_input_tokens, \
-             cost_usd_micros, project_path, ts_iso, session_id, wave_id) \
+             cost_usd_micros, project_path, ts_iso, session_id, wave_id, \
+             tool_use_id) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                 ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                 ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             // trace_id / parent_span_id / name are not part of SpanRecord;
             // adapters that have them stash them in `extra`.
@@ -166,6 +177,7 @@ fn insert_span_row(conn: &Connection, rec: SpanRecord) -> Result<()> {
             rec.ts.clone(),
             rec.session_id,
             Option::<String>::None, // wave_id — populated by adapters that know it
+            tool_use_id,            // v4: W4 attribution join key
         ],
     )?;
     tx.commit()?;

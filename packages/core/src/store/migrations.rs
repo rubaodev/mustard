@@ -46,7 +46,7 @@ use rusqlite::{Connection, OptionalExtension};
 /// Bump this when adding a new `migrate_vN_to_vN_plus_1` step and append the
 /// call inside [`apply`]. A database with `_mustard_meta.schema_version` equal
 /// to [`LATEST_VERSION`] is a no-op on open.
-pub const LATEST_VERSION: u32 = 3;
+pub const LATEST_VERSION: u32 = 4;
 
 /// Sentinel spec name for events that could not be attributed by the v2
 /// backfill — typically pre-pipeline events or rows missing `session_id`.
@@ -72,6 +72,7 @@ pub fn apply(conn: &Connection) -> Result<u32> {
         match current {
             1 => migrate_v1_to_v2(conn)?,
             2 => migrate_v2_to_v3(conn)?,
+            3 => migrate_v3_to_v4(conn)?,
             // Future migrations append here. The `LATEST_VERSION` constant is
             // the only invariant — every step must move the version forward.
             other => {
@@ -255,6 +256,29 @@ fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
     )?;
 
     write_schema_version(&tx, 3)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v3 → v4 — add `spans.tool_use_id` for the W4 attribution join.
+///
+/// The W4 reader joins `spans` to `events` by the Anthropic `tool_use` block
+/// id: assistant turns carry that id in their `message.content[].id` (when
+/// `type == "tool_use"`) and the `agent.start` event written by the
+/// `subagent-tracker` hook records the same id in its payload. Persisting the
+/// id on the span row lets the reader skip the per-span JSON scan on the hot
+/// path; `idx_spans_tool_use_id` keeps the join lookup at O(log n).
+///
+/// Re-runnable via the same `add_column_if_missing` probe used in v3 — a DB
+/// that already absorbed the ALTER (e.g. a partial v4 from a previous open)
+/// is a no-op.
+fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    add_column_if_missing(&tx, "spans", "tool_use_id", "TEXT")?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_spans_tool_use_id ON spans(tool_use_id);",
+    )?;
+    write_schema_version(&tx, 4)?;
     tx.commit()?;
     Ok(())
 }

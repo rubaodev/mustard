@@ -72,6 +72,14 @@ pub struct SpanRecord {
     #[serde(default)]
     pub is_error: bool,
     /// Catch-all for adapter-specific fields not in the core schema.
+    ///
+    /// **W4 attribution channel:** adapters populate `extra["tool_use_id"]`
+    /// (as a JSON string) when the upstream payload exposes the Anthropic
+    /// `tool_use` block id. The writer pulls this out and persists it into the
+    /// `spans.tool_use_id` column (migration v4), which the reader joins
+    /// against `events.payload.$.tool_use_id` for primary attribution. Keeping
+    /// the field in `extra` instead of bumping the struct shape preserves the
+    /// W1-frozen `SpanRecord` API for downstream crates that struct-init it.
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
