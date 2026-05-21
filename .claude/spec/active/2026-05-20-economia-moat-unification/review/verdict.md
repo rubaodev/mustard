@@ -1,82 +1,58 @@
 # Review Verdict — economia-moat-unification
 
 ### Phase: REVIEW (Wave 9)
-### Timestamp: 2026-05-21T06:30:00Z
-### Round: 1/2
+### Timestamp Final: 2026-05-21T06:55:00Z
+### Status: APPROVED (after 2 fix-loops)
 
-## Verdict consolidado
+## Resultado final
 
-**REJECTED** (1 CRITICAL real em core, 1 CRITICAL cosmético em dashboard) → fix-loop 1/2.
+| Reviewer | Round 1 | Round 2 | Round 3 |
+|----------|---------|---------|---------|
+| core | REJECTED (1 CRITICAL) | APPROVED ✅ | — |
+| rt | APPROVED (2 W rec.) | APPROVED ✅ | — |
+| dashboard | APPROVED-fixes (1 CRITICAL cosm.) | REJECTED (2 partial) | APPROVED ✅ |
 
-| Reviewer | Verdict | CRITICAL | WARNING | NOTE | Tactical-fix |
-|----------|---------|----------|---------|------|--------------|
-| core | REJECTED | 1 (projects[0] bug) | 5 | 3 | 4 |
-| rt | APPROVED | 0 | 2 | 4 | 3 |
-| dashboard | APPROVED-with-fixes | 1 (cosmetic) | 3 | 5 | 3 |
+**Pipeline APPROVED para avançar pra QA (Wave 10).**
 
-## CRITICAL findings (devem fechar)
-
-### Core
-
-1. **`reader.rs`: fan_out closures passam `projects[0]` em todas as 6 branches de `AllProjects`** (linhas 43, 121, 197, 274, 348, 423).
-   - Hoje não corrompe dados (porque `scope_where(Project)` emite `None, None` params), mas silenciosamente rompe se um filtro por path for adicionado em `scope_where` futuro.
-   - Fix: expor o `ProjectPath` corrente para a closure (capturar da iteração interna do `fan_out`).
-   - LOC estimado: ~12.
-
-### Dashboard
-
-2. **`i18n.ts`: import `useSyncExternalStore` não usado** (linhas 21 e 116 com `void` suppressor).
-   - Não quebra tsc hoje, mas trip-eará lint `no-unused-vars`. Comment de "referenced via zustand selector under the hood" é falso (zustand não usa `useSyncExternalStore` direto).
-   - Fix: deletar import + suppressor.
-   - LOC: 3.
-
-## WARNING confirmados (devem fechar — silenciam correctness)
+## Fix-loop 1 (round 1 → round 2)
 
 ### Core
-
-3. **`reader.rs:640,643,650`: tautologia `?2 = ?2` em `scope_where(Wave)` em `economy_summary` + `savings_breakdown`** — Wave scope vira no-op silencioso. Callers de `EconomyScope::Wave` para essas 2 fns recebem todos os spans do spec, não só da wave. Hole de correctness.
-   - Fix: implementar filtragem real por wave_id (já existe no CTE de `per_agent_costs`; replicar nas outras 2).
-   - LOC: ~15.
-
-### Dashboard
-
-4. **`NOTICE.md`: placeholders `<year>` e `<authors>` literais** — atribuição MIT incompleta legalmente; deve ser substituída por best-effort (`2023-2025 Anthropic, Inc.`) antes do CLOSE.
-   - LOC: 1.
-
-## WARNING + tactical-fix recomendados (bundlar no fix-loop p/ entregar 100% limpo)
-
-### Core
-
-5. **`now_iso` + `epoch_secs_to_ymdhms` duplicados 3x** em `sources/{otel,transcript,rtk}.rs` — extrair para `economy::sources::time` privado. ~90 LOC dedupe.
-
-6. **Adicionar 1 teste cobrindo `EconomyScope::Wave` em economy_summary** — `tests/economy_basic.rs` ou `economy_attribution.rs`. ~15 LOC.
+- ✅ `MultiProjectReader::fan_out` closure agora `Fn(&Connection, &ProjectPath)` — bug `projects[0]` corrigido por design da API (não nos call-sites)
+- ✅ `scope_where` reescrito sem tautologias `?N=?N`; Wave scope em `economy_summary` via attribution_cte (filtro real)
+- ✅ `economy::sources::time` (NEW) extraído — dedupe 3x dos helpers `now_iso`/`epoch_secs_to_ymdhms` (90 LOC menos)
+- ✅ `test_economy_summary_wave_scope_filters_to_wave_only` adicionado (regressão pro tautology bug)
+- ✅ 268 tests pass (+3)
 
 ### RT
-
-7. **`bash_guard.rs:1470` — `BashGuardBlock` → `RtkRewrite`** no site rtk-rewrite. ~1 LOC. Resolve W2 Concern + WARNING do reviewer.
-
-8. **`bash_guard.rs:1466` — `estimate_input_tokens(&cmd, "")` → thread `ctx.model` ou env `CLAUDE_MODEL`**. ~3 LOC.
+- ✅ `bash_guard.rs:1477` — `SavingsSource::BashGuardBlock` → `RtkRewrite` no site rtk-rewrite
+- ✅ `bash_guard.rs:1472` — `estimate_input_tokens(&cmd, &env::var("CLAUDE_MODEL"))` em vez de empty string
+- ✅ `util/mod.rs` — `home_dir()` + `encode_cwd()` consolidados; `session_cleanup.rs` + `transcript_watcher.rs` importam do util compartilhado
+- ✅ 644 tests pass
 
 ### Dashboard
+- ✅ `i18n.ts` — `useSyncExternalStore` import + void suppressor removidos
+- ✅ `NOTICE.md` — placeholders `<year>`/`<authors>` → `"2023–2025 Anthropic, Inc."`
+- ✅ `formatTokens` consolidado em `lib/types/economy.ts` — `ExecutionTrace.tsx` + `BaseRow.tsx` importam de lá
+- ✅ `CodeBlock.tsx` — grid layout condicional (`block` quando `showLineNumbers=false`)
 
-9. **`formatTokens` duplicado** em `ExecutionTrace.tsx`/`BaseRow.tsx`/`economy.ts` — consolidar em `lib/types/economy.ts` (já exporta lá). ~10 LOC.
+## Fix-loop 2 (round 2 → round 3) — só dashboard
 
-10. **`CodeBlock`: grid bug quando `showLineNumbers={false}`** — usar `grid-cols-[1fr]` quando sem gutter. ~5 LOC.
+### Dashboard
+- ✅ `i18n.ts:72-77` — JSDoc de `useLang()` reescrito; zero menção restante de `useSyncExternalStore` no arquivo inteiro
+- ✅ `format.ts:10` — `formatTokens` reescrito como `export { formatTokens } from "./types/economy";` (re-export do canônico) — uma única definição em todo o codebase
 
-## NOTE (não precisam ser fixados agora, mas vão pra Concerns)
+## Concerns aceitos (vão para CLOSE como debt list)
 
-- Core: `eprintln!` em vez de `tracing::warn!` em adapters (motivado por `mustard-core` não ter `tracing` dep)
-- Core: `context_routing_quality` usa `f64` para ratios (aceitável; documentar)
-- Core: `insert_span_row` grava `project_path` como `None` (writer não thread o param)
-- Core: `AttributeView` linear scan (aceitável até ~50 attrs)
-- RT: 5 cópias do helper Connection (W3a delivered `open_for` mas W2 hooks não foram refatorados — follow-up wave)
-- RT: `home_dir()`+`encode_cwd()` duplicados em session_cleanup.rs + transcript_watcher.rs
-- RT: `/v1/traces` sem doc do env var necessário
-- RT: `transcript_watcher` sem PID file (multi-spawn risk com `MUSTARD_TRANSCRIPT_WATCH=1`)
-- Dashboard: `WorkspaceStatusBar.tsx` virou orphan (importado em nenhum lugar)
-- Dashboard: `ScopeBar` fetcha specs internamente (não é reusable fora da Economia)
-- Dashboard: `EconomySummary.top_agents_by_cost` cap=3 no core, mas `PerAgentTable.limit=10`
+Lista consolidada das 23 Concerns originais das 8 waves: 22 ACEITAS pelos reviewers, 1 NEED-DISCUSSION:
+- W4 3º fallback silencioso (span sem `agent.start` cai na coluna própria) — REVIEW pediu adicionar log/counter de "spans sem atribuição" como tactical-fix futuro. Não bloqueia.
+
+## Tactical Fix Candidates surfacedos (não consumidos nesta wave)
+
+Reviewers identificaram 10 candidates totais. 7 foram resolvidos nos fix-loops; 3 ficam como sugestão futura:
+- Core: `eprintln!` → `tracing::warn!` (precisa adicionar `tracing` dep no `mustard-core`)
+- RT: refactor dos 5 hooks W2 para usar `economy::store::open_for` (já existe; só falta consumir)
+- RT: `transcript_watcher` ganhar PID file pra idempotência
 
 ## Próximo passo
 
-Fix-loop 1/2: dispatch 3 fix agents paralelos (core-impl, rt-impl, dashboard-impl) com a lista CRITICAL+WARNING+tactical-fix do seu subprojeto. Re-dispatch dos 3 reviewers após retorno. Se APPROVED em todos → avança pra QA (Wave 10). Se algum CRITICAL persistir → loop 2/2; se ainda assim falhar → STOP + AskUserQuestion.
+QA (Wave 10) — `mustard-rt run qa-run --spec 2026-05-20-economia-moat-unification` para rodar os 67+ Acceptance Criteria literalmente.

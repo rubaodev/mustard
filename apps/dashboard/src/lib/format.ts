@@ -7,9 +7,11 @@ export function formatNumber(n: number): string {
   return `${(n / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}G`;
 }
 
-export function formatTokens(n: number): string {
-  return formatNumber(n);
-}
+// `formatTokens` lives in `lib/types/economy.ts` (the canonical source — its
+// lowercase "k" suffix matches the W7 Economia rows and the design-craft
+// guideline). Re-exported here so existing callers that import from
+// `@/lib/format` keep working without spawning a divergent implementation.
+export { formatTokens } from "./types/economy";
 
 export function formatPct(p: number): string {
   if (!Number.isFinite(p)) return "0%";

@@ -70,9 +70,10 @@ const DICTIONARY = new Map<string, TranslationRow>([
 ]);
 
 /**
- * Subscribe to the Preferences-controlled language. `useSyncExternalStore`
- * keeps this provider zero-context: any component can call `useTranslate()`
- * without wrapping the tree.
+ * Read the Preferences-controlled language via a zustand selector on the
+ * shared `useStore`. Zustand handles subscription/re-render internally, so
+ * this hook stays zero-context — any component can call `useTranslate()`
+ * without wrapping the tree in a Provider.
  */
 function useLang(): Lang {
   // Selector pattern — single field of the store, mirroring the guardrail in
