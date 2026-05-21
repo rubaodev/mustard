@@ -1,8 +1,8 @@
 # Wave 5 — Migration one-shot do repo Mustard
 
 ### Parent: [[2026-05-21-flatten-spec-layout-and-multi-collab]]
-### Status: draft
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Lang: pt
 
 ## Resumo
@@ -25,20 +25,20 @@ Hoje o repo tem 3 pastas em `spec/active/`, 85 em `spec/completed/` e 1 em `spec
 
 ## Tarefas
 
-- [ ] Script de migração via `node -e` (one-shot, idempotente):
+- [x] Script de migração via `node -e` (one-shot, idempotente):
   1. Mover cada subdir de `.claude/spec/active/`, `.claude/spec/completed/`, `.claude/spec/superseded/` para `.claude/spec/{slug}/`.
   2. Após o move, apagar as 3 pastas vazias (`active/`, `completed/`, `superseded/`).
-- [ ] Backfill SQLite via `mustard-rt run rebuild-specs` + verificações por Node:
+- [x] Backfill SQLite via `mustard-rt run rebuild-specs` + verificações por Node:
   1. Para cada spec em `spec/{slug}/`, ler header. Se `### Status:` ∈ {completed, cancelled, abandoned} e SQLite não tem `pipeline.status: <esse>` registrado, emitir o evento sintético.
   2. Para as 5 specs identificadas como fantasma nesta sessão: emitir o evento que falta (status → completed se o header diz completed).
-- [ ] Para a spec presa (`2026-05-20-economia-moat-unification`): nada precisa mover (já está em flat `spec/`), só confirmar header está alinhado com `pipeline.status: completed`.
-- [ ] Rodar `mustard-rt run rebuild-specs` no final e validar via Node que zero fantasma + zero preso.
+- [x] Para a spec presa (`2026-05-20-economia-moat-unification`): nada precisa mover (já está em flat `spec/`), só confirmar header está alinhado com `pipeline.status: completed`.
+- [x] Rodar `mustard-rt run rebuild-specs` no final e validar via Node que zero fantasma + zero preso.
 
 ## Acceptance Criteria
 
-- [ ] AC-W5-1: As 3 pastas-bucket não existem mais — Command: `node -e "const f=require('fs');const bad=['active','completed','superseded'].filter(b=>f.existsSync('.claude/spec/'+b));process.exit(bad.length===0?0:(console.error('still exist:',bad),1))"`
-- [ ] AC-W5-2: Todas as specs do repo (89) estão em `.claude/spec/{name}/spec.md` — Command: `node -e "const f=require('fs');const dirs=f.readdirSync('.claude/spec').filter(d=>f.statSync('.claude/spec/'+d).isDirectory());const bad=dirs.filter(d=>!f.existsSync('.claude/spec/'+d+'/spec.md'));process.exit(bad.length===0&&dirs.length>=85?0:(console.error('bad:',bad,'count:',dirs.length),1))"`
-- [ ] AC-W5-3: Zero fantasmas (specs ativas no SQLite sem pasta) — Command: `node -e "const {DatabaseSync}=require('node:sqlite');const fs=require('fs');const db=new DatabaseSync('.claude/.harness/mustard.db');const onDisk=new Set(fs.readdirSync('.claude/spec').filter(d=>fs.statSync('.claude/spec/'+d).isDirectory()&&fs.existsSync('.claude/spec/'+d+'/spec.md')));const active=db.prepare(\"SELECT name FROM specs WHERE status IN ('planning','implementing','reviewing','qa','blocked','wave-failed','closed-followup')\").all().map(r=>r.name);const ghosts=active.filter(n=>!onDisk.has(n));process.exit(ghosts.length===0?0:(console.error('ghosts:',ghosts),1))"`
+- [x] AC-W5-1: As 3 pastas-bucket não existem mais — Command: `node -e "const f=require('fs');const bad=['active','completed','superseded'].filter(b=>f.existsSync('.claude/spec/'+b));process.exit(bad.length===0?0:(console.error('still exist:',bad),1))"`
+- [x] AC-W5-2: Todas as specs do repo (89) estão em `.claude/spec/{name}/spec.md` — Command: `node -e "const f=require('fs');const dirs=f.readdirSync('.claude/spec').filter(d=>f.statSync('.claude/spec/'+d).isDirectory());const bad=dirs.filter(d=>!f.existsSync('.claude/spec/'+d+'/spec.md'));process.exit(bad.length===0&&dirs.length>=85?0:(console.error('bad:',bad,'count:',dirs.length),1))"`
+- [x] AC-W5-3: Zero fantasmas (specs ativas no SQLite sem pasta) — Command: `node -e "const {DatabaseSync}=require('node:sqlite');const fs=require('fs');const db=new DatabaseSync('.claude/.harness/mustard.db');const onDisk=new Set(fs.readdirSync('.claude/spec').filter(d=>fs.statSync('.claude/spec/'+d).isDirectory()&&fs.existsSync('.claude/spec/'+d+'/spec.md')));const active=db.prepare(\"SELECT name FROM specs WHERE status IN ('planning','implementing','reviewing','qa','blocked','wave-failed','closed-followup')\").all().map(r=>r.name);const ghosts=active.filter(n=>!onDisk.has(n));process.exit(ghosts.length===0?0:(console.error('ghosts:',ghosts),1))"`
 
 ## Limites
 

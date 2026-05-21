@@ -8,6 +8,17 @@ Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 (+ `COORDINATE` for roadmaps / multi-spec parents).
 Single source of truth — phase names, descriptions, entry triggers: `refs/canonical-phases.md`.
 
+### Spec Layout — Flat `spec/{name}/`
+
+Specs live under a single flat directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories. Status is read from the `### Status:` header inside `spec.md`; archival is semantic-only — `/close` emits a `pipeline.status` event into SQLite (no filesystem move). Wave plans add `wave-plan.md` plus `wave-N-{role}/spec.md` subdirectories inside the same `{name}/` directory.
+
+### Two-Stage Close — Emit-Only
+
+`/close` runs in two stages, both purely event-driven:
+
+1. **Verification gate** — build/type-check/lint/test pass, QA verdict is recorded, checklist fully `[x]`, `docs-stale-check` returns no hits.
+2. **Emit-only close** — emit `pipeline.status: completed` (and optionally `pipeline.phase: CLOSE`) for the spec. The directory stays at `.claude/spec/{name}/`. A follow-up window is implicit via the event timestamp; tactical-fix sub-specs link via `### Parent:` and the `spec.link` event regardless of when the parent closed.
+
 ### Spec Artifact — Two Layers
 
 A spec is a single `spec.md` file organized in two named layers:

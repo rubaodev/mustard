@@ -33,6 +33,19 @@
         "memory/lessons\\.json"
       ],
       "replacement_hint": "Pipeline state derived integralmente de eventos SQLite via pipeline_state_for_spec; knowledge/memory em tabelas knowledge_patterns/memory_decisions/memory_lessons; emissores usam mustard-rt run emit-pipeline / mustard-rt run memory"
+    },
+    {
+      "from_spec": "2026-05-21-flatten-spec-layout-and-multi-collab",
+      "closed_at": null,
+      "obsolete_terms": [
+        "spec/active/",
+        "spec/completed/",
+        "spec/superseded/",
+        "active_spec_dir",
+        "completed_spec_dir"
+      ],
+      "hint": "Use spec/{name}/ (flatten layout)",
+      "replacement_hint": "Use spec/{name}/ (flatten layout) — status is read from the spec header, not from a bucket directory; archival is semantic-only via the pipeline.status event"
     }
   ]
 }

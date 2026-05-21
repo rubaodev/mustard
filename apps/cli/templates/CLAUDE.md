@@ -146,5 +146,9 @@ A coleta de arquivos do scanner (`scan/file_utils.rs`) ignora pastas em ordem ad
 - env `MUSTARD_SCAN_IGNORE` — lista CSV (ex: `MUSTARD_SCAN_IGNORE=Pods,vendor,assets`)
 - entradas de pasta do `.gitignore` do subprojeto (extraídas via `parseGitignoreDirs` — conservativo: só nomes sem `/`, sem glob, sem `!`)
 
+## Spec Layout
+
+Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Status:` header inside `spec.md`, and archival is semantic-only (the `pipeline.status` event in SQLite, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
+
 ## Full Reference
 Rules, pipeline, naming: `pipeline-config.md`

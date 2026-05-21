@@ -10,7 +10,7 @@ Single unified template for all dispatches:
 
 `{context_md}` is the **relevance-filtered glossary slice** — the subset of `CONTEXT.md` term blocks that match the active spec's entities/files/key-tokens, produced by `context-slice.js`. It sits inside PREFIX-STABLE because the slice is stable for the whole pipeline (the spec does not change mid-run), so the prefix cache holds across dispatches and waves. Leave it empty when `CONTEXT.md` is absent (graceful degrade) — the orchestrator omits the `## SHARED LANGUAGE` block content but keeps the heading harmless. The orchestrator refreshes the slice only on a wave transition.
 
-`{spec_lang}` is filled from the active spec's `### Lang:` header (`pt` or `en`). Orchestrator reads it from `.claude/spec/active/{specName}/spec.md`. Defaults to `en` if missing.
+`{spec_lang}` is filled from the active spec's `### Lang:` header (`pt` or `en`). Orchestrator reads it from `.claude/spec/{specName}/spec.md`. Defaults to `en` if missing.
 
 ---
 

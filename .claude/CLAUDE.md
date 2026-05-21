@@ -38,5 +38,9 @@ Any change that touches production code (schema, API, UI) → Pipeline Feature.
 
 **Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
 
+## Spec Layout
+
+Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — status comes from the `### Status:` header inside `spec.md`, and archival is semantic-only (the `pipeline.status` event in SQLite, not a filesystem move). Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs inside the same `{name}/` directory.
+
 ## Full Reference
 Rules, pipeline, naming: `.claude/pipeline-config.md`

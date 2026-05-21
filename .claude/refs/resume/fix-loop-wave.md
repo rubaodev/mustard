@@ -44,7 +44,7 @@ A wave is considered **failed** when:
    - `failedWaves.push(currentWave)`
    - `status = "failed"`
    - `updatedAt = {ISO now}`
-2. Write failure log to `.claude/spec/active/{specName}/wave-{currentWave}-{role}/failure.md`:
+2. Write failure log to `.claude/spec/{specName}/wave-{currentWave}-{role}/failure.md`:
    ```markdown
    # Wave {N} Failure — {role}
    ## When: {ISO}

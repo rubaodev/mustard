@@ -38,7 +38,7 @@ Before writing the single spec in Full scope, check whether the work should be d
 
 6. **Write Wave Plan structure:**
    ```
-   .claude/spec/active/{date}-{name}/
+   .claude/spec/{date}-{name}/
      ├── wave-plan.md
      ├── wave-1-{role}/spec.md
      ├── wave-2-{role}/spec.md

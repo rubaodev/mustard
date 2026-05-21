@@ -27,7 +27,7 @@ Task({
   model: "haiku",
   description: "Pre-EXECUTE existence check",
   prompt: `# EXISTENCE CHECK
-Read .claude/spec/active/{specName}/spec.md sections: "## Files" and "## Checklist".
+Read .claude/spec/{specName}/spec.md sections: "## Files" and "## Checklist".
 
 For EACH checklist task (task-level, NOT file-level):
   1. Extract 1-3 concrete identifiers from the task text — function names, component names, file path fragments, string literals.
