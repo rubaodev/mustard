@@ -16,7 +16,7 @@
 
 <!-- 1-2 lines: the rationale. Link to spec/issue/discussion if applicable. -->
 
-Spec: <!-- .claude/spec/active/<name>/spec.md OR link to issue --> 
+Spec: <!-- .claude/spec/<name>/spec.md OR link to issue --> 
 
 ## Como testar / How to test
 

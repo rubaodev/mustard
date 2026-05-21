@@ -55,6 +55,37 @@ Strategic `/compact` suggestions to optimize context window usage during pipelin
 **Format:** Present as an advisory suggestion, never block or auto-compact:
 > "Heavy analysis complete. Consider running `/compact` before EXECUTE to optimize context window. Then use `/resume` to continue."
 
+## Tactical Fix Discovery
+
+Characteristic of Mustard: a tactical fix surfaced during REVIEW or QA must NOT become a silent follow-up, and must NOT become a new wave grafted onto an in-flight EXECUTE. Either path breaks SDD purity — the first hides work, the second mutates a spec that was already approved.
+
+The Mustard rule: a tactical fix gets its own sub-spec, linked to the parent via the `### Parent:` header and the `spec.link` harness event. Parent spec stays frozen after approve. The sub-spec passes through the normal pipeline (ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE) and shows up in the dashboard tree under the parent.
+
+### Rule
+
+- **REVIEW and QA agents** list tactical-fix candidates in their return section under `## Tactical Fix Candidates` (or `## Candidatos a Tactical Fix` when Lang=pt). Each entry: one-line description + the file path(s) involved.
+- **The orchestrator** (parent context) sees that section and suggests `/mustard:tactical-fix <parent> "<descrição>"` to the user — one suggestion per candidate.
+- This is **advisory only** — it does NOT block `/mustard:approve` of the REVIEW verdict, does NOT block `/mustard:close` after QA pass, and does NOT trigger a fix-loop.
+
+### Qualification criteria
+
+A finding qualifies as a tactical-fix candidate when ALL of these hold:
+
+- ≤100 LOC across all touched files.
+- No change to a public contract (schema, public API, exported types, CLI flags).
+- No pending design decision — the fix is obvious to the agent that found it.
+- No new dependency.
+
+Anything outside those bounds is a **legitimate follow-up** (track in `## Follow-ups` on the parent spec) OR a **new full-scope spec** (run `/mustard:feature` afresh). Do NOT stretch the tactical-fix mechanism to cover decisions or contract changes.
+
+### Mechanics
+
+- Command: `/mustard:tactical-fix <parent> "<descrição>" [--scope touch|light|full]` — creates `.claude/spec/<slug>/spec.md` with the `### Parent:` header and emits `spec.link parent→child`.
+- Header convention: `### Parent: <slug>` is a one-line spec header recognised by the spec-section parser. Optional — its absence is silent; its presence wires up the dashboard sub-spec tree and the `spec_children` projection.
+- Fail-open: if the parent slug does not exist on disk, the sub-spec is still created and the event still emitted — only dashboard navigation is degraded.
+
+→ See `commands/mustard/tactical-fix/SKILL.md` for the full command flow.
+
 ## Session Handoff
 
 When a pipeline pauses or a session ends mid-pipeline:

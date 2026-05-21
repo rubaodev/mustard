@@ -213,14 +213,14 @@ mod tests {
         fs::create_dir_all(claude.join("commands/mustard")).unwrap();
         fs::create_dir_all(claude.join("skills")).unwrap();
         fs::create_dir_all(claude.join("docs")).unwrap();
-        fs::create_dir_all(claude.join("spec/active")).unwrap();
+        fs::create_dir_all(claude.join("spec")).unwrap();
         // Stale Mustard-owned files (should be replaced).
         fs::write(claude.join("commands/mustard/feature.md"), "v1-stale").unwrap();
         fs::write(claude.join("skills/guard.js"), "v1-stale").unwrap();
         // User files (must survive untouched).
         fs::write(claude.join("CLAUDE.md"), "USER RULES").unwrap();
         fs::write(claude.join("docs/notes.md"), "USER NOTES").unwrap();
-        fs::write(claude.join("spec/active/feat.md"), "USER SPEC").unwrap();
+        fs::write(claude.join("spec/feat.md"), "USER SPEC").unwrap();
         fs::write(
             claude.join("mustard.json"),
             r#"{"version":"0.0.1","runtime":{"kind":"native"}}"#,
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(fs::read_to_string(claude.join("CLAUDE.md")).unwrap(), "USER RULES");
         assert_eq!(fs::read_to_string(claude.join("docs/notes.md")).unwrap(), "USER NOTES");
         assert_eq!(
-            fs::read_to_string(claude.join("spec/active/feat.md")).unwrap(),
+            fs::read_to_string(claude.join("spec/feat.md")).unwrap(),
             "USER SPEC"
         );
         // Mustard-owned files are refreshed from the payload.

@@ -12,7 +12,7 @@ Single unified template for all dispatches:
 
 `{cross_wave_memory}` is a **per-wave dynamic injection** — markdown gerado por `mustard-rt run memory cross-wave --spec <spec> --wave N` resumindo memórias das waves anteriores deste spec; vazio na primeira wave (ou em pipelines single-spec sem wave-plan). Por mudar a cada dispatch de wave, vive na seção VARIABLE (abaixo do marcador `<!-- VARIABLE -->`), nunca em PREFIX-STABLE — caso contrário invalidaria o prompt cache da Anthropic.
 
-`{spec_lang}` is filled from the active spec's `### Lang:` header (`pt` or `en`). Orchestrator reads it from `.claude/spec/active/{specName}/spec.md`. Defaults to `en` if missing.
+`{spec_lang}` is filled from the active spec's `### Lang:` header (`pt` or `en`). Orchestrator reads it from `.claude/spec/{specName}/spec.md`. Defaults to `en` if missing.
 
 ---
 

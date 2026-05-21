@@ -83,7 +83,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 
 ## Action
 
-1. Locate active spec in `.claude/spec/active/`
+1. Locate spec in `.claude/spec/{name}/` (flat layout — no `active/completed/superseded` buckets; status is read from the spec header / SQLite projection)
 2. If none exists → inform user and stop
 3. **Spec Checkpoint — update spec header:**
    - `### Status: completed`
@@ -97,17 +97,16 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    ```bash
    mustard-rt run complete-spec <spec-name>
    ```
-   - The spec stays under `spec/active/` for a follow-up window so post-feature fixes still link to it.
+   - The spec.md header is updated via `emit-pipeline` (Wave 2) — `status: closed-followup` is written into the SQLite projection; no filesystem move happens. The spec dir stays at `.claude/spec/{name}/` regardless of status.
    - The script snapshots `affectedFiles` from harness events + `git diff --name-only <parent>...HEAD`.
-   - Pipeline state is updated to `{ status: 'closed-followup', closedAt, affectedFiles }`.
-   - `metrics-tracker.js` only attributes new tool calls to this spec when `tool_input.file_path ∈ affectedFiles`.
-   - Spec is auto-archived (moved to `completed/` + state removed) when:
+   - `metrics-tracker` only attributes new tool calls to this spec when `tool_input.file_path ∈ affectedFiles`.
+   - Spec is auto-archived (status flipped to `completed` via `--archive`) when:
      - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
      - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
 6. **Pipeline State — emit completion:**
    - Emit the status transition so the SQLite projection reflects the closed state:
      ```bash
-     mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"implementing\",\"to\":\"completed\"}"
+     mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"implementing\",\"to\":\"completed\"}"
      ```
    - The `closed-followup` state intentionally stays around so follow-up edits get linked. No JSON file is deleted here — the `--archive` stage in `mustard-rt run complete-spec` handles archival.
 6b. **Knowledge Capture:**
@@ -133,7 +132,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    - If RTK available: extract `saved_tokens` and `savings_pct`
    - Include in output block below
 6d. **Metrics Archive:**
-   - Read metrics from `.claude/.pipeline-states/{spec-name}.json`
+   - Read metrics from the pipeline state derived from the SQLite event log (`mustard-rt run event-projections --view pipeline-state --spec {spec-name}`)
    - If metrics exist, ensure `.claude/metrics/` directory exists
    - Save to `.claude/metrics/{spec-name}.json`:
      ```json
@@ -160,7 +159,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 7a. **Pipeline Summary (BEFORE banner):**
 
    ```bash
-   mustard-rt run pipeline-summary --spec-dir .claude/spec/active/{spec-name}
+   mustard-rt run pipeline-summary --spec-dir .claude/spec/{spec-name}
    ```
 
    Print the resulting markdown inline above the banner. The command renders four sections — `## Feito|What's Done`, `## Falta|What's Left`, `## Próximos Passos|Next Steps`, `## Follow-ups Manuais|Manual Follow-ups` (labels follow the spec's `### Lang:`).
@@ -168,7 +167,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    **Fail-open:** if the command exits non-zero, log a warning and continue with the banner — do NOT abort CLOSE.
 
 7b. **Wave Tree:**
-   - Run `mustard-rt run wave-tree --spec-dir .claude/spec/active/{spec-name}` (or `.claude/spec/completed/{spec-name}` if `complete-spec` already moved it)
+   - Run `mustard-rt run wave-tree --spec-dir .claude/spec/{spec-name}`
    - Print output inline before the banner
    - Fail-open (warn, do not abort CLOSE)
 
@@ -176,7 +175,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
    ================================================================
      PIPELINE COMPLETE — {spec-name}
      Agents: {n} ok | Files: {created} created, {modified} modified
-     [v] Registry updated | [v] Spec moved to completed/
+     [v] Registry updated | [v] Spec status: completed
      Token Economy: {saved}k saved ({pct}% reduction) — RTK
    ================================================================
    ```
@@ -187,12 +186,11 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 
 If the user wants to cancel (not complete):
 - Update spec: `### Status: cancelled`
-- Move to `completed/` anyway (for history)
-- Emit cancellation status event:
+- Emit cancellation status event (no filesystem move — status lives in the header + SQLite projection):
   ```bash
-  mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":null,\"to\":\"cancelled\"}"
+  mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":null,\"to\":\"cancelled\"}"
   ```
-- Output: "Pipeline cancelled. Spec archived in completed/."
+- Output: "Pipeline cancelled. Spec marked status=cancelled."
 
 ## Results Documentation
 
@@ -210,7 +208,7 @@ If output lists epics ready to fold:
 ```bash
 mustard-rt run epic-fold --epic <name>
 ```
-This consolidates learning into knowledge.json and marks granular events compactable.
+This consolidates learning into the `knowledge_patterns` table of the SQLite event store (added via `mustard-rt run memory add ...`) and marks granular events compactable.
 
 ## When to Use
 

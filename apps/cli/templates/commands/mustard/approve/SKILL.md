@@ -15,7 +15,7 @@ A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *wh
 
 ## Prerequisites
 
-- Active spec in `.claude/spec/active/`
+- Active spec in `.claude/spec/{name}/` (flat layout — status is read from the spec header / SQLite projection)
 - Spec presented to user and awaiting approval
 
 ## Action
@@ -24,26 +24,26 @@ A spec has two named layers (see `/feature` § Full Scope): `## PRD` — the *wh
    - `mustard-rt run sync-registry`
    - Do NOT proceed to step 2 without running this command
 2. **Read** `.claude/pipeline-config.md` — agents, model selection
-3. Locate active spec in `.claude/spec/active/`
+3. Locate the active spec in `.claude/spec/{specName}/` (filter by `Status:` header — skip `completed`/`cancelled`)
 
 ### Step 3b: Wave Plan Detection
 
-Check if the located spec is a wave plan: look for `.claude/spec/active/{specName}/wave-plan.md`.
+Check if the located spec is a wave plan: look for `.claude/spec/{specName}/wave-plan.md`.
 
 **If `wave-plan.md` exists:**
 
-1. Read `.claude/.pipeline-states/{specName}.json` — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
+1. Read pipeline state derived from the SQLite event log (run `mustard-rt run event-projections --view pipeline-state --spec {specName}` to obtain the current snapshot) — expect `isWavePlan: true`, `totalWaves: N`, `currentWave: 1`, `completedWaves: []`.
 2. Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). List each wave spec file path below the block (one line each).
-2b. **Wave size audit (advisory):** run `mustard-rt run wave-size-check --spec-dir .claude/spec/active/{specName}`.
+2b. **Wave size audit (advisory):** run `mustard-rt run wave-size-check --spec-dir .claude/spec/{specName}`.
    - If the result is `action: "audited"` and `oversizedCount > 0`, print an advisory block listing each oversized wave:
      `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`
    - State explicitly that this is **advisory** — it does NOT block approval. It informs the **"Stop — re-plan with guidance"** option of the next `AskUserQuestion`: a wave that is too large can be split before EXECUTE.
    - If `oversizedCount === 0` or the result is `action: "skip"`, print nothing (silent).
 3. `AskUserQuestion`:
    - **"Approve wave plan — start with wave 1"** → proceed to step 4 (update header + state for wave 1 dispatch)
-   - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/active/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` from each wave), delete `wave-plan.md` and `wave-N-*/` subdirectories, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
-   - **"Stop — re-plan with guidance"** → stop. Instruct user: `Delete .claude/spec/active/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
-4. If user approved wave plan, for step 4 and onward, operate on the **wave 1 spec** (`.claude/spec/active/{specName}/wave-1-{role}/spec.md`) — update its header, not the wave-plan.md header.
+   - **"Reject decomposition — use single spec"** → merge all wave specs back into a single spec at `.claude/spec/{specName}/spec.md` (concatenate `## Files`, `## Tasks`, `## Boundaries` from each wave), delete `wave-plan.md` and `wave-N-*/` subdirectories, set `scopeOverride: "user-rejected-waves"` and `isWavePlan: false` in pipeline state, proceed to step 4 on the single spec
+   - **"Stop — re-plan with guidance"** → stop. Instruct user: `Delete .claude/spec/{specName}/ and re-run /feature {name} with explicit guidance (e.g., "keep wave 2 and wave 3 together").`
+4. If user approved wave plan, for step 4 and onward, operate on the **wave 1 spec** (`.claude/spec/{specName}/wave-1-{role}/spec.md`) — update its header, not the wave-plan.md header.
 
 **If `wave-plan.md` does NOT exist:** proceed as a single spec (original behavior below).
 
@@ -54,7 +54,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/active/{specNam
 5. **Pipeline State — emit status transition to approved:**
    - Extract `spec-name` from the spec directory (e.g. basename of path → `2026-02-26-linked-services-card`)
    ```bash
-   mustard-rt run emit-pipeline --kind status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
+   mustard-rt run emit-pipeline --kind pipeline.status --spec {spec-name} --payload "{\"from\":\"draft\",\"to\":\"approved\"}"
    ```
    - Phase is derived from `pipeline.phase` events in SQLite; the `mustard-rt run emit-phase` calls elsewhere in the pipeline remain the canonical phase signal. No JSON file is written here.
 5b. **Memory Persist — record architectural decisions:**
