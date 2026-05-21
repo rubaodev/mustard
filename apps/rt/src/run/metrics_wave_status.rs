@@ -264,7 +264,6 @@ fn build_result(project: &Path, parent: &str) -> Value {
     let parent_dir = project
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(parent);
 
     // Detect waves: wave-plan first, fallback to dir glob.

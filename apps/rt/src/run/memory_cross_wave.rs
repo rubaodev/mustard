@@ -181,7 +181,6 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
     let plan_path = project
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec)
         .join("wave-plan.md");
 

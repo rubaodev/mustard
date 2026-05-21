@@ -655,7 +655,7 @@ fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
 /// Lessons bullets and persist them via `memory.js`. Pure side effect.
 fn run_memory_auto_extract(cwd: &str) {
     let claude = Path::new(cwd).join(".claude");
-    let active = claude.join("spec").join("active");
+    let active = claude.join("spec");
     if !active.exists() {
         return;
     }

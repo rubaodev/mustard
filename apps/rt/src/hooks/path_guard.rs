@@ -576,7 +576,6 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
             let spec_dir = Path::new(cwd)
                 .join(".claude")
                 .join("spec")
-                .join("active")
                 .join(spec_name);
             let spec_dir_opt = if spec_dir.exists() { Some(spec_dir) } else { None };
             pipeline_state_for_spec(&store, spec_name, spec_dir_opt.as_deref())
@@ -875,7 +874,7 @@ mod tests {
         )
         .unwrap();
         // Spec with a Files section.
-        let spec_dir = cwd.join(".claude").join("spec").join("active").join("myspec");
+        let spec_dir = cwd.join(".claude").join("spec").join("myspec");
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(
             spec_dir.join("spec.md"),

@@ -218,7 +218,6 @@ fn pipeline_segment(dir: &Path) -> Option<String> {
                     let spec_dir = dir
                         .join(".claude")
                         .join("spec")
-                        .join("active")
                         .join(spec_name);
                     let spec_dir_opt = if spec_dir.exists() { Some(spec_dir) } else { None };
                     pipeline_state_for_spec(s, spec_name, spec_dir_opt.as_deref())

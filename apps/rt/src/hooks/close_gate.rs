@@ -167,7 +167,6 @@ fn find_debt_markers(cwd: &str, spec: Option<&str>) -> Vec<DebtMarker> {
     let spec_path = Path::new(cwd)
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec)
         .join("spec.md");
     let Ok(raw) = std::fs::read_to_string(&spec_path) else {
@@ -415,7 +414,6 @@ fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, Vec<String>)
     let spec_path = Path::new(cwd)
         .join(".claude")
         .join("spec")
-        .join("active")
         .join(spec)
         .join("spec.md");
     let Ok(raw) = std::fs::read_to_string(&spec_path) else {
@@ -1082,7 +1080,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude").join(".harness")).unwrap();
         std::fs::create_dir_all(dir.path().join(".claude").join(".pipeline-states")).unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join("active"))
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec"))
             .unwrap();
         dir
     }
@@ -1109,7 +1107,6 @@ mod tests {
         let dir = cwd
             .join(".claude")
             .join("spec")
-            .join("active")
             .join(spec_name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("spec.md"), body).unwrap();
