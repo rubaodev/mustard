@@ -19,7 +19,7 @@
 //! and never exits non-zero because of an upstream problem — exactly like the
 //! enforcement hooks' fail-open contract.
 
-use std::fs;
+use mustard_core::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,7 +125,7 @@ fn execute(opts: &Options) {
 /// Read and parse the manifest. Returns `None` on any IO / parse error
 /// (fail-open).
 fn load_manifest(path: &Path) -> Option<ArtifactManifest> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -540,20 +540,17 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
     let entries = fs::read_dir(src).map_err(|e| format!("read_dir {}: {e}", src.display()))?;
     for entry in entries {
-        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
-        let name = entry.file_name();
+        let name = &entry.file_name;
         if name == ".git" {
             continue;
         }
-        let from = entry.path();
-        let to = dest.join(&name);
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("file_type {}: {e}", from.display()))?;
-        if file_type.is_dir() {
-            copy_tree(&from, &to)?;
-        } else if file_type.is_file() {
-            fs::copy(&from, &to)
+        let from = &entry.path;
+        let to = dest.join(name);
+        if entry.is_dir {
+            copy_tree(from, &to)?;
+        } else {
+            // `fs::copy` has no facade equivalent — use std::fs directly (file SIZE/byte copy).
+            std::fs::copy(from, &to)
                 .map(|_| ())
                 .map_err(|e| format!("copy {} -> {}: {e}", from.display(), to.display()))?;
         }
@@ -573,7 +570,7 @@ fn write_manifest(manifest: &ArtifactManifest, path: &Path) -> bool {
     let Ok(json) = serde_json::to_string_pretty(manifest) else {
         return false;
     };
-    std::fs::write(path, format!("{json}\n")).is_ok()
+    fs::write_atomic(path, format!("{json}\n").as_bytes()).is_ok()
 }
 
 /// The JSON `category` string for the report.

@@ -9,6 +9,7 @@
 //! The `--format json` shape is parsed by `wave-size-check`, so it is preserved
 //! exactly: `{ kind, root, waves: [{ label, folder, status, icon }] }`.
 
+use mustard_core::fs;
 use mustard_core::spec;
 use serde_json::json;
 use std::path::Path;
@@ -80,7 +81,7 @@ fn first_number(s: &str) -> Option<String> {
 
 /// Parse a `wave-plan.md` table into waves and resolve folders on disk.
 fn parse_wave_plan(wave_plan_file: &Path, spec_dir: &Path) -> Vec<Wave> {
-    let Ok(content) = std::fs::read_to_string(wave_plan_file) else {
+    let Ok(content) = fs::read_to_string(wave_plan_file) else {
         return Vec::new();
     };
     let mut waves: Vec<(String, String)> = Vec::new();
@@ -129,11 +130,11 @@ fn parse_wave_plan(wave_plan_file: &Path, spec_dir: &Path) -> Vec<Wave> {
     }
 
     // Resolve actual folders on disk.
-    let entries: Vec<String> = std::fs::read_dir(spec_dir)
+    let entries: Vec<String> = fs::read_dir(spec_dir)
         .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                .map(|e| e.file_name().to_string_lossy().to_string())
+            rd.into_iter()
+                .filter(|e| e.is_dir)
+                .map(|e| e.file_name)
                 .collect()
         })
         .unwrap_or_default();
@@ -185,7 +186,7 @@ fn render_ascii(root: &str, waves: &[Wave]) -> String {
 
 /// Dispatch `mustard-rt run wave-tree`.
 pub fn run(spec_dir: &str, format: &str) {
-    let dir = std::fs::canonicalize(spec_dir)
+    let dir = fs::canonicalize(spec_dir)
         .unwrap_or_else(|_| std::path::PathBuf::from(spec_dir));
     if !dir.exists() {
         println!("(no spec at {spec_dir})");

@@ -5,6 +5,7 @@
 //! process environment, mirroring how the JS scripts did (`CLAUDE_PROJECT_DIR`,
 //! `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`).
 
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use std::path::Path;
 
@@ -87,14 +88,14 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
     let states = Path::new(project_dir_path)
         .join(".claude")
         .join(".pipeline-states");
-    let entries = std::fs::read_dir(&states).ok()?;
+    let entries = fs::read_dir(&states).ok()?;
     let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let name = entry.file_name().to_string_lossy().into_owned();
+    for entry in entries {
+        let name = &entry.file_name;
         if !name.ends_with(".json") || name.ends_with(".metrics.json") {
             continue;
         }
-        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+        let Ok(mtime) = fs::modified(&entry.path) else {
             continue;
         };
         if best.as_ref().is_none_or(|(t, _)| mtime > *t) {

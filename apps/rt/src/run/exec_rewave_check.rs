@@ -17,6 +17,7 @@ use crate::run::scope_decompose::decide;
 use crate::run::wave_dependency::compute_waves;
 use crate::run::wave_lib::{detect_role, parse_files_section};
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
@@ -25,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 /// Read a JSON file, returning `None` on any error.
 fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
 /// Extract an optional `new entities: N` count from spec text.
@@ -201,7 +202,7 @@ pub fn run(spec_arg: Option<&str>) {
 
     let result = (|| -> Value {
         // 1. Read spec.
-        let Ok(spec_text) = std::fs::read_to_string(&spec_file) else {
+        let Ok(spec_text) = fs::read_to_string(&spec_file) else {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "spec-not-readable" });
         };
         let spec_name = spec_dir
@@ -276,7 +277,7 @@ pub fn run(spec_arg: Option<&str>) {
 
         // 8. Write wave structure.
         let wave_plan_content = build_wave_plan_md(&spec_name, &waves, &spec_text, decompose_reason);
-        if std::fs::write(&wave_plan_path, wave_plan_content).is_err() {
+        if fs::write_atomic(&wave_plan_path, wave_plan_content.as_bytes()).is_err() {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "cannot-write-wave-plan" });
         }
 
@@ -295,10 +296,10 @@ pub fn run(spec_arg: Option<&str>) {
                 .unwrap_or_default();
             let primary_role = roles.first().cloned().unwrap_or_else(|| "lib".to_string());
             let wave_dir = spec_dir.join(format!("wave-{wave_num}-{primary_role}"));
-            let _ = std::fs::create_dir_all(&wave_dir);
+            let _ = fs::create_dir_all(&wave_dir);
             let wave_spec_content =
                 build_wave_spec_md(&spec_text, &files, wave_num, &roles.join("/"), "../wave-plan.md");
-            let _ = std::fs::write(wave_dir.join("spec.md"), wave_spec_content);
+            let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
             waves_meta.push(json!({
                 "wave": wave_num,
                 "role": primary_role,
@@ -307,7 +308,7 @@ pub fn run(spec_arg: Option<&str>) {
         }
 
         // 9. Rename original spec to spec.original.md.
-        let _ = std::fs::rename(&spec_file, spec_dir.join("spec.original.md"));
+        let _ = fs::rename(&spec_file, spec_dir.join("spec.original.md"));
 
         // 10. Update pipeline-state.
         let mut updated = state.unwrap_or_else(|| json!({ "specName": spec_name }));
@@ -321,9 +322,9 @@ pub fn run(spec_arg: Option<&str>) {
             obj.insert("rewaveSource".to_string(), json!("exec-entry"));
             obj.insert("updatedAt".to_string(), json!(now_iso8601()));
         }
-        let _ = std::fs::create_dir_all(&states_dir);
+        let _ = fs::create_dir_all(&states_dir);
         if let Ok(text) = serde_json::to_string_pretty(&updated) {
-            let _ = std::fs::write(&state_file, text);
+            let _ = fs::write_atomic(&state_file, text.as_bytes());
         }
 
         json!({

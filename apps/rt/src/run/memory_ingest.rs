@@ -16,6 +16,7 @@
 
 use crate::run::env::project_dir as env_project_dir;
 use crate::run::memory::{insert_decision, insert_lesson, upsert_knowledge_pattern};
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -36,7 +37,7 @@ fn ingest_knowledge(conn: &Connection, claude_dir: &Path, errors: &mut Vec<Value
     if !path.exists() {
         return 0;
     }
-    let raw = match std::fs::read_to_string(&path) {
+    let raw = match fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
             errors.push(json!({ "file": "knowledge.json", "error": e.to_string() }));
@@ -112,7 +113,7 @@ fn ingest_memory_file(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| table_label.to_string());
-    let raw = match std::fs::read_to_string(file_path) {
+    let raw = match fs::read_to_string(file_path) {
         Ok(t) => t,
         Err(e) => {
             errors.push(json!({ "file": file_name, "error": e.to_string() }));
@@ -229,17 +230,17 @@ pub fn run(delete: bool) {
     let mut deleted_any = false;
     if delete {
         if knowledge_ok && !knowledge_had_error {
-            if std::fs::remove_file(&knowledge_path).is_ok() {
+            if fs::remove_file(&knowledge_path).is_ok() {
                 deleted_any = true;
             }
         }
         if decisions_ok && !decisions_had_error {
-            if std::fs::remove_file(&decisions_path).is_ok() {
+            if fs::remove_file(&decisions_path).is_ok() {
                 deleted_any = true;
             }
         }
         if lessons_ok && !lessons_had_error {
-            if std::fs::remove_file(&lessons_path).is_ok() {
+            if fs::remove_file(&lessons_path).is_ok() {
                 deleted_any = true;
             }
         }

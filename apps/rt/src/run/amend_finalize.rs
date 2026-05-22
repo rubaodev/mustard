@@ -21,6 +21,7 @@
 
 use crate::util::now_iso8601;
 use mustard_core::error::Result;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::{AmendWindow, SqliteEventStore};
 use mustard_core::model::event::{
@@ -244,10 +245,11 @@ fn build_amendments_block(
 /// Append the amendments block to `spec.md` at `spec_dir`.
 fn append_to_spec(spec_dir: &Path, block: &str) -> std::result::Result<(), String> {
     let spec_file = spec_dir.join("spec.md");
-    let existing = std::fs::read_to_string(&spec_file)
+    let existing = fs::read_to_string(&spec_file)
         .map_err(|e| format!("read spec.md: {e}"))?;
     let updated = format!("{}\n{}\n", existing.trim_end_matches('\n'), block);
-    std::fs::write(&spec_file, updated).map_err(|e| format!("write spec.md: {e}"))
+    fs::write_atomic(&spec_file, updated.as_bytes())
+        .map_err(|e| format!("write spec.md: {e}"))
 }
 
 /// Emit a [`EVENT_PIPELINE_AMEND_CLOSE`] harness event.

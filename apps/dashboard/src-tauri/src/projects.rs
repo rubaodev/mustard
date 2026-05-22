@@ -16,8 +16,8 @@
 //! `find_mustard_root()` is intentionally NOT used — the user-selected `path`
 //! is the target, not the dashboard's own scaffold root.
 
+use mustard_core::fs;
 use serde::Serialize;
-use std::io::ErrorKind;
 use std::path::Path;
 
 /// Result of inspecting a folder for a Mustard installation.
@@ -63,15 +63,13 @@ pub async fn detect_project_mustard(path: String) -> Result<ProjectDetection, St
 pub async fn uninstall_mustard(path: String) -> Result<(), String> {
     let base = Path::new(&path);
 
-    match std::fs::remove_dir_all(base.join(".claude")) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("Failed to remove .claude/: {e}")),
-    }
+    // fs::remove_dir_all is fail-open (success when path is absent).
+    fs::remove_dir_all(base.join(".claude"))
+        .map_err(|e| format!("Failed to remove .claude/: {e}"))?;
 
-    match std::fs::remove_file(base.join("mustard.json")) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
+    // fs::remove_file returns Error::NotFound when absent — treat that as success.
+    match fs::remove_file(base.join("mustard.json")) {
+        Ok(()) | Err(mustard_core::error::Error::NotFound(_)) => {}
         Err(e) => return Err(format!("Failed to remove mustard.json: {e}")),
     }
 
@@ -82,7 +80,7 @@ pub async fn uninstall_mustard(path: String) -> Result<(), String> {
 /// parse failure collapses to `None` — callers treat that as "unknown".
 fn read_mustard_json_version(claude_dir: &Path) -> Option<String> {
     let path = claude_dir.join("mustard.json");
-    let content = std::fs::read_to_string(&path).ok()?;
+    let content = fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     v.get("version")
         .and_then(|x| x.as_str())

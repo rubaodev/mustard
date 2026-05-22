@@ -22,6 +22,7 @@
 //! Idempotent: each output file is only created when absent. The stdout JSON
 //! reports which were created vs skipped.
 
+use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde::Deserialize;
@@ -235,13 +236,10 @@ fn render_qa(parent: &str, hd: &Headings<'_>) -> String {
 /// Write `content` to `path` only when the file does not already exist.
 /// Returns `true` when the file was created, `false` when it was skipped.
 fn write_if_absent(path: &Path, content: &str) -> bool {
-    if path.exists() {
+    if fs::exists(path) {
         return false;
     }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(path, content).is_ok()
+    fs::write_atomic(path, content.as_bytes()).is_ok()
 }
 
 /// Run `mustard-rt run wave-scaffold --spec-dir <dir> --plan <json-file>`.
@@ -271,7 +269,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             .join(plan_arg)
     };
 
-    let raw = match std::fs::read_to_string(&plan_path) {
+    let raw = match fs::read_to_string(&plan_path) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("[wave-scaffold] cannot read plan {}: {e}", plan_path.display());
@@ -303,7 +301,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     let lang = plan.lang.as_deref().unwrap_or("pt");
     let hd = headings_for(lang);
 
-    let _ = std::fs::create_dir_all(&spec_dir);
+    let _ = fs::create_dir_all(&spec_dir);
 
     let mut created: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();

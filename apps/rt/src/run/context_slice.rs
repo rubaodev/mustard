@@ -9,6 +9,7 @@
 //! an error. The relevance heuristic (entity/file extraction + frequency-
 //! derived significant tokens) and the line cap mirror the JS version exactly.
 
+use mustard_core::fs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -46,7 +47,7 @@ pub struct SliceResult {
 
 /// Read a file, returning `None` on any error (fail-graceful).
 fn read_file_safe(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+    fs::read_to_string(path).ok()
 }
 
 /// The line cap: `MUSTARD_GLOSSARY_MAX_LINES` when a positive integer, else

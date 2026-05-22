@@ -13,6 +13,7 @@
 
 use crate::run::env::session_id;
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -21,17 +22,14 @@ use std::path::Path;
 
 /// Read a pipeline-state file, returning `None` on any error.
 fn read_state(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
 /// Write a pipeline-state file (pretty JSON + trailing newline). Fail-soft.
 fn write_state(path: &Path, value: &Value) -> bool {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     match serde_json::to_string_pretty(value) {
-        Ok(text) => std::fs::write(path, format!("{text}\n")).is_ok(),
+        Ok(text) => fs::write_atomic(path, format!("{text}\n").as_bytes()).is_ok(),
         Err(_) => false,
     }
 }

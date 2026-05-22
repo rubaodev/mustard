@@ -10,6 +10,7 @@ pub mod telemetry;
 pub mod telemetry_agg;
 mod watcher;
 
+use mustard_core::fs;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -323,17 +324,13 @@ fn dashboard_recipes(repo_path: String) -> Result<Vec<RecipeMeta>, String> {
         return Ok(vec![]);
     }
     let mut results = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let path = &entry.path;
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
         let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        let content = match std::fs::read_to_string(&path) {
+        let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => { eprintln!("recipes: failed to read {:?}", path); continue; }
         };
@@ -393,18 +390,17 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
         if !root.exists() {
             continue;
         }
-        let entries = match std::fs::read_dir(root) {
+        let entries = match fs::read_dir(root) {
             Ok(e) => e,
             Err(_) => continue,
         };
         for entry in entries {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            let skill_path = entry.path().join("SKILL.md");
+            let skill_path = entry.path.join("SKILL.md");
             if !skill_path.exists() { continue; }
-            let content = match std::fs::read_to_string(&skill_path) { Ok(c) => c, Err(_) => continue };
+            let content = match fs::read_to_string(&skill_path) { Ok(c) => c, Err(_) => continue };
             if !content.starts_with("---\n") { continue; }
             let (mut skill_name, description) = parse_skill_frontmatter(&content);
-            if skill_name.is_empty() { skill_name = entry.file_name().to_string_lossy().to_string(); }
+            if skill_name.is_empty() { skill_name = entry.file_name.clone(); }
             results.push(SkillMeta { name: skill_name, description, source: source.to_string() });
         }
     }
@@ -428,16 +424,15 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
                         };
                         let sub_root = base.join(&name).join(".claude").join("skills");
                         if !sub_root.exists() { continue; }
-                        let entries = match std::fs::read_dir(&sub_root) { Ok(e) => e, Err(_) => continue };
+                        let entries = match fs::read_dir(&sub_root) { Ok(e) => e, Err(_) => continue };
                         for entry in entries {
-                            let entry = match entry { Ok(e) => e, Err(_) => continue };
-                            let skill_path = entry.path().join("SKILL.md");
+                            let skill_path = entry.path.join("SKILL.md");
                             if !skill_path.exists() { continue; }
-                            let content = match std::fs::read_to_string(&skill_path) { Ok(c) => c, Err(_) => continue };
+                            let content = match fs::read_to_string(&skill_path) { Ok(c) => c, Err(_) => continue };
                             if !content.starts_with("---\n") { continue; }
                             let (mut skill_name, description) = parse_skill_frontmatter(&content);
                             if skill_name.is_empty() {
-                                skill_name = entry.file_name().to_string_lossy().to_string();
+                                skill_name = entry.file_name.clone();
                             }
                             results.push(SkillMeta { name: skill_name, description, source: format!("subproject:{}", name) });
                         }
@@ -547,20 +542,17 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
     let spec_root = base.join(".claude").join("spec");
     let mut rows: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
 
-    let rd = match std::fs::read_dir(&spec_root) {
+    let rd = match fs::read_dir(&spec_root) {
         Ok(r) => r,
         Err(_) => return vec![],
     };
 
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for entry in rd {
+        let path = &entry.path;
+        if !entry.is_dir {
             continue;
         }
-        let name = match path.file_name().and_then(|s| s.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
+        let name = entry.file_name.clone();
         // Phase and status: parse spec.md / wave-plan.md frontmatter.
         // Status and phase from the DB (pipeline.* events) take precedence
         // in `dashboard_specs::merge` — these FS values are fallbacks only.
@@ -580,7 +572,7 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
         }
         let phase = from_spec.0;
         let status = from_spec.1;
-        let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
+        let mtime = fs::modified(path).ok();
         let parent_row = SpecRow {
             name: name.clone(),
             status,
@@ -598,16 +590,13 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
         // groups them visually.
         let wave_plan = path.join("wave-plan.md");
         if wave_plan.exists() {
-            if let Ok(child_rd) = std::fs::read_dir(&path) {
-                for child in child_rd.flatten() {
-                    let cpath = child.path();
-                    if !cpath.is_dir() {
+            if let Ok(child_rd) = fs::read_dir(path) {
+                for child in child_rd {
+                    let cpath = &child.path;
+                    if !child.is_dir {
                         continue;
                     }
-                    let cname = match cpath.file_name().and_then(|s| s.to_str()) {
-                        Some(s) => s.to_string(),
-                        None => continue,
-                    };
+                    let cname = child.file_name.clone();
                     // Only walk dirs that look like wave-N-something
                     if !cname.starts_with("wave-") {
                         continue;
@@ -617,7 +606,7 @@ fn specs_from_fs(base: &PathBuf) -> Vec<SpecRow> {
                         continue;
                     }
                     let (cphase, cstatus) = parse_spec_md(&cspec);
-                    let cmtime = child.metadata().ok().and_then(|m| m.modified().ok());
+                    let cmtime = fs::modified(cpath).ok();
                     let child_row = SpecRow {
                         name: cname,
                         status: cstatus,
@@ -651,10 +640,9 @@ fn detect_spec_existence(spec_root: &PathBuf, name: &str) -> Option<String> {
     }
     // Could also be a wave child — scan one level for parent dirs that contain
     // a {name}/ subdir (wave-N-something under a wave-plan parent).
-    if let Ok(rd) = std::fs::read_dir(spec_root) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.is_dir() && p.join(name).is_dir() {
+    if let Ok(rd) = fs::read_dir(spec_root) {
+        for entry in rd {
+            if entry.is_dir && entry.path.join(name).is_dir() {
                 return Some("flat".to_string());
             }
         }
@@ -668,7 +656,7 @@ fn detect_spec_existence(spec_root: &PathBuf, name: &str) -> Option<String> {
 //   `### Status: closed | Phase: CLOSE`
 //   `- **Status**: closed` / `- **Phase**: CLOSE` (legacy bullet form)
 fn parse_spec_md(path: &PathBuf) -> (Option<String>, Option<String>) {
-    let content = match std::fs::read_to_string(path) {
+    let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return (None, None),
     };
@@ -797,23 +785,22 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
     // 1. Standalone spec — flat layout: .claude/spec/{spec_name}/spec.md
     let path = base.join(&spec_name).join("spec.md");
     if path.exists() {
-        return std::fs::read_to_string(&path).map_err(|e| e.to_string());
+        return fs::read_to_string(&path).map_err(|e| e.to_string());
     }
     // 2. Wave-plan child: dashboard_specs emits children with a bare name
     //    (e.g. "wave-2-frontend") and parent set, but the file actually lives
     //    one level down at .claude/spec/{parent}/{spec_name}/spec.md.
     //    Without the parent, search every spec dir for a matching child.
-    let Ok(rd) = std::fs::read_dir(&base) else {
+    let Ok(rd) = fs::read_dir(&base) else {
         return Err(format!("spec markdown not found: {}", spec_name));
     };
-    for entry in rd.flatten() {
-        let parent_dir = entry.path();
-        if !parent_dir.is_dir() {
+    for entry in rd {
+        if !entry.is_dir {
             continue;
         }
-        let child = parent_dir.join(&spec_name).join("spec.md");
+        let child = entry.path.join(&spec_name).join("spec.md");
         if child.exists() {
-            return std::fs::read_to_string(&child).map_err(|e| e.to_string());
+            return fs::read_to_string(&child).map_err(|e| e.to_string());
         }
     }
     // 3. Wave-plan parent: roadmap specs carry only a `wave-plan.md` at their
@@ -821,20 +808,19 @@ fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<Strin
     //    back to the wave-plan file so the side panel renders the plan.
     let wplan = base.join(&spec_name).join("wave-plan.md");
     if wplan.exists() {
-        return std::fs::read_to_string(&wplan).map_err(|e| e.to_string());
+        return fs::read_to_string(&wplan).map_err(|e| e.to_string());
     }
     // 4. Symmetry with case 2: a wave-plan parent nested under another spec dir.
-    let Ok(rd2) = std::fs::read_dir(&base) else {
+    let Ok(rd2) = fs::read_dir(&base) else {
         return Err(format!("spec markdown not found: {}", spec_name));
     };
-    for entry in rd2.flatten() {
-        let parent_dir = entry.path();
-        if !parent_dir.is_dir() {
+    for entry in rd2 {
+        if !entry.is_dir {
             continue;
         }
-        let child = parent_dir.join(&spec_name).join("wave-plan.md");
+        let child = entry.path.join(&spec_name).join("wave-plan.md");
         if child.exists() {
-            return std::fs::read_to_string(&child).map_err(|e| e.to_string());
+            return fs::read_to_string(&child).map_err(|e| e.to_string());
         }
     }
     Err(format!("spec markdown not found: {}", spec_name))
@@ -885,7 +871,7 @@ fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
 fn lib_sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
     let path = std::path::Path::new(repo_path)
         .join(".claude").join("spec").join(spec).join("spec.md");
-    let content = match std::fs::read_to_string(&path) {
+    let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => { eprintln!("lib_sync_spec_status_header: read {}: {e}", path.display()); return; }
     };
@@ -904,7 +890,7 @@ fn lib_sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
     }
     let mut out = lines.join("\n");
     if content.ends_with('\n') { out.push('\n'); }
-    if let Err(e) = std::fs::write(&path, out) {
+    if let Err(e) = fs::write_atomic(&path, out.as_bytes()) {
         eprintln!("lib_sync_spec_status_header: write {}: {e}", path.display());
     }
 }
@@ -1266,7 +1252,7 @@ fn dashboard_read_env(repo_path: String) -> Result<HashMap<String, String>, Stri
     if !settings_path.exists() {
         return Ok(HashMap::new());
     }
-    let content = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+    let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     let env_obj = match v.get("env").and_then(|e| e.as_object()) {
         Some(obj) => obj,
@@ -1283,7 +1269,7 @@ fn dashboard_read_env(repo_path: String) -> Result<HashMap<String, String>, Stri
 fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Result<(), String> {
     let settings_path = PathBuf::from(&repo_path).join(".claude").join("settings.json");
     let mut value: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())?
     } else {
         serde_json::json!({})
@@ -1291,15 +1277,7 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
     value.as_object_mut().ok_or_else(|| "settings.json is not a JSON object".to_string())?
         ["env"] = serde_json::to_value(env).map_err(|e| e.to_string())?;
     let serialized = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
-    let tmp_path = settings_path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp_path, &serialized) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e.to_string());
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &settings_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e.to_string());
-    }
+    fs::write_atomic(&settings_path, serialized.as_bytes()).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1329,7 +1307,7 @@ fn read_entity_registry(repo_path: String) -> Result<Vec<String>, String> {
     if !registry_path.exists() {
         return Ok(vec![]);
     }
-    let content = std::fs::read_to_string(&registry_path).map_err(|e| e.to_string())?;
+    let content = fs::read_to_string(&registry_path).map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     // Preferred: explicit `entities` key.
     if let Some(entities) = v.get("entities") {

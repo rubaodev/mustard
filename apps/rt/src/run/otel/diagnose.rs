@@ -17,6 +17,7 @@
 //! agent return note.
 
 use super::store::{claude_dir, SampleRow, Store};
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -99,7 +100,7 @@ fn check_collector() -> Value {
     if !pid_file.exists() {
         return json!({ "ok": false, "reason": "no pid file", "pid": Value::Null });
     }
-    let raw = match std::fs::read_to_string(&pid_file) {
+    let raw = match fs::read_to_string(&pid_file) {
         Ok(s) => s,
         Err(e) => {
             return json!({

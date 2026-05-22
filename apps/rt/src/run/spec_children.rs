@@ -24,6 +24,7 @@
 //! Fail-open: any I/O or SQLite failure is silently downgraded to an empty
 //! contribution from that side. The subcommand always emits valid JSON.
 
+use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::{SpecChild, SpecReader, SpecStatus, SqliteSpecReader, WaveView};
 use serde::Serialize;
@@ -150,15 +151,15 @@ fn read_header_window(path: &Path, cap: usize) -> Option<String> {
 /// file I/O errors are silently skipped.
 fn scan_filesystem(project: &Path, parent: &str) -> Vec<ChildEntry> {
     let spec_root = project.join(".claude").join("spec");
-    let Ok(entries) = std::fs::read_dir(&spec_root) else {
+    let Ok(entries) = fs::read_dir(&spec_root) else {
         return Vec::new();
     };
     let mut out: Vec<ChildEntry> = Vec::new();
     // Cap at 4 KiB — header section is always near the top of a spec.md.
     const HEADER_CAP: usize = 4096;
-    for entry in entries.flatten() {
-        let dir_path = entry.path();
-        if !dir_path.is_dir() {
+    for entry in entries {
+        let dir_path = &entry.path;
+        if !entry.is_dir {
             continue;
         }
         let spec_md = dir_path.join("spec.md");
@@ -174,7 +175,7 @@ fn scan_filesystem(project: &Path, parent: &str) -> Vec<ChildEntry> {
         if found_parent != parent {
             continue;
         }
-        let slug = entry.file_name().to_string_lossy().into_owned();
+        let slug = entry.file_name.clone();
         out.push(ChildEntry {
             spec: slug,
             status: status_opt.unwrap_or_else(|| "unknown".to_string()),

@@ -15,6 +15,7 @@
 //! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
 //! already delegated to the `*_v2` adapters since Wave 4 of the audit.
 
+use mustard_core::fs;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -628,7 +629,7 @@ pub fn spec_action(
                     message: Some("spec não encontrada".into()),
                 });
             }
-            std::fs::remove_dir_all(&spec_dir).map_err(|e| e.to_string())?;
+            fs::remove_dir_all(&spec_dir).map_err(|e| e.to_string())?;
             emit_pipeline_removed(repo_path, spec);
             Ok(SpecAction {
                 action:  "remove".into(),
@@ -767,7 +768,7 @@ fn sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
         .join(spec)
         .join("spec.md");
 
-    let content = match std::fs::read_to_string(&path) {
+    let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -800,7 +801,7 @@ fn sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
     if content.ends_with('\n') {
         out.push('\n');
     }
-    if let Err(e) = std::fs::write(&path, out) {
+    if let Err(e) = fs::write_atomic(&path, out.as_bytes()) {
         eprintln!(
             "sync_spec_status_header: write {} failed: {e}",
             path.display()
@@ -1404,13 +1405,12 @@ fn resolve_spec_dir(repo_path: &str, spec_name: &str) -> Option<std::path::PathB
 
     // Wave child nested inside a wave-plan parent:
     // `.claude/spec/{parent}/{spec_name}/`.
-    let Ok(rd) = std::fs::read_dir(&base) else { return None };
-    for entry in rd.flatten() {
-        let parent_dir = entry.path();
-        if !parent_dir.is_dir() {
+    let Ok(rd) = fs::read_dir(&base) else { return None };
+    for entry in rd {
+        if !entry.is_dir {
             continue;
         }
-        let child = parent_dir.join(spec_name);
+        let child = entry.path.join(spec_name);
         if child.is_dir() {
             return Some(child);
         }
@@ -1594,20 +1594,17 @@ pub fn dashboard_spec_waves_planned_run(
         return Ok(Vec::new());
     }
 
-    let Ok(rd) = std::fs::read_dir(&spec_dir) else {
+    let Ok(rd) = fs::read_dir(&spec_dir) else {
         return Ok(Vec::new());
     };
 
     let mut out: Vec<SpecWavePlanned> = Vec::new();
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for entry in rd {
+        let path = &entry.path;
+        if !entry.is_dir {
             continue;
         }
-        let name = match entry.file_name().to_str().map(str::to_string) {
-            Some(n) => n,
-            None => continue,
-        };
+        let name = entry.file_name.clone();
         // Match `wave-{digits}-{role}` exactly. Role is the remainder after
         // the second dash; must be non-empty.
         let Some(rest) = name.strip_prefix("wave-") else { continue };
@@ -1628,7 +1625,7 @@ pub fn dashboard_spec_waves_planned_run(
         // Count declared files via the wave sub-spec's `## Arquivos` block.
         // Missing / unreadable spec.md degrades to 0.
         let spec_md = path.join("spec.md");
-        let declared = match std::fs::read_to_string(&spec_md) {
+        let declared = match fs::read_to_string(&spec_md) {
             Ok(text) => u32::try_from(parse_arquivos_count(&text)).unwrap_or(u32::MAX),
             Err(_) => 0,
         };

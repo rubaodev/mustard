@@ -5,6 +5,7 @@
 //! pretty JSON; emits nothing (exit 0) when there is no match or no recipes
 //! directory.
 
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -73,21 +74,22 @@ pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&st
     if !recipes_dir.exists() {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(&recipes_dir) else {
+    let Ok(entries) = fs::read_dir(&recipes_dir) else {
         return;
     };
 
     let operation_lower = operation.to_lowercase();
     let mut json_files: Vec<std::path::PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
+        .into_iter()
+        .filter(|e| !e.is_dir)
+        .map(|e| e.path)
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
         .collect();
     json_files.sort();
 
     let mut matched: Option<Value> = None;
     for file in json_files {
-        let Ok(raw) = std::fs::read_to_string(&file) else {
+        let Ok(raw) = fs::read_to_string(&file) else {
             continue;
         };
         let Ok(recipe) = serde_json::from_str::<Value>(&raw) else {

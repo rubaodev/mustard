@@ -30,6 +30,7 @@
 //!   preserved. The rewrite never indexes a string with `&s[a..b]` (which
 //!   panics off a char boundary) — it operates on whole lines.
 
+use mustard_core::fs;
 use mustard_core::spec::{
     self, flags_label, header_field, outcome_label, stage_label,
 };
@@ -368,29 +369,6 @@ fn inject_extras(content: &str, extras: &[(String, String)]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Atomic write
-// ---------------------------------------------------------------------------
-
-/// Write `content` to `path` atomically: a sibling tempfile is written and
-/// flushed, then renamed over the target. A crash before the rename leaves the
-/// original untouched. Returns the IO error on failure.
-fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "spec.md".to_string());
-    let tmp = dir.join(format!(".{file_name}.migrate.tmp"));
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(content.as_bytes())?;
-        f.flush()?;
-    }
-    std::fs::rename(&tmp, path)
-}
-
-// ---------------------------------------------------------------------------
 // Audit log
 // ---------------------------------------------------------------------------
 
@@ -436,15 +414,15 @@ fn collect_md(root: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_md_into(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_md_into(&path, out);
+    for entry in entries {
+        let path = &entry.path;
+        if entry.is_dir {
+            collect_md_into(path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            out.push(path);
+            out.push(path.clone());
         }
     }
 }
@@ -479,7 +457,7 @@ pub fn run(opts: MigrateOpts) {
         }
         total += 1;
 
-        let content = match std::fs::read_to_string(path) {
+        let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => {
                 // Fail-open: a per-file read error is logged, never aborts.
@@ -550,7 +528,7 @@ pub fn run(opts: MigrateOpts) {
                         .collect::<Vec<_>>(),
                 });
                 if opts.apply {
-                    match atomic_write(path, &new_content) {
+                    match fs::write_atomic(path, new_content.as_bytes()) {
                         Ok(()) => {}
                         Err(_) => {
                             errors += 1;
@@ -593,11 +571,8 @@ pub fn run(opts: MigrateOpts) {
 
     // Resolve the audit-log path (default `.claude/.harness/migration-{date}.log.json`).
     let log_path = opts.log.unwrap_or_else(default_log_path);
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let log_json = serde_json::to_string_pretty(&log).unwrap_or_else(|_| "{}".to_string());
-    let log_written = std::fs::write(&log_path, &log_json).is_ok();
+    let log_written = fs::write_atomic(&log_path, log_json.as_bytes()).is_ok();
 
     // One-line stdout summary (byte-stable JSON).
     let summary = json!({

@@ -33,6 +33,7 @@
 use crate::run::complete_spec::parse_iso_millis;
 use crate::run::env::project_dir;
 use crate::run::memory_cross_wave;
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::{Connection, params};
 use serde::Serialize;
@@ -141,13 +142,13 @@ fn wave_number(name: &str) -> u32 {
 
 /// Glob fallback when wave-plan is absent: list every `wave-*-*` directory.
 fn fallback_wave_dirs(parent_dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(parent_dir) else {
+    let Ok(entries) = fs::read_dir(parent_dir) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .map(|e| e.file_name().to_string_lossy().to_string())
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.file_name)
         .filter(|n| {
             let lc = n.to_lowercase();
             lc.starts_with("wave-")
@@ -268,7 +269,7 @@ fn build_result(project: &Path, parent: &str) -> Value {
         .join(parent);
 
     // Detect waves: wave-plan first, fallback to dir glob.
-    let plan_text = std::fs::read_to_string(parent_dir.join("wave-plan.md")).unwrap_or_default();
+    let plan_text = fs::read_to_string(parent_dir.join("wave-plan.md")).unwrap_or_default();
     let plan_rows = parse_plan_rows(&plan_text);
     let (wave_names, models): (Vec<String>, BTreeMap<String, Option<String>>) =
         if plan_rows.is_empty() {

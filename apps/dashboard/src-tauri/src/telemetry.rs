@@ -1,3 +1,4 @@
+use mustard_core::fs;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -273,19 +274,15 @@ const EXCLUDED_HOOKS: &[&str] = &["rtk-gain", "rtk-rewrite", "budget-observation
 
 pub fn hook_fire_counts(repo_path: &Path, session_since: Option<&str>) -> Vec<HookFireCount> {
     let metrics_dir = repo_path.join(".claude").join(".metrics");
-    let rd = match std::fs::read_dir(&metrics_dir) {
-        Ok(r) => r,
+    let entries = match fs::read_dir(&metrics_dir) {
+        Ok(e) => e,
         Err(_) => return vec![],
     };
 
     let mut results: Vec<HookFireCount> = Vec::new();
 
-    for entry in rd {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
+    for entry in entries {
+        let path = &entry.path;
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
         }
@@ -296,7 +293,7 @@ pub fn hook_fire_counts(repo_path: &Path, session_since: Option<&str>) -> Vec<Ho
         if EXCLUDED_HOOKS.contains(&stem.as_str()) {
             continue;
         }
-        let content = match std::fs::read_to_string(&path) {
+        let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("hook_fire_counts: failed to read {:?}: {}", path, e);
@@ -357,7 +354,7 @@ pub fn routing_breakdown(repo_path: &Path, session_since: Option<&str>) -> Routi
     if !path.exists() {
         return empty();
     }
-    let content = match std::fs::read_to_string(&path) {
+    let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return empty(),
     };
@@ -674,7 +671,7 @@ pub fn friction_entries(repo_path: &Path) -> Vec<FrictionEntry> {
         .join(".claude")
         .join(".metrics")
         .join("friction.json");
-    let content = match std::fs::read_to_string(&path) {
+    let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return vec![],
     };
@@ -1033,8 +1030,7 @@ fn freshness_block(conn: &Connection, repo_path: &Path) -> FreshnessBlock {
     // Trust the PID file only when it has been refreshed within the last
     // 5 minutes — a wedged collector may leave a stale PID behind, and
     // mere `is_file()` would keep the badge green/amber in that case.
-    let pid_recent = std::fs::metadata(&pid_path)
-        .and_then(|m| m.modified())
+    let pid_recent = fs::modified(&pid_path)
         .ok()
         .and_then(|t| t.elapsed().ok())
         .map(|d| d.as_secs() < 300)
@@ -1049,7 +1045,7 @@ fn freshness_block(conn: &Connection, repo_path: &Path) -> FreshnessBlock {
             .join(".claude")
             .join(".harness")
             .join(".canary.log");
-        match std::fs::read_to_string(&canary_path) {
+        match fs::read_to_string(&canary_path) {
             Ok(s) => {
                 let lines: Vec<String> = s
                     .lines()

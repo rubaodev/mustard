@@ -8,6 +8,7 @@
 //! prints `{ done, left, nextSteps, followUps }`. No `--format html`.
 
 use crate::run::spec_sections::is_heading;
+use mustard_core::fs;
 use mustard_core::spec;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -400,7 +401,7 @@ pub fn run(spec_dir: Option<&str>, format: &str) {
         std::process::exit(1);
     };
     let spec_file = Path::new(spec_dir).join("spec.md");
-    let text = match std::fs::read_to_string(&spec_file) {
+    let text = match fs::read_to_string(&spec_file) {
         Ok(t) => t,
         Err(err) => {
             eprintln!("pipeline-summary: cannot read {}: {err}", spec_file.display());
@@ -426,7 +427,7 @@ pub fn run(spec_dir: Option<&str>, format: &str) {
         .join(".claude")
         .join(".pipeline-states")
         .join(format!("{spec_base}.json"));
-    if let Ok(t) = std::fs::read_to_string(&state_file) {
+    if let Ok(t) = fs::read_to_string(&state_file) {
         if let Ok(v) = serde_json::from_str::<Value>(&t) {
             state = v;
         }

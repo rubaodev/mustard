@@ -8,6 +8,7 @@
 //! Output (stdout): one line — `marked` | `already-marked` | `error: <reason>`.
 //! Exit codes: 0 success/no-op, 1 not-found/no-section/not-located, 2 bad args.
 
+use mustard_core::fs;
 use std::path::{Path, PathBuf};
 
 /// Print `error: <msg>` and exit with `code`.
@@ -127,7 +128,7 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
         die(1, &format!("spec not found: {spec}"));
     };
 
-    let raw = match std::fs::read_to_string(&spec_path) {
+    let raw = match fs::read_to_string(&spec_path) {
         Ok(r) => r,
         Err(e) => die(1, &format!("cannot read spec: {e}")),
     };
@@ -193,7 +194,7 @@ pub fn run(spec: Option<&str>, item: Option<&str>, line: Option<usize>, cwd_arg:
     };
     lines[target_idx] = new_line;
 
-    if let Err(e) = std::fs::write(&spec_path, lines.join("\n")) {
+    if let Err(e) = fs::write_atomic(&spec_path, lines.join("\n").as_bytes()) {
         die(1, &format!("cannot write spec: {e}"));
     }
     println!("marked");

@@ -13,6 +13,7 @@
 //! `PRIMARY KEY (ts_bucket, metric, session_id, model, token_type)`, which is
 //! the `ON CONFLICT` target the UPSERTs depend on.
 
+use mustard_core::fs;
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
@@ -88,7 +89,7 @@ impl Store {
         let harness_dir = claude_dir.join(".harness");
         // A directory-create failure is surfaced as a generic SQLite error so
         // the caller has a single error type to fail open against.
-        if std::fs::create_dir_all(&harness_dir).is_err() {
+        if fs::create_dir_all(&harness_dir).is_err() {
             return Err(rusqlite::Error::InvalidPath(harness_dir));
         }
         let db_path = harness_dir.join("mustard.db");

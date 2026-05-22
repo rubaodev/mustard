@@ -1,3 +1,4 @@
+use mustard_core::fs;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::ffi::OsStr;
@@ -39,7 +40,7 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
         let has_db = db_path.is_file();
         let has_json = json_path.is_file();
         if has_db || has_json {
-            let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
             let canonical_str = canonical.to_string_lossy().to_string();
             let id = fnv1a_hex(canonical_str.as_bytes());
             let name = dir
@@ -72,23 +73,18 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
             continue;
         }
 
-        let entries = match std::fs::read_dir(&dir) {
+        let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        for entry in entries.flatten() {
-            let ft = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if !ft.is_dir() {
+        for entry in entries {
+            if !entry.is_dir {
                 continue;
             }
-            let name = entry.file_name();
-            if SKIP_DIRS.iter().any(|s| OsStr::new(s) == name.as_os_str()) {
+            if SKIP_DIRS.iter().any(|s| OsStr::new(s) == OsStr::new(&entry.file_name)) {
                 continue;
             }
-            queue.push_back((entry.path(), depth + 1));
+            queue.push_back((entry.path, depth + 1));
         }
     }
 
@@ -105,9 +101,8 @@ fn fnv1a_hex(bytes: &[u8]) -> String {
 }
 
 fn mtime_ms(p: &Path) -> Option<u64> {
-    std::fs::metadata(p)
+    fs::modified(p)
         .ok()
-        .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
 }

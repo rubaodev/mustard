@@ -25,6 +25,7 @@
 use super::project::{project_logs, project_metrics};
 use super::store::{claude_dir, Store};
 use mustard_core::economy::{self, sources::otel as otel_source, sources::IngestContext};
+use mustard_core::fs;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,16 +41,7 @@ const DEFAULT_PORT: u16 = 4318;
 /// Append one JSON record to `.claude/.harness/.canary.log`. Fail-silent: a
 /// logging failure must never affect request handling.
 fn canary(harness_dir: &Path, record: &Value) {
-    let _ = std::fs::create_dir_all(harness_dir);
-    let line = format!("{record}\n");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(harness_dir.join(".canary.log"))
-    {
-        use std::io::Write;
-        let _ = f.write_all(line.as_bytes());
-    }
+    let _ = fs::append_line(harness_dir.join(".canary.log"), &record.to_string());
 }
 
 /// Resolve the listen port from `MUSTARD_OTEL_PORT`, defaulting to 4318.

@@ -38,6 +38,7 @@
 //! or no captured memory rows for them. Exit 0 always (fail-open).
 
 use crate::run::env::project_dir;
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use rusqlite::{Connection, params};
 use serde_json::Value;
@@ -128,20 +129,16 @@ fn parse_wave_number(wave_name: &str) -> Option<i64> {
 ///
 /// I/O errors yield an empty `Vec` (fail-open).
 pub(crate) fn parse_wave_dirs_from_fs(spec_dir: &Path) -> Vec<String> {
-    let entries = match std::fs::read_dir(spec_dir) {
+    let entries = match fs::read_dir(spec_dir) {
         Ok(it) => it,
         Err(_) => return Vec::new(),
     };
     let mut hits: Vec<(i64, String)> = Vec::new();
-    for entry in entries.flatten() {
-        let file_type = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(_) => continue,
-        };
-        if !file_type.is_dir() {
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_string();
+        let name = entry.file_name.clone();
         let Some(n) = parse_wave_number(&name) else {
             continue;
         };
@@ -272,7 +269,7 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
     let spec_dir = project.join(".claude").join("spec").join(spec);
     let plan_path = spec_dir.join("wave-plan.md");
 
-    let plan_text = std::fs::read_to_string(&plan_path).unwrap_or_default();
+    let plan_text = fs::read_to_string(&plan_path).unwrap_or_default();
     let mut all_names = parse_wave_names(&plan_text);
     // Filesystem fallback when the wave-plan table is missing/empty (e.g. the
     // plan uses an ASCII code-fence diagram instead of the canonical table).

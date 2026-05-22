@@ -17,6 +17,7 @@
 
 use crate::run::env::project_dir as env_project_dir;
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use mustard_core::store::event_store::EventSink;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
@@ -131,7 +132,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string_lossy().to_string());
 
-        let raw = match std::fs::read_to_string(path) {
+        let raw = match fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
                 errors.push(json!({ "file": file_label, "error": e.to_string() }));
@@ -255,7 +256,7 @@ pub fn run(opts: PipelineStateIngestOpts) {
         if !had_error {
             ingested += 1;
             if opts.delete {
-                if std::fs::remove_file(path).is_ok() {
+                if fs::remove_file(path).is_ok() {
                     deleted += 1;
                 }
             }
@@ -304,17 +305,13 @@ fn collect_candidates(states_dir: &Path) -> Result<Vec<std::path::PathBuf>, Stri
     if !states_dir.exists() {
         return Ok(Vec::new());
     }
-    let entries = std::fs::read_dir(states_dir)
+    let entries = fs::read_dir(states_dir)
         .map_err(|e| format!("read_dir failed: {e}"))?;
     let mut result = Vec::new();
-    for entry in entries.flatten() {
-        let p = entry.path();
-        let name = p
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+    for entry in entries {
+        let name = &entry.file_name;
         if name.ends_with(".json") && !name.ends_with(".metrics.json") {
-            result.push(p);
+            result.push(entry.path);
         }
     }
     result.sort();
