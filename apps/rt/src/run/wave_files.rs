@@ -12,6 +12,7 @@
 //! Fail-open: any I/O error degrades to `{"count":0,"markdown":"","path":null}`
 //! and exit `0`.
 
+use mustard_core::fs;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -48,23 +49,21 @@ fn resolve_wave_spec_path(project_dir: &str, spec: &str, wave: u32) -> Option<Pa
         return None;
     }
     let prefix = format!("wave-{wave}-");
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&spec_dir)
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&spec_dir)
         .ok()?
-        .flatten()
+        .into_iter()
         .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.starts_with(&prefix) {
+            if !entry.file_name.starts_with(&prefix) {
                 return None;
             }
             // Require something after the `wave-N-` prefix (the role segment).
-            if name.len() <= prefix.len() {
+            if entry.file_name.len() <= prefix.len() {
                 return None;
             }
-            let path = entry.path();
-            if !path.is_dir() {
+            if !entry.is_dir {
                 return None;
             }
-            let spec_md = path.join("spec.md");
+            let spec_md = entry.path.join("spec.md");
             if spec_md.is_file() { Some(spec_md) } else { None }
         })
         .collect();
@@ -163,7 +162,7 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
         return;
     };
 
-    let markdown = match std::fs::read_to_string(&path) {
+    let markdown = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(_) => {
             emit_empty();

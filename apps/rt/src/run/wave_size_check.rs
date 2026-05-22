@@ -12,6 +12,7 @@
 
 use crate::run::scope_decompose::decide;
 use crate::run::wave_lib::{detect_role, parse_files_section};
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -35,11 +36,12 @@ fn enumerate_waves(spec_dir: &Path) -> Option<Vec<WaveFolder>> {
     if !spec_dir.join("wave-plan.md").exists() {
         return None;
     }
-    let mut folders: Vec<String> = std::fs::read_dir(spec_dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                .map(|e| e.file_name().to_string_lossy().to_string())
+    let mut folders: Vec<String> = fs::read_dir(spec_dir)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .filter(|e| e.is_dir)
+                .map(|e| e.file_name)
                 .filter(|n| {
                     // `^wave-\d+`
                     let lower = n.to_lowercase();
@@ -69,7 +71,7 @@ fn wave_number_of(name: &str) -> Option<u32> {
 /// Try to extract a wave's file list from `wave-plan.md` (for stub waves).
 fn files_from_wave_plan(spec_dir: &Path, wave_num: Option<u32>) -> Option<Vec<String>> {
     let wave_num = wave_num?;
-    let text = std::fs::read_to_string(spec_dir.join("wave-plan.md")).ok()?;
+    let text = fs::read_to_string(spec_dir.join("wave-plan.md")).ok()?;
     let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
 
     // 1. `### Wave N` section → `Files (N): a, b, c`.
@@ -183,7 +185,7 @@ fn audit_wave(wave: &WaveFolder, spec_dir: &Path, limit: usize) -> Value {
     let mut source: Option<&str> = None;
     let wave_spec_path = spec_dir.join(folder).join("spec.md");
     if wave_spec_path.exists() {
-        if let Ok(text) = std::fs::read_to_string(&wave_spec_path) {
+        if let Ok(text) = fs::read_to_string(&wave_spec_path) {
             if let Some(parsed) = parse_files_section(&text) {
                 if !parsed.is_empty() {
                     files = Some(parsed);

@@ -8,6 +8,7 @@
 //! `{ "error": "error-fallback" }`.
 
 use crate::run::wave_lib::detect_role;
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -162,7 +163,7 @@ fn build_graph(
 
     for abs_file in &abs_files {
         let deps = graph.entry(abs_file.clone()).or_default();
-        let Ok(content) = std::fs::read_to_string(abs_file) else {
+        let Ok(content) = fs::read_to_string(abs_file) else {
             continue;
         };
         for imp in extract_imports(&content) {

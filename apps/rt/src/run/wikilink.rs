@@ -26,6 +26,7 @@
 //! Exit code is always `0` (fail-open).
 
 use crate::run::env::project_dir;
+use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::store::wikilinks::{self, Wikilink};
 use rusqlite::Connection;
@@ -39,28 +40,23 @@ fn collect_markdown(root: &Path) -> Vec<(PathBuf, String)> {
     let mut out: Vec<(PathBuf, String)> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
-                stack.push(path);
+        for entry in entries {
+            if entry.is_dir {
+                stack.push(entry.path.clone());
                 continue;
             }
-            if !ft.is_file() {
+            if !entry.file_name.ends_with(".md") {
                 continue;
             }
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let rel = path
+            let rel = entry.path
                 .strip_prefix(root)
-                .unwrap_or(&path)
+                .unwrap_or(&entry.path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            out.push((path, rel));
+            out.push((entry.path, rel));
         }
     }
     out.sort_by(|a, b| a.1.cmp(&b.1));
@@ -155,12 +151,12 @@ fn derive_from(root: &Path, abs_path: &Path) -> String {
 fn known_specs(project: &Path) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     let root = project.join(".claude").join("spec");
-    let Ok(entries) = std::fs::read_dir(&root) else {
+    let Ok(entries) = fs::read_dir(&root) else {
         return out;
     };
-    for entry in entries.flatten() {
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            out.insert(entry.file_name().to_string_lossy().to_string());
+    for entry in entries {
+        if entry.is_dir {
+            out.insert(entry.file_name);
         }
     }
     out
@@ -207,7 +203,7 @@ pub fn run(spec_dir_arg: Option<&str>) {
     let mut links: Vec<Wikilink> = Vec::new();
     if spec_dir.exists() {
         for (abs, rel) in collect_markdown(&spec_dir) {
-            let Ok(content) = std::fs::read_to_string(&abs) else {
+            let Ok(content) = fs::read_to_string(&abs) else {
                 continue;
             };
             let from = derive_from(&spec_dir, &abs);

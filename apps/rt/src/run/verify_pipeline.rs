@@ -17,6 +17,7 @@
 
 use crate::report::{table, Report};
 use crate::util::now_iso8601;
+use mustard_core::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -98,7 +99,7 @@ fn discover_via_sync_detect(cwd: &Path) -> Vec<VerifyTarget> {
 /// Fallback: scan `pipeline-config.md` for a Build Command column.
 fn discover_via_config(cwd: &Path) -> Vec<VerifyTarget> {
     let config_path = cwd.join(".claude").join("pipeline-config.md");
-    let Ok(config) = std::fs::read_to_string(&config_path) else {
+    let Ok(config) = fs::read_to_string(&config_path) else {
         return Vec::new();
     };
     let lines: Vec<&str> = config.split('\n').collect();
@@ -145,12 +146,12 @@ fn discover_via_config(cwd: &Path) -> Vec<VerifyTarget> {
 /// Last-resort defaults probe — `npm test` if a `package.json` exists,
 /// `dotnet build` if a `.csproj` exists.
 fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
-    let Ok(entries) = std::fs::read_dir(cwd) else {
+    let Ok(entries) = fs::read_dir(cwd) else {
         return Vec::new();
     };
     let names: Vec<String> = entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
+        .into_iter()
+        .map(|e| e.file_name)
         .collect();
     if names.iter().any(|n| n == "package.json") {
         return vec![VerifyTarget {
@@ -316,7 +317,7 @@ fn verify_targets(targets: &[VerifyTarget]) -> VerifyResult {
 /// Write the standalone HTML report.
 fn write_html_report(cwd: &Path, result: &VerifyResult) -> Option<PathBuf> {
     let dir = cwd.join(".claude").join(".qa-reports");
-    std::fs::create_dir_all(&dir).ok()?;
+    fs::create_dir_all(&dir).ok()?;
     let mut report = Report::new(
         "Pipeline Verification",
         format!(
@@ -342,7 +343,7 @@ fn write_html_report(cwd: &Path, result: &VerifyResult) -> Option<PathBuf> {
     }
     report.section("Targets", &table(&["Target", "Status", "Detail"], &rows));
     let path = dir.join("verify-pipeline.html");
-    std::fs::write(&path, report.render()).ok()?;
+    fs::write_atomic(&path, report.render().as_bytes()).ok()?;
     Some(path)
 }
 

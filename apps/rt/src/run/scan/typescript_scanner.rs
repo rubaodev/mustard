@@ -6,6 +6,7 @@
 //! hand-written string scanning that preserves the same decision logic.
 
 use super::file_utils::{collect_files, infer_common_folder, read_file_safe, relative_path};
+use mustard_core::fs;
 use super::rust_scanner::extract_brace_body;
 use super::{
     detect_value_convention, DtoInfo, EndpointInfo, EntityInfo, EnumInfo, RouteInfo, ScanResult,
@@ -669,11 +670,12 @@ impl Scanner for TypeScriptScanner {
     fn detect_architecture(&self, root: &Path) -> String {
         let fw = Self::detect_frameworks(root);
         let list_dirs = |dir: &Path| -> Vec<String> {
-            std::fs::read_dir(dir)
-                .map(|d| {
-                    d.flatten()
-                        .filter(|e| e.path().is_dir())
-                        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .filter(|e| e.is_dir)
+                        .map(|e| e.file_name)
                         .collect()
                 })
                 .unwrap_or_default()

@@ -6,6 +6,7 @@
 
 use super::file_utils::{collect_files, read_file_safe, relative_path};
 use super::{detect_value_convention, EntityInfo, EnumInfo, Scanner};
+use mustard_core::fs;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -47,19 +48,15 @@ impl Scanner for PythonScanner {
 
     fn detect_architecture(&self, root: &Path) -> String {
         let mut dirs: Vec<String> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(root) {
-            for e in entries.flatten() {
-                if e.path().is_dir() {
-                    if let Some(name) = e.file_name().to_str() {
-                        dirs.push(name.to_string());
-                        // One level deeper, for src-layout projects.
-                        if let Ok(nested) = std::fs::read_dir(e.path()) {
-                            for n in nested.flatten() {
-                                if n.path().is_dir() {
-                                    if let Some(nn) = n.file_name().to_str() {
-                                        dirs.push(nn.to_string());
-                                    }
-                                }
+        if let Ok(entries) = fs::read_dir(root) {
+            for e in entries {
+                if e.is_dir {
+                    dirs.push(e.file_name.clone());
+                    // One level deeper, for src-layout projects.
+                    if let Ok(nested) = fs::read_dir(&e.path) {
+                        for n in nested {
+                            if n.is_dir {
+                                dirs.push(n.file_name);
                             }
                         }
                     }

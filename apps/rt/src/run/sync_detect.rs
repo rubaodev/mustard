@@ -21,6 +21,7 @@
 //! does — a later wave can add fine-grained module hashing).
 
 use crate::util::sha256::Sha256;
+use mustard_core::fs;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -100,12 +101,10 @@ fn file_exists(dir: &Path, pattern: &str) -> bool {
     if parts.len() != 2 {
         return false;
     }
-    std::fs::read_dir(dir)
+    fs::read_dir(dir)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|name| name.starts_with(parts[0]) && name.ends_with(parts[1]))
+            entries.into_iter().any(|e| {
+                e.file_name.starts_with(parts[0]) && e.file_name.ends_with(parts[1])
             })
         })
         .unwrap_or(false)
@@ -116,17 +115,14 @@ fn dir_exists(base: &Path, dir_name: &str) -> bool {
     if base.join(dir_name).is_dir() {
         return true;
     }
-    let Ok(entries) = std::fs::read_dir(base) else {
+    let Ok(entries) = fs::read_dir(base) else {
         return false;
     };
-    for e in entries.flatten() {
-        let Some(name) = e.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if name.starts_with('.') || matches!(name.as_str(), "node_modules" | "bin" | "obj") {
+    for e in entries {
+        if e.file_name.starts_with('.') || matches!(e.file_name.as_str(), "node_modules" | "bin" | "obj") {
             continue;
         }
-        if e.path().join(dir_name).is_dir() {
+        if e.path.join(dir_name).is_dir() {
             return true;
         }
     }
@@ -137,21 +133,18 @@ fn dir_exists(base: &Path, dir_name: &str) -> bool {
 fn find_csproj_files(dir: &Path, max_depth: usize) -> Vec<PathBuf> {
     let mut results = Vec::new();
     fn walk(dir: &Path, remaining: usize, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
-        for e in entries.flatten() {
-            let Some(name) = e.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if e.path().is_file() && name.ends_with(".csproj") {
-                out.push(e.path());
-            } else if e.path().is_dir()
+        for e in entries {
+            if !e.is_dir && e.file_name.ends_with(".csproj") {
+                out.push(e.path.clone());
+            } else if e.is_dir
                 && remaining > 0
-                && !name.starts_with('.')
-                && !matches!(name.as_str(), "node_modules" | "bin" | "obj")
+                && !e.file_name.starts_with('.')
+                && !matches!(e.file_name.as_str(), "node_modules" | "bin" | "obj")
             {
-                walk(&e.path(), remaining - 1, out);
+                walk(&e.path, remaining - 1, out);
             }
         }
     }
@@ -161,7 +154,7 @@ fn find_csproj_files(dir: &Path, max_depth: usize) -> Vec<PathBuf> {
 
 /// Read a file, returning an empty string on any error.
 fn read_safe(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    fs::read_to_string(path).unwrap_or_default()
 }
 
 /// `true` if any `.csproj` under `dir` targets `Microsoft.NET.Sdk.Web`.
@@ -402,12 +395,12 @@ fn extract_between(content: &str, open: &str, close: &str) -> Option<String> {
 /// List the `.md` command files inside `<subproject>/.claude/commands/`.
 fn get_commands(abs_path: &Path) -> Vec<String> {
     let dir = abs_path.join(".claude").join("commands");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .into_iter()
+        .map(|e| e.file_name)
         .filter(|n| n.ends_with(".md"))
         .collect();
     names.sort();
@@ -418,12 +411,10 @@ fn get_commands(abs_path: &Path) -> Vec<String> {
 fn get_agents(root: &Path) -> Vec<String> {
     let mut agents = vec!["orchestrator".to_string()];
     let dir = root.join(".claude").join("prompts");
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            if let Some(name) = e.file_name().to_str() {
-                if name.ends_with(".md") && !name.starts_with('_') {
-                    agents.push(name.trim_end_matches(".md").to_string());
-                }
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries {
+            if e.file_name.ends_with(".md") && !e.file_name.starts_with('_') {
+                agents.push(e.file_name.trim_end_matches(".md").to_string());
             }
         }
     }
@@ -511,25 +502,22 @@ fn scan_for_subprojects(root: &Path) -> Vec<String> {
             out.push(rel_dir.replace('\\', "/"));
             return;
         }
-        let Ok(entries) = std::fs::read_dir(abs_dir) else {
+        let Ok(entries) = fs::read_dir(abs_dir) else {
             return;
         };
-        for e in entries.flatten() {
-            if !e.path().is_dir() {
+        for e in entries {
+            if !e.is_dir {
                 continue;
             }
-            let Some(name) = e.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if name.starts_with('.') || ignore.contains(&name.as_str()) {
+            if e.file_name.starts_with('.') || ignore.contains(&e.file_name.as_str()) {
                 continue;
             }
             let next_rel = if rel_dir.is_empty() {
-                name.clone()
+                e.file_name.clone()
             } else {
-                format!("{rel_dir}/{name}")
+                format!("{rel_dir}/{}", e.file_name)
             };
-            walk(&e.path(), &next_rel, depth + 1, ignore, out);
+            walk(&e.path, &next_rel, depth + 1, ignore, out);
         }
     }
     walk(root, "", 0, IGNORE, &mut results);
@@ -539,33 +527,29 @@ fn scan_for_subprojects(root: &Path) -> Vec<String> {
 /// Recursively collect source + manifest files under `dir`, returned as paths
 /// relative to `root` with forward slashes — a port of `collectSourceFiles()`.
 fn collect_source_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for e in entries.flatten() {
-        let Some(name) = e.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if name.starts_with('.')
+    for e in entries {
+        if e.file_name.starts_with('.')
             || matches!(
-                name.as_str(),
+                e.file_name.as_str(),
                 "node_modules" | "bin" | "obj" | "dist" | "migrations" | "_backup"
             )
         {
             continue;
         }
-        let path = e.path();
-        if path.is_dir() {
-            collect_source_files(root, &path, out);
-        } else if path.is_file() {
+        if e.is_dir {
+            collect_source_files(root, &e.path, out);
+        } else {
             let is_source = SOURCE_EXTENSIONS
                 .iter()
-                .any(|ext| name.to_ascii_lowercase().ends_with(ext));
-            let is_manifest = MANIFEST_FILES.contains(&name.as_str());
+                .any(|ext| e.file_name.to_ascii_lowercase().ends_with(ext));
+            let is_manifest = MANIFEST_FILES.contains(&e.file_name.as_str());
             if is_source || is_manifest {
-                let rel = path
+                let rel = e.path
                     .strip_prefix(root)
-                    .unwrap_or(&path)
+                    .unwrap_or(&e.path)
                     .to_string_lossy()
                     .replace('\\', "/");
                 out.push(rel);
@@ -589,7 +573,7 @@ fn compute_source_hash(root: &Path, subproject_rel: &str) -> String {
     let mut hash = Sha256::new();
     for file in &files {
         hash.update(file.as_bytes());
-        if let Ok(bytes) = std::fs::read(root.join(file)) {
+        if let Ok(bytes) = fs::read(root.join(file)) {
             hash.update(&bytes);
         }
     }

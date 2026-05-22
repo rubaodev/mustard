@@ -33,8 +33,8 @@
 //! watcher never propagates an error to the parent.
 
 use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
+use mustard_core::fs;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -197,10 +197,9 @@ fn enumerate_jsonl(project_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(project_dir) else {
         return out;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if is_transcript_path(&path) {
-            out.push(path);
+    for entry in entries {
+        if is_transcript_path(&entry.path) {
+            out.push(entry.path);
         }
     }
     out
