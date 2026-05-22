@@ -1,11 +1,11 @@
 # Spec lifecycle unification + Linear-style /specs redesign
 
-### Stage: Plan
-### Outcome: Active
+### Stage: Close
+### Outcome: Completed
 ### Flags: 
 ### Lang: pt
 ### Scope: full
-### Checkpoint: 2026-05-21T00:00:00Z
+### Checkpoint: 2026-05-22T02:10:00Z
 ### Wave-plan: true
 
 ## Resumo
