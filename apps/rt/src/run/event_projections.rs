@@ -195,6 +195,7 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
     let mut findings: Vec<Value> = Vec::new();
     let mut decisions: Vec<Value> = Vec::new();
     let mut lessons: Vec<Value> = Vec::new();
+    let mut hygiene: Vec<Value> = Vec::new();
     let mut specs = std::collections::BTreeSet::new();
 
     for ev in events {
@@ -216,6 +217,11 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
             "finding" => findings.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "decision" => decisions.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
             "lesson" => lessons.push(serde_json::to_value(ev).unwrap_or(Value::Null)),
+            // hygiene.detected / hygiene.autoclose / hygiene.skipped — surfaced so
+            // `--view session-summary` lists recent hygiene activity (AC-W5-5).
+            k if k.starts_with("hygiene.") => {
+                hygiene.push(serde_json::to_value(ev).unwrap_or(Value::Null));
+            }
             _ => {}
         }
     }
@@ -229,6 +235,7 @@ fn build_session_summary(events: &[HarnessEvent]) -> Value {
         "findings": findings,
         "decisions": decisions,
         "lessons": lessons,
+        "hygiene": hygiene,
     })
 }
 
@@ -1069,6 +1076,21 @@ mod tests {
         let v = build_session_summary(&events);
         assert_eq!(v["agentCount"], json!(1));
         assert_eq!(v["specs"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn session_summary_surfaces_hygiene_events() {
+        // AC-W5-5: `--view session-summary` lists recent hygiene.* activity.
+        let events = vec![
+            ev("hygiene.detected", Some("a"), json!({ "reason": "stale" })),
+            ev("hygiene.autoclose", Some("b"), json!({ "gate_result": { "build": "pass" } })),
+            ev("hygiene.skipped", Some("c"), json!({ "blocker": "build_red" })),
+            ev("tool.use", Some("a"), json!({ "tool": "Edit" })),
+        ];
+        let v = build_session_summary(&events);
+        let hygiene = v["hygiene"].as_array().expect("hygiene array present");
+        assert_eq!(hygiene.len(), 3, "all three hygiene.* kinds surfaced");
+        assert_eq!(hygiene[0]["event"], json!("hygiene.detected"));
     }
 
     #[test]

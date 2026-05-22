@@ -21,6 +21,7 @@ use crate::hooks::session_cleanup::SessionCleanup;
 use crate::hooks::session_start::SessionStart;
 use crate::hooks::size_gate::SizeGate;
 use crate::hooks::skills_audit::SkillsAudit;
+use crate::hooks::spec_hygiene::SpecHygiene;
 use crate::hooks::tool_result::ToolResult;
 use crate::hooks::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
@@ -285,6 +286,18 @@ impl Registry {
                 observer: Some(Box::new(PostEdit)),
             },
             // ── Wave 5: session-lifecycle families ───────────────────────────
+            // `spec_hygiene` is registered *before* `session_start` so its
+            // gated auto-close (and the spec-header rewrite it performs) runs
+            // ahead of the SessionStart memory injection — the order the
+            // dispatcher iterates modules in (spec-lifecycle-unification W5).
+            Module {
+                id: "spec_hygiene",
+                // SessionStart-only side effect — emits `hygiene.*` events and,
+                // for a green close-gate, auto-closes a candidate spec.
+                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
+                check: Some(Box::new(SpecHygiene)),
+                observer: None,
+            },
             Module {
                 id: "session_start",
                 // `harness-init` + `session-memory` + `spec-hygiene` — the
@@ -473,6 +486,7 @@ mod tests {
             "close_gate",
             "enforce_registry",
             "post_edit",
+            "spec_hygiene",
             "session_start",
             "knowledge",
             "session_cleanup",
@@ -491,6 +505,12 @@ mod tests {
         // `session_start` on SessionStart.
         assert!(applicable_ids(&registry, Trigger::SessionStart, None)
             .contains(&"session_start"));
+        // `spec_hygiene` also runs on SessionStart, *before* `session_start`.
+        let start = applicable_ids(&registry, Trigger::SessionStart, None);
+        assert!(start.contains(&"spec_hygiene"));
+        let hyg_idx = start.iter().position(|id| *id == "spec_hygiene");
+        let ss_idx = start.iter().position(|id| *id == "session_start");
+        assert!(hyg_idx < ss_idx, "spec_hygiene must precede session_start");
         // `session_cleanup` + `knowledge` on SessionEnd.
         let end = applicable_ids(&registry, Trigger::SessionEnd, None);
         assert!(end.contains(&"session_cleanup"));

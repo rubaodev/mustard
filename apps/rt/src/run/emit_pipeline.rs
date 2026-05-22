@@ -52,10 +52,26 @@ const EVENT_PIPELINE_FLAG_CLEAR: &str = "pipeline.flag.clear";
 /// directly-emittable "new" set.
 const EVENT_PIPELINE_PHASE: &str = "pipeline.phase";
 
-/// The 13 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
+// --- Hygiene event kinds (spec-lifecycle-unification W5) ---------------------
+//
+// Emitted by the `spec_hygiene` SessionStart hook (and accepted here so the
+// hook — or a test — can also drive them via `emit-pipeline`). They carry no
+// legacy alias: they are first-class new kinds. See `hooks/spec_hygiene.rs`.
+
+/// `hygiene.detected` — an active spec was classified `stale`,
+/// `abandoned_suspect`, or (in detect mode) `candidate`. Advisory only.
+const EVENT_HYGIENE_DETECTED: &str = "hygiene.detected";
+/// `hygiene.autoclose` — a candidate spec passed the close-gate and was
+/// auto-closed (`pipeline.outcome: completed` follows).
+const EVENT_HYGIENE_AUTOCLOSE: &str = "hygiene.autoclose";
+/// `hygiene.skipped` — a candidate spec failed the close-gate; it was left
+/// active. Payload carries the `blocker`.
+const EVENT_HYGIENE_SKIPPED: &str = "hygiene.skipped";
+
+/// The 17 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
 /// plus the legacy `pipeline.phase` (alias-only), plus the 4 new canonical
-/// state-model kinds. A literal list — no magic alias resolution
-/// (cf. memory `project_emit_pipeline_kind_full_prefix`).
+/// state-model kinds, plus the 3 W5 `hygiene.*` kinds. A literal list — no
+/// magic alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
@@ -71,6 +87,9 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_OUTCOME,
     EVENT_PIPELINE_FLAG_SET,
     EVENT_PIPELINE_FLAG_CLEAR,
+    EVENT_HYGIENE_DETECTED,
+    EVENT_HYGIENE_AUTOCLOSE,
+    EVENT_HYGIENE_SKIPPED,
 ];
 
 /// Options for `mustard-rt run emit-pipeline`.
@@ -373,8 +392,8 @@ mod tests {
 
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
-        // 9 legacy + 1 legacy phase (alias-only) + 4 new canonical kinds.
-        assert_eq!(KNOWN_KINDS.len(), 14);
+        // 9 legacy + 1 legacy phase (alias-only) + 4 new canonical + 3 hygiene.
+        assert_eq!(KNOWN_KINDS.len(), 17);
         // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STATUS));
@@ -392,6 +411,10 @@ mod tests {
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_OUTCOME));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_FLAG_SET));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_FLAG_CLEAR));
+        // W5 hygiene kinds.
+        assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_DETECTED));
+        assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_AUTOCLOSE));
+        assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_SKIPPED));
     }
 
     #[test]

@@ -36,5 +36,6 @@ pub mod session_cleanup;
 pub mod session_start;
 pub mod size_gate;
 pub mod skills_audit;
+pub mod spec_hygiene;
 pub mod tool_result;
 pub mod tracker;
