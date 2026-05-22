@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "react-router";
 import { Search } from "lucide-react";
 import { useStore } from "@/lib/store";
 import {
   useProjects,
   fetchSpecs,
   dashboardSpecCard,
+  fetchWorkspaceHealth,
   type SpecCard,
 } from "@/lib/dashboard";
 import { useT } from "@/lib/i18n";
@@ -246,8 +248,18 @@ export function Specs() {
   const projects = useProjects();
   const activeProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
   const queryClient = useQueryClient();
+  const location = useLocation();
 
-  const [bucket, setBucket] = useState<SpecFilterBucket>("ativas");
+  // Wave-6: read `?filter=` query param so deep-links from WorkspaceHealthCard work.
+  const initialBucket = useMemo<SpecFilterBucket>(() => {
+    const params = new URLSearchParams(location.search);
+    const f = params.get("filter");
+    if (f === "suspects" || f === "suspeitas") return "suspeitas";
+    if (f === "encerradas") return "encerradas";
+    return "ativas";
+  }, [location.search]);
+
+  const [bucket, setBucket] = useState<SpecFilterBucket>(initialBucket);
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [search, setSearch] = useState("");
 
@@ -359,6 +371,21 @@ export function Specs() {
       .filter((d): d is SpecCard => d != null);
   }, [cardQueries]);
 
+  // Wave-6: fetch hygiene health to populate suspect sets for badges + "Suspeitas" filter.
+  const { data: healthData } = useQuery({
+    queryKey: ["workspace-health", activeProject?.path],
+    queryFn: () => fetchWorkspaceHealth(activeProject!.path),
+    enabled: !!activeProject,
+    staleTime: 10_000,
+    refetchInterval: 12_000,
+    refetchIntervalInBackground: false,
+  });
+
+  const suspectSpecs = useMemo<ReadonlySet<string>>(
+    () => new Set(healthData?.suspect_specs ?? []),
+    [healthData],
+  );
+
   // Two-stage loading cascade — see prior spec note: don't flash the empty
   // state while the per-card fan-out is mid-flight.
   const cardsLoading = cardQueries.some((q) => q.isLoading);
@@ -374,7 +401,16 @@ export function Specs() {
 
   const filteredSpecs = useMemo<SpecCard[]>(() => {
     return cards
-      .filter((c) => filterBucket(stateFromStatus(c.status)) === bucket)
+      .filter((c) => {
+        const state = stateFromStatus(c.status);
+        const fb = filterBucket(state);
+        if (bucket === "suspeitas") {
+          // Wave-6: "Suspeitas" shows flag-bearing specs (blocked/wave-failed)
+          // UNION hygiene suspects from workspace_health.
+          return fb === "suspeitas" || suspectSpecs.has(c.spec);
+        }
+        return fb === bucket;
+      })
       .filter((c) => {
         if (dateCutoff === 0) return true;
         const ts = c.last_event_at ?? c.started_at;
@@ -385,7 +421,7 @@ export function Specs() {
         if (!search.trim()) return true;
         return c.spec.toLowerCase().includes(search.trim().toLowerCase());
       });
-  }, [cards, bucket, dateCutoff, search]);
+  }, [cards, bucket, dateCutoff, search, suspectSpecs]);
 
   // Group filtered specs by Stage, dropping empty groups. Within a group,
   // newest activity first.
@@ -507,6 +543,7 @@ export function Specs() {
                                   expanded={isExpanded}
                                   onToggle={toggleSpec}
                                   onOpen={openSpec}
+                                  suspectSpecs={suspectSpecs}
                                 />
                                 {isExpanded && repoPath && (
                                   <SpecChildrenTree

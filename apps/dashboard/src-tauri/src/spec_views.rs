@@ -253,6 +253,181 @@ pub struct WorkspaceSummary {
     pub top_files_today: Vec<FileCount>,
 }
 
+/// Wave-6 (2026-05-21, spec `spec-lifecycle-unification/wave-6-observability`) —
+/// hygiene health roll-up for one project. Aggregates counts of active specs,
+/// hygiene suspects (recent `hygiene.detected` events), auto-closures today,
+/// and flag-bearing specs (`blocked`, `wave_failed`, `followup_open`).
+///
+/// Fail-open: any DB error → all-zeros struct so the card stays renderable.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkspaceHealth {
+    /// Specs whose last `pipeline.status` outcome is `active`.
+    pub active: i64,
+    /// Distinct specs with a `hygiene.detected` event in the last 7 days that
+    /// are still active (not yet closed by autoclose or user action).
+    pub suspects: i64,
+    /// `hygiene.autoclose` events in the last 24 hours.
+    pub autoclose_today: i64,
+    /// Active specs whose `SpecState.flags.blocked` is true.
+    pub blocked: i64,
+    /// Active specs whose `SpecState.flags.wave_failed` is true.
+    pub wave_failed: i64,
+    /// Active specs whose `SpecState.flags.followup_open` is true.
+    pub followup_open: i64,
+    /// ISO-8601 timestamp of the most recent `hygiene.*` event (nullable).
+    pub last_hygiene_run_at: Option<String>,
+    /// Slug list of suspect specs (distinct, for `/specs?filter=suspects` cross-reference).
+    #[serde(default)]
+    pub suspect_specs: Vec<String>,
+}
+
+/// Aggregate hygiene health data from the project's `mustard.db`.
+///
+/// Opens via `db::with_db` (the same helper used by all other aggregation
+/// commands in this file). Fail-open: returns an all-zeros `WorkspaceHealth`
+/// when the DB is absent, unreadable, or its schema is unexpected.
+pub fn workspace_health_impl(conn: &Connection) -> Result<WorkspaceHealth, String> {
+    // ── suspects: distinct specs with hygiene.detected in last 7 days ───────
+    let suspects_sql = "SELECT DISTINCT spec FROM events \
+                        WHERE event = 'hygiene.detected' \
+                          AND spec IS NOT NULL \
+                          AND ts >= datetime('now', '-7 days')";
+    let suspect_specs: Vec<String> = {
+        let mut stmt = conn.prepare(suspects_sql).unwrap_or_else(|_| {
+            conn.prepare("SELECT 1 WHERE 0").unwrap()
+        });
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    };
+
+    // Filter suspects to only those still active (outcome == 'active' in their
+    // latest pipeline.status event). We use a subquery approach for simplicity:
+    // for each suspect candidate, check if its last pipeline.status payload
+    // contains "active" as the `to` field.
+    let suspects_active: Vec<String> = suspect_specs
+        .iter()
+        .filter(|spec_name| {
+            let sql = "SELECT json_extract(payload, '$.to') FROM events \
+                       WHERE event = 'pipeline.status' AND spec = ?1 \
+                       ORDER BY id DESC LIMIT 1";
+            let mut stmt = match conn.prepare(sql) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            stmt.query_row(params![spec_name.as_str()], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .map(|outcome| {
+                matches!(
+                    outcome.as_deref(),
+                    Some("active") | Some("implementing") | Some("planning") | Some("reviewing") | Some("qa") | None
+                )
+            })
+            .unwrap_or(true) // fail-open: assume active when unknown
+        })
+        .cloned()
+        .collect();
+
+    // ── autoclose_today: hygiene.autoclose events in last 24h ────────────────
+    let autoclose_today: i64 = {
+        let sql = "SELECT COUNT(*) FROM events \
+                   WHERE event = 'hygiene.autoclose' \
+                     AND ts >= datetime('now', '-1 day')";
+        conn.query_row(sql, [], |row| row.get(0)).unwrap_or(0)
+    };
+
+    // ── last_hygiene_run_at: max ts of any hygiene.* event ───────────────────
+    let last_hygiene_run_at: Option<String> = {
+        let sql = "SELECT MAX(ts) FROM events \
+                   WHERE event LIKE 'hygiene.%'";
+        conn.query_row(sql, [], |row| row.get(0)).unwrap_or(None)
+    };
+
+    // ── flag-bearing specs: scan last pipeline.status per spec for flags ─────
+    // Strategy: get all distinct specs, then for each, check for flag-emitting
+    // event kinds (`hygiene.detected`/pipeline events don't carry flags directly).
+    // Flags (`blocked`, `wave_failed`, `followup_open`) come from the `SpecState`
+    // model. We approximate via event kinds: `pipeline.status` with `to=blocked`
+    // → blocked, `to=wave-failed` → wave_failed, `to=closed-followup` → followup_open.
+    let mut blocked: i64 = 0;
+    let mut wave_failed: i64 = 0;
+    let mut followup_open: i64 = 0;
+
+    let all_specs_sql = "SELECT DISTINCT spec FROM events WHERE spec IS NOT NULL";
+    let all_specs: Vec<String> = {
+        let mut stmt = match conn.prepare(all_specs_sql) {
+            Ok(s) => s,
+            Err(_) => {
+                return Ok(WorkspaceHealth {
+                    active: 0,
+                    suspects: i64::try_from(suspects_active.len()).unwrap_or(0),
+                    autoclose_today,
+                    blocked,
+                    wave_failed,
+                    followup_open,
+                    last_hygiene_run_at,
+                    suspect_specs: suspects_active,
+                });
+            }
+        };
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    };
+
+    let status_sql = "SELECT json_extract(payload, '$.to') FROM events \
+                      WHERE event = 'pipeline.status' AND spec = ?1 \
+                      ORDER BY id DESC LIMIT 1";
+    let mut active: i64 = 0;
+    for spec_name in &all_specs {
+        let mut stmt = match conn.prepare(status_sql) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let last_status: Option<String> = stmt
+            .query_row(params![spec_name.as_str()], |row| row.get(0))
+            .unwrap_or(None);
+        match last_status.as_deref() {
+            Some("blocked") => {
+                blocked += 1;
+                active += 1;
+            }
+            Some("wave-failed") => {
+                wave_failed += 1;
+                active += 1;
+            }
+            Some("closed-followup") => {
+                followup_open += 1;
+                // closed-followup is still active in the sense of needing attention
+                active += 1;
+            }
+            Some("implementing") | Some("planning") | Some("reviewing") | Some("qa") | Some("active") | None => {
+                active += 1;
+            }
+            Some("completed") | Some("cancelled") | Some("abandoned") => {
+                // terminal — do not count
+            }
+            Some(_) => {
+                // unknown status — count as active (fail-open)
+                active += 1;
+            }
+        }
+    }
+
+    Ok(WorkspaceHealth {
+        active,
+        suspects: i64::try_from(suspects_active.len()).unwrap_or(0),
+        autoclose_today,
+        blocked,
+        wave_failed,
+        followup_open,
+        last_hygiene_run_at,
+        suspect_specs: suspects_active,
+    })
+}
+
 // ── spec_events ───────────────────────────────────────────────────────────────
 
 pub fn spec_events(

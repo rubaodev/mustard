@@ -254,3 +254,27 @@ export interface ContributionCell {
   date: string;
   count: number;
 }
+
+/**
+ * Wave-6 (2026-05-21, spec `spec-lifecycle-unification/wave-6-observability`) —
+ * hygiene health roll-up returned by `workspace_health`. All counts default to 0
+ * when the DB is absent (fail-open). Mirrors `spec_views::WorkspaceHealth`.
+ */
+export interface WorkspaceHealth {
+  /** Specs whose last pipeline status is an active/in-progress variant. */
+  active: number;
+  /** Distinct specs with a `hygiene.detected` event in the last 7 days (still active). */
+  suspects: number;
+  /** `hygiene.autoclose` events in the last 24 hours. */
+  autoclose_today: number;
+  /** Active specs flagged as blocked. */
+  blocked: number;
+  /** Active specs flagged as wave-failed. */
+  wave_failed: number;
+  /** Active specs in the follow-up window. */
+  followup_open: number;
+  /** ISO-8601 timestamp of the most recent `hygiene.*` event. */
+  last_hygiene_run_at: string | null;
+  /** Slug list of suspect specs, for cross-referencing with the main spec list. */
+  suspect_specs: string[];
+}

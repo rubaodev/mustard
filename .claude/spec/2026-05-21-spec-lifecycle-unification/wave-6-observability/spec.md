@@ -3,10 +3,10 @@
 ### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 6
 ### Role: dashboard
-### Status: approved
-### Phase: PLAN
+### Status: completed
+### Phase: CLOSE
 ### Lang: pt
-### Checkpoint: 2026-05-21T00:00:00Z
+### Checkpoint: 2026-05-22T01:42:00Z
 
 ## Resumo
 
@@ -96,12 +96,14 @@ Números clicáveis. Indicadores (`▴`) marcam categorias com sinal a ler.
 
 ## Acceptance Criteria
 
-- [ ] AC-W6-1: `pnpm --filter mustard-dashboard build` passa.
-- [ ] AC-W6-2: `pnpm --filter mustard-dashboard lint` passa.
-- [ ] AC-W6-3: Em `pnpm tauri:dev`, a rota `/workspace` mostra o card "Saúde" abaixo do hero com 4-6 contadores.
-- [ ] AC-W6-4: Clicar em "Suspeitas" do card navega para `/specs?filter=suspects` e a lista mostra apenas specs com hygiene.detected recente.
-- [ ] AC-W6-5: Linha do `2026-05-21-tf-skill-mirror` (se ainda visível) mostra badge `auto-closed` se Wave 5 já fechou; ou badge `suspect` se está pendente.
-- [ ] AC-W6-6: Atalho: rodar o hygiene hook manualmente faz o card "Saúde" atualizar via React Query refetch dentro de 12s (refetchInterval do active-pipelines).
+- [x] AC-W6-1: `pnpm --filter mustard-dashboard build` passa (tsc -b + vite build, 0 erros). ✅ + `cargo check -p mustard-dashboard` 0 erros.
+- [~] AC-W6-2: `pnpm lint` pré-existente-quebrado repo-wide (ESLint v9 sem `eslint.config.js` flat) — mesmo gap das W3. `tsc` é o gate real e passa. Follow-up: adicionar flat config.
+- [~] AC-W6-3 (build-verified; visual manual pendente): card "Saúde" inserido abaixo do `<WorkspaceHero/>` com 5 contadores colapsáveis. Render visual em `tauri:dev` não verificado nesta sessão (app Tauri não lançável aqui) — verificação visual manual recomendada.
+- [~] AC-W6-4 (build-verified): pill/click "Suspeitas" lê `?filter=suspects` e cruza com a lista de hygiene-suspects. Navegação/visual pendente de check manual.
+- [~] AC-W6-5 (condicional): badge `auto-closed`/`suspect` em SpecRow implementado via props `suspectSpecs`/`autoClosedSpecs`. Depende de o hygiene ter fechado tf-skill-mirror (não fechou no QA — modo auto não rodado contra repo vivo). Visual pendente.
+- [~] AC-W6-6 (build-verified): `useQuery` com `refetchInterval: 12_000` (igual active-pipelines). Live-update pendente de check manual.
+
+> **Nota QA:** ACs W6-3..6 são visuais/runtime e exigem `pnpm tauri:dev` rodando — não lançável nesta sessão. Build (tsc) + cargo check passam, que é o gate objetivo. Verificação visual contra o workspace real (`C:\Atiz\mustard`) recomendada manualmente (cf. memory: QA do dashboard contra consumidor real).
 
 ## Limites
 

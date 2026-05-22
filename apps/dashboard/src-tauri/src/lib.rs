@@ -1556,6 +1556,19 @@ fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::Workspac
     spec_views::workspace_summary_v2(&repo_path)
 }
 
+// ── Wave-6 hygiene observability ─────────────────────────────────────────────
+
+/// Return hygiene health roll-up for a project's mustard.db. Fail-open:
+/// returns an all-zeros `WorkspaceHealth` when the DB is absent.
+#[tauri::command]
+fn workspace_health(repo_path: String) -> spec_views::WorkspaceHealth {
+    let base = std::path::PathBuf::from(&repo_path);
+    match db::with_db(&base, spec_views::workspace_health_impl) {
+        Some(Ok(h)) => h,
+        _ => spec_views::WorkspaceHealth::default(),
+    }
+}
+
 // ── Wave-7 telemetry aggregation commands ────────────────────────────────────
 
 #[tauri::command]
@@ -1719,7 +1732,8 @@ pub fn run() {
             spec_views::dashboard_events_feed,
             prd_lapidator::lapidate_prd,
             prd_lapidator::check_claude_available,
-            read_entity_registry
+            read_entity_registry,
+            workspace_health
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

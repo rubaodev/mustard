@@ -1,6 +1,7 @@
 import { ChevronRight, ChevronDown, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { StageBullet } from "./StageBullet";
+import { SpecBadge } from "./SpecBadge";
 import { stateFromStatus } from "./stage-from-status";
 import type { SpecCard } from "@/lib/types/specs";
 
@@ -12,6 +13,19 @@ interface SpecRowProps {
   onToggle: (slug: string) => void;
   /** Open the spec in a new tab / drill-down (row click). */
   onOpen: (slug: string) => void;
+  /**
+   * Wave-6: set of spec slugs flagged as suspects by the hygiene hook
+   * (`hygiene.detected` in the last 7 days, still active). When provided,
+   * matching rows get a `suspect` badge. Passed down from `Specs.tsx` which
+   * holds the `workspace_health` query result.
+   */
+  suspectSpecs?: ReadonlySet<string>;
+  /**
+   * Wave-6: set of spec slugs that were auto-closed today (`hygiene.autoclose`
+   * in the last 24h). Used to render the `auto-closed` badge in the
+   * "Encerradas" bucket.
+   */
+  autoClosedSpecs?: ReadonlySet<string>;
 }
 
 function formatDuration(ms: number | null): string {
@@ -30,9 +44,25 @@ function formatDuration(ms: number | null): string {
  * duration. Clicking the row (anywhere but the chevron) opens the drill-down;
  * clicking the chevron toggles the inline children tree.
  */
-export function SpecRow({ data, expanded, onToggle, onOpen }: SpecRowProps) {
+export function SpecRow({
+  data,
+  expanded,
+  onToggle,
+  onOpen,
+  suspectSpecs,
+  autoClosedSpecs,
+}: SpecRowProps) {
   const state = stateFromStatus(data.status);
   const Chevron = expanded ? ChevronDown : ChevronRight;
+
+  // Compute which badges to render for this row (right of the name).
+  // Order: blocked → wave-failed → followup → suspect → auto-closed.
+  const badges: Array<"blocked" | "wave-failed" | "followup" | "suspect" | "auto-closed"> = [];
+  if (state.flags.blocked) badges.push("blocked");
+  if (state.flags.wave_failed) badges.push("wave-failed");
+  if (state.flags.followup_open) badges.push("followup");
+  if (suspectSpecs?.has(data.spec)) badges.push("suspect");
+  if (autoClosedSpecs?.has(data.spec)) badges.push("auto-closed");
 
   return (
     <div
@@ -72,11 +102,21 @@ export function SpecRow({ data, expanded, onToggle, onOpen }: SpecRowProps) {
 
       {/* Spec name — mono, truncates at the end. */}
       <span
-        className="font-mono text-[12px] text-foreground/90 truncate flex-1 min-w-0"
+        className="font-mono text-[12px] text-foreground/90 truncate min-w-0"
+        style={{ flex: "1 1 0%" }}
         title={data.spec}
       >
         {data.spec}
       </span>
+
+      {/* Wave-6 hygiene badges — right of the name, before metric columns. */}
+      {badges.length > 0 && (
+        <div className="hidden sm:flex items-center gap-1 shrink-0">
+          {badges.map((variant) => (
+            <SpecBadge key={variant} variant={variant} />
+          ))}
+        </div>
+      )}
 
       {/* Quantitative columns. Hidden on the narrowest widths so the name keeps
           priority; tabular-nums so counters align column-to-column. */}

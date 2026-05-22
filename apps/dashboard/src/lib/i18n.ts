@@ -150,6 +150,26 @@ const DICTIONARY = new Map<string, TranslationRow>([
   // Drawer / panel affordances.
   ["drawer.pin", { pt: "Fixar painel", en: "Pin panel" }],
   ["drawer.unpin", { pt: "Soltar painel", en: "Unpin panel" }],
+
+  // Wave-6 — workspace health card (hygiene observability).
+  ["workspace.health.title", { pt: "Saúde do workspace", en: "Workspace health" }],
+  ["workspace.health.active", { pt: "Ativas", en: "Active" }],
+  ["workspace.health.suspects", { pt: "Suspeitas", en: "Suspects" }],
+  ["workspace.health.autoclose_today", { pt: "Auto-fechadas hoje", en: "Auto-closed today" }],
+  ["workspace.health.blocked", { pt: "Bloqueadas", en: "Blocked" }],
+  ["workspace.health.wave_failed", { pt: "Wave failed", en: "Wave failed" }],
+  ["workspace.health.followup_open", { pt: "Follow-up", en: "Follow-up" }],
+  ["workspace.health.last_run", { pt: "Última verificação há {time}", en: "Last check {time} ago" }],
+
+  // Wave-6 — spec badges (hygiene flags).
+  ["specs.badge.blocked", { pt: "bloqueada", en: "blocked" }],
+  ["specs.badge.wave_failed", { pt: "wave failed", en: "wave failed" }],
+  ["specs.badge.followup", { pt: "follow-up", en: "follow-up" }],
+  ["specs.badge.suspect", { pt: "suspeita", en: "suspect" }],
+  ["specs.badge.auto_closed", { pt: "auto-fechada", en: "auto-closed" }],
+
+  // Wave-6 — "Suspeitas" filter pill (populated by hygiene suspects).
+  ["specs.filter.suspects", { pt: "Suspeitas", en: "Suspects" }],
 ]);
 
 /**

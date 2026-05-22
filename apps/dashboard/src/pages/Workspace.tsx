@@ -8,6 +8,7 @@ import {
   DataCard,
 } from "@/components/page";
 import { WorkspaceHero } from "@/components/workspace/WorkspaceHero";
+import { WorkspaceHealthCard } from "@/components/workspace/WorkspaceHealthCard";
 import { WorkspaceStatusCounters } from "@/components/workspace/WorkspaceStatusCounters";
 import { WorkspaceAlertsColumn } from "@/components/workspace/WorkspaceAlertsColumn";
 import { WorkspaceSpecsByStatus } from "@/components/workspace/WorkspaceSpecsByStatus";
@@ -104,6 +105,10 @@ export function Workspace() {
     <div className="flex flex-col gap-6 w-full">
       {/* Hero: multi-spec list (replaces single-pipeline StatusBar + Timeline). */}
       <WorkspaceHero summary={summary} />
+
+      {/* Wave-6: hygiene health card — collapsible counters for suspects,
+          auto-closures, and flag-bearing specs. */}
+      <WorkspaceHealthCard repoPath={repoPath} />
 
       {/* Status counters (replaces MonthCalendar) + token savings card. */}
       <div className="grid grid-cols-3 gap-6">

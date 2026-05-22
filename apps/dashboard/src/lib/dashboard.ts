@@ -608,6 +608,20 @@ export function fetchAmendWindowDuration(repoPath: string): Promise<number[]> {
   return invoke<number[]>("amend_window_duration", { repoPath });
 }
 
+// --- Wave-6 hygiene health ---
+
+export type { WorkspaceHealth } from "@/lib/types/specs";
+
+/**
+ * Fetch the hygiene health roll-up for one project. Never throws — returns
+ * all-zeros when the DB is absent (Tauri command is fail-open).
+ */
+export function fetchWorkspaceHealth(
+  repoPath: string,
+): Promise<import("@/lib/types/specs").WorkspaceHealth> {
+  return invoke("workspace_health", { repoPath });
+}
+
 // --- Wave-3 spec-card commands ---
 
 export type {
