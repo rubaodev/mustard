@@ -1,7 +1,7 @@
 # wave-3-ui — Estado compartilhado no dashboard + refresh enxuto
 
 ### Parent: [[2026-05-22-db-access-repository-and-live-refresh]]
-### Stage: Done
+### Stage: Close
 ### Outcome: Completed
 ### Flags:
 ### Lang: pt

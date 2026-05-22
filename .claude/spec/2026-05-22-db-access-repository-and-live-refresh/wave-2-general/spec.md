@@ -1,7 +1,7 @@
 # wave-2-general — Rotear hooks pelo repository único
 
 ### Parent: [[2026-05-22-db-access-repository-and-live-refresh]]
-### Stage: Done
+### Stage: Close
 ### Outcome: Completed
 ### Flags:
 ### Lang: pt

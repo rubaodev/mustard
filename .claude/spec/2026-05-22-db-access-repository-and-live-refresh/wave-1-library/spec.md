@@ -1,7 +1,7 @@
 # wave-1-library — Repository único + schema fast-path
 
 ### Parent: [[2026-05-22-db-access-repository-and-live-refresh]]
-### Stage: Done
+### Stage: Close
 ### Outcome: Completed
 ### Flags:
 ### Lang: pt
