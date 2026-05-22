@@ -3,10 +3,10 @@
 ### Parent: [[2026-05-21-spec-lifecycle-unification]]
 ### Wave: 3
 ### Role: dashboard
-### Status: approved
-### Phase: PLAN
+### Status: implementing
+### Phase: EXECUTE
 ### Lang: pt
-### Checkpoint: 2026-05-21T00:00:00Z
+### Checkpoint: 2026-05-22T00:48:00Z
 
 ## Resumo
 
@@ -120,3 +120,9 @@ apps/dashboard/src/components/page/PhaseChip.tsx               (atualizar para S
 - Bullet animation: opcional motion library; se quiser CSS-only, transição em `stroke-dashoffset` no SVG ring funciona bem.
 - Cor da chevron `▾/▸` em `muted-foreground/50`; ao hover na linha pinta `muted-foreground`.
 - Tipo do child (`wave` / `ac` / `sub-spec`) em `text-muted-foreground/60` com width fixo 80px para alinhamento.
+
+## Concerns (registradas na EXECUTE da W3)
+
+- **SpecCard.tsx não removido (limpeza parcial).** AC-W3-3 (`rg 'from "@/components/specs/SpecCard"'` vazio) passa — nenhum call-site absoluto restou. Mas `SpecDetailDashboard.tsx` (explicitamente OUT desta wave) ainda importa `./SpecCard` por path relativo, então deletar o arquivo quebra o build. Componente restaurado. **Follow-up:** migrar o header do `SpecDetailDashboard` para fora do `SpecCard` (provável Wave 6 ou tactical-fix) e só então remover.
+- **AC-W3-2 (lint) não verificável.** `pnpm --filter mustard-dashboard lint` está quebrado em todo o repo: ESLint v9 exige `eslint.config.js` (flat config) e nenhum existe. Gap de ambiente pré-existente, não regressão desta wave. Recomenda-se sub-spec separada para adicionar o flat config antes de exigir AC-W3-2.
+- **i18n em `src/lib/i18n.ts`** (não `src/i18n.ts`): as chaves `route.specs.*` canônicas vivem no dict plano do `useT()`. Chaves novas adicionadas lá.

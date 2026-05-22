@@ -100,6 +100,25 @@ const DICTIONARY = new Map<string, TranslationRow>([
   // Route headers (PageHeader title/subtitle pairs).
   ["route.specs.title", { pt: "Specs", en: "Specs" }],
   ["route.specs.subtitle", { pt: "Lista e drill-down por spec", en: "List and per-spec drill-down" }],
+
+  // Specs dense-list (spec-lifecycle-unification W3) — Stage group headers.
+  ["route.specs.groups.analyze", { pt: "Analisando", en: "Analyzing" }],
+  ["route.specs.groups.plan", { pt: "Planejando", en: "Planning" }],
+  ["route.specs.groups.execute", { pt: "Executando", en: "Executing" }],
+  ["route.specs.groups.qa_review", { pt: "Validando", en: "Reviewing" }],
+  ["route.specs.groups.close", { pt: "Fechadas", en: "Closed" }],
+  ["route.specs.groups.cancelled", { pt: "Canceladas", en: "Cancelled" }],
+  ["route.specs.groups.abandoned", { pt: "Abandonadas", en: "Abandoned" }],
+  // Expandable-tree child kind tags + empty/error/filters.
+  ["route.specs.child.wave", { pt: "onda", en: "wave" }],
+  ["route.specs.child.ac", { pt: "AC", en: "AC" }],
+  ["route.specs.child.sub_spec", { pt: "sub-spec", en: "sub-spec" }],
+  ["route.specs.empty_group", { pt: "0", en: "0" }],
+  ["route.specs.children_empty", { pt: "Sem ondas, ACs ou sub-specs.", en: "No waves, ACs or sub-specs." }],
+  ["route.specs.children_error", { pt: "Não foi possível carregar os filhos.", en: "Could not load children." }],
+  ["route.specs.filter.ativas", { pt: "Ativas", en: "Active" }],
+  ["route.specs.filter.suspeitas", { pt: "Suspeitas", en: "Flagged" }],
+  ["route.specs.filter.encerradas", { pt: "Encerradas", en: "Closed" }],
   ["route.knowledge.title", { pt: "Conhecimento", en: "Knowledge" }],
   ["route.knowledge.subtitle", { pt: "O que o Mustard aprendeu neste workspace", en: "What Mustard learned in this workspace" }],
 

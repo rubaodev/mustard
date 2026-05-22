@@ -432,3 +432,25 @@
     background-clip: padding-box;
   }
 }
+
+/* ── StageBullet current-arc pulse ───────────────────────────────────────────
+   CSS-only "in flight" cue for the current lifecycle stage arc in
+   `StageBullet.tsx`. Eases opacity so the active segment breathes without a JS
+   timer. Honours reduced-motion. */
+@keyframes stage-bullet-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.stage-bullet-pulse {
+  animation: stage-bullet-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage-bullet-pulse {
+    animation: none;
+  }
+}

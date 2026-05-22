@@ -692,6 +692,20 @@ export function dashboardSpecChildren(
   return invoke("dashboard_spec_children", { repoPath, parent });
 }
 
+/**
+ * Wave 3 (spec-lifecycle-unification): fetch the children tree (waves +
+ * acceptance criteria + sub-specs) for one spec in a single round-trip. Backed
+ * by `mustard-rt run spec-children-tree --spec NAME`. Always resolves — the
+ * backend collapses subprocess/parse failures into an empty tree so the
+ * expandable row renders a clean empty state instead of throwing.
+ */
+export function fetchSpecChildrenTree(
+  spec: string,
+  projectPath: string,
+): Promise<import("@/lib/types/specs").ChildrenTree> {
+  return invoke("spec_children_tree", { spec, projectPath });
+}
+
 // --- Wave-4 metrics wave-status (spec mustard-wave-network-standard) ---
 
 /** One per-wave row returned by `mustard-rt run metrics wave-status`. */

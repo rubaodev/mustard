@@ -1501,6 +1501,120 @@ pub fn dashboard_spec_wave_files_run(
 }
 
 // ===========================================================================
+// Wave 3 (spec-lifecycle-unification) — spec-children-tree.
+//
+// `dashboard_spec_children_tree` shells out to `mustard-rt run
+// spec-children-tree --spec NAME` and returns the parsed `ChildrenTree`. The
+// shapes below mirror `apps/rt/src/run/spec_children_tree.rs` 1:1 (`WaveChild`,
+// `AcChild`, `ChildrenTree`) plus `mustard_core::SpecChild` (the `subspecs`
+// element). They are `Deserialize`-only here: we never re-serialise these on
+// the backend, the React side reads them straight from the command result.
+// Same fail-open + JSON-slice contract as `spec_children_v2` /
+// `dashboard_spec_wave_files_run`.
+// ===========================================================================
+
+/// One wave row — mirrors `WaveChild` in `spec_children_tree.rs`. `status` is
+/// the kebab-case `WaveStatus` (`queued | in-progress | completed | failed`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct WaveChild {
+    pub idx: u32,
+    pub role: String,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub duration_ms: Option<i64>,
+}
+
+/// One acceptance-criterion row — mirrors `AcChild`. `status` is the lowercase
+/// `AcStatus` (`pass | fail | skip | pending`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct AcChild {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub last_run_at: Option<String>,
+    pub evidence: Option<String>,
+}
+
+/// Lifecycle qualifiers — mirrors `mustard_core::Flags`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct StateFlags {
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub wave_failed: bool,
+    #[serde(default)]
+    pub followup_open: bool,
+}
+
+/// Canonical lifecycle state — mirrors `mustard_core::SpecState`. `stage` and
+/// `outcome` are kebab-case enums on the core side; carried as `String` here.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SpecStateJson {
+    pub stage: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub flags: StateFlags,
+}
+
+/// One linked sub-spec — mirrors `mustard_core::SpecChild`, the `subspecs`
+/// element of the children tree.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct SubSpecChild {
+    pub spec: String,
+    pub state: SpecStateJson,
+    /// Legacy flat status, derived from `state` (kebab-case).
+    pub status: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// Full projection from `mustard-rt run spec-children-tree --spec NAME` —
+/// mirrors `ChildrenTree` in `apps/rt/src/run/spec_children_tree.rs`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ChildrenTree {
+    #[serde(default)]
+    pub spec: String,
+    #[serde(default)]
+    pub waves: Vec<WaveChild>,
+    #[serde(default)]
+    pub acs: Vec<AcChild>,
+    #[serde(default)]
+    pub subspecs: Vec<SubSpecChild>,
+}
+
+/// Invoke `mustard-rt run spec-children-tree --spec NAME` and parse the JSON
+/// document into a typed [`ChildrenTree`]. Fail-open: a spawn failure surfaces
+/// as `Err` (so the UI can show "mustard-rt not on PATH"); unparseable / empty
+/// stdout returns an empty tree so the row renders a clean empty state.
+pub fn spec_children_tree_run(repo_path: &str, spec: &str) -> Result<ChildrenTree, String> {
+    if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
+        return Err(format!("invalid spec name: {spec}"));
+    }
+    let mut cmd = mustard_rt_command(&["run", "spec-children-tree", "--spec", spec]);
+    cmd.current_dir(repo_path);
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => return Err(format!("spawn mustard-rt: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<ChildrenTree>(slice_json(&stdout)) {
+        Ok(parsed) => Ok(parsed),
+        Err(_) => Ok(ChildrenTree {
+            spec: spec.to_string(),
+            ..ChildrenTree::default()
+        }),
+    }
+}
+
+// ===========================================================================
 // Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three aggregations
 // for the redesigned Overview page. Each command opens the project's
 // `mustard.db` via `crate::db::with_db`, falls back to an empty payload when

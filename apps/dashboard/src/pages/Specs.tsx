@@ -1,16 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
-import {
-  Search,
-  PlayCircle,
-  Eye,
-  AlertOctagon,
-  CheckCircle2,
-  CircleDashed,
-  Clock,
-  Ban,
-  Trash2,
-} from "lucide-react";
+import { Search } from "lucide-react";
 import { useStore } from "@/lib/store";
 import {
   useProjects,
@@ -18,11 +8,16 @@ import {
   dashboardSpecCard,
   type SpecCard,
 } from "@/lib/dashboard";
+import { useT } from "@/lib/i18n";
+import { SectionHeader, EmptyState } from "@/components/page";
+import { SpecRow } from "@/components/specs/SpecRow";
+import { SpecGroupHeader } from "@/components/specs/SpecGroupHeader";
+import { SpecChildrenTree } from "@/components/specs/SpecChildrenTree";
 import {
-  SectionHeader,
-  EmptyState,
-} from "@/components/page";
-import { SpecCard as SpecCardComponent } from "@/components/specs/SpecCard";
+  stateFromStatus,
+  filterBucket,
+  type SpecFilterBucket,
+} from "@/components/specs/stage-from-status";
 import { SpecTabBar, type SpecTab } from "@/components/specs/SpecTabBar";
 import { SpecDetailDashboard } from "@/components/specs/SpecDetailDashboard";
 import {
@@ -32,114 +27,54 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-// ── Phase ordering for active specs ──────────────────────────────────────────
-const PHASE_ORDER = ["analyze", "plan", "execute", "qa", "close"];
-function phaseRank(phase: string): number {
-  const i = PHASE_ORDER.indexOf(phase.toLowerCase());
-  return i === -1 ? PHASE_ORDER.length : i;
-}
-
-type StatusFilter =
-  | "ativas"
-  | "followup"
-  | "encerradas"
-  | "cancelado"
-  | "abandonado"
-  | "todas";
 type DateFilter = "today" | "7d" | "30d" | "all";
 
-const STATUS_LABEL: Record<StatusFilter, string> = {
-  ativas: "Ativas",
-  followup: "Follow-up",
-  encerradas: "Encerradas",
-  cancelado: "Cancelado",
-  abandonado: "Abandonado",
-  todas: "Todas",
-};
+// ── Stage grouping ────────────────────────────────────────────────────────────
+// Active specs group by their `state.stage`; terminal specs split into their
+// own outcome buckets so cleanup of cancelled/abandoned stays meaningful.
+type GroupKey =
+  | "analyze"
+  | "plan"
+  | "execute"
+  | "qa_review"
+  | "close"
+  | "cancelled"
+  | "abandoned";
 
-// ── Inline SpecsTopBar ────────────────────────────────────────────────────────
-interface SpecsTopBarProps {
-  status: StatusFilter;
-  onStatus: (v: StatusFilter) => void;
-  date: DateFilter;
-  onDate: (v: DateFilter) => void;
-  search: string;
-  onSearch: (v: string) => void;
-}
+// Render order — earliest active stage first, terminal buckets last.
+const GROUP_ORDER: GroupKey[] = [
+  "analyze",
+  "plan",
+  "execute",
+  "qa_review",
+  "close",
+  "cancelled",
+  "abandoned",
+];
 
-function SpecsTopBar({
-  status,
-  onStatus,
-  date,
-  onDate,
-  search,
-  onSearch,
-}: SpecsTopBarProps) {
-  const btnBase =
-    "px-2.5 py-1 rounded text-[12px] transition-colors duration-100";
-  const active = "bg-primary/10 text-primary font-medium";
-  const inactive = "text-muted-foreground hover:bg-muted/40 hover:text-foreground";
+// Terminal groups stay collapsed by default so current work isn't buried.
+const COLLAPSED_BY_DEFAULT = new Set<GroupKey>(["close", "cancelled", "abandoned"]);
 
-  return (
-    <div className="flex items-center gap-3 flex-wrap">
-      {/* Status filters */}
-      <div className="flex items-center gap-1">
-        {(
-          [
-            "ativas",
-            "followup",
-            "encerradas",
-            "cancelado",
-            "abandonado",
-            "todas",
-          ] as StatusFilter[]
-        ).map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => onStatus(v)}
-            aria-pressed={status === v}
-            className={`${btnBase} ${status === v ? active : inactive}`}
-          >
-            {STATUS_LABEL[v]}
-          </button>
-        ))}
-      </div>
-
-      {/* Date filters */}
-      <div className="flex items-center gap-1">
-        {(["today", "7d", "30d", "all"] as DateFilter[]).map((v) => {
-          const label = v === "today" ? "Hoje" : v === "all" ? "Todas" : v;
-          return (
-            <button
-              key={v}
-              type="button"
-              onClick={() => onDate(v)}
-              aria-pressed={date === v}
-              className={`${btnBase} ${date === v ? active : inactive}`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Search */}
-      <div className="relative flex-1 min-w-[160px]">
-        <Search
-          className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground"
-          aria-hidden
-        />
-        <input
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder="Buscar por nome…"
-          aria-label="Buscar specs por nome"
-          className="w-full pl-7 pr-3 py-1 bg-card border border-border rounded-md text-[12px] outline-none placeholder:text-muted-foreground focus:border-primary focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
-        />
-      </div>
-    </div>
-  );
+function groupKeyForCard(card: SpecCard): GroupKey {
+  const state = stateFromStatus(card.status);
+  if (state.outcome === "completed") return "close";
+  if (state.outcome === "cancelled") return "cancelled";
+  if (state.outcome === "abandoned") return "abandoned";
+  // Active — group by stage. `close` here means the follow-up window.
+  switch (state.stage) {
+    case "analyze":
+      return "analyze";
+    case "plan":
+      return "plan";
+    case "execute":
+      return "execute";
+    case "qa-review":
+      return "qa_review";
+    case "close":
+      return "close";
+    default:
+      return "plan";
+  }
 }
 
 // ── Quick-open dialog ────────────────────────────────────────────────────────
@@ -225,23 +160,125 @@ function SpecQuickOpenDialog({
   );
 }
 
+// ── Filter / search bar ───────────────────────────────────────────────────────
+interface SpecsFilterBarProps {
+  bucket: SpecFilterBucket;
+  onBucket: (v: SpecFilterBucket) => void;
+  date: DateFilter;
+  onDate: (v: DateFilter) => void;
+  search: string;
+  onSearch: (v: string) => void;
+}
+
+const BUCKETS: SpecFilterBucket[] = ["ativas", "suspeitas", "encerradas"];
+
+function SpecsFilterBar({
+  bucket,
+  onBucket,
+  date,
+  onDate,
+  search,
+  onSearch,
+}: SpecsFilterBarProps) {
+  const t = useT();
+  const pillBase = "px-2.5 py-1 rounded-md text-[12px] transition-colors duration-100";
+  const active = "bg-primary/10 text-primary font-medium";
+  const inactive = "text-muted-foreground hover:bg-muted/40 hover:text-foreground";
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      {/* Primary state pills */}
+      <div className="flex items-center gap-1">
+        {BUCKETS.map((b) => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => onBucket(b)}
+            aria-pressed={bucket === b}
+            className={`${pillBase} ${bucket === b ? active : inactive}`}
+          >
+            {t(`route.specs.filter.${b}`, b)}
+          </button>
+        ))}
+      </div>
+
+      {/* Date filters */}
+      <div className="flex items-center gap-1">
+        {(["today", "7d", "30d", "all"] as DateFilter[]).map((v) => {
+          const label = v === "today" ? "Hoje" : v === "all" ? "Todas" : v;
+          return (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onDate(v)}
+              aria-pressed={date === v}
+              className={`${pillBase} ${date === v ? active : inactive}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Search */}
+      <div className="relative flex-1 min-w-[160px]">
+        <Search
+          className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground"
+          aria-hidden
+        />
+        <input
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder="Buscar por nome…"
+          aria-label="Buscar specs por nome"
+          className="w-full pl-7 pr-3 py-1 bg-card border border-border rounded-md text-[12px] outline-none placeholder:text-muted-foreground focus:border-primary focus-visible:ring-2 focus-visible:ring-[--color-accent-mustard] transition-colors"
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export function Specs() {
+  const t = useT();
   const projectsRoot = useStore((s) => s.projectsRoot);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const projects = useProjects();
   const activeProject = projects.find((p) => p.id === activeWorkspaceId) ?? null;
   const queryClient = useQueryClient();
 
-  // Default to "ativas" — the primary use-case is "what's running now",
-  // not "everything ever". The legacy default of "todas" buried current
-  // work under closed history (spec 2026-05-20-dashboard-ux-honest).
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ativas");
+  const [bucket, setBucket] = useState<SpecFilterBucket>("ativas");
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [search, setSearch] = useState("");
 
-  // Wave-1 (spec `2026-05-21-dashboard-spec-tabs`): route-local tab state.
-  // Sair da rota = unmount = state limpo. No persistence in zustand.
+  // Expand state — which specs show their children tree, which Stage groups
+  // are open. Both reset on unmount (route-local).
+  const [expandedSpecs, setExpandedSpecs] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<GroupKey>>(new Set());
+  // Tracks whether the user has manually toggled groups yet — until then the
+  // default-open heuristic drives the open set.
+  const [groupsTouched, setGroupsTouched] = useState(false);
+
+  function toggleSpec(slug: string) {
+    setExpandedSpecs((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
+  }
+
+  function toggleGroup(key: GroupKey) {
+    setGroupsTouched(true);
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // Tab state (spec `2026-05-21-dashboard-spec-tabs`): route-local.
   const [tabs, setTabs] = useState<SpecTab[]>([{ id: "list", kind: "list" }]);
   const [activeTabId, setActiveTabId] = useState<string>("list");
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
@@ -261,8 +298,6 @@ export function Specs() {
       const idx = prev.findIndex((t) => t.id === id);
       if (idx === -1) return prev;
       const next = prev.filter((t) => t.id !== id);
-      // If the closed tab was active, focus the tab immediately to the left
-      // (falls back to "list" when no spec tabs remain to the left).
       if (activeTabId === id) {
         const leftIdx = Math.max(0, idx - 1);
         const leftTab = next[leftIdx] ?? next[0] ?? { id: "list" };
@@ -277,6 +312,7 @@ export function Specs() {
     if (!active || active.kind === "list") {
       queryClient.invalidateQueries({ queryKey: ["specs"] });
       queryClient.invalidateQueries({ queryKey: ["spec-card"] });
+      queryClient.invalidateQueries({ queryKey: ["spec-children-tree"] });
       return;
     }
     const slug = active.specName;
@@ -289,15 +325,14 @@ export function Specs() {
   }
 
   // Hash deep-link: auto-open spec on mount only when the hash looks like a
-  // spec slug (date-prefixed). HashRouter paths like `#/specs` would otherwise
-  // be treated as a slug and open a phantom tab.
+  // spec slug (date-prefixed).
   useEffect(() => {
     const hash = window.location.hash.replace(/^#/, "");
     if (hash && /^\d{4}-\d{2}-\d{2}-/.test(hash)) openSpec(hash);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fetch spec list (SpecRow[])
+  // Fetch spec list (SpecRow names) then fan out one SpecCard per spec.
   const { data: specRows, isLoading: listLoading } = useQuery({
     queryKey: ["specs", activeProject?.path],
     queryFn: () => fetchSpecs(activeProject!.path),
@@ -306,9 +341,6 @@ export function Specs() {
     refetchInterval: 15_000,
   });
 
-  // Fan-out: fetch SpecCard for each spec. Wave 5 fix (2026-05-20): every
-  // card polls on a 5-second cadence so an active pipeline animates without
-  // the user having to refocus the window.
   const cardQueries = useQueries({
     queries: (specRows ?? []).map((row) => ({
       queryKey: ["spec-card", activeProject?.path, row.name] as const,
@@ -327,16 +359,11 @@ export function Specs() {
       .filter((d): d is SpecCard => d != null);
   }, [cardQueries]);
 
-  // Bug 1 fix (spec `2026-05-21-dashboard-spec-tabs-polish` W1): the `cards`
-  // fan-out is governed by `useQueries`, which takes one tick to populate
-  // even when the list query is `success`. Treat the page as still loading
-  // while ANY card query is mid-flight so we never flash the "Nenhuma spec
-  // encontrada" empty state on first mount. Two-stage cascade: list loading
-  // OR per-card fan-out loading → render the skeleton row block.
+  // Two-stage loading cascade — see prior spec note: don't flash the empty
+  // state while the per-card fan-out is mid-flight.
   const cardsLoading = cardQueries.some((q) => q.isLoading);
   const specsLoading = listLoading || cardsLoading;
 
-  // Date cutoff
   const dateCutoff = useMemo<number>(() => {
     const now = Date.now();
     if (dateFilter === "today") return now - 24 * 60 * 60 * 1000;
@@ -345,74 +372,9 @@ export function Specs() {
     return 0;
   }, [dateFilter]);
 
-  const FOLLOWUP_STATUS = "closed-followup";
-  const COMPLETED_STATUSES = new Set(["completed", "closed", "no-events"]);
-  const CANCELLED_STATUSES = new Set(["cancelled"]);
-  const ABANDONED_STATUSES = new Set(["abandoned"]);
-  const TERMINAL_STATUSES = new Set([
-    ...COMPLETED_STATUSES,
-    ...CANCELLED_STATUSES,
-    ...ABANDONED_STATUSES,
-  ]);
-  const isFollowup = (c: SpecCard) => c.status === FOLLOWUP_STATUS;
-  const isCancelled = (c: SpecCard) => CANCELLED_STATUSES.has(c.status);
-  const isAbandoned = (c: SpecCard) => ABANDONED_STATUSES.has(c.status);
-  const isTerminal = (c: SpecCard) => TERMINAL_STATUSES.has(c.status);
-  const isActive = (c: SpecCard) => !isTerminal(c) && !isFollowup(c);
-
-  type GroupKey =
-    | "ativas"
-    | "revisao"
-    | "bloqueadas"
-    | "followup"
-    | "concluidas"
-    | "cancelados"
-    | "abandonados"
-    | "sem-eventos";
-  const GROUP_ORDER: GroupKey[] = [
-    "ativas",
-    "revisao",
-    "bloqueadas",
-    "followup",
-    "concluidas",
-    "cancelados",
-    "abandonados",
-    "sem-eventos",
-  ];
-  const GROUP_META: Record<
-    GroupKey,
-    { label: string; Icon: typeof PlayCircle }
-  > = {
-    ativas: { label: "Ativas", Icon: PlayCircle },
-    revisao: { label: "Em revisão", Icon: Eye },
-    bloqueadas: { label: "Bloqueadas", Icon: AlertOctagon },
-    followup: { label: "Follow-up", Icon: Clock },
-    concluidas: { label: "Concluídas", Icon: CheckCircle2 },
-    cancelados: { label: "Cancelados", Icon: Ban },
-    abandonados: { label: "Abandonados", Icon: Trash2 },
-    "sem-eventos": { label: "Sem eventos", Icon: CircleDashed },
-  };
-  function groupKeyForStatus(status: string): GroupKey {
-    if (status === "no-events") return "sem-eventos";
-    if (status === "blocked" || status === "wave-failed") return "bloqueadas";
-    if (status === "reviewing" || status === "qa") return "revisao";
-    if (status === FOLLOWUP_STATUS) return "followup";
-    if (ABANDONED_STATUSES.has(status)) return "abandonados";
-    if (CANCELLED_STATUSES.has(status)) return "cancelados";
-    if (COMPLETED_STATUSES.has(status)) return "concluidas";
-    return "ativas";
-  }
-
   const filteredSpecs = useMemo<SpecCard[]>(() => {
     return cards
-      .filter((c) => {
-        if (statusFilter === "ativas" && !isActive(c)) return false;
-        if (statusFilter === "followup" && !isFollowup(c)) return false;
-        if (statusFilter === "encerradas" && !isTerminal(c)) return false;
-        if (statusFilter === "cancelado" && !isCancelled(c)) return false;
-        if (statusFilter === "abandonado" && !isAbandoned(c)) return false;
-        return true;
-      })
+      .filter((c) => filterBucket(stateFromStatus(c.status)) === bucket)
       .filter((c) => {
         if (dateCutoff === 0) return true;
         const ts = c.last_event_at ?? c.started_at;
@@ -422,30 +384,33 @@ export function Specs() {
       .filter((c) => {
         if (!search.trim()) return true;
         return c.spec.toLowerCase().includes(search.trim().toLowerCase());
-      })
-      .sort((a, b) => {
-        const rank = (c: SpecCard) => (isActive(c) ? 0 : isFollowup(c) ? 1 : 2);
-        const ra = rank(a);
-        const rb = rank(b);
-        if (ra !== rb) return ra - rb;
-        if (ra === 0) return phaseRank(a.phase) - phaseRank(b.phase);
+      });
+  }, [cards, bucket, dateCutoff, search]);
+
+  // Group filtered specs by Stage, dropping empty groups. Within a group,
+  // newest activity first.
+  const grouped = useMemo<[GroupKey, SpecCard[]][]>(() => {
+    const map = new Map<GroupKey, SpecCard[]>();
+    for (const key of GROUP_ORDER) map.set(key, []);
+    for (const c of filteredSpecs) map.get(groupKeyForCard(c))!.push(c);
+    for (const list of map.values()) {
+      list.sort((a, b) => {
         const ta = a.last_event_at ? new Date(a.last_event_at).getTime() : 0;
         const tb = b.last_event_at ? new Date(b.last_event_at).getTime() : 0;
         return tb - ta;
       });
-  }, [cards, statusFilter, dateCutoff, search]);
-
-  const groupedByStatus = useMemo<[GroupKey, SpecCard[]][]>(() => {
-    if (statusFilter !== "todas") return [];
-    const map = new Map<GroupKey, SpecCard[]>();
-    for (const key of GROUP_ORDER) map.set(key, []);
-    for (const c of filteredSpecs) {
-      const key = groupKeyForStatus(c.status);
-      map.get(key)!.push(c);
     }
-    return GROUP_ORDER.map((k) => [k, map.get(k) ?? []] as [GroupKey, SpecCard[]])
-      .filter(([, list]) => list.length > 0);
-  }, [statusFilter, filteredSpecs]);
+    return GROUP_ORDER.map((k) => [k, map.get(k) ?? []] as [GroupKey, SpecCard[]]).filter(
+      ([, list]) => list.length > 0,
+    );
+  }, [filteredSpecs]);
+
+  // A group renders open when the user has explicitly toggled it open, or —
+  // before any manual toggle — when it isn't a terminal bucket.
+  function isGroupOpen(key: GroupKey): boolean {
+    if (groupsTouched) return expandedGroups.has(key);
+    return !COLLAPSED_BY_DEFAULT.has(key);
+  }
 
   // ── Gate cascade ─────────────────────────────────────────────────────────
   if (!projectsRoot) {
@@ -493,28 +458,25 @@ export function Specs() {
 
       {activeTab.kind === "list" ? (
         <div className="flex flex-col gap-6">
-          <SpecsTopBar
-            status={statusFilter}
-            onStatus={setStatusFilter}
+          <SpecsFilterBar
+            bucket={bucket}
+            onBucket={setBucket}
             date={dateFilter}
             onDate={setDateFilter}
             search={search}
             onSearch={setSearch}
           />
 
-          <section className="flex flex-col gap-3">
+          <section className="flex flex-col gap-2">
             <SectionHeader
               title="Specs"
               right={specsLoading ? undefined : String(filteredSpecs.length)}
             />
 
             {specsLoading ? (
-              <ul className="flex flex-col gap-2">
-                {[0, 1, 2].map((i) => (
-                  <li
-                    key={i}
-                    className="h-20 bg-muted/40 rounded-lg animate-pulse"
-                  />
+              <ul className="flex flex-col gap-1">
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <li key={i} className="h-8 bg-muted/40 rounded-md animate-pulse" />
                 ))}
               </ul>
             ) : filteredSpecs.length === 0 ? (
@@ -522,47 +484,45 @@ export function Specs() {
                 title="Nenhuma spec encontrada"
                 description="Ajuste os filtros ou rode uma pipeline com /mustard:feature."
               />
-            ) : statusFilter === "todas" ? (
-              <div className="flex flex-col gap-5">
-                {groupedByStatus.map(([key, list]) => {
-                  const meta = GROUP_META[key];
-                  const Icon = meta.Icon;
+            ) : (
+              <div className="flex flex-col gap-3">
+                {grouped.map(([key, list]) => {
+                  const open = isGroupOpen(key);
                   return (
-                    <section key={key} className="flex flex-col gap-2">
-                      <header className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                        <Icon className="h-3.5 w-3.5" aria-hidden />
-                        <span className="font-medium">{meta.label}</span>
-                        <span
-                          className="tabular-nums text-muted-foreground/60"
-                          style={{ fontVariantNumeric: "tabular-nums" }}
-                        >
-                          {list.length}
-                        </span>
-                      </header>
-                      <div className="flex flex-col gap-2">
-                        {list.map((s) => (
-                          <SpecCardComponent
-                            key={s.spec}
-                            data={s}
-                            repoPath={repoPath}
-                            onOpenSpec={openSpec}
-                          />
-                        ))}
-                      </div>
+                    <section key={key} className="flex flex-col">
+                      <SpecGroupHeader
+                        label={t(`route.specs.groups.${key}`, key)}
+                        count={list.length}
+                        expanded={open}
+                        onToggle={() => toggleGroup(key)}
+                      />
+                      {open && (
+                        <div className="flex flex-col">
+                          {list.map((s) => {
+                            const isExpanded = expandedSpecs.has(s.spec);
+                            return (
+                              <div key={s.spec} className="flex flex-col">
+                                <SpecRow
+                                  data={s}
+                                  expanded={isExpanded}
+                                  onToggle={toggleSpec}
+                                  onOpen={openSpec}
+                                />
+                                {isExpanded && repoPath && (
+                                  <SpecChildrenTree
+                                    spec={s.spec}
+                                    projectPath={repoPath}
+                                    onOpenParent={openSpec}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </section>
                   );
                 })}
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {filteredSpecs.map((s) => (
-                  <SpecCardComponent
-                    key={s.spec}
-                    data={s}
-                    repoPath={repoPath}
-                    onOpenSpec={openSpec}
-                  />
-                ))}
               </div>
             )}
           </section>

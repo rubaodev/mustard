@@ -1470,6 +1470,17 @@ async fn dashboard_spec_children(
     spec_views::spec_children_v2(&repo_path, &parent)
 }
 
+/// Wave 3 (spec-lifecycle-unification) — shell out to `mustard-rt run
+/// spec-children-tree --spec NAME` and return the parsed `ChildrenTree`
+/// (waves + acceptance criteria + sub-specs) for the dense `/specs` drill-down.
+#[tauri::command]
+async fn spec_children_tree(
+    spec: String,
+    project_path: String,
+) -> Result<spec_views::ChildrenTree, String> {
+    spec_views::spec_children_tree_run(&project_path, &spec)
+}
+
 /// Wave 4 (2026-05-20, spec `mustard-wave-network-standard`) — shell out to
 /// `mustard-rt run metrics wave-status --spec <name>` and return the typed
 /// `MetricsWaveStatus`. Audit-2 in this wave's `metrics-audit.md` documents
@@ -1696,6 +1707,7 @@ pub fn run() {
             dashboard_spec_events,
             dashboard_spec_action,
             dashboard_spec_children,
+            spec_children_tree,
             dashboard_workspace_summary,
             dashboard_metrics_wave_status,
             dashboard_wikilink_extract,

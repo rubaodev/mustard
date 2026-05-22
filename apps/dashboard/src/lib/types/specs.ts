@@ -1,6 +1,81 @@
 // Wave-3 spec-view types — mirrors spec_views.rs shapes.
 // Field names are snake_case to match Rust serde output directly.
 
+// ── Lifecycle model (spec-lifecycle-unification W1 `mustard-core`) ────────────
+// These mirror `packages/core/src/model/view/spec.rs` 1:1. Both `Stage` and
+// `Outcome` serialize kebab-case (`#[serde(rename_all = "kebab-case")]`); the
+// `qa-review` spelling and `wave-failed`/`followup-open` flags round-trip
+// straight through. `Flags` fields default to `false` (serde `#[serde(default)]`).
+
+/** Lifecycle position — `Stage` in `mustard-core` (kebab-case). */
+export type Stage = "analyze" | "plan" | "execute" | "qa-review" | "close";
+
+/** Terminal disposition — `Outcome` in `mustard-core` (kebab-case). */
+export type Outcome = "active" | "completed" | "cancelled" | "abandoned";
+
+/** Orthogonal qualifiers — `Flags` in `mustard-core`. All default `false`. */
+export interface Flags {
+  blocked: boolean;
+  wave_failed: boolean;
+  followup_open: boolean;
+}
+
+/** Canonical lifecycle state — `SpecState` in `mustard-core`. */
+export interface SpecState {
+  stage: Stage;
+  outcome: Outcome;
+  flags: Flags;
+}
+
+// ── spec-children-tree (W2 `mustard-rt run spec-children-tree`) ───────────────
+// Mirrors `apps/rt/src/run/spec_children_tree.rs` 1:1. `WaveChild.status` is a
+// `WaveStatus` (kebab-case: queued | in-progress | completed | failed);
+// `AcChild.status` is an `AcStatus` (lowercase: pass | fail | skip | pending);
+// `SubSpecChild` mirrors `mustard_core::SpecChild` (the `subspecs` element).
+
+/** One wave row — mirrors `WaveChild` in `spec_children_tree.rs`. */
+export interface WaveChild {
+  idx: number;
+  role: string;
+  /** queued | in-progress | completed | failed (WaveStatus, kebab-case). */
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+}
+
+/** One acceptance-criterion row — mirrors `AcChild` in `spec_children_tree.rs`. */
+export interface AcChild {
+  id: string;
+  label: string;
+  /** pass | fail | skip | pending (AcStatus, lowercase). */
+  status: string;
+  last_run_at: string | null;
+  evidence: string | null;
+}
+
+/** One linked sub-spec — the `subspecs` element (`mustard_core::SpecChild`). */
+export interface SubSpecChild {
+  spec: string;
+  state: SpecState;
+  /** Legacy flat status, derived from `state` (kebab-case). */
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  reason: string | null;
+}
+
+/**
+ * Full projection from `mustard-rt run spec-children-tree --spec NAME` —
+ * mirrors `ChildrenTree` in `apps/rt/src/run/spec_children_tree.rs`.
+ */
+export interface ChildrenTree {
+  spec: string;
+  waves: WaveChild[];
+  acs: AcChild[];
+  subspecs: SubSpecChild[];
+}
+
 export interface SpecCard {
   spec: string;
   status: string;
