@@ -506,9 +506,20 @@ pub enum RunCmd {
     },
     /// Normalise `rtk gain` analytics into the Mustard JSON shape.
     RtkGain,
-    /// Backfill `cost_usd_micros` on legacy `run_usage` rows with NULL cost,
-    /// applying the same sonnet fallback the writer uses for new spans.
-    BackfillRunUsageCost,
+    /// Backfill `cost_usd_micros` on legacy `run_usage` rows.
+    ///
+    /// Default: only touch rows with NULL/0 cost (idempotent — applies the
+    /// shared `compute_cost_micros` helper to historical NULLs). With
+    /// `--force`, recomputes cost on every row carrying any non-zero token
+    /// bucket, overwriting prior values. Use `--force` after the pricing
+    /// formula changes (cache-aware buckets, new rate tiers).
+    BackfillRunUsageCost {
+        /// Recompute cost on ALL rows with non-zero tokens, overwriting any
+        /// existing `cost_usd_micros`. Without this flag, only NULL/0 cost
+        /// rows are touched.
+        #[arg(long)]
+        force: bool,
+    },
     /// Backfill `spec` / `wave_id` / `agent_id` on legacy `run_usage` rows
     /// that came in without attribution, by joining against `run_attribution`.
     BackfillRunUsageSpec,
@@ -800,7 +811,7 @@ pub fn dispatch(cmd: RunCmd) {
             quiet,
         ),
         RunCmd::RtkGain => rtk_gain::run(),
-        RunCmd::BackfillRunUsageCost => backfill_run_usage_cost::run(),
+        RunCmd::BackfillRunUsageCost { force } => backfill_run_usage_cost::run(force),
         RunCmd::BackfillRunUsageSpec => backfill_run_usage_spec::run(),
         RunCmd::ScanOrchestrate { target, force } => {
             scan_orchestrate::run(force, target.as_deref())

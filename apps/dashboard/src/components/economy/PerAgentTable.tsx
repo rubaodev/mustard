@@ -5,6 +5,7 @@
 // result at 3 entries today; we still allow up to 10 here so a future bump in
 // the core ceiling lands without a UI change.
 
+import { useTranslation } from "react-i18next";
 import { MetricsPill } from "@/components/ds";
 import type { AgentCost } from "@/lib/types/economy";
 import { formatTokens, formatUsd } from "@/lib/types/economy";
@@ -17,12 +18,13 @@ export interface PerAgentTableProps {
 }
 
 export function PerAgentTable({ agents, limit = 10 }: PerAgentTableProps) {
+  const { t } = useTranslation();
   const rows = agents.slice(0, limit);
 
   if (rows.length === 0) {
     return (
       <p className="text-[12px] text-[--ds-text-tertiary] italic px-3 py-2">
-        Nenhum agente custou nada neste escopo ainda.
+        {t("economy.table.empty")}
       </p>
     );
   }
@@ -31,10 +33,10 @@ export function PerAgentTable({ agents, limit = 10 }: PerAgentTableProps) {
     <table className="w-full text-[12px] border-separate border-spacing-0">
       <thead>
         <tr className="text-left text-[11px] uppercase tracking-wide text-[--ds-text-tertiary]">
-          <th className="font-medium px-3 py-2">Agente</th>
-          <th className="font-medium px-3 py-2 text-right">Spans</th>
-          <th className="font-medium px-3 py-2 text-right">Tokens</th>
-          <th className="font-medium px-3 py-2 text-right">Custo</th>
+          <th className="font-medium px-3 py-2">{t("economy.table.agent")}</th>
+          <th className="font-medium px-3 py-2 text-right">{t("economy.table.dispatches")}</th>
+          <th className="font-medium px-3 py-2 text-right">{t("economy.table.tokens")}</th>
+          <th className="font-medium px-3 py-2 text-right">{t("economy.table.cost")}</th>
         </tr>
       </thead>
       <tbody>

@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { Folder, FileText, Waves, GitCompare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fetchSpecs, useProjects } from "@/lib/dashboard";
@@ -32,14 +33,17 @@ export interface ScopeBarProps {
   onScopeChange: (scope: EconomyScope) => void;
 }
 
-const TABS: Array<{ kind: EconomyScopeKind; label: string; icon: ReactNode }> = [
-  { kind: "project",      label: "Projeto",            icon: <Folder size={14} /> },
-  { kind: "spec",         label: "Spec",               icon: <FileText size={14} /> },
-  { kind: "wave",         label: "Wave",               icon: <Waves size={14} /> },
-  { kind: "all_projects", label: "Comparar projetos",  icon: <GitCompare size={14} /> },
+// Static metadata (kind + icon) for the four scope tabs. Labels are resolved
+// at render time via `t()` so the bar swaps language without a remount.
+const TAB_META: Array<{ kind: EconomyScopeKind; labelKey: string; icon: ReactNode }> = [
+  { kind: "project",      labelKey: "economy.scope.project", icon: <Folder size={14} /> },
+  { kind: "spec",         labelKey: "economy.scope.spec",    icon: <FileText size={14} /> },
+  { kind: "wave",         labelKey: "economy.scope.wave",    icon: <Waves size={14} /> },
+  { kind: "all_projects", labelKey: "economy.scope.compare", icon: <GitCompare size={14} /> },
 ];
 
 export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
+  const { t } = useTranslation();
   // Spec list comes from the standard reader; we filter to active wave-plan
   // parents + standalone active specs so the dropdown stays short. A spec
   // with no recorded waves is still listed under "Spec" — only the "Wave"
@@ -106,7 +110,7 @@ export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-1.5">
-        {TABS.map((tab) => {
+        {TAB_META.map((tab) => {
           const active = scope.kind === tab.kind;
           return (
             <button
@@ -122,7 +126,7 @@ export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
               )}
             >
               {tab.icon}
-              <span>{tab.label}</span>
+              <span>{t(tab.labelKey)}</span>
             </button>
           );
         })}
@@ -131,13 +135,13 @@ export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
       {/* Spec dropdown — visible when Spec tab is active. */}
       {scope.kind === "spec" && (
         <div className="flex items-center gap-2 text-[12px]">
-          <label className="text-[--ds-text-tertiary]">Spec:</label>
+          <label className="text-[--ds-text-tertiary]">{t("economy.scope.specLabel")}</label>
           <select
             value={scope.spec}
             onChange={(e) => onScopeChange(specScope(projectPath, e.target.value))}
             className="bg-[--ds-surface-base] border border-[--ds-surface-hover] rounded-[--ds-radius-sm] px-2 py-1 text-[--ds-text-primary] min-w-[260px]"
           >
-            <option value="">— selecione —</option>
+            <option value="">{t("economy.scope.selectPlaceholder")}</option>
             {activeSpecs.map((s) => (
               <option key={s.name} value={s.name}>
                 {s.name}
@@ -150,20 +154,20 @@ export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
       {/* Wave: cascading spec → wave dropdowns. */}
       {scope.kind === "wave" && (
         <div className="flex items-center gap-2 text-[12px] flex-wrap">
-          <label className="text-[--ds-text-tertiary]">Spec:</label>
+          <label className="text-[--ds-text-tertiary]">{t("economy.scope.specLabel")}</label>
           <select
             value={scope.spec}
             onChange={(e) => onScopeChange(waveScope(projectPath, e.target.value, ""))}
             className="bg-[--ds-surface-base] border border-[--ds-surface-hover] rounded-[--ds-radius-sm] px-2 py-1 text-[--ds-text-primary] min-w-[220px]"
           >
-            <option value="">— selecione —</option>
+            <option value="">{t("economy.scope.selectPlaceholder")}</option>
             {activeSpecs.map((s) => (
               <option key={s.name} value={s.name}>
                 {s.name}
               </option>
             ))}
           </select>
-          <label className="text-[--ds-text-tertiary]">Wave:</label>
+          <label className="text-[--ds-text-tertiary]">{t("economy.scope.waveLabel")}</label>
           <select
             value={scope.wave}
             onChange={(e) =>
@@ -172,7 +176,7 @@ export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
             disabled={!scope.spec || waveChildren.length === 0}
             className="bg-[--ds-surface-base] border border-[--ds-surface-hover] rounded-[--ds-radius-sm] px-2 py-1 text-[--ds-text-primary] min-w-[220px] disabled:opacity-40"
           >
-            <option value="">— selecione —</option>
+            <option value="">{t("economy.scope.selectPlaceholder")}</option>
             {waveChildren.map((w) => (
               <option key={w.name} value={w.name}>
                 {w.name}
@@ -182,14 +186,14 @@ export function ScopeBar({ projectPath, scope, onScopeChange }: ScopeBarProps) {
         </div>
       )}
 
-      {/* Comparar projetos: multi-select via checkboxes. */}
+      {/* Compare projects: multi-select via checkboxes. */}
       {scope.kind === "all_projects" && (
         <div className="flex flex-col gap-1.5 text-[12px]">
-          <label className="text-[--ds-text-tertiary]">Projetos a comparar:</label>
+          <label className="text-[--ds-text-tertiary]">{t("economy.scope.compareLabel")}</label>
           <div className="flex flex-wrap gap-2">
             {projects.length === 0 ? (
               <span className="text-[--ds-text-tertiary] italic">
-                Nenhum projeto descoberto.
+                {t("economy.scope.noProjects")}
               </span>
             ) : (
               projects.map((p) => {

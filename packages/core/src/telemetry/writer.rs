@@ -338,56 +338,84 @@ pub struct BackfillReport {
     pub updated: usize,
 }
 
-/// Backfill `cost_usd_micros` on legacy `run_usage` rows whose cost is NULL.
+/// Backfill `cost_usd_micros` on legacy `run_usage` rows.
 ///
-/// Designed for the one-shot case where the writer changed (see the
-/// `2026-05-23-price-frame-model-fallback` tactical fix) but the historical
-/// data was already on disk with NULL costs from the previous code path.
+/// Designed for one-shot retroactive pricing after the cost formula changes
+/// (e.g. the 2026-05-23 cache-aware pricing fix — `cache_read` rebilled at
+/// 10% of base, `cache_creation` at 125%). Delegates the actual pricing to
+/// [`crate::economy::estimator::compute_cost_micros`], so the SQL writer and
+/// the transcript ingest path share a single source of truth.
 ///
-/// Policy mirrors `economy::sources::transcript::price_frame` exactly:
+/// ## Modes
 ///
-/// 1. Only touch rows with `cost_usd_micros IS NULL`. Idempotent — running
-///    twice updates nothing new because the second pass finds no NULL rows.
-/// 2. Skip rows whose `(input + cache_read + output)` totals zero — there is
-///    nothing to price, NULL is the honest value.
-/// 3. If the row has a known `model`, use its pricing table entry. If
-///    `model` is NULL or unknown, fall back to `claude-sonnet-4-6` (the
-///    project default per `CLAUDE.md`).
+/// - `force = false` (default): only touch rows with `cost_usd_micros IS
+///   NULL OR cost_usd_micros = 0`. Idempotent — running twice updates nothing
+///   new because the second pass finds no candidates. Use this after adding
+///   a new pricing branch (a model id we didn't track before).
+///
+/// - `force = true`: SELECT every row with any non-zero token bucket and
+///   recompute its cost. The UPDATE does NOT filter on the prior cost value,
+///   so an existing wrong number is overwritten. Use this when the *formula*
+///   changes and historical rows now compute to a different value.
+///
+/// In both modes, rows with all-zero tokens are skipped (nothing to price —
+/// NULL/0 is honest).
 ///
 /// All UPDATEs run inside one transaction so a sweep is all-or-nothing.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Sqlite`] on a database failure.
-pub fn backfill_null_costs(conn: &Connection) -> Result<BackfillReport> {
-    use crate::economy::estimator::model_pricing_usd_micros_per_million;
-    // The project default — kept in sync with the same constant in
-    // `economy::sources::transcript::price_frame`. Mirroring rather than
-    // re-exporting keeps the writer self-contained.
-    const FALLBACK_MODEL: &str = "claude-sonnet-4-6";
+pub fn backfill_null_costs(conn: &Connection, force: bool) -> Result<BackfillReport> {
+    use crate::economy::estimator::compute_cost_micros;
 
     // ── Step 1: collect candidates ─────────────────────────────────────
     // SELECT before UPDATE so we know the exact span_id set we touched, and
-    // so the UPDATE step can use parameterised IN clauses without re-running
-    // the SQL twice. Limit fields to what `price_frame` needs.
+    // so the UPDATE step can use parameterised clauses without re-running
+    // the SQL twice. Pull every token bucket that the cache-aware pricing
+    // helper needs (input, cache_creation, cache_read, output).
     //
-    // Candidate filter accepts BOTH legacy storage shapes:
-    //   - `cost_usd_micros IS NULL` (price_frame returned None pre-fallback)
-    //   - `cost_usd_micros = 0` paired with non-zero tokens (older writer
-    //     paths normalised None to 0 — semantically the same gap)
-    // Rows with cost=0 AND tokens=0 are honest zeros (no work was done)
-    // and stay untouched.
-    let mut stmt = conn.prepare(
-        "SELECT span_id, model, input_tokens, output_tokens, cache_read_input_tokens \
+    // Filter modes:
+    //   force=false: only NULL/0 cost rows that also have any token > 0.
+    //   force=true:  every row with any token > 0, regardless of current cost.
+    let select_sql = if force {
+        "SELECT span_id, model, input_tokens, cache_creation_input_tokens, \
+                cache_read_input_tokens, output_tokens \
+         FROM run_usage \
+         WHERE (COALESCE(input_tokens,0) > 0 \
+                OR COALESCE(cache_creation_input_tokens,0) > 0 \
+                OR COALESCE(cache_read_input_tokens,0) > 0 \
+                OR COALESCE(output_tokens,0) > 0)"
+    } else {
+        "SELECT span_id, model, input_tokens, cache_creation_input_tokens, \
+                cache_read_input_tokens, output_tokens \
          FROM run_usage \
          WHERE (cost_usd_micros IS NULL OR cost_usd_micros = 0) \
-           AND (COALESCE(input_tokens,0) > 0 OR COALESCE(output_tokens,0) > 0 \
-                OR COALESCE(cache_read_input_tokens,0) > 0)",
-    )?;
-    type CandidateRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>);
+           AND (COALESCE(input_tokens,0) > 0 \
+                OR COALESCE(cache_creation_input_tokens,0) > 0 \
+                OR COALESCE(cache_read_input_tokens,0) > 0 \
+                OR COALESCE(output_tokens,0) > 0)"
+    };
+
+    let mut stmt = conn.prepare(select_sql)?;
+    type CandidateRow = (
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
     let candidates: Vec<CandidateRow> = stmt
         .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
         })?
         .filter_map(std::result::Result::ok)
         .collect();
@@ -403,45 +431,40 @@ pub fn backfill_null_costs(conn: &Connection) -> Result<BackfillReport> {
     // the user can re-run without worrying about half-applied state.
     let tx = conn.unchecked_transaction()?;
     let mut updated = 0usize;
-    for (span_id, model_opt, input_tokens, output_tokens, cache_read) in candidates {
-        let input = input_tokens.unwrap_or(0).saturating_add(cache_read.unwrap_or(0));
-        let output = output_tokens.unwrap_or(0);
-
-        // Same fallback ladder as `price_frame`: try the row's model first,
-        // fall through to sonnet pricing if missing or unknown.
-        let (in_per_m, out_per_m) = match model_opt.as_deref() {
-            Some(m) => {
-                let (i, o) = model_pricing_usd_micros_per_million(m);
-                if i == 0 && o == 0 {
-                    model_pricing_usd_micros_per_million(FALLBACK_MODEL)
-                } else {
-                    (i, o)
-                }
-            }
-            None => model_pricing_usd_micros_per_million(FALLBACK_MODEL),
+    for (span_id, model_opt, input_tokens, cache_creation, cache_read, output_tokens) in
+        candidates
+    {
+        let cost = match compute_cost_micros(
+            model_opt.as_deref(),
+            input_tokens.unwrap_or(0),
+            cache_creation.unwrap_or(0),
+            cache_read.unwrap_or(0),
+            output_tokens.unwrap_or(0),
+        ) {
+            Some(c) if c > 0 => c,
+            // Either the pricing helper returned None (degenerate / missing
+            // fallback pricing) or computed zero. Either way, keep the prior
+            // value rather than write a misleading 0.
+            _ => continue,
         };
 
-        // Defensive: if the fallback model itself isn't in the pricing
-        // table (someone removed the row?), leave the SQL NULL alone.
-        if in_per_m == 0 && out_per_m == 0 {
-            continue;
+        // In force mode the WHERE filter on cost is intentionally dropped so
+        // an existing (potentially wrong) number is overwritten. In the
+        // default mode we keep the NULL/0 guard so concurrent writes that
+        // priced the row in the meantime are not clobbered.
+        if force {
+            tx.execute(
+                "UPDATE run_usage SET cost_usd_micros = ?1 WHERE span_id = ?2",
+                params![cost, span_id],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE run_usage SET cost_usd_micros = ?1 \
+                 WHERE span_id = ?2 \
+                   AND (cost_usd_micros IS NULL OR cost_usd_micros = 0)",
+                params![cost, span_id],
+            )?;
         }
-
-        let cost = input
-            .saturating_mul(in_per_m)
-            .saturating_add(output.saturating_mul(out_per_m))
-            / 1_000_000;
-        if cost <= 0 {
-            // Pricing produced zero — keep NULL rather than write a misleading 0.
-            continue;
-        }
-
-        tx.execute(
-            "UPDATE run_usage SET cost_usd_micros = ?1 \
-             WHERE span_id = ?2 \
-               AND (cost_usd_micros IS NULL OR cost_usd_micros = 0)",
-            params![cost, span_id],
-        )?;
         updated += 1;
     }
     tx.commit()?;
@@ -625,6 +648,157 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_totals", [], |r| r.get(0))
             .unwrap();
         assert_eq!(totals, 2, "the new + null-ts totals survive");
+    }
+
+    #[test]
+    fn backfill_null_costs_prices_null_rows_and_skips_already_priced() {
+        let dir = tempdir().unwrap();
+        let store = TelemetryStore::new(dir.path().join("telemetry.db")).unwrap();
+        let conn = store.conn();
+
+        // Seed three rows:
+        //  - null-cost: cost_usd_micros = NULL, sonnet tokens → should be priced
+        //  - already-priced: cost_usd_micros = 999_999 → untouched in default mode
+        //  - all-zero-tokens: cost = NULL, tokens = 0 → skipped (honest NULL)
+        let seed = |span_id: &str,
+                    cost: Option<i64>,
+                    input: Option<i64>,
+                    cache_read: Option<i64>,
+                    output: Option<i64>| {
+            record_run(
+                conn,
+                &RunUsage {
+                    trace_id: None,
+                    span_id: span_id.into(),
+                    parent_span_id: None,
+                    name: None,
+                    started_at: None,
+                    ended_at: None,
+                    duration_ms: None,
+                    attributes: None,
+                    spec: None,
+                    phase: None,
+                    model: Some("claude-sonnet-4-6".into()),
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_input_tokens: cache_read,
+                    cache_creation_input_tokens: None,
+                    cost_usd_micros: cost,
+                    is_error: false,
+                    project_path: None,
+                    ts_iso: None,
+                    session_id: Some("s1".into()),
+                    wave_id: None,
+                    tool_use_id: None,
+                    agent_id: None,
+                },
+            )
+            .unwrap();
+        };
+        seed("null-cost", None, Some(1_000), Some(10_000), Some(500));
+        seed(
+            "already-priced",
+            Some(999_999),
+            Some(1_000),
+            Some(10_000),
+            Some(500),
+        );
+        seed("all-zero-tokens", None, Some(0), Some(0), Some(0));
+
+        let report = backfill_null_costs(conn, false).unwrap();
+        // Two rows passed the filter (null-cost, all-zero-tokens has zero tokens → not selected);
+        // only null-cost actually gets a non-zero cost write.
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.scanned, 1);
+
+        // Cache-aware price for null-cost: 1000*3M + 10000*3M/10 + 500*15M
+        //   = 3_000_000_000 + 3_000_000_000 + 7_500_000_000 = 13_500_000_000 raw micros
+        //   = 13_500 micros after / 1_000_000.
+        let cost_null: Option<i64> = conn
+            .query_row(
+                "SELECT cost_usd_micros FROM run_usage WHERE span_id = ?1",
+                params!["null-cost"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cost_null, Some(13_500));
+
+        // already-priced row: untouched (force=false leaves non-zero costs alone).
+        let cost_priced: Option<i64> = conn
+            .query_row(
+                "SELECT cost_usd_micros FROM run_usage WHERE span_id = ?1",
+                params!["already-priced"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cost_priced, Some(999_999));
+    }
+
+    #[test]
+    fn backfill_null_costs_force_recomputes_existing_rows() {
+        let dir = tempdir().unwrap();
+        let store = TelemetryStore::new(dir.path().join("telemetry.db")).unwrap();
+        let conn = store.conn();
+
+        // Seed a row with a wrong pre-existing cost (e.g. legacy pricing path
+        // that counted cache_read as fresh input — 10× inflated).
+        record_run(
+            conn,
+            &RunUsage {
+                trace_id: None,
+                span_id: "inflated".into(),
+                parent_span_id: None,
+                name: None,
+                started_at: None,
+                ended_at: None,
+                duration_ms: None,
+                attributes: None,
+                spec: None,
+                phase: None,
+                model: Some("claude-sonnet-4-6".into()),
+                input_tokens: Some(1_000),
+                output_tokens: Some(500),
+                cache_read_input_tokens: Some(10_000),
+                cache_creation_input_tokens: None,
+                // Legacy inflated cost: treated cache_read as full input.
+                //   (1000 + 10_000)*3M + 500*15M = 33_000_000_000 + 7_500_000_000
+                //   → 40_500 micros.
+                cost_usd_micros: Some(40_500),
+                is_error: false,
+                project_path: None,
+                ts_iso: None,
+                session_id: Some("s1".into()),
+                wave_id: None,
+                tool_use_id: None,
+                agent_id: None,
+            },
+        )
+        .unwrap();
+
+        // Default (non-force) leaves the inflated row alone: it has a non-zero cost.
+        let report_noforce = backfill_null_costs(conn, false).unwrap();
+        assert_eq!(report_noforce.updated, 0);
+        let still_inflated: Option<i64> = conn
+            .query_row(
+                "SELECT cost_usd_micros FROM run_usage WHERE span_id = ?1",
+                params!["inflated"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_inflated, Some(40_500));
+
+        // Force recomputes against the cache-aware formula.
+        let report_force = backfill_null_costs(conn, true).unwrap();
+        assert_eq!(report_force.updated, 1);
+        let now_correct: Option<i64> = conn
+            .query_row(
+                "SELECT cost_usd_micros FROM run_usage WHERE span_id = ?1",
+                params!["inflated"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Correct cache-aware cost: 13_500 (see prior test).
+        assert_eq!(now_correct, Some(13_500));
     }
 
     #[test]

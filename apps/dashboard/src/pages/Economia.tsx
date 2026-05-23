@@ -14,6 +14,8 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import dayjs from "dayjs";
 import { AlertTriangle, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -40,6 +42,7 @@ import { projectScope, formatTokens, formatUsd } from "@/lib/types/economy";
 
 
 export function Economia() {
+  const { t } = useTranslation();
   const projectsRoot = useStore((s) => s.projectsRoot);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const projects = useProjects();
@@ -107,8 +110,8 @@ export function Economia() {
     return (
       <div className="flex flex-col gap-6 w-full">
         <EmptyState
-          title="Diretório de projetos não configurado"
-          description="Vá em Configurações e aponte para a pasta onde estão seus repos."
+          title={t("economy.empty.noRoot.title")}
+          description={t("economy.empty.noRoot.description")}
         />
       </div>
     );
@@ -118,8 +121,8 @@ export function Economia() {
     return (
       <div className="flex flex-col gap-6 w-full">
         <EmptyState
-          title="Selecione um workspace"
-          description="Use o seletor na sidebar para escolher um projeto."
+          title={t("economy.empty.noWorkspace.title")}
+          description={t("economy.empty.noWorkspace.description")}
         />
       </div>
     );
@@ -140,7 +143,7 @@ export function Economia() {
       ? dayjs(data.last_updated_ms).toISOString()
       : null;
   const updatedAgo = lastUpdatedIso ? relativeTime(lastUpdatedIso) : null;
-  const { badgeLabel, badgeVariant } = collectorBadge(health);
+  const { badgeLabel, badgeVariant } = collectorBadge(health, t);
   const sessions = data?.by_session ?? [];
 
   // ── Ingestion staleness signal ───────────────────────────────────────────
@@ -162,11 +165,11 @@ export function Economia() {
     ingestionStaleHours != null &&
     ingestionStaleHours > STALENESS_HOURS;
 
-  // ── Distribuição por agente (light, horizontal-bar style w/o chart lib) ─
-  // We render the top agents as proportional bars sized by `tokens`. No
-  // recharts/d3 dependency — pure flex + Tailwind widths.
+  // Top agents drive the "Por agente" / "By agent" section. The horizontal-bar
+  // distribution chart that previously lived below was removed in the
+  // 2026-05-23-economia-i18n-migration sub-spec — `PerAgentTable` already shows
+  // tokens per agent, so the standalone chart was visual duplication.
   const topAgents = data?.top_agents_by_cost ?? [];
-  const tokensMax = topAgents.reduce((acc, a) => Math.max(acc, a.tokens), 0);
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -176,12 +179,15 @@ export function Economia() {
         <IngestionStaleBanner hours={ingestionStaleHours} />
       )}
 
-      {/* ── KPI cards: custo, economia, cache hit ──────────────────────── */}
+      {/* ── KPI cards: cost, savings, cache hit ──────────────────────── */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <KPICard
-          label="Custo do projeto (medido)"
+          label={t("economy.kpi.cost.label")}
           value={summary.isLoading ? "…" : formatUsd(data?.total_cost_usd_micros ?? 0)}
-          hint={`${(data?.span_count ?? 0).toLocaleString()} execuções · ${formatTokens(data?.total_tokens ?? 0)} tokens`}
+          hint={t("economy.kpi.cost.hint", {
+            dispatches: (data?.span_count ?? 0).toLocaleString(),
+            tokens: formatTokens(data?.total_tokens ?? 0),
+          })}
           accent={data && data.total_cost_usd_micros > 0 ? "indigo" : "zinc"}
           caption={
             <div className="flex flex-col gap-1">
@@ -192,36 +198,34 @@ export function Economia() {
                   size="sm"
                 />
                 <span>{badgeLabel}</span>
-                {updatedAgo ? <span>· atualizado {updatedAgo}</span> : null}
+                {updatedAgo ? (
+                  <span>· {t("economy.kpi.cost.updatedAgo", { ago: updatedAgo })}</span>
+                ) : null}
               </div>
-              <span>cobrado pela Anthropic, somado por sessão</span>
+              <span>{t("economy.kpi.cost.caption")}</span>
             </div>
           }
         />
         <KPICard
-          label="Economia total (tokens)"
+          label={t("economy.kpi.savings.label")}
           value={summary.isLoading ? "…" : `${formatTokens(data?.total_tokens_saved ?? 0)} tok`}
-          hint="abaixo, o detalhe por origem"
+          hint={t("economy.kpi.savings.hint")}
           accent={data && data.total_tokens_saved > 0 ? "emerald" : "zinc"}
-          caption="tokens que a ferramenta evitou de gastar — abaixo, o detalhe por origem"
+          caption={t("economy.kpi.savings.caption")}
         />
         <KPICard
-          label="Cache hit"
+          label={t("economy.kpi.cache.label")}
           value={
             routing.isLoading ? "…" : routing.data ? `${cacheRatio.toFixed(1)}%` : "—"
           }
-          hint={routing.data ? cacheHitTier(cacheRatio) : "sem dados nesta janela"}
+          hint={routing.data ? cacheHitTier(cacheRatio, t) : t("economy.kpi.cache.noData")}
           accent={cacheRatio >= 80 ? "emerald" : cacheRatio >= 50 ? "amber" : "zinc"}
           caption={
             <div className="flex flex-col gap-1">
-              <span>
-                tokens servidos do cache ÷ (cache + escrita no cache + input novo).
-                Acima de 80% é ótimo — a Anthropic cobra só 10% do preço normal nesses tokens.
-              </span>
+              <span>{t("economy.kpi.cache.caption")}</span>
               {scope.kind === "wave" && (
                 <span className="text-amber-500/80">
-                  ⓘ no filtro de Wave, o número é da spec inteira — o cache da
-                  Anthropic não distingue waves dentro de uma mesma spec.
+                  {t("economy.kpi.cache.collapseWave")}
                 </span>
               )}
             </div>
@@ -232,19 +236,21 @@ export function Economia() {
       {summary.error ? (
         <EmptyState
           variant="warning"
-          title="Falha ao ler os dados de economia"
+          title={t("economy.summaryError.title")}
           description={String((summary.error as Error)?.message ?? summary.error)}
         />
       ) : null}
 
-      {/* ── Por agente (top-N) ─────────────────────────────────────────── */}
+      {/* ── By agent (top-N) ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <header className="flex flex-col gap-0.5">
           <h2 className="text-sm font-medium">
-            {topAgents.length > 0 ? `Por agente (top ${topAgents.length})` : "Por agente"}
+            {topAgents.length > 0
+              ? t("economy.byAgent.title", { count: topAgents.length })
+              : t("economy.byAgent.titleFallback")}
           </h2>
           <p className="text-[11px] text-[--ds-text-tertiary]">
-            agentes que mais consumiram tokens nesta janela
+            {t("economy.byAgent.caption")}
           </p>
         </header>
         <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
@@ -252,46 +258,14 @@ export function Economia() {
         </div>
       </section>
 
-      {/* ── Distribuição por agente (horizontal bars sem chart lib) ────── */}
-      {topAgents.length > 0 && (
-        <section className="flex flex-col gap-3">
-          <header className="flex flex-col gap-0.5">
-            <h2 className="text-sm font-medium">Distribuição de tokens por agente</h2>
-            <p className="text-[11px] text-[--ds-text-tertiary]">
-              cada barra é proporcional aos tokens consumidos pelo agente
-            </p>
-          </header>
-          <div className="flex flex-col gap-1.5">
-            {topAgents.map((a) => {
-              const pct = tokensMax > 0 ? (a.tokens / tokensMax) * 100 : 0;
-              return (
-                <div
-                  key={a.agent_id}
-                  className="flex items-center gap-3 px-3 py-2 rounded-[--ds-radius-md] bg-[--ds-surface-base]"
-                >
-                  <span className="font-mono text-[12px] text-[--ds-text-primary] truncate w-[180px] shrink-0">
-                    {a.agent_id || "—"}
-                  </span>
-                  <div className="flex-1 h-2 rounded bg-[--ds-surface-hover] overflow-hidden">
-                    <div
-                      className="h-full bg-[--ds-accent-primary]/60"
-                      style={{ width: `${pct.toFixed(2)}%` }}
-                    />
-                  </div>
-                  <MetricsPill value={formatTokens(a.tokens)} unit="tok" />
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* ── Por sessão (custo medido por sessão do Claude Code) ───────── */}
+      {/* ── By session (measured cost per Claude Code session) ────────── */}
       <section className="flex flex-col gap-3">
         <header className="flex flex-col gap-0.5">
-          <h2 className="text-sm font-medium">Por sessão</h2>
+          <h2 className="text-sm font-medium">{t("economy.bySession.title")}</h2>
           <p className="text-[11px] text-[--ds-text-tertiary]">
-            uma linha por sessão do Claude Code — compare o custo com <code className="font-mono">/cost</code> para conferir
+            {t("economy.bySession.captionBefore")}
+            <code className="font-mono">/cost</code>
+            {t("economy.bySession.captionAfter")}
           </p>
         </header>
         {sessions.length > 0 ? (
@@ -303,28 +277,29 @@ export function Economia() {
                 usd={s.usd}
                 lastAtMs={s.last_at_ms}
                 specs={s.specs}
+                noSpecLabel={t("economy.bySession.noSpec")}
               />
             ))}
           </div>
         ) : scope.kind === "spec" || scope.kind === "wave" ? (
           <EmptyState
-            title="Não disponível neste filtro"
-            description="A Anthropic atribui custo medido só por sessão — sessão não tem dimensão de spec nem onda. Para ver as sessões, volte ao filtro Projeto."
+            title={t("economy.bySession.unavailable.title")}
+            description={t("economy.bySession.unavailable.description")}
           />
         ) : (
           <EmptyState
-            title="Sem sessões registradas"
-            description="As sessões aparecem aqui depois que o Claude Code rodar com telemetria ligada."
+            title={t("economy.bySession.empty.title")}
+            description={t("economy.bySession.empty.description")}
           />
         )}
       </section>
 
-      {/* ── O que a ferramenta evitou de gastar (savings by source) ────── */}
+      {/* ── Savings by source ──────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <header className="flex flex-col gap-0.5">
-          <h2 className="text-sm font-medium">O que a ferramenta evitou de gastar</h2>
+          <h2 className="text-sm font-medium">{t("economy.savings.title")}</h2>
           <p className="text-[11px] text-[--ds-text-tertiary]">
-            cada linha é uma estratégia que poupa tokens — a injeção de receita é estimada
+            {t("economy.savings.caption")}
           </p>
         </header>
         <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-2">
@@ -332,18 +307,17 @@ export function Economia() {
         </div>
       </section>
 
-      {/* ── Custo estimado por spec / onda (per-dispatch attribution) ──── */}
+      {/* ── Estimated per spec / wave (per-dispatch attribution) ──────── */}
       <section className="flex flex-col gap-3">
         <header className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-medium">Custo estimado por spec / onda</h2>
+            <h2 className="text-sm font-medium">{t("economy.estimated.title")}</h2>
             <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em] font-medium text-primary/70 bg-primary/10 border border-primary/20">
-              estimado
+              {t("economy.estimated.badge")}
             </span>
           </div>
           <p className="text-[11px] text-[--ds-text-tertiary]">
-            soma do custo de cada execução atribuída à spec — uma estimativa interna por dispatch,
-            útil para comparar features. Não é o valor cobrado pela Anthropic.
+            {t("economy.estimated.caption")}
           </p>
         </header>
         <EstimatedBySpecWave
@@ -371,11 +345,13 @@ function SessionRow({
   usd,
   lastAtMs,
   specs,
+  noSpecLabel,
 }: {
   sessionId: string;
   usd: number;
   lastAtMs: number | null;
   specs: string[];
+  noSpecLabel: string;
 }) {
   const date = formatSessionDate(lastAtMs);
   const shortId = sessionId ? sessionId.slice(0, 8) : "—";
@@ -394,7 +370,7 @@ function SessionRow({
       <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
         {visibleSpecs.length === 0 ? (
           <span className="text-[11px] text-[--ds-text-tertiary] italic">
-            sem spec registrada
+            {noSpecLabel}
           </span>
         ) : (
           visibleSpecs.map((spec) => (
@@ -429,13 +405,16 @@ function SessionRow({
  * accurate independently.
  */
 function IngestionStaleBanner({ hours }: { hours: number }) {
-  // Round to a friendly bucket so the message reads naturally: "há 9 horas"
-  // is more useful than "há 8.73 horas". For very large gaps (>48h) we tip
-  // over to "há N dias" because hours stop being legible past two days.
-  const label =
-    hours >= 48
-      ? `${Math.round(hours / 24)} dias`
-      : `${Math.round(hours)} horas`;
+  // Round to a friendly bucket so the message reads naturally — "há 9 horas"
+  // beats "há 8.73 horas". For very large gaps (>48h) tip over to "N dias"
+  // because hours stop being legible past two days. Plural forms live in the
+  // i18n bundle under `economy.staleBanner.label_{hours,days}_{one,other}`.
+  const { t } = useTranslation();
+  const isDays = hours >= 48;
+  const count = isDays ? Math.round(hours / 24) : Math.round(hours);
+  const label = isDays
+    ? t("economy.staleBanner.label_days", { count })
+    : t("economy.staleBanner.label_hours", { count });
   return (
     <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[12.5px]">
       <AlertTriangle
@@ -444,14 +423,14 @@ function IngestionStaleBanner({ hours }: { hours: number }) {
       />
       <div className="flex flex-col gap-1 min-w-0">
         <p className="font-medium text-[--ds-text-primary]">
-          A tabela de custo estimado por spec/onda parou de receber dados há {label}.
+          {t("economy.staleBanner.title", { label })}
         </p>
         <p className="text-[--ds-text-secondary] leading-relaxed">
-          O custo medido (do card "Custo do projeto") continua atualizado — só a
-          quebra por feature está congelada. Para retomar a estimação por spec:
-          verifique que o collector do <code className="font-mono text-[11px]">mustard-rt</code> está rodando
-          e que o Claude Code está exportando OTEL via{" "}
-          <code className="font-mono text-[11px]">OTEL_EXPORTER_OTLP_ENDPOINT</code>.
+          {t("economy.staleBanner.bodyBefore")}
+          <code className="font-mono text-[11px]">mustard-rt</code>
+          {t("economy.staleBanner.bodyBetween")}
+          <code className="font-mono text-[11px]">OTEL_EXPORTER_OTLP_ENDPOINT</code>
+          {t("economy.staleBanner.bodyAfter")}
         </p>
       </div>
     </div>
@@ -490,10 +469,11 @@ function EstimatedBySpecWave({
   perWave: WaveCost[];
   isLoading: boolean;
 }) {
+  const { t } = useTranslation();
   if (isLoading) {
     return (
       <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] p-4 text-[12px] text-[--ds-text-tertiary]">
-        carregando…
+        {t("economy.estimated.loading")}
       </div>
     );
   }
@@ -503,8 +483,8 @@ function EstimatedBySpecWave({
   if (namedSpecs.length === 0) {
     return (
       <EmptyState
-        title="Sem execuções atribuídas neste escopo"
-        description="As linhas aparecem aqui assim que dispatches forem registrados com a spec correspondente."
+        title={t("economy.estimated.empty.title")}
+        description={t("economy.estimated.empty.description")}
       />
     );
   }
@@ -536,10 +516,10 @@ function EstimatedBySpecWave({
     <div className="rounded-[--ds-radius-md] border border-[--ds-surface-hover] bg-[--ds-surface-base] overflow-hidden">
       {/* Column header row */}
       <div className="grid grid-cols-[1fr_110px_110px_110px] gap-3 px-3 py-2 text-[10px] uppercase tracking-[0.14em] font-medium text-[--ds-text-tertiary] border-b border-[--ds-surface-hover]">
-        <span>Spec / onda</span>
-        <span className="text-right">Execuções</span>
-        <span className="text-right">Tokens</span>
-        <span className="text-right">Custo</span>
+        <span>{t("economy.estimated.col.specWave")}</span>
+        <span className="text-right">{t("economy.estimated.col.dispatches")}</span>
+        <span className="text-right">{t("economy.estimated.col.tokens")}</span>
+        <span className="text-right">{t("economy.estimated.col.cost")}</span>
       </div>
 
       <div className="flex flex-col">
@@ -574,7 +554,7 @@ function EstimatedBySpecWave({
                   {unwavedBySpec.has(row.spec_id) && (
                     <SpecOrWaveRow
                       key={`wave-${row.spec_id}-unattributed`}
-                      name="(sem onda atribuída)"
+                      name={t("economy.estimated.noWaveAttributed")}
                       dispatches={unwavedBySpec.get(row.spec_id)!.span_count}
                       tokens={unwavedBySpec.get(row.spec_id)!.tokens}
                       costMicros={unwavedBySpec.get(row.spec_id)!.cost_usd_micros}
@@ -593,10 +573,9 @@ function EstimatedBySpecWave({
         <div className="px-3 py-2 border-t border-[--ds-surface-hover]/60 bg-[--ds-surface-hover]/20 text-[10.5px] text-[--ds-text-tertiary] flex items-center gap-1.5">
           <Info className="h-3 w-3 text-[--ds-text-tertiary] shrink-0" strokeWidth={2} />
           <span>
-            {unattributedDispatches === 1
-              ? "1 execução sem spec registrada"
-              : `${unattributedDispatches.toLocaleString()} execuções sem spec registrada`}
-            {" "}— não aparecem na tabela porque não dá pra atribuir a uma feature específica.
+            {t("economy.estimated.unattributed", {
+              count: unattributedDispatches,
+            })}
           </span>
         </div>
       )}
@@ -697,11 +676,11 @@ function SpecOrWaveRow({
  * - 50-79% — partial reuse. Often means the stable prefix is drifting.
  * - < 50% — little reuse; the prefix is either small or churning.
  */
-function cacheHitTier(percent: number): string {
-  if (percent >= 80) return "ótimo · cache funcionando";
-  if (percent >= 50) return "morno · prefixo mudando";
-  if (percent > 0) return "frio · pouco reuso";
-  return "sem reuso medido";
+function cacheHitTier(percent: number, t: TFunction): string {
+  if (percent >= 80) return t("economy.kpi.cache.tier.optimal");
+  if (percent >= 50) return t("economy.kpi.cache.tier.warm");
+  if (percent > 0) return t("economy.kpi.cache.tier.cold");
+  return t("economy.kpi.cache.tier.empty");
 }
 
 /**
@@ -709,18 +688,21 @@ function cacheHitTier(percent: number): string {
  * `undefined` (still loading) reads as "desligado" so the badge never claims
  * the data is live before we know.
  */
-function collectorBadge(health: CollectorHealth | undefined): {
+function collectorBadge(
+  health: CollectorHealth | undefined,
+  t: TFunction,
+): {
   badgeLabel: string;
   badgeVariant: StatusDotVariant;
 } {
   switch (health) {
     case "live":
-      return { badgeLabel: "ao vivo", badgeVariant: "active" };
+      return { badgeLabel: t("economy.kpi.cost.statusLive"), badgeVariant: "active" };
     case "stale":
-      return { badgeLabel: "parado", badgeVariant: "blocked" };
+      return { badgeLabel: t("economy.kpi.cost.statusStale"), badgeVariant: "blocked" };
     case "off":
     default:
-      return { badgeLabel: "desligado", badgeVariant: "idle" };
+      return { badgeLabel: t("economy.kpi.cost.statusOff"), badgeVariant: "idle" };
   }
 }
 

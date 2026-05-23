@@ -1,9 +1,17 @@
 //! `mustard-rt run backfill-run-usage-cost` — one-shot retroactive pricing.
 //!
-//! Tactical fix companion to `price_frame-model-fallback`: that fix changed
-//! the write path so new spans without a `model` attribute still get priced
-//! (sonnet fallback). This subcommand applies the same policy to legacy
-//! rows that were already on disk with `cost_usd_micros = NULL`.
+//! Applies the shared `mustard_core::economy::estimator::compute_cost_micros`
+//! helper to historical `run_usage` rows that were written before the current
+//! pricing path landed. Two modes:
+//!
+//! - Default (`--force` absent): only NULL/0 cost rows are touched. Idempotent.
+//!   Use after adding a new pricing branch (e.g. a new model id) so previously
+//!   unpriced rows get a number.
+//!
+//! - `--force`: recompute every row carrying any non-zero token bucket,
+//!   overwriting prior cost values. Use after the *formula* changes — e.g.
+//!   the 2026-05-23 cache-aware split (cache_read now billed at 10%, not 100%
+//!   of input rate), where historical rows have a wrong but non-zero number.
 //!
 //! Output is a stable JSON object on stdout so the calling shell or the
 //! dashboard can confirm what happened:
@@ -22,8 +30,12 @@ use serde_json::json;
 
 use crate::run::env::project_dir;
 
-/// Run the backfill on the project's telemetry.db. Idempotent.
-pub fn run() {
+/// Run the backfill on the project's telemetry.db.
+///
+/// `force = false` is idempotent (NULL/0 cost rows only). `force = true`
+/// recomputes every row with any non-zero token bucket, overwriting prior
+/// `cost_usd_micros` values — required after a pricing-formula change.
+pub fn run(force: bool) {
     let cwd = project_dir();
 
     // Open the store. Fail-open at this layer because a missing DB is a
@@ -38,6 +50,7 @@ pub fn run() {
                     "rows_scanned": 0,
                     "rows_updated": 0,
                     "db_path": cwd.clone(),
+                    "force": force,
                     "error": e.to_string(),
                 })
             );
@@ -45,7 +58,7 @@ pub fn run() {
         }
     };
 
-    match writer::backfill_null_costs(store.conn()) {
+    match writer::backfill_null_costs(store.conn(), force) {
         Ok(report) => {
             println!(
                 "{}",
@@ -53,6 +66,7 @@ pub fn run() {
                     "rows_scanned": report.scanned,
                     "rows_updated": report.updated,
                     "db_path": cwd,
+                    "force": force,
                 })
             );
         }

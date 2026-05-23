@@ -76,6 +76,136 @@ pub fn model_pricing_usd_micros_per_million(model: &str) -> (i64, i64) {
     }
 }
 
+/// Compute a frame's cost in micro-USD, splitting tokens into the four
+/// Anthropic-priced buckets.
+///
+/// ## Pricing buckets
+///
+/// Anthropic bills cache-aware: a single assistant turn can spend tokens in
+/// four buckets, each at a different rate relative to the model's base
+/// `(input, output)` price:
+///
+/// | Bucket | Rate |
+/// |---|---|
+/// | `input` (fresh, uncached) | `rate_in` |
+/// | `cache_creation` (writing the prefix to cache) | `rate_in × 5/4` (1.25×) |
+/// | `cache_read` (hitting an existing cache entry) | `rate_in / 10` (0.10×) |
+/// | `output` (assistant tokens) | `rate_out` |
+///
+/// In Claude Code workloads the prefix is huge and cached, so most tokens
+/// land in `cache_read` — billed at 10% of base. Treating them as full
+/// `input` (which the legacy `price_frame` did) inflated cost estimates
+/// 3-10× depending on cache hit ratio.
+///
+/// ## Fallback model
+///
+/// When `model` is `None` or names a model missing from the pricing table,
+/// falls back to `claude-sonnet-4-6` — the project default per
+/// `CLAUDE.md § Model Routing`. The fallback is logged via `eprintln!` so a
+/// grep on mustard-rt logs surfaces every frame we had to estimate. If the
+/// fallback model itself is missing from the table (someone removed the
+/// row?), returns `None` rather than divide-by-zero.
+///
+/// ## Degenerate case
+///
+/// When all four bucket totals are zero, returns `None` — there is nothing
+/// to price and a SQL NULL is the honest value. A misleading zero would
+/// otherwise hide unpriced rows in aggregations.
+///
+/// All arithmetic is `saturating_*` over `i64`; no floats, no panics on
+/// absurd token counts shipped by a bogus adapter.
+#[must_use]
+pub fn compute_cost_micros(
+    model: Option<&str>,
+    input: i64,
+    cache_creation: i64,
+    cache_read: i64,
+    output: i64,
+) -> Option<i64> {
+    // The project default — kept in sync with `CLAUDE.md § Model Routing`.
+    // Used both when the frame has no model attribute and when the attribute
+    // names a model we don't have pricing for.
+    const FALLBACK_MODEL: &str = "claude-sonnet-4-6";
+
+    // ── Point 1: degenerate input ──────────────────────────────────────
+    // No tokens to price in any bucket: every branch below would compute
+    // zero anyway, and returning `None` keeps SQL aggregation honest (a
+    // true "nothing happened" row stays NULL, not a misleading $0).
+    let input = input.max(0);
+    let cache_creation = cache_creation.max(0);
+    let cache_read = cache_read.max(0);
+    let output = output.max(0);
+    if input == 0 && cache_creation == 0 && cache_read == 0 && output == 0 {
+        return None;
+    }
+
+    // ── Point 2: resolve pricing, falling back when needed ─────────────
+    // First try the model the frame declares. If that yields (0, 0) — either
+    // because `model` was `None` or because the model is missing from the
+    // pricing table — apply the documented sonnet fallback. We log each
+    // fallback once per frame so the cause stays traceable in stderr.
+    let (effective_model, in_per_m, out_per_m) = match model {
+        Some(m) => {
+            let (i, o) = model_pricing_usd_micros_per_million(m);
+            if i == 0 && o == 0 {
+                eprintln!(
+                    "compute_cost_micros: unknown model '{m}' — falling back to {FALLBACK_MODEL} pricing"
+                );
+                let (fi, fo) = model_pricing_usd_micros_per_million(FALLBACK_MODEL);
+                (FALLBACK_MODEL, fi, fo)
+            } else {
+                (m, i, o)
+            }
+        }
+        None => {
+            eprintln!(
+                "compute_cost_micros: frame has no model attribute — falling back to {FALLBACK_MODEL} pricing"
+            );
+            let (fi, fo) = model_pricing_usd_micros_per_million(FALLBACK_MODEL);
+            (FALLBACK_MODEL, fi, fo)
+        }
+    };
+
+    // ── Point 3: defensive — fallback model itself missing from table ──
+    // Should never trip in normal operation (sonnet is the canonical entry).
+    // If someone removes the row from the pricing table this prevents a
+    // divide-by-zero blast. Return None so the row stays honest.
+    if in_per_m == 0 && out_per_m == 0 {
+        eprintln!(
+            "compute_cost_micros: fallback model '{effective_model}' has no pricing entry; emitting NULL"
+        );
+        return None;
+    }
+
+    // ── Point 4: cache-aware linear cost in micro-USD ──────────────────
+    // Rates from the pricing table are `micros_per_million_tokens`. Each
+    // bucket's contribution:
+    //
+    //   input          → tokens × rate_in
+    //   cache_creation → tokens × rate_in × 5 / 4      (1.25× write premium)
+    //   cache_read     → tokens × rate_in / 10         (10% hit discount)
+    //   output         → tokens × rate_out
+    //
+    // Integer multipliers (5/4 and 1/10) keep the math floatless. We compute
+    // each bucket's micros first, then divide by 1_000_000 at the end.
+    // `saturating_*` guards against an absurd token count (i64::MAX) shipped
+    // by a bogus adapter.
+    let input_micros = input.saturating_mul(in_per_m);
+    let creation_micros = cache_creation
+        .saturating_mul(in_per_m)
+        .saturating_mul(5)
+        / 4;
+    let cache_read_micros = cache_read.saturating_mul(in_per_m) / 10;
+    let output_micros = output.saturating_mul(out_per_m);
+
+    let cost = input_micros
+        .saturating_add(creation_micros)
+        .saturating_add(cache_read_micros)
+        .saturating_add(output_micros)
+        / 1_000_000;
+    Some(cost)
+}
+
 /// One-time handle on the shared cl100k singleton. `OnceLock` shields the
 /// inner reference for the lifetime of the process; calling
 /// `cl100k_base_singleton()` directly is itself cheap but the indirection
@@ -124,5 +254,109 @@ mod tests {
     #[test]
     fn unknown_model_returns_zero_pricing() {
         assert_eq!(model_pricing_usd_micros_per_million("gpt-7"), (0, 0));
+    }
+
+    // ── compute_cost_micros tests ──────────────────────────────────────
+
+    #[test]
+    fn compute_cost_micros_input_only_uses_base_rate() {
+        // Sonnet: 3_000_000 micros/M input. 1_000 input tokens → 3_000 micros.
+        let cost = compute_cost_micros(Some("claude-sonnet-4-6"), 1_000, 0, 0, 0)
+            .expect("priced");
+        assert_eq!(cost, 3_000);
+    }
+
+    #[test]
+    fn compute_cost_micros_output_only_uses_output_rate() {
+        // Sonnet: 15_000_000 micros/M output. 500 output tokens → 7_500 micros.
+        let cost = compute_cost_micros(Some("claude-sonnet-4-6"), 0, 0, 0, 500)
+            .expect("priced");
+        assert_eq!(cost, 7_500);
+    }
+
+    #[test]
+    fn compute_cost_micros_cache_read_is_one_tenth_of_input() {
+        // 10_000 cache_read tokens at sonnet rates → 3_000 micros
+        // (vs. 30_000 micros if treated as fresh input — the 10× regression
+        // the cache_read bucket is meant to fix).
+        let read_cost = compute_cost_micros(Some("claude-sonnet-4-6"), 0, 0, 10_000, 0)
+            .expect("priced");
+        let input_equivalent =
+            compute_cost_micros(Some("claude-sonnet-4-6"), 10_000, 0, 0, 0)
+                .expect("priced");
+        assert_eq!(read_cost, input_equivalent / 10);
+        assert_eq!(read_cost, 3_000);
+    }
+
+    #[test]
+    fn compute_cost_micros_cache_creation_is_five_quarters_of_input() {
+        // 4_000 cache_creation tokens at sonnet rates → 4_000 * 3_000_000 * 5/4 / 1_000_000
+        //   = 12_000 * 5 / 4 = 15_000 micros (1.25× of 12_000 input-equivalent).
+        let creation_cost = compute_cost_micros(Some("claude-sonnet-4-6"), 0, 4_000, 0, 0)
+            .expect("priced");
+        let input_equivalent =
+            compute_cost_micros(Some("claude-sonnet-4-6"), 4_000, 0, 0, 0)
+                .expect("priced");
+        // 1.25 × 12_000 = 15_000.
+        assert_eq!(creation_cost, input_equivalent * 5 / 4);
+        assert_eq!(creation_cost, 15_000);
+    }
+
+    #[test]
+    fn compute_cost_micros_realistic_mixed_frame() {
+        // Realistic Claude Code turn: huge cached prefix, small fresh input,
+        // moderate output, minor cache creation.
+        //   input          =     500 → 500 * 3_000_000 = 1_500_000_000 micros
+        //   cache_creation =   2_000 → 2_000 * 3_000_000 * 5/4 = 7_500_000_000
+        //   cache_read     = 100_000 → 100_000 * 3_000_000 / 10 = 30_000_000_000
+        //   output         =   1_000 → 1_000 * 15_000_000 = 15_000_000_000
+        //   total micros (raw)        = 54_000_000_000
+        //   total / 1_000_000 (cost)  = 54_000
+        let cost = compute_cost_micros(
+            Some("claude-sonnet-4-6"),
+            500,
+            2_000,
+            100_000,
+            1_000,
+        )
+        .expect("priced");
+        assert_eq!(cost, 54_000);
+    }
+
+    #[test]
+    fn compute_cost_micros_uses_sonnet_fallback_when_model_none() {
+        // None should use sonnet pricing — same answer as explicitly naming sonnet.
+        let with_none = compute_cost_micros(None, 1_000, 0, 0, 500).expect("priced");
+        let with_sonnet =
+            compute_cost_micros(Some("claude-sonnet-4-6"), 1_000, 0, 0, 500)
+                .expect("priced");
+        assert_eq!(with_none, with_sonnet);
+        // 1_000 * 3M + 500 * 15M = 3_000 + 7_500 = 10_500 micros.
+        assert_eq!(with_none, 10_500);
+    }
+
+    #[test]
+    fn compute_cost_micros_uses_sonnet_fallback_for_unknown_model() {
+        // Unknown model name → sonnet pricing.
+        let cost = compute_cost_micros(Some("gpt-7-quantum"), 1_000, 0, 0, 500)
+            .expect("priced");
+        assert_eq!(cost, 10_500);
+    }
+
+    #[test]
+    fn compute_cost_micros_degenerate_all_zero_returns_none() {
+        assert_eq!(compute_cost_micros(None, 0, 0, 0, 0), None);
+        assert_eq!(
+            compute_cost_micros(Some("claude-sonnet-4-6"), 0, 0, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn compute_cost_micros_opus_priced_per_tier() {
+        // Opus: 15_000_000 micros/M input. 1_000 input → 15_000 micros.
+        let cost = compute_cost_micros(Some("claude-opus-4-7"), 1_000, 0, 0, 0)
+            .expect("priced");
+        assert_eq!(cost, 15_000);
     }
 }

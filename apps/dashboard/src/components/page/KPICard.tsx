@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Info } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 export type KPIAccent = "emerald" | "amber" | "rose" | "indigo" | "violet" | "sky" | "zinc";
@@ -59,6 +60,7 @@ export function KPICard({
   valueClassName,
   className,
 }: KPICardProps) {
+  const { t } = useTranslation();
   return (
     <div
       className={cn(
@@ -89,7 +91,7 @@ export function KPICard({
               <Info className="h-2 w-2 text-primary/70" strokeWidth={2.5} />
             </div>
             <div className="text-[10.5px] uppercase tracking-[0.14em] font-medium text-primary/60 mb-1">
-              o que isso significa
+              {t("kpi.captionLabel")}
             </div>
             <div className="flex flex-col gap-1 text-[11px] leading-snug text-muted-foreground [&_span]:block">
               {caption}
