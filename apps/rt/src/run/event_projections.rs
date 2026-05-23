@@ -639,6 +639,105 @@ fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
     })
 }
 
+/// Convert a `pipeline.phase` UPPERCASE value to Title Case for unified display.
+/// Known values: ANALYZE, PLAN, EXECUTE, REVIEW, QAREVIEW, CLOSE. Unknown values
+/// are title-cased by capitalising the first character only.
+fn phase_uppercase_to_title(s: &str) -> String {
+    match s.to_ascii_uppercase().as_str() {
+        "ANALYZE"  => "Analyze".to_string(),
+        "PLAN"     => "Plan".to_string(),
+        "EXECUTE"  => "Execute".to_string(),
+        "REVIEW"   => "Review".to_string(),
+        "QAREVIEW" => "QaReview".to_string(),
+        "CLOSE"    => "Close".to_string(),
+        _ => {
+            let mut c = s.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+            }
+        }
+    }
+}
+
+/// `buildActivePipelines` — specs that have at least one event and whose last
+/// `pipeline.stage` OR `pipeline.phase` event is not `Close`. Ordered by
+/// `lastEventAt` descending. Specs closed more than 30 days ago are also
+/// excluded (defensive filter).
+fn build_active_pipelines(events: &[HarnessEvent]) -> Value {
+    use std::collections::BTreeMap;
+
+    let now_ms = crate::util::now_millis() as i64;
+    // 30-day window in milliseconds.
+    let cutoff_ms = now_ms - 30 * 86_400_000;
+
+    // Per-spec accumulator: (last_event_ts, last_stage).
+    let mut per_spec: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+
+    for ev in events {
+        let Some(spec) = ev.spec.as_deref() else { continue };
+        if ev.ts.is_empty() { continue; }
+
+        let entry = per_spec.entry(spec.to_string()).or_insert_with(|| (ev.ts.clone(), None));
+        // Track the maximum timestamp (ISO-8601 lexicographic order is correct for UTC).
+        if ev.ts > entry.0 {
+            entry.0 = ev.ts.clone();
+        }
+        // Track the last stage from `pipeline.stage` (Title Case) OR
+        // `pipeline.phase` (UPPERCASE → Title Case). Whichever appears latest
+        // in the event stream wins (lexicographic ts comparison is safe for UTC).
+        match ev.event.as_str() {
+            "pipeline.stage" => {
+                if let Some(stage) = ev.payload.get("to").and_then(Value::as_str) {
+                    entry.1 = Some(stage.to_string());
+                }
+            }
+            "pipeline.phase" => {
+                let raw = ev.payload.get("to")
+                    .or_else(|| ev.payload.get("from"))
+                    .and_then(Value::as_str);
+                if let Some(r) = raw {
+                    entry.1 = Some(phase_uppercase_to_title(r));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut pipelines: Vec<Value> = per_spec
+        .into_iter()
+        .filter(|(_, (last_ts, last_stage))| {
+            // Exclude specs that never emitted a pipeline.stage event (legacy/abandoned).
+            if last_stage.is_none() {
+                return false;
+            }
+            // Exclude specs whose last stage is Close.
+            if last_stage.as_deref().map(|s| s.eq_ignore_ascii_case("close")).unwrap_or(false) {
+                return false;
+            }
+            // Exclude specs with no activity in the last 30 days.
+            let ts_ms = crate::run::complete_spec::parse_iso_millis(last_ts).unwrap_or(0);
+            ts_ms >= cutoff_ms
+        })
+        .map(|(spec, (last_event_at, last_stage))| {
+            json!({
+                "spec": spec,
+                "lastEventAt": last_event_at,
+                "stage": last_stage,
+            })
+        })
+        .collect();
+
+    // Sort by lastEventAt descending (ISO-8601 lexicographic comparison is safe for UTC).
+    pipelines.sort_by(|a, b| {
+        let ta = a["lastEventAt"].as_str().unwrap_or("");
+        let tb = b["lastEventAt"].as_str().unwrap_or("");
+        tb.cmp(ta)
+    });
+
+    json!({ "pipelines": pipelines })
+}
+
 /// Compute the projection for a `--view`.
 fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Value {
     match view {
@@ -663,6 +762,7 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
             let days = wave.map(i64::from).unwrap_or(30);
             build_pr_metrics(&read_events(cwd), cwd, days)
         }
+        "active-pipelines" => build_active_pipelines(&read_events(cwd)),
         other => json!({ "error": format!("Unknown view: {other}") }),
     }
 }
@@ -682,7 +782,7 @@ fn write_html_report(cwd: &Path, view: &str, json_text: &str) -> Option<PathBuf>
 pub fn run(view: Option<&str>, spec: Option<&str>, wave: Option<u32>, format: &str) {
     let Some(view) = view else {
         eprintln!("Usage: event-projections --view <name> [--spec <name>] [--wave <n>] [--format json|html]");
-        eprintln!("Views: agent-visibility, pipeline-state, session-summary, epic-summary, cross-session-timeline, spec-tree, pr-metrics");
+        eprintln!("Views: agent-visibility, pipeline-state, session-summary, epic-summary, cross-session-timeline, spec-tree, pr-metrics, active-pipelines");
         return;
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

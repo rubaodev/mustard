@@ -417,7 +417,8 @@ pub enum RunCmd {
     /// Query the harness event log by view.
     EventProjections {
         /// View name: `agent-visibility`, `pipeline-state`, `session-summary`,
-        /// `epic-summary`.
+        /// `epic-summary`, `cross-session-timeline`, `spec-tree`, `pr-metrics`,
+        /// `active-pipelines` (no `--spec` required).
         #[arg(long)]
         view: Option<String>,
         /// Spec name (required by `pipeline-state` / `epic-summary`).

@@ -45,6 +45,15 @@
         "completed_spec_dir"
       ],
       "replacement_hint": "Use spec/{name}/ (flatten layout) — status is read from the spec header, not from a bucket directory; archival is semantic-only via the pipeline.status event"
+    },
+    {
+      "from_spec": "2026-05-21-spec-lifecycle-unification",
+      "closed_at": null,
+      "obsolete_terms": [
+        "### Status:",
+        "Status:"
+      ],
+      "replacement_hint": "Use ### Stage: (Analyze|Plan|Execute|Close) + ### Outcome: (Active|Completed) instead of ### Status: (draft|approved|implementing|closed-followup|completed)"
     }
   ]
 }

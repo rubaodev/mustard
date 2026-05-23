@@ -65,11 +65,13 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
 
 ### Step 1: Detect & Confirm
 
-1. **Detect active specs** — Glob BOTH root markers (a wave plan has no `spec.md` at its root, only `wave-plan.md`):
+1a. **Try `event-projections --view active-pipelines` first.** Run `mustard-rt run event-projections --view active-pipelines` to fetch candidates with `{spec, lastEventAt, stage}`. If the view returns ≥1 pipeline, use those names and SKIP the Glob below entirely. If the view returns empty array or errors, fall through to the Glob fallback (1b).
+
+1b. **Glob fallback.** Glob BOTH root markers (a wave plan has no `spec.md` at its root, only `wave-plan.md`):
    - `.claude/spec/*/spec.md` (single specs)
    - `.claude/spec/*/wave-plan.md` (wave plans)
 
-   Each match identifies one spec by its parent dir `{specName}`. Filter by `Status:` header (and/or SQLite `pipeline_state_for_spec`) — only `draft`, `approved`, `implementing`, `closed-followup` are considered "active". Union the results. If 0 matches → inform user and stop. Do NOT replace with `**/spec.md` — that would also pick up per-wave specs and double-count wave plans.
+   Each match identifies one spec by its parent dir `{specName}`. Filter by `### Stage:` ≠ `Close` AND `### Outcome:` ≠ `Completed` (use harness `pipeline_state_for_spec` projection when available). Union the results. If 0 matches → inform user and stop. Do NOT replace with `**/spec.md` — that would also pick up per-wave specs and double-count wave plans.
 2. If multiple → ask which one; if 1 → use automatically.
 3. **Resolve operational spec file** (the file the rest of resume operates on):
    - If matched root file is `spec.md` → operational spec = that file (single-spec mode).
@@ -88,12 +90,12 @@ Before loading heavy context (sync-registry, diff-context, Explore Gate), ask th
            - Inform user inline: `Reconstruí pipeline-state do wave-plan.md (W{completed} done, W{currentWave} next).`
      c. With state (loaded or reconstructed), operational spec = result of Glob `.claude/spec/{specName}/wave-{currentWave}-*/spec.md` (one match expected).
    - **3d. Stub Expansion (wave-plan mode only).** By design `/feature` expands wave-1 fully and leaves waves N≥2 as skeletons (Status: queued, Title + 1-line summary). When resume picks up wave N≥2, the stub must be expanded inline — no `/mustard:approve` roundtrip:
-     1. Read first 30 lines of the operational spec. Treat as **stub** if `### Status: queued` AND neither `## Files` nor `## Tasks` heading is present.
+     1. Read first 30 lines of the operational spec. Treat as **stub** if `### Stage: Plan` AND `### Outcome: Active` AND neither `## Files` nor `## Tasks` heading is present.
      2. If not a stub → continue to step 4.
      3. If stub → expand inline via `Task(Plan)` (single dispatch, `model: "opus"`):
         - Prompt inputs: this wave's row in `wave-plan.md` (role, file list, deps, Rationale), the most recent completed wave's spec (entity/pattern continuity), `entity-registry.json` Grepped for entities mentioned in the file list.
-        - Required return: full expanded spec content for this wave matching the Full-scope template (Status: draft, Summary, Entity Info, Files, Tasks per agent, Dependencies, Boundaries, Acceptance Criteria, Checklist). Nothing else.
-        - On return: **Write** the content to the operational spec file (replace the skeleton), then update its header to `Status: implementing`, `Phase: EXECUTE`, `Checkpoint: {ISO now}`.
+        - Required return: full expanded spec content for this wave matching the Full-scope template (Stage: Plan, Outcome: Active, Summary, Entity Info, Files, Tasks per agent, Dependencies, Boundaries, Acceptance Criteria, Checklist). Nothing else.
+        - On return: **Write** the content to the operational spec file (replace the skeleton), then update its header to `### Stage: Execute`, `### Outcome: Active`, `### Checkpoint: {ISO now}`.
         - Inform user inline: `Expandi wave-{N} stub via Plan agent. Avançando para EXECUTE.`
      3b. **Wave size audit (advisory).** Right after the expanded spec is written, run `mustard-rt run wave-size-check --spec-dir .claude/spec/{specName}`. If the result is `action: "audited"` and the entry for the current wave (`wave === currentWave`) has `oversized: true`, print the advisory line `⚠ Wave {N} ({folder}) — {fileCount} arquivos, {layerCount} camada(s) — considere dividir ({reason})`, noting the freshly-expanded wave came out large. This is **advisory** — do NOT block, do NOT re-plan automatically; continue into EXECUTE normally. Rationale: waves N≥2 only become a full spec here at resume, so `/approve`'s size audit never sees their real size — this is the checkpoint that catches large late waves.
      4. Proceed to step 4 with the now-expanded spec.
@@ -272,7 +274,7 @@ After REVIEW returns APPROVED, run QA before CLOSE. NEVER go REVIEW→CLOSE dire
 20. **CLOSE:**
     - **Wave plan gate:** if `pipeline-state.isWavePlan === true`, only CLOSE when `completedWaves.length === totalWaves`. If waves remain (`currentWave <= totalWaves` and wave N-1 just finished), **do not** run CLOSE — instead update state (`currentWave++`, `completedWaves.push`), output `═══ WAVE {N-1} COMPLETE — {role} ═══`, and stop. Next `/mustard:resume` picks up wave N.
     - `mustard-rt run sync-registry`
-    - Spec: `Status: completed`, `Phase: CLOSE`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` status `completed`, and mark each `wave-N-{role}/spec.md` completed too.
+    - Spec: `### Stage: Close`, `### Outcome: Completed`, all `[ ]` → `[x]`. For wave plans: mark `wave-plan.md` outcome `Completed`, and mark each `wave-N-{role}/spec.md` completed too.
     - The spec dir stays at `.claude/spec/{specName}/` — status flips to `completed` via the emit below; no filesystem move.
     - **Emit completion:**
       ```bash
