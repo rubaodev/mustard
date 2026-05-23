@@ -1,9 +1,13 @@
 //! `rtk gain` adapter — translates the local `rtk` binary's savings ledger into
 //! [`SavingsRecord`]s.
 //!
-//! `rtk gain --json` prints a JSON array where every entry is one rewrite or
-//! filter operation that saved tokens, in this shape (subject to RTK
-//! versioning):
+//! This adapter accepts **two output shapes** because the rtk CLI changed flag
+//! conventions across versions and we want to ingest from either:
+//!
+//! ### Legacy shape — array of per-rewrite entries
+//!
+//! Older rtk builds (and a hypothetical future one that re-exposes per-rewrite
+//! detail) returned a JSON array, one entry per shell rewrite:
 //!
 //! ```json
 //! [
@@ -13,9 +17,27 @@
 //! ]
 //! ```
 //!
+//! ### Current shape — summary + daily breakdowns
+//!
+//! Current rtk versions (validated against the installed binary on 2026-05-23)
+//! return a JSON object with a `summary` and time-bucketed breakdowns. The
+//! adapter consumes `daily[]`, emitting one record per day:
+//!
+//! ```json
+//! {
+//!   "summary": { "total_commands": 22377, "total_saved": 409008460, ... },
+//!   "daily":   [{ "date": "2026-03-29", "saved_tokens": 102367, ... }, ...],
+//!   "weekly":  [...],
+//!   "monthly": [...]
+//! }
+//! ```
+//!
+//! The CLI invocation switched from `rtk gain --json` (which exits 2 on
+//! current rtk) to `rtk gain --all --format json` (the supported syntax).
+//!
 //! This adapter shells out to the binary via [`std::process::Command`], parses
-//! the JSON, and returns one [`SavingsRecord`] per non-zero entry — *without*
-//! writing to SQLite. The caller is responsible for persisting via
+//! the JSON, and returns one [`SavingsRecord`] per row — *without* writing to
+//! SQLite. The caller is responsible for persisting via
 //! [`crate::economy::writer::record_savings`].
 //!
 //! ## Testability
@@ -44,14 +66,15 @@ use crate::error::{Error, Result};
 use super::IngestContext;
 use super::time::now_iso;
 
-/// Pluggable runner for `rtk gain --json` so tests can inject a fake
-/// without spawning a process.
+/// Pluggable runner for `rtk gain` so tests can inject a fake without
+/// spawning a process. The runner is responsible for fetching the raw
+/// stdout; the parser in [`ingest_with`] decides how to interpret it.
 ///
 /// The single method returns the raw stdout as bytes (the same shape as
 /// `std::process::Output::stdout`) so the adapter logic that decodes the JSON
 /// stays in one place — both real and faked paths share it.
 pub trait RtkCommand {
-    /// Run `rtk gain --json` and return its stdout, or an [`Err`] if the
+    /// Run the rtk subcommand and return its stdout, or an [`Err`] if the
     /// command could not be spawned / exited non-zero.
     ///
     /// # Errors
@@ -63,7 +86,9 @@ pub trait RtkCommand {
 }
 
 /// Production [`RtkCommand`] — invokes the real binary on PATH (or the path
-/// pointed at by `MUSTARD_RTK_BIN`).
+/// pointed at by `MUSTARD_RTK_BIN`). Calls `rtk gain --all --format json` to
+/// match the current rtk CLI; the older `--json` shorthand exits 2 on
+/// current builds.
 #[derive(Debug, Default)]
 pub struct RealRtkCommand;
 
@@ -71,12 +96,12 @@ impl RtkCommand for RealRtkCommand {
     fn run(&self) -> Result<Vec<u8>> {
         let bin = std::env::var("MUSTARD_RTK_BIN").unwrap_or_else(|_| "rtk".to_string());
         let output = Command::new(&bin)
-            .args(["gain", "--json"])
+            .args(["gain", "--all", "--format", "json"])
             .output()
             .map_err(Error::from)?;
         if !output.status.success() {
             return Err(Error::check_failed(format!(
-                "rtk gain --json exited {}",
+                "rtk gain --all --format json exited {}",
                 output.status
             )));
         }
@@ -111,7 +136,7 @@ pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<S
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "rtk::ingest: `rtk gain --json` unavailable ({e}); returning 0 savings"
+                "rtk::ingest: `rtk gain --all --format json` unavailable ({e}); returning 0 savings"
             );
             return Ok(Vec::new());
         }
@@ -123,17 +148,41 @@ pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<S
             return Ok(Vec::new());
         }
     };
-    let entries = match parsed.as_array() {
-        Some(a) => a.clone(),
-        None => {
-            eprintln!("rtk::ingest: stdout was not a JSON array; returning 0 savings");
-            return Ok(Vec::new());
-        }
-    };
 
-    let ts = now_iso();
     let project = ProjectPath::new(&ctx.project_path);
 
+    // ── Shape 1: legacy array of per-rewrite entries ─────────────────────
+    // Kept for compatibility with older rtk builds (or a future one that
+    // re-exposes per-rewrite detail). Each entry gets its own
+    // `SavingsRecord` stamped with `now_iso()` because the legacy shape
+    // carries no per-row timestamp.
+    if let Some(entries) = parsed.as_array() {
+        return Ok(map_legacy_array(entries.clone(), &project));
+    }
+
+    // ── Shape 2: current `{summary, daily, weekly, monthly}` object ──────
+    // The current rtk CLI returns daily aggregates instead of per-rewrite
+    // rows. We emit one record per `daily[]` entry — keeps the temporal
+    // breakdown the dashboard wants without inventing fake per-rewrite rows.
+    // Weekly/monthly are ignored (would double-count over `daily`).
+    if let Some(daily) = parsed.get("daily").and_then(Value::as_array) {
+        return Ok(map_daily_array(daily.clone(), &project));
+    }
+
+    eprintln!("rtk::ingest: stdout shape not recognised (no array, no `daily`); returning 0 savings");
+    Ok(Vec::new())
+}
+
+/// Map a legacy `rtk gain --json` array (per-rewrite shape) to records.
+///
+/// One record per entry whose `saved_tokens > 0`. Timestamp is `now_iso`
+/// because the legacy shape carries no per-row date. The full RTK entry
+/// survives in `extra` so the dashboard can render command/before/after.
+fn map_legacy_array(
+    entries: Vec<Value>,
+    project: &ProjectPath,
+) -> Vec<SavingsRecord> {
+    let ts = now_iso();
     let mut out: Vec<SavingsRecord> = Vec::new();
     for entry in entries {
         let saved = entry
@@ -141,23 +190,16 @@ pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<S
             .and_then(Value::as_i64)
             .unwrap_or(0);
         if saved <= 0 {
-            // Zero / negative savings are not interesting and risk polluting
-            // the per-source averages the dashboard renders.
             continue;
         }
         let model_target = entry
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_owned);
-
-        // Preserve the full RTK entry under `extra` so the dashboard can
-        // surface the rewriter's `command`/`before_tokens`/`after_tokens`
-        // fields without forcing the core schema to grow per-source columns.
         let extra = match entry {
             Value::Object(map) => map,
             _ => serde_json::Map::new(),
         };
-
         out.push(SavingsRecord {
             ts: ts.clone(),
             source: SavingsSource::RtkRewrite,
@@ -170,7 +212,50 @@ pub fn ingest_with(ctx: &IngestContext, runner: &dyn RtkCommand) -> Result<Vec<S
             extra,
         });
     }
-    Ok(out)
+    out
+}
+
+/// Map current `rtk gain --all --format json` daily aggregates to records.
+///
+/// One record per day with `saved_tokens > 0`. Each record's `ts` is the
+/// day's date at noon UTC so it sorts cleanly inside its bucket but doesn't
+/// collide with a midnight timestamp from a different source. `model_target`
+/// stays `None` because the daily roll-up doesn't track per-day model split.
+fn map_daily_array(daily: Vec<Value>, project: &ProjectPath) -> Vec<SavingsRecord> {
+    let mut out: Vec<SavingsRecord> = Vec::new();
+    for entry in daily {
+        let saved = entry
+            .get("saved_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if saved <= 0 {
+            continue;
+        }
+        // Use the rtk-reported `date` field. Stamp at noon UTC so a re-ingest
+        // doesn't perfectly collide with another source's midnight write
+        // (helps eyeball uniqueness in `savings_records.ts`).
+        let ts = entry
+            .get("date")
+            .and_then(Value::as_str)
+            .map(|d| format!("{d}T12:00:00Z"))
+            .unwrap_or_else(now_iso);
+        let extra = match entry {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        out.push(SavingsRecord {
+            ts,
+            source: SavingsSource::RtkRewrite,
+            tokens_saved: saved,
+            model_target: None,
+            project_path: project.clone(),
+            spec_id: None,
+            wave_id: None,
+            agent_id: None,
+            extra,
+        });
+    }
+    out
 }
 
 
@@ -244,6 +329,43 @@ mod tests {
 
         let runner_obj = FakeRtk(Ok(b"{\"not\":\"an array\"}".to_vec()));
         let out = ingest_with(&ctx(), &runner_obj).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn ingest_with_parses_summary_plus_daily_shape() {
+        // Current rtk CLI output: a JSON object with `summary` and
+        // time-bucketed breakdowns. Adapter should iterate `daily[]` and
+        // emit one record per non-zero day, keyed by the rtk-reported date.
+        let stdout = br#"{
+            "summary": {"total_commands": 200, "total_saved": 5000},
+            "daily": [
+                {"date":"2026-05-21","commands":10,"saved_tokens":1500,"savings_pct":75.0},
+                {"date":"2026-05-22","commands":5,"saved_tokens":0,"savings_pct":0.0},
+                {"date":"2026-05-23","commands":20,"saved_tokens":3500,"savings_pct":80.0}
+            ],
+            "weekly":  [{"week":"2026-W21","saved_tokens":5000}],
+            "monthly": [{"month":"2026-05","saved_tokens":5000}]
+        }"#;
+        let runner = FakeRtk(Ok(stdout.to_vec()));
+        let out = ingest_with(&ctx(), &runner).unwrap();
+        assert_eq!(out.len(), 2, "zero-saving day must be filtered out");
+        assert_eq!(out[0].tokens_saved, 1500);
+        assert_eq!(out[0].ts, "2026-05-21T12:00:00Z");
+        assert_eq!(out[0].source, SavingsSource::RtkRewrite);
+        assert!(out[0].model_target.is_none());
+        assert_eq!(out[1].tokens_saved, 3500);
+        assert_eq!(out[1].ts, "2026-05-23T12:00:00Z");
+        // Weekly/monthly are intentionally ignored (would double-count).
+    }
+
+    #[test]
+    fn ingest_with_returns_empty_for_unknown_object_shape() {
+        // Object that is neither legacy array nor `{daily: [...]}`. Defensive
+        // fail-open — no records, no panic.
+        let stdout = br#"{"summary": {"total_commands": 1}, "totally_different": []}"#;
+        let runner = FakeRtk(Ok(stdout.to_vec()));
+        let out = ingest_with(&ctx(), &runner).unwrap();
         assert!(out.is_empty());
     }
 
