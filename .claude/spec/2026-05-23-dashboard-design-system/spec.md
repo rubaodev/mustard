@@ -38,8 +38,8 @@ Testable, binary (pass/fail) criteria. Each MUST be executable and independent.
 - [x] AC-1: dashboard build passa após refactor — Command: `pnpm --filter mustard-dashboard build`
 - [~] AC-2: DEFERRED → [[2026-05-23-tf-dashboard-eslint-baseline]] (lint passa via TF dedicado; baseline pré-existente sem eslint.config.js)
 - [x] AC-3: `DESIGN.md` existe na raiz do app dashboard com o pack binance materializado — Command: `node -e "const fs=require('fs');const t=fs.readFileSync('apps/dashboard/DESIGN.md','utf8');if(!/binance/i.test(t))process.exit(1);if(t.length<800)process.exit(2);console.log('ok')"`
-- [x] AC-4: token system unificado — arquivo legado `apps/dashboard/src/styles/theme.css` deletado e zero referência viva — Command: `node -e "const fs=require('fs');if(fs.existsSync('apps/dashboard/src/styles/theme.css'))process.exit(1);const {execSync}=require('child_process');const r=execSync('rg -l \"styles/theme.css\" apps/dashboard/src 2>nul || exit 0',{encoding:'utf8'});if(r.trim())process.exit(2);console.log('ok')"`
-- [x] AC-5: barril `components/ds/` absorvido em `components/page/`, diretório removido e nenhum import vivo — Command: `node -e "const fs=require('fs');if(fs.existsSync('apps/dashboard/src/components/ds'))process.exit(1);const {execSync}=require('child_process');const r=execSync('rg -l \"@/components/ds\" apps/dashboard/src 2>nul || exit 0',{encoding:'utf8'});if(r.trim())process.exit(2);console.log('ok')"`
+- [x] AC-4: token system unificado — arquivo legado `apps/dashboard/src/styles/theme.css` deletado e zero referência viva — Command: `node -e "const fs=require('fs');const p=require('path');if(fs.existsSync('apps/dashboard/src/styles/theme.css'))process.exit(1);const needle='styles/theme.css';const root='apps/dashboard/src';const exts=['.tsx','.ts','.jsx','.js','.mjs','.cjs','.css'];const hits=[];function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){if(e.name==='node_modules'||e.name==='.git'||e.name==='dist')continue;const f=p.join(d,e.name);if(e.isDirectory())walk(f);else if(exts.some(x=>e.name.endsWith(x))){if(fs.readFileSync(f,'utf8').includes(needle))hits.push(f)}}}walk(root);if(hits.length){console.error('matches:\\n'+hits.join('\\n'));process.exit(2)}console.log('ok')"`
+- [x] AC-5: barril `components/ds/` absorvido em `components/page/`, diretório removido e nenhum import vivo — Command: `node -e "const fs=require('fs');const p=require('path');if(fs.existsSync('apps/dashboard/src/components/ds'))process.exit(1);const needle='@/components/ds';const root='apps/dashboard/src';const exts=['.tsx','.ts','.jsx','.js','.mjs','.cjs'];const hits=[];function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){if(e.name==='node_modules'||e.name==='.git'||e.name==='dist')continue;const f=p.join(d,e.name);if(e.isDirectory())walk(f);else if(exts.some(x=>e.name.endsWith(x))){if(fs.readFileSync(f,'utf8').includes(needle))hits.push(f)}}}walk(root);if(hits.length){console.error('matches:\\n'+hits.join('\\n'));process.exit(2)}console.log('ok')"`
 - [ ] AC-6: todas as 11 páginas só importam de `@/components/ui`, `@/components/page`, `@/components/layout` ou subpastas page-bound — nenhuma importa de `@/components/ds` — Command: `node scripts/check-pages-imports.mjs apps/dashboard/src/pages`
 - [x] AC-7: brand color Mustard preservada e canvas Binance adotado — Command: `node -e "const fs=require('fs');const c=fs.readFileSync('apps/dashboard/src/style.css','utf8');if(!/--primary:\s*#dfab01/.test(c))process.exit(1);if(!/#0b0e11/.test(c))process.exit(2);if(!/#1e2329/.test(c))process.exit(3);console.log('ok')"`
 - [x] AC-8: trading semantics Binance aplicadas (`#0ecb81` up, `#f6465d` down) — Command: `node -e "const fs=require('fs');const c=fs.readFileSync('apps/dashboard/src/style.css','utf8');if(!/#0ecb81/.test(c))process.exit(1);if(!/#f6465d/.test(c))process.exit(2);console.log('ok')"`
@@ -79,9 +79,11 @@ N/A — refactor visual + estrutural, sem entidade de domínio nova. Subprojeto 
 - `apps/dashboard/src/components/layout/SplitDetail.tsx` (alinhar ritmo)
 - `apps/dashboard/src/components/ui/button.tsx` (variant `primary` = preto sobre amarelo Mustard, 40px altura, 6px radius — assinatura "black on yellow")
 
-**Wave 4 — Pages high-traffic (ui):** `Workspace.tsx`, `Specs.tsx`, `Economia.tsx`, `Knowledge.tsx`
+**Wave 4 — Refator estrutural (ui):** folder-per-component em TODO `components/**` e migração de domínios para `src/features/{specs,workspace,economy,knowledge,prd,telemetry,amend,trace}`; 10 strays do root realocados; codemod `scripts/refactor-folder-per-component.mjs` + script AC-10 `scripts/check-pages-no-inline-visual.mjs` criados; tokens fantasmas (`--color-ok`, `--color-accent-mustard`, `text-red-*`) varridos.
 
-**Wave 5 — Pages secondary (ui):** `ProjectDetail.tsx`, `SpecDetail.tsx`, `Prd.tsx`, `Commands.tsx`, `Settings.tsx`, `Preferences.tsx`, `Home.tsx`
+**Wave 5 — Pages high-traffic (ui):** `Workspace.tsx`, `Specs.tsx`, `Economia.tsx`, `Knowledge.tsx`
+
+**Wave 6 — Pages secondary (ui):** `ProjectDetail.tsx`, `SpecDetail.tsx`, `Prd.tsx`, `Commands.tsx`, `Settings.tsx`, `Preferences.tsx`, `Home.tsx`
 
 Total: ~55 arquivos tocados, 2 deletados, ~28 novos/movidos.
 
@@ -201,31 +203,26 @@ Convenção: import sempre `@/components/page`, nunca arquivo individual. Adicio
 - [ ] `components/ui/button.tsx`: ajustar variant `default`/`primary` para assinatura "black on yellow" (bg `--primary`, text `--primary-foreground` = preto, 40px altura, 6px radius)
 - [ ] Build + lint
 
-### Wave 4 — Pages high-traffic (ui, model: opus)
+### Wave 4 — Refator estrutural (ui, model: opus)
 
-- [ ] `Workspace.tsx`: trocar wrapper hand-rolled por `<PageSurface>`; hero da página em `<EditorialBand>`; auditar classes Tailwind raw e substituir por primitivas
-- [ ] `Specs.tsx`: idem; conferir que listas usam `DataCard`, deltas usam `DeltaText`
-- [ ] `Economia.tsx`: idem; pílulas numéricas em `StatPill`, deltas de custo em `DeltaText`
-- [ ] `Knowledge.tsx`: idem
-- [ ] Build + lint
-- [ ] Visual smoke test: `pnpm --filter mustard-dashboard dev` → abrir as 4 rotas; confirmar canvas escuro + cards elevados + amarelo apenas em CTA
+Detalhes em `[[wave-4-ui]]`. Folder-per-component + namespace `src/features/` para os 8 domínios; codemod determinístico + script AC-10; sweep de tokens fantasmas. Sem mudança visual nem de comportamento.
 
-### Wave 5 — Pages secondary (ui, model: opus)
+### Wave 5 — Pages high-traffic (ui, model: opus)
 
-- [ ] `ProjectDetail.tsx`, `SpecDetail.tsx`: padrão da Wave 4
-- [ ] `Prd.tsx`, `Commands.tsx`: idem
-- [ ] `Settings.tsx`, `Preferences.tsx`: idem
-- [ ] `Home.tsx`: idem
-- [ ] Build + lint
-- [ ] Visual smoke test: abrir as 7 rotas restantes
+Detalhes em `[[wave-5-ui]]`. `Workspace`, `Specs`, `Economia`, `Knowledge` compõem `<PageSurface>` + `<EditorialBand>` + primitivas; imports via `@/features/*`; check-pages-no-inline-visual passa nas 4.
+
+### Wave 6 — Pages secondary (ui, model: opus)
+
+Detalhes em `[[wave-6-ui]]`. `ProjectDetail`, `SpecDetail`, `Prd`, `Commands`, `Settings`, `Preferences`, `Home` no mesmo padrão; AC-6 e AC-10 do parent ficam verdes ao fim — destrava CLOSE do wave plan.
 
 ## Dependências
 
 - Wave 2 depende de Wave 1 (tokens unificados antes de consolidar barril)
 - Wave 3 depende de Wave 2 (primitivas estabilizadas antes do shell)
-- Wave 4 depende de Wave 3 (shell estável antes de migrar pages)
-- Wave 5 depende de Wave 4 (padrão validado primeiro nas high-traffic)
-- npm: `+@fontsource-variable/ibm-plex-mono`, `-@fontsource-variable/jetbrains-mono`, `-@fontsource/jetbrains-mono`. Nenhuma outra dep nova.
+- Wave 4 depende de Wave 3 (shell estável antes do refator estrutural)
+- Wave 5 depende de Wave 4 (`features/*` existem antes das pages alto-tráfego migrarem)
+- Wave 6 depende de Wave 5 (padrão `<PageSurface>` + `<EditorialBand>` validado primeiro nas 4 high-traffic)
+- npm: `+@fontsource-variable/ibm-plex-mono`, `-@fontsource-variable/jetbrains-mono`, `-@fontsource/jetbrains-mono`. Wave 4 pode adicionar `acorn-jsx` devDep se necessário.
 
 ## Limites
 

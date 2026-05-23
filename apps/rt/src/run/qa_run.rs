@@ -110,20 +110,39 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
         return None;
     }
     let rest = rest[mark.len_utf8()..].strip_prefix(']')?.trim_start();
-    // `AC-<digits>`.
+    // `AC-<id>` where id matches `[A-Za-z0-9]+(-[A-Za-z0-9]+)*`.
     let lower = rest.to_lowercase();
     if !lower.starts_with("ac-") {
         return None;
     }
     let after_ac = &rest[3..];
-    // Accept any alphanumeric suffix after `AC-` — wave-plans use `AC-G1`,
-    // `AC-G2` (the `G` modifier marks GLOBAL ACs that span every wave), while
-    // single specs keep `AC-1`, `AC-2`. The id pattern is `AC-[A-Za-z0-9]+`.
-    let id_end = after_ac
+    // Accept multi-segment IDs like `AC-W4-1`, `AC-TF-3`, `AC-G1`, `AC-1`.
+    // Pattern: `[A-Za-z0-9]+(-[A-Za-z0-9]+)*` — each `-` must be followed by
+    // at least one alphanumeric character to be part of the ID (not a separator
+    // to the description text). Wave-plans use `AC-G1`/`AC-G2` (global ACs
+    // spanning every wave) and wave-scoped IDs like `AC-W4-1`..`AC-W4-10`.
+    let first_end = after_ac
         .find(|c: char| !c.is_ascii_alphanumeric())
         .unwrap_or(after_ac.len());
-    if id_end == 0 {
+    if first_end == 0 {
         return None;
+    }
+    // Extend the ID through any additional `-<alphanum>` segments.
+    let mut id_end = first_end;
+    loop {
+        let tail = &after_ac[id_end..];
+        // Must start with `-` followed by at least one alphanumeric.
+        if !tail.starts_with('-') {
+            break;
+        }
+        let seg_start = 1; // skip the `-`
+        let seg_len = tail[seg_start..]
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(tail[seg_start..].len());
+        if seg_len == 0 {
+            break;
+        }
+        id_end += 1 + seg_len; // consume `-` + segment
     }
     let id = format!("AC-{}", &after_ac[..id_end]);
     let after_id = after_ac[id_end..].trim_start();
@@ -622,6 +641,33 @@ mod tests {
         let b = parse_ac_line("- [x] AC-G7: skill reads modelo — Command: `grep -q Modelo SKILL.md`").unwrap();
         assert_eq!(b.id, "AC-G7");
         assert_eq!(b.command, "grep -q Modelo SKILL.md");
+    }
+
+    /// Multi-segment IDs (`AC-W4-1`, `AC-TF-3`, `AC-W4-10`) must parse
+    /// correctly. These appear in wave-scoped specs where the wave number is
+    /// embedded in the ID (e.g. wave-4 ACs use `AC-W4-N`). This was the bug
+    /// fixed in `2026-05-23-tf-qa-run-parser-multidash-ac`: the scanner stopped
+    /// at the first `-` inside the ID suffix, producing `AC-W4` instead of
+    /// `AC-W4-1` and returning zero parseable items for the whole section.
+    #[test]
+    fn parses_ac_id_multi_segment() {
+        // Two-segment: wave-scoped single digit.
+        let a = parse_ac_line("- [ ] AC-W4-1: layout ok — Command: `cargo build`").unwrap();
+        assert_eq!(a.id, "AC-W4-1");
+        assert_eq!(a.command, "cargo build");
+        // Two-segment: wave-scoped double digit.
+        let b = parse_ac_line("- [x] AC-W4-10: all tokens — Command: `cargo test`").unwrap();
+        assert_eq!(b.id, "AC-W4-10");
+        assert_eq!(b.command, "cargo test");
+        // Two-segment: TF prefix.
+        let c = parse_ac_line("- [ ] AC-TF-3: parser fix — Command: `true`").unwrap();
+        assert_eq!(c.id, "AC-TF-3");
+        assert_eq!(c.command, "true");
+        // Single-segment regression: AC-1 and AC-G1 must still work.
+        let d = parse_ac_line("- [ ] AC-1: base — Command: `echo ok`").unwrap();
+        assert_eq!(d.id, "AC-1");
+        let e = parse_ac_line("- [ ] AC-G1: global — Command: `echo ok`").unwrap();
+        assert_eq!(e.id, "AC-G1");
     }
 
     /// PT heading "Critérios de Aceitação globais" (suffix word after the
