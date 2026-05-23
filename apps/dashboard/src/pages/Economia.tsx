@@ -311,17 +311,17 @@ export function Economia() {
 
       {/* ── Custo estimado por spec / onda (per-dispatch attribution) ──── */}
       <section className="flex flex-col gap-3">
-        <header className="flex items-baseline justify-between gap-3 flex-wrap">
-          <div className="flex flex-col gap-0.5">
+        <header className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
             <h2 className="text-sm font-medium">Custo estimado por spec / onda</h2>
-            <p className="text-[11px] text-[--ds-text-tertiary] max-w-[680px]">
-              soma do custo de cada execução atribuída à spec — uma estimativa interna por dispatch,
-              útil para comparar features. Não é o valor cobrado pela Anthropic.
-            </p>
+            <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em] font-medium text-primary/70 bg-primary/10 border border-primary/20">
+              estimado
+            </span>
           </div>
-          <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em] font-medium text-primary/70 bg-primary/10 border border-primary/20">
-            estimado
-          </span>
+          <p className="text-[11px] text-[--ds-text-tertiary]">
+            soma do custo de cada execução atribuída à spec — uma estimativa interna por dispatch,
+            útil para comparar features. Não é o valor cobrado pela Anthropic.
+          </p>
         </header>
         <EstimatedBySpecWave
           perSpec={perSpec.data ?? []}
@@ -448,13 +448,28 @@ function EstimatedBySpecWave({
       />
     );
   }
-  // Group waves under their parent spec; drop wave rows without a wave_id.
+  // Group waves under their parent spec. We split a spec's wave rows into two
+  // buckets: those with a real `wave_id` (rendered normally) and those without
+  // (collapsed into a single "sem onda atribuída" footer row so the user sees
+  // the attribution gap instead of silently missing dispatches).
   const wavesBySpec = new Map<string, WaveCost[]>();
+  const unwavedBySpec = new Map<string, WaveCost>();
   for (const w of perWave) {
-    if (!w.spec_id || !w.wave_id) continue;
-    const list = wavesBySpec.get(w.spec_id) ?? [];
-    list.push(w);
-    wavesBySpec.set(w.spec_id, list);
+    if (!w.spec_id) continue;
+    if (w.wave_id) {
+      const list = wavesBySpec.get(w.spec_id) ?? [];
+      list.push(w);
+      wavesBySpec.set(w.spec_id, list);
+    } else {
+      const acc = unwavedBySpec.get(w.spec_id);
+      if (acc) {
+        acc.span_count += w.span_count;
+        acc.tokens += w.tokens;
+        acc.cost_usd_micros += w.cost_usd_micros;
+      } else {
+        unwavedBySpec.set(w.spec_id, { ...w });
+      }
+    }
   }
 
   return (
@@ -484,7 +499,7 @@ function EstimatedBySpecWave({
                 tokens={row.tokens}
                 costMicros={row.cost_usd_micros}
               />
-              {waves.length > 0 && (
+              {(waves.length > 0 || unwavedBySpec.has(row.spec_id)) && (
                 <div className="flex flex-col">
                   {waves.map((w) => (
                     <SpecOrWaveRow
@@ -496,6 +511,17 @@ function EstimatedBySpecWave({
                       nested
                     />
                   ))}
+                  {unwavedBySpec.has(row.spec_id) && (
+                    <SpecOrWaveRow
+                      key={`wave-${row.spec_id}-unattributed`}
+                      name="(sem onda atribuída)"
+                      dispatches={unwavedBySpec.get(row.spec_id)!.span_count}
+                      tokens={unwavedBySpec.get(row.spec_id)!.tokens}
+                      costMicros={unwavedBySpec.get(row.spec_id)!.cost_usd_micros}
+                      nested
+                      muted
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -507,10 +533,10 @@ function EstimatedBySpecWave({
         <div className="px-3 py-2 border-t border-[--ds-surface-hover]/60 bg-[--ds-surface-hover]/20 text-[10.5px] text-[--ds-text-tertiary] flex items-center gap-1.5">
           <Info className="h-3 w-3 text-[--ds-text-tertiary] shrink-0" strokeWidth={2} />
           <span>
-            {unattributedDispatches.toLocaleString()} execução
-            {unattributedDispatches === 1 ? "" : "ões"} sem spec registrada
-            {unattributedDispatches === 1 ? "" : "s"} — não aparecem na tabela
-            porque não dá pra atribuir a uma feature específica.
+            {unattributedDispatches === 1
+              ? "1 execução sem spec registrada"
+              : `${unattributedDispatches.toLocaleString()} execuções sem spec registrada`}
+            {" "}— não aparecem na tabela porque não dá pra atribuir a uma feature específica.
           </span>
         </div>
       )}
@@ -530,12 +556,15 @@ function SpecOrWaveRow({
   tokens,
   costMicros,
   nested = false,
+  muted = false,
 }: {
   name: string;
   dispatches: number;
   tokens: number;
   costMicros: number;
   nested?: boolean;
+  /** Render the row as a "missing attribution" entry: italic + dimmer. */
+  muted?: boolean;
 }) {
   return (
     <div
@@ -550,10 +579,12 @@ function SpecOrWaveRow({
         )}
         <span
           className={cn(
-            "font-mono truncate",
+            "truncate",
+            muted ? "italic font-normal" : "font-mono",
             nested
               ? "text-[11.5px] text-[--ds-text-secondary]"
               : "text-[12.5px] text-[--ds-text-primary]",
+            muted && "text-[--ds-text-tertiary]",
           )}
           title={name}
         >
