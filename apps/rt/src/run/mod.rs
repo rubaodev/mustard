@@ -15,6 +15,7 @@ pub mod scan;
 pub mod amend_finalize;
 mod analyze_validation;
 mod artifact_update;
+mod backfill_run_usage_cost;
 mod db_maintain;
 mod doctor;
 mod complete_spec;
@@ -504,6 +505,9 @@ pub enum RunCmd {
     },
     /// Normalise `rtk gain` analytics into the Mustard JSON shape.
     RtkGain,
+    /// Backfill `cost_usd_micros` on legacy `run_usage` rows with NULL cost,
+    /// applying the same sonnet fallback the writer uses for new spans.
+    BackfillRunUsageCost,
     /// Pre-dispatch orchestration for `/scan` — emits the dispatch plan JSON.
     ScanOrchestrate {
         /// Single subproject to scan (optional positional).
@@ -792,6 +796,7 @@ pub fn dispatch(cmd: RunCmd) {
             quiet,
         ),
         RunCmd::RtkGain => rtk_gain::run(),
+        RunCmd::BackfillRunUsageCost => backfill_run_usage_cost::run(),
         RunCmd::ScanOrchestrate { target, force } => {
             scan_orchestrate::run(force, target.as_deref())
         }

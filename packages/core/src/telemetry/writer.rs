@@ -217,6 +217,129 @@ pub fn lookup_attribution_by_session(
 /// Milliseconds in one day — the unit for the [`prune_older_than_days`] wrapper.
 const MS_PER_DAY: i64 = 86_400_000;
 
+/// Outcome of a [`backfill_null_costs`] sweep — how many rows we looked at and
+/// how many we wrote back. The caller (a `mustard-rt run` subcommand) prints
+/// this as JSON so the user can confirm the operation did something.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct BackfillReport {
+    /// Rows that matched the candidate filter — NULL cost AND non-zero tokens.
+    pub scanned: usize,
+    /// Subset of `scanned` for which we wrote a non-zero cost. Equal to
+    /// `scanned` in the happy path; smaller only if a row computed to 0.
+    pub updated: usize,
+}
+
+/// Backfill `cost_usd_micros` on legacy `run_usage` rows whose cost is NULL.
+///
+/// Designed for the one-shot case where the writer changed (see the
+/// `2026-05-23-price-frame-model-fallback` tactical fix) but the historical
+/// data was already on disk with NULL costs from the previous code path.
+///
+/// Policy mirrors `economy::sources::transcript::price_frame` exactly:
+///
+/// 1. Only touch rows with `cost_usd_micros IS NULL`. Idempotent — running
+///    twice updates nothing new because the second pass finds no NULL rows.
+/// 2. Skip rows whose `(input + cache_read + output)` totals zero — there is
+///    nothing to price, NULL is the honest value.
+/// 3. If the row has a known `model`, use its pricing table entry. If
+///    `model` is NULL or unknown, fall back to `claude-sonnet-4-6` (the
+///    project default per `CLAUDE.md`).
+///
+/// All UPDATEs run inside one transaction so a sweep is all-or-nothing.
+///
+/// # Errors
+///
+/// Returns [`Error::Sqlite`] on a database failure.
+pub fn backfill_null_costs(conn: &Connection) -> Result<BackfillReport> {
+    use crate::economy::estimator::model_pricing_usd_micros_per_million;
+    // The project default — kept in sync with the same constant in
+    // `economy::sources::transcript::price_frame`. Mirroring rather than
+    // re-exporting keeps the writer self-contained.
+    const FALLBACK_MODEL: &str = "claude-sonnet-4-6";
+
+    // ── Step 1: collect candidates ─────────────────────────────────────
+    // SELECT before UPDATE so we know the exact span_id set we touched, and
+    // so the UPDATE step can use parameterised IN clauses without re-running
+    // the SQL twice. Limit fields to what `price_frame` needs.
+    //
+    // Candidate filter accepts BOTH legacy storage shapes:
+    //   - `cost_usd_micros IS NULL` (price_frame returned None pre-fallback)
+    //   - `cost_usd_micros = 0` paired with non-zero tokens (older writer
+    //     paths normalised None to 0 — semantically the same gap)
+    // Rows with cost=0 AND tokens=0 are honest zeros (no work was done)
+    // and stay untouched.
+    let mut stmt = conn.prepare(
+        "SELECT span_id, model, input_tokens, output_tokens, cache_read_input_tokens \
+         FROM run_usage \
+         WHERE (cost_usd_micros IS NULL OR cost_usd_micros = 0) \
+           AND (COALESCE(input_tokens,0) > 0 OR COALESCE(output_tokens,0) > 0 \
+                OR COALESCE(cache_read_input_tokens,0) > 0)",
+    )?;
+    type CandidateRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>);
+    let candidates: Vec<CandidateRow> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .filter_map(std::result::Result::ok)
+        .collect();
+    drop(stmt);
+
+    let scanned = candidates.len();
+    if scanned == 0 {
+        return Ok(BackfillReport::default());
+    }
+
+    // ── Step 2: compute + UPDATE in one transaction ────────────────────
+    // Single transaction so a partial failure leaves the table untouched —
+    // the user can re-run without worrying about half-applied state.
+    let tx = conn.unchecked_transaction()?;
+    let mut updated = 0usize;
+    for (span_id, model_opt, input_tokens, output_tokens, cache_read) in candidates {
+        let input = input_tokens.unwrap_or(0).saturating_add(cache_read.unwrap_or(0));
+        let output = output_tokens.unwrap_or(0);
+
+        // Same fallback ladder as `price_frame`: try the row's model first,
+        // fall through to sonnet pricing if missing or unknown.
+        let (in_per_m, out_per_m) = match model_opt.as_deref() {
+            Some(m) => {
+                let (i, o) = model_pricing_usd_micros_per_million(m);
+                if i == 0 && o == 0 {
+                    model_pricing_usd_micros_per_million(FALLBACK_MODEL)
+                } else {
+                    (i, o)
+                }
+            }
+            None => model_pricing_usd_micros_per_million(FALLBACK_MODEL),
+        };
+
+        // Defensive: if the fallback model itself isn't in the pricing
+        // table (someone removed the row?), leave the SQL NULL alone.
+        if in_per_m == 0 && out_per_m == 0 {
+            continue;
+        }
+
+        let cost = input
+            .saturating_mul(in_per_m)
+            .saturating_add(output.saturating_mul(out_per_m))
+            / 1_000_000;
+        if cost <= 0 {
+            // Pricing produced zero — keep NULL rather than write a misleading 0.
+            continue;
+        }
+
+        tx.execute(
+            "UPDATE run_usage SET cost_usd_micros = ?1 \
+             WHERE span_id = ?2 \
+               AND (cost_usd_micros IS NULL OR cost_usd_micros = 0)",
+            params![cost, span_id],
+        )?;
+        updated += 1;
+    }
+    tx.commit()?;
+
+    Ok(BackfillReport { scanned, updated })
+}
+
 /// Delete telemetry rows older than `cutoff_ts_ms` (milliseconds since the Unix
 /// epoch) and return the total number of rows removed.
 ///
