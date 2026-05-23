@@ -1,6 +1,8 @@
 # Enhancement: i18n-foundation-sidebar
 
-### Status: closed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Scope: light
 ### Checkpoint: 2026-05-13T00:00:00Z
 ### Lang: pt
 

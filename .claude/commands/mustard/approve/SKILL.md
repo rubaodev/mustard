@@ -50,7 +50,6 @@ Check if the located spec is a wave plan: look for `.claude/spec/{specName}/wave
 4. **Spec Checkpoint — update spec header:**
    - `### Stage: Plan`
    - `### Outcome: Active`
-   - `### Phase: PLAN`
    - `### Checkpoint: {ISO timestamp now}`
 5. **Pipeline State — emit status transition to approved:**
    - Extract `spec-name` from the spec directory (e.g. basename of path → `2026-02-26-linked-services-card`)

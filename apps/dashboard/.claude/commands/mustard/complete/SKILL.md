@@ -50,8 +50,8 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 1. Locate active spec in `.claude/spec/active/`
 2. If none exists → inform user and stop
 3. **Spec Checkpoint — update spec header:**
-   - `### Status: completed`
-   - `### Phase: CLOSE`
+   - `### Stage: Close`
+   - `### Outcome: Completed`
    - `### Checkpoint: {ISO timestamp now}`
    - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mark-checklist-item.js`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
 4. **Entity Registry — update if needed:**
@@ -131,7 +131,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 ## Cancellation Flow
 
 If the user wants to cancel (not complete):
-- Update spec: `### Status: cancelled`
+- Update spec: `### Outcome: Cancelled`
 - Move to `completed/` anyway (for history)
 - Delete `.claude/.pipeline-states/{spec-name}.json`
 - Output: "Pipeline cancelled. Spec archived in completed/."

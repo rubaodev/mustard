@@ -1,6 +1,8 @@
 # Feature: dashboard-sqlite-reader
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-12T00:00:00Z
 ### Lang: pt
 

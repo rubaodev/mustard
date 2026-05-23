@@ -1,6 +1,8 @@
 # Enhancement: dashboard-activity-feed
 
-### Status: closed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Scope: light
 ### Checkpoint: 2026-05-13T03:20:34.000Z
 ### Lang: pt
 

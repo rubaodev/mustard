@@ -1,6 +1,8 @@
 # Feature: dashboard-telemetry-tab
 
-### Status: closed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T05:10:00Z
 ### Lang: pt
 

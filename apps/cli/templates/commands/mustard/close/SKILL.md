@@ -85,7 +85,7 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 
 1. Locate spec in `.claude/spec/{name}/` (flat layout — no `active/completed/superseded` buckets; status is read from the spec header / SQLite projection)
 2. If none exists → inform user and stop
-3. **Spec Checkpoint — update spec header (rewrite legacy `### Status:`/`### Phase:` lines if present):**
+3. **Spec Checkpoint — update spec header:**
    - `### Stage: Close`
    - `### Outcome: Completed`
    - `### Checkpoint: {ISO timestamp now}`

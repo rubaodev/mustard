@@ -88,7 +88,6 @@ See `.claude/pipeline-config.md` Escalation Statuses for concern classification 
 3. **Spec Checkpoint — update spec header:**
    - `### Stage: Close`
    - `### Outcome: Completed`
-   - `### Phase: CLOSE`
    - `### Checkpoint: {ISO timestamp now}`
    - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mustard-rt run mark-checklist-item`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
 4. **Entity Registry — update if needed:**

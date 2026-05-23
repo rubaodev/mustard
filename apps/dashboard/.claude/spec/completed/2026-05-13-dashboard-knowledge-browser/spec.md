@@ -1,6 +1,8 @@
 # Enhancement: dashboard-knowledge-browser
 
-### Status: closed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Scope: light
 ### Checkpoint: 2026-05-13T03:16:54.000Z
 ### Lang: pt
 

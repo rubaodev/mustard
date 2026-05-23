@@ -1,6 +1,8 @@
 # Feature: dashboard-live-pipeline-status
 
-### Status: closed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T06:15:00Z
 ### Lang: pt
 

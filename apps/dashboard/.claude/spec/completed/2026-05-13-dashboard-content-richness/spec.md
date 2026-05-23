@@ -1,6 +1,8 @@
 # Feature: dashboard-content-richness
 
-### Status: closed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T03:00:00Z
 ### Lang: pt
 

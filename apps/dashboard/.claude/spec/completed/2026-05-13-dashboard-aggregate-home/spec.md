@@ -1,6 +1,8 @@
 # Enhancement: dashboard-aggregate-home
 
-### Status: closed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Scope: light
 ### Checkpoint: 2026-05-13T03:13:33.000Z
 ### Lang: pt
 

@@ -1,7 +1,7 @@
 # Feature: dashboard-multi-project-discovery
 
-### Status: completed
-### Phase: CLOSE
+### Stage: Close
+### Outcome: Completed
 ### Scope: full
 ### Checkpoint: 2026-05-12T23:00:00Z
 ### Lang: pt

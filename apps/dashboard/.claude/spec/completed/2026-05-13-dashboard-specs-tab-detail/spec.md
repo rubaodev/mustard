@@ -1,6 +1,8 @@
 # Feature: dashboard-specs-tab-detail
 
-### Status: closed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T03:02:53.000Z
 ### Lang: pt
 

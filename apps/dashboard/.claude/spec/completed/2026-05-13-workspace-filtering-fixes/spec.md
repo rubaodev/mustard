@@ -1,6 +1,8 @@
 # Bugfix: Workspace Filtering + Switcher Placement + Watcher Coverage
 
-### Status: completed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Scope: light
 ### Checkpoint: 2026-05-13T01:00:00Z
 ### Lang: pt
 

@@ -1,6 +1,8 @@
 # Feature: dashboard-visual-hardening
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-12T23:20:00Z
 ### Lang: pt
 

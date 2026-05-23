@@ -1,6 +1,8 @@
 # Enhancement: dashboard-visual-craft-pass
 
-### Status: completed | Phase: CLOSE | Scope: light
+### Stage: Close
+### Outcome: Completed
+### Scope: light
 ### Checkpoint: 2026-05-12T00:00:00Z
 ### Lang: pt
 

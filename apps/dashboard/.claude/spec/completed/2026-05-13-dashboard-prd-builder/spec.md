@@ -1,6 +1,8 @@
 # Feature: dashboard-prd-builder
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T19:00:00Z
 ### Lang: pt
 

@@ -1,6 +1,8 @@
 # Feature: dashboard-commands-catalog
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T18:30:00Z
 ### Lang: pt
 

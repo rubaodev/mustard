@@ -1,6 +1,8 @@
 # Feature: dashboard-tauri-scaffold
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-12T00:00:00Z
 ### Commits: 70ca592 (feat: bootstrap), e97d68b (chore: remove nested template duplicates)
 ### QA: 8/8 AC PASS (AC-5 tauri build --debug em 37.6s, binário mustard-dashboard.exe 21 MB)

@@ -1,6 +1,8 @@
 # Feature: dashboard-notion-linear-refactor
 
-### Status: completed | Phase: CLOSE | Scope: full
+### Stage: Close
+### Outcome: Completed
+### Scope: full
 ### Checkpoint: 2026-05-13T00:00:00Z
 ### Lang: pt
 

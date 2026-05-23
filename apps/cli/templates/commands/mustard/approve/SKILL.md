@@ -47,7 +47,7 @@ Check if the located spec is a wave plan: look for `.claude/spec/{specName}/wave
 
 **If `wave-plan.md` does NOT exist:** proceed as a single spec (original behavior below).
 
-4. **Spec Checkpoint — update spec header to new format (rewrite legacy `### Status:`/`### Phase:` lines if present):**
+4. **Spec Checkpoint — update spec header:**
    - `### Stage: Plan`
    - `### Outcome: Active`
    - `### Flags:`
