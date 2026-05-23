@@ -21,7 +21,7 @@ export function SplitDetail({
 }) {
   if (!open) return <>{children}</>;
   return (
-    <div className="fixed left-[220px] top-[48px] right-0 bottom-0 z-30 flex bg-background">
+    <div className="fixed left-[220px] top-[40px] right-0 bottom-0 z-30 flex bg-background">
       <div className="w-1/2 min-w-0 overflow-y-auto px-6 py-6">{children}</div>
       <aside className="w-1/2 border-l border-border flex flex-col overflow-hidden">
         {panel}

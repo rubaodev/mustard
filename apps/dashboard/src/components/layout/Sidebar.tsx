@@ -71,12 +71,12 @@ import { useIsMustardRepo } from "@/hooks/useArtifactDrift";
 // ---------------------------------------------------------------------------
 
 const groupHeaderClass =
-  "text-xs uppercase tracking-wider font-medium text-muted-foreground px-3 py-1.5";
+  "text-xs uppercase tracking-wider text-muted-foreground px-3 py-1.5";
 
 const toolNavItemClass = ({ isActive }: { isActive: boolean }) =>
   `flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors duration-150 ${
     isActive
-      ? "bg-primary/10 text-primary font-medium"
+      ? "bg-primary/15 text-foreground font-medium"
       : "text-sidebar-foreground/70 hover:bg-muted/40 hover:text-foreground"
   }`;
 
@@ -86,7 +86,7 @@ const leafItemClass = (active: boolean) =>
   cn(
     "flex items-center gap-2 pl-9 pr-3 py-1.5 rounded-md text-sm transition-colors duration-150",
     active
-      ? "bg-primary/10 text-primary font-medium"
+      ? "bg-primary/15 text-foreground font-medium"
       : "text-sidebar-foreground/70 hover:bg-muted/40 hover:text-foreground",
   );
 
@@ -116,9 +116,9 @@ function StatusDotInline({ kind }: { kind: StatusKind }) {
   }
   const color =
     kind === "installed"
-      ? "bg-[--color-ok] ring-[--color-ok]/30"
+      ? "bg-[--intent-success] ring-[--intent-success]/30"
       : kind === "updateAvailable"
-        ? "bg-[--color-accent-mustard] ring-[--color-accent-mustard]/30"
+        ? "bg-[--primary] ring-[--primary]/30"
         : "bg-zinc-500 ring-zinc-500/30";
   return (
     <span
@@ -217,16 +217,16 @@ function ProjectTreeNode({
     statusLineColor = "text-muted-foreground";
   } else if (!detection?.installed) {
     statusLine = t("sidebar.status.notInstalled");
-    statusLineColor = "text-red-400";
+    statusLineColor = "text-[--intent-error]";
   } else if (!detection.version) {
     statusLine = t("sidebar.status.versionUnknown");
-    statusLineColor = "text-[--color-ok]";
+    statusLineColor = "text-[--intent-success]";
   } else {
     const suffix = updateAvailable
       ? t("sidebar.status.updateAvailable")
       : t("sidebar.status.installed");
     statusLine = `v${detection.version} · ${suffix}`;
-    statusLineColor = updateAvailable ? "text-red-400" : "text-[--color-ok]";
+    statusLineColor = updateAvailable ? "text-[--intent-error]" : "text-[--intent-success]";
   }
 
   async function ensureActive() {
@@ -355,7 +355,7 @@ function ProjectTreeNode({
                   title={t("artifact.staleCount", { count: staleCount })}
                   className={cn(
                     "shrink-0 inline-flex items-center px-1.5 rounded text-[10px] leading-4 tabular-nums",
-                    "border border-[--color-accent-mustard]/30 bg-[--color-accent-mustard]/10 text-[--color-accent-mustard]",
+                    "border border-[--primary]/30 bg-[--primary]/10 text-[--primary]",
                   )}
                 >
                   {t("artifact.staleCount", { count: staleCount })}

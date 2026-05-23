@@ -55,16 +55,16 @@ export function Topbar() {
   const hasActive = liveQueries.some((q) => (q.data?.length ?? 0) > 0);
 
   return (
-    <header className="row-start-1 col-start-2 h-12 sticky top-0 bg-background border-b border-border flex items-center justify-between gap-3 px-5 z-10">
+    <header className="row-start-1 col-start-2 h-10 sticky top-0 bg-card flex items-center justify-between gap-3 px-5 z-10">
       <div className="flex items-center gap-3 min-w-0">
         <nav className="text-sm flex items-center gap-1.5 min-w-0" aria-label="Breadcrumb">
           <span className="text-muted-foreground">Mustard</span>
           <span className="text-muted-foreground">/</span>
-          <span className="text-foreground font-medium truncate">{label}</span>
+          <span className="text-foreground truncate">{label}</span>
         </nav>
         {hasActive && (
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span className="w-1.5 h-1.5 rounded-full bg-[--color-ok] animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[--intent-success] animate-pulse" />
             <span>live</span>
           </div>
         )}
