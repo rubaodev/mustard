@@ -22,8 +22,40 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Per-command timeout (2 min), matching `verify-pipeline.js`.
+/// Default per-command timeout (2 min) — the historical contract from
+/// `verify-pipeline.js`. Used when the command prefix gives no stack hint.
 const CMD_TIMEOUT_SECS: u64 = 120;
+
+/// Per-stack default timeouts (W0/AC-0.3). Overridable by the matching
+/// `MUSTARD_VERIFY_TIMEOUT_*` env var so CI/dev can tune without a rebuild.
+const TIMEOUT_RUST_SECS: u64 = 600;
+const TIMEOUT_TS_SECS: u64 = 120;
+const TIMEOUT_PYTHON_SECS: u64 = 180;
+
+/// Pick a timeout based on the verification command's leading token. Rust
+/// workspaces routinely exceed the 120 s default; respect that without
+/// punishing the TS/Python paths. Env override per stack:
+///
+/// - `MUSTARD_VERIFY_TIMEOUT_RUST`
+/// - `MUSTARD_VERIFY_TIMEOUT_TS`
+/// - `MUSTARD_VERIFY_TIMEOUT_PYTHON`
+fn effective_timeout(command: &str) -> u64 {
+    let head = command.split_whitespace().next().unwrap_or("");
+    let (env_key, default) = match head {
+        "cargo" | "rustc" => ("MUSTARD_VERIFY_TIMEOUT_RUST", TIMEOUT_RUST_SECS),
+        "npm" | "pnpm" | "yarn" | "node" | "tsc" | "vitest" | "playwright" => {
+            ("MUSTARD_VERIFY_TIMEOUT_TS", TIMEOUT_TS_SECS)
+        }
+        "python" | "python3" | "pytest" | "poetry" | "uv" => {
+            ("MUSTARD_VERIFY_TIMEOUT_PYTHON", TIMEOUT_PYTHON_SECS)
+        }
+        _ => return CMD_TIMEOUT_SECS,
+    };
+    std::env::var(env_key)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(default)
+}
 
 /// A discovered subproject's verification commands.
 struct VerifyTarget {
@@ -141,8 +173,9 @@ fn discover_via_config(cwd: &Path) -> Vec<VerifyTarget> {
     out
 }
 
-/// Last-resort defaults probe — `npm test` if a `package.json` exists,
-/// `dotnet build` if a `.csproj` exists.
+/// Last-resort defaults probe — stack-aware (W0/AC-0.3). Prefers Rust over
+/// JS because a Rust monorepo with a root `package.json` (pnpm workspace +
+/// Cargo workspace) used to fall through to `npm test` and time out.
 fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
     let Ok(entries) = fs::read_dir(cwd) else {
         return Vec::new();
@@ -151,6 +184,31 @@ fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
         .into_iter()
         .map(|e| e.file_name)
         .collect();
+    // Rust first: a workspace `Cargo.toml` is the strongest stack signal.
+    if names.iter().any(|n| n == "Cargo.toml") {
+        return vec![VerifyTarget {
+            name: "default".to_string(),
+            cwd: cwd.to_path_buf(),
+            build: Some("cargo build --workspace --quiet".to_string()),
+            test: Some("cargo test --workspace --quiet".to_string()),
+        }];
+    }
+    if names.iter().any(|n| n == "go.mod") {
+        return vec![VerifyTarget {
+            name: "default".to_string(),
+            cwd: cwd.to_path_buf(),
+            build: Some("go build ./...".to_string()),
+            test: Some("go test ./...".to_string()),
+        }];
+    }
+    if names.iter().any(|n| n == "pyproject.toml" || n == "setup.py") {
+        return vec![VerifyTarget {
+            name: "default".to_string(),
+            cwd: cwd.to_path_buf(),
+            build: None,
+            test: Some("python -m pytest -q".to_string()),
+        }];
+    }
     if names.iter().any(|n| n == "package.json") {
         return vec![VerifyTarget {
             name: "default".to_string(),
@@ -194,8 +252,9 @@ fn build_shell_command(command: &str) -> Command {
     c
 }
 
-/// Run one shell command in `cwd` with a timeout. Returns `Ok` on exit 0,
-/// `Err(excerpt)` otherwise.
+/// Run one shell command in `cwd` with a stack-aware timeout. Returns `Ok` on
+/// exit 0, `Err(excerpt)` otherwise. Timeout picked by [`effective_timeout`]
+/// (Rust 600 s, TS/Python 120-180 s; env-overridable).
 fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
     let mut cmd = build_shell_command(command);
     cmd.current_dir(cwd)
@@ -203,7 +262,8 @@ fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(CMD_TIMEOUT_SECS);
+    let timeout_secs = effective_timeout(command);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -230,7 +290,7 @@ fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("timeout after {}ms", CMD_TIMEOUT_SECS * 1000));
+                    return Err(format!("timeout after {}ms", timeout_secs * 1000));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }

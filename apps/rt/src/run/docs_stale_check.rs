@@ -47,6 +47,10 @@ const IGNORE_DIRS: &[&str] = &[
     "node_modules", ".git", "dist", "bin", "obj", ".next", "vendor",
     "__pycache__", ".nuxt", ".output", "build", "coverage", "target",
     "migrations", ".vs", ".idea",
+    // W0/AC-0.2: skip orphan agent worktrees that linger under
+    // `.claude/worktrees/agent-*` — they mirror the source tree and trigger
+    // false-positive stale-doc hits.
+    "worktrees", ".worktrees",
 ];
 
 /// Directory recursion depth cap — a working copy this deep is pathological.

@@ -751,7 +751,6 @@ impl Check for SessionStart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
