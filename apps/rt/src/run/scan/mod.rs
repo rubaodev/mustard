@@ -413,9 +413,13 @@ mod tests {
 
     // --- Wave 1 (`project-profiler`) single-pass behaviour ----------------
 
-    /// Serialises access to the disk-read / disk-hit global counters so the
-    /// two read-count tests below do not race when `cargo test` runs them on
-    /// separate threads of the default pool.
+    /// Historical mutex kept for symmetry with earlier revisions that used
+    /// a global atomic counter. Wave 1 (`project-profiler`) moved the
+    /// disk-read / disk-hit counters into `thread_local!` cells, so each
+    /// test owns its own slot and the two `single_pass_*` tests cannot
+    /// contaminate each other (or any other parallel test) any more. The
+    /// lock is retained as a no-op safety net should a future refactor
+    /// reintroduce shared state.
     static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Build a multi-stack fixture: one Rust subproject with a diesel entity,
@@ -529,9 +533,9 @@ mod tests {
     /// AC-2 — during a single `Scanner::scan` call no source file is re-opened
     /// via `read_file_safe` after the visit pass has cached it. The per-faceta
     /// scanners would otherwise re-read each file ≈5 times (one per `scan_*`
-    /// method). Tests using the global counters acquire `COUNTER_LOCK` so they
-    /// do not race when `cargo test` runs them concurrently on the same thread
-    /// pool.
+    /// method). The counters live in `thread_local!` cells, so the test is
+    /// immune to interference from parallel tests; `COUNTER_LOCK` is held as
+    /// a no-op for forward compatibility (see its docstring).
     #[test]
     fn single_pass_reads_once() {
         let _guard = COUNTER_LOCK

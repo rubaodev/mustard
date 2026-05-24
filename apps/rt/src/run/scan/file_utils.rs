@@ -23,10 +23,9 @@
 
 use mustard_core::fs as mfs;
 use rayon::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Universal directory skip-list — mirrors `DEFAULT_IGNORE` in `file-utils.js`.
 pub const DEFAULT_IGNORE: &[&str] = &[
@@ -181,10 +180,10 @@ pub fn read_file_safe(file_path: &Path) -> Option<String> {
     if let Some(hit) = cache_read(file_path) {
         return Some(hit);
     }
-    DISK_READ_COUNTER.fetch_add(1, Ordering::Relaxed);
+    DISK_READ_COUNTER.with(|c| c.set(c.get() + 1));
     let result = mfs::read_to_string(file_path).ok();
     if result.is_some() {
-        DISK_HIT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        DISK_HIT_COUNTER.with(|c| c.set(c.get() + 1));
     }
     result
 }
@@ -264,22 +263,32 @@ thread_local! {
     static CACHE_STACK: RefCell<Vec<VisitCache>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Global counter of disk reads performed by [`read_file_safe`] when no cache
-/// covered the path. Used by the single-pass parity test (AC-2) to assert that
-/// a scan reads each source file at most once. Production callers ignore it.
-static DISK_READ_COUNTER: AtomicU64 = AtomicU64::new(0);
-/// Companion counter: increments only when the disk read returned `Some` —
-/// i.e. when an *existing* file slipped past the cache. Tests assert this stays
-/// at zero, which is the real "single-pass" guarantee. Probes for absent files
-/// (`Cargo.toml`/`main.rs` shortcuts) are tracked by `DISK_READ_COUNTER` only.
-static DISK_HIT_COUNTER: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    /// Thread-local counter of disk reads performed by [`read_file_safe`] when
+    /// no cache covered the path. Used by the single-pass parity test (AC-2)
+    /// to assert that a scan reads each source file at most once.
+    ///
+    /// Thread-local (rather than a global `AtomicU64`) so concurrent `cargo
+    /// test` workers do not race: every test sees its own counter, and the
+    /// only path that bypasses the cache to bump it (`read_file_safe`) runs
+    /// on the caller thread — the rayon-parallel reads inside [`visit`] go
+    /// through `mfs::read_to_string` directly and never touch this counter.
+    /// Production callers ignore it.
+    static DISK_READ_COUNTER: Cell<u64> = const { Cell::new(0) };
+    /// Companion counter: increments only when the disk read returned `Some` —
+    /// i.e. when an *existing* file slipped past the cache. Tests assert this
+    /// stays at zero, which is the real "single-pass" guarantee. Probes for
+    /// absent files (`Cargo.toml`/`main.rs` shortcuts) are tracked by
+    /// `DISK_READ_COUNTER` only. Same thread-local rationale as above.
+    static DISK_HIT_COUNTER: Cell<u64> = const { Cell::new(0) };
+}
 
 /// Snapshot the disk-read attempt counter — test-only helper.
 #[doc(hidden)]
 #[must_use]
 #[allow(dead_code)]
 pub fn disk_read_count() -> u64 {
-    DISK_READ_COUNTER.load(Ordering::Relaxed)
+    DISK_READ_COUNTER.with(Cell::get)
 }
 
 /// Snapshot the disk-hit counter (disk reads that returned content) —
@@ -288,15 +297,15 @@ pub fn disk_read_count() -> u64 {
 #[must_use]
 #[allow(dead_code)]
 pub fn disk_hit_count() -> u64 {
-    DISK_HIT_COUNTER.load(Ordering::Relaxed)
+    DISK_HIT_COUNTER.with(Cell::get)
 }
 
-/// Reset both global counters — test-only helper.
+/// Reset both thread-local counters — test-only helper.
 #[doc(hidden)]
 #[allow(dead_code)]
 pub fn reset_disk_read_count() {
-    DISK_READ_COUNTER.store(0, Ordering::Relaxed);
-    DISK_HIT_COUNTER.store(0, Ordering::Relaxed);
+    DISK_READ_COUNTER.with(|c| c.set(0));
+    DISK_HIT_COUNTER.with(|c| c.set(0));
 }
 
 /// Source-file extensions the scanner family reads. Everything else under the

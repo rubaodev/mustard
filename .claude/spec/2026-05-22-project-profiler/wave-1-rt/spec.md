@@ -4,7 +4,7 @@
 ### Outcome: Active
 ### Flags:
 ### Lang: pt
-### Checkpoint: 2026-05-23T00:00:00Z
+### Checkpoint: 2026-05-24T09:05:08.646Z
 ### Parent: 2026-05-22-project-profiler
 
 ## PRD
@@ -19,9 +19,9 @@ O scan de um subprojeto faz 1 passada em vez de ~6, e o `entity-registry.json` r
 
 ## Critérios de Aceitação
 
-- [ ] AC-1: paridade do registry — a passada única produz o mesmo registry que o motor antigo num fixture — Command: `cargo test -p mustard-rt single_pass_parity`
-- [ ] AC-2: cada arquivo é lido uma única vez por scan (contador de leituras instrumentado no teste) — Command: `cargo test -p mustard-rt single_pass_reads_once`
-- [ ] AC-3: workspace compila e clippy limpo — Command: `cargo clippy -p mustard-rt -- -D warnings`
+- [x] AC-1: paridade do registry — a passada única produz o mesmo registry que o motor antigo num fixture — Command: `cargo test -p mustard-rt single_pass_parity`
+- [x] AC-2: cada arquivo é lido uma única vez por scan (contador de leituras instrumentado no teste) — Command: `cargo test -p mustard-rt single_pass_reads_once`
+- [x] AC-3: workspace compila e clippy limpo — Command: `cargo clippy -p mustard-rt -- -D warnings`
 
 ## Plano
 
@@ -41,13 +41,13 @@ Introduzir um `FileVisitor`/passada única que, ao ler cada arquivo uma vez, ali
 
 ### rt Agent (Wave 1)
 
-- [ ] Adicionar `rayon` ao `mustard-rt`; computar ignore-set uma vez por root e passar por referência.
-- [ ] Implementar passada única `visit(root) -> Vec<(RelPath, String)>` que lê cada arquivo uma vez, paralelizada com rayon, resultado ordenado por path.
-- [ ] Refatorar `Scanner::scan()` para receber o vetor da passada e rodar os extratores de faceta sobre o conteúdo em memória (sem novo `collect_files`).
-- [ ] Adaptar `cluster_discovery` e `enrich_descriptions` para consumir o conteúdo já lido.
-- [ ] Teste de paridade (`single_pass_parity`): registry idêntico (byte-estável) ao baseline num fixture multi-stack.
-- [ ] Teste de contagem de leitura (`single_pass_reads_once`): instrumentar `mustard-core::fs` no teste e afirmar 1 leitura por arquivo.
-- [ ] `cargo build --workspace` + `cargo clippy -p mustard-rt -- -D warnings` + `cargo test -p mustard-rt`.
+- [x] Adicionar `rayon` ao `mustard-rt`; computar ignore-set uma vez por root e passar por referência.
+- [x] Implementar passada única `visit(root) -> Vec<(RelPath, String)>` que lê cada arquivo uma vez, paralelizada com rayon, resultado ordenado por path.
+- [x] Refatorar `Scanner::scan()` para receber o vetor da passada e rodar os extratores de faceta sobre o conteúdo em memória (sem novo `collect_files`).
+- [x] Adaptar `cluster_discovery` e `enrich_descriptions` para consumir o conteúdo já lido.
+- [x] Teste de paridade (`single_pass_parity`): registry idêntico (byte-estável) ao baseline num fixture multi-stack.
+- [x] Teste de contagem de leitura (`single_pass_reads_once`): instrumentar `mustard-core::fs` no teste e afirmar 1 leitura por arquivo.
+- [x] `cargo build --workspace` + `cargo clippy -p mustard-rt -- -D warnings` + `cargo test -p mustard-rt`.
 
 ## Limites
 
