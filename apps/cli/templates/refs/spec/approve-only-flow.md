@@ -20,7 +20,7 @@ Uma spec tem duas camadas nomeadas (ver `/feature` § Full Scope): `## PRD` — 
 
 1. **Step 0: AUTO-SYNC (obrigatório)** — já rodado no Step 1 do `/mustard:spec`. Não re-executar.
 2. **Read** `.claude/pipeline-config.md` — agents, model selection (seleção de modelo).
-3. A spec já foi localizada pelo picker do `/mustard:spec` (filtrada por `### Stage:` + `### Outcome:` — só `Outcome: Active` AND `Stage ∈ {Plan, Execute}`).
+3. A spec já foi localizada pelo picker do `/mustard:spec` (filtrada por header Stage + Outcome — só Outcome `Active` AND Stage ∈ {Plan, Execute}).
 
 ### Step 3b: Wave Plan Detection (detecção de plano de wave)
 
@@ -43,12 +43,7 @@ Cheque se a spec localizada é um plano de wave: procure `.claude/spec/{specName
 
 **Se `wave-plan.md` NÃO existe:** seguir como spec única (comportamento abaixo).
 
-4. **Spec Checkpoint — atualizar header da spec:**
-   - `### Stage: Plan`
-   - `### Outcome: Active`
-   - `### Flags:`
-   - `### Checkpoint: {ISO timestamp now}`
-   (preservar linhas existentes `### Scope:`, `### Lang:`, `### Parent:`)
+4. **Spec Checkpoint — atualizar header da spec**: setar Stage `Plan`, Outcome `Active`, Flags vazio, Checkpoint `{ISO timestamp now}`. Preservar linhas existentes de Scope, Lang e Parent (header).
 5. **Pipeline State — emitir transição de stage para Plan:**
    - Extrair `spec-name` do diretório da spec (ex.: basename do path → `2026-02-26-linked-services-card`)
    ```bash

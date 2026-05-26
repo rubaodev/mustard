@@ -1,6 +1,11 @@
 ---
 name: commit-workflow
 description: Git commit strategy, submodule-aware, budget ≤15 API calls. Use when committing changes, staging files, or coordinating commits across submodules.
+tags: [docs, any]
+appliesTo: []
+scope: [code-editing]
+metadata:
+  generated_by: foundation
 disable-model-invocation: true
 source: manual
 ---

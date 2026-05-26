@@ -46,6 +46,13 @@ mod backfill_run_usage_cost;
 mod backfill_run_usage_spec;
 mod db_maintain;
 mod doctor;
+// W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
+// (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
+// dispatched by `doctor.rs` but live in dedicated modules so the legacy
+// `CheckResult` envelope stays out of their way.
+pub mod doctor_claude_paths;
+pub mod doctor_workspace_leaks;
+pub mod doctor_i1;
 pub mod plan_from_spec;
 mod complete_spec;
 mod context_slice;
@@ -786,16 +793,18 @@ pub enum RunCmd {
         expect_rows_after: Option<String>,
     },
     /// Read-only installation health diagnostic: wiring, drift, state health,
-    /// wave-integrity, and (optionally) residue. Prints a compact
-    /// OK/WARN/FAIL report and exits 1 if any category is FAIL, 0 otherwise.
+    /// wave-integrity, claude-paths, workspace-leaks, i1, and (optionally)
+    /// residue. Prints a compact OK/WARN/FAIL report and exits 1 if any
+    /// category is FAIL, 0 otherwise.
     ///
     /// Pass `--json` as a shortcut for `--format json` (W10.T10.6).
     Doctor {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
-        /// Run a specific named check in isolation (e.g. `skill-discovery`,
-        /// `wave-integrity`).
+        /// Run a specific named check in isolation: `skill-discovery`,
+        /// `wave-integrity`, `claude-paths` (W3.T3.4), `workspace-leaks`
+        /// (W3.T3.8), or `i1` (W3.T3.9).
         #[arg(long)]
         check: Option<String>,
         /// Output format: `text` (default) or `json`.

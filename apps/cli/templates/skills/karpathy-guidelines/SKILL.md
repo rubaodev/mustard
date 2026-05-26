@@ -1,6 +1,11 @@
 ---
 name: karpathy-guidelines
 description: Behavioral guidelines to reduce common LLM coding mistakes (think before coding, simplicity first, surgical changes, goal-driven execution). Use when implementing, writing, editing, modifying, changing, refactoring, fixing, bugfixing, or reviewing code. Apply to any code alteration in features, bugfixes, refactors, or reviews. Loads the core principles only; use karpathy-guidelines-detail for examples on complex refactors.
+tags: [any, add, fix, refactor, review]
+appliesTo: []
+scope: [code-editing, review]
+metadata:
+  generated_by: foundation
 license: MIT
 source: manual
 ---

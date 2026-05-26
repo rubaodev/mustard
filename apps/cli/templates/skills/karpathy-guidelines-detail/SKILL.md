@@ -1,6 +1,11 @@
 ---
 name: karpathy-guidelines-detail
-description: Extended examples and elaboration for karpathy-guidelines. Load when refactor crosses 3+ files, complex behavior change, or first attempt was rejected for slop. Skip for trivial edits — karpathy-guidelines core is sufficient.
+description: Extended examples and elaboration for karpathy-guidelines. Use when refactor crosses 3+ files, complex behavior change, or first attempt was rejected for slop. Skip for trivial edits — karpathy-guidelines core is sufficient.
+tags: [refactor, fix]
+appliesTo: []
+scope: [code-editing, review]
+metadata:
+  generated_by: foundation
 license: MIT
 source: manual
 ---

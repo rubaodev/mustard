@@ -199,6 +199,30 @@
           }
         ]
       }
+    ],
+
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk mustard-rt on Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk mustard-rt on Notification",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   },
 

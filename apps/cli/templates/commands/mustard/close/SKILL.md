@@ -1,220 +1,45 @@
 ---
-name: mustard:close
-description: Finalize the active pipeline (CLOSE phase) — verify build/review/QA, archive the spec, emit the completion banner.
+name: mustard-close
+description: Use when the user runs /close or asks to finalize, complete, or cancel the active pipeline. Verifies build/review/QA, archives the spec, and emits the completion banner.
+source: manual
 ---
-
+<!-- mustard:generated -->
 # /close - Finalize Pipeline
 
 ## Trigger
 
 `/close`
 
-## Description
-
-Finalizes the current pipeline, either completing or canceling.
-
 ## Verification Gate (MANDATORY)
 
-1. **Review completed**: Check pipeline state — review agent MUST have run and returned APPROVED. If not → dispatch review first (see resume.md step 19)
-2. **Build passes**: run build command for each affected subproject (from .claude/pipeline-config.md)
-3. **Changes match spec**: each `[x]` corresponds to a real file
-4. **Zero CRITICAL issues**: review report shows zero CRITICAL violations (SOLID, design system, patterns, i18n, integration)
-5. **No regressions**: existing features still work
-
-#### Verification Gate (automated)
-
-Before finalizing, run build/test verification:
-
-```bash
-mustard-rt run verify-pipeline
-```
-
-- **Exit 0** (all passed): proceed to completion
-- **Exit 1** (failures): report failed builds/tests to user, do NOT proceed
-  - Show: which subproject failed, which command, error excerpt
-  - Ask user: fix and retry, or force-complete anyway
-- **Script missing/errors**: warn but continue (fail-open)
-
-Then run QA against the spec's Acceptance Criteria:
-
-```bash
-mustard-rt run qa-run --spec {spec-name}
-```
-
-Parse the JSON output and branch on `payload.overall`:
-- **`fail`**: do NOT finalize — report the failing AC (`criteria[]` entries with `status: "fail"`) to the user and stop.
-- **`skip`** (no Acceptance Criteria section / no parseable items): warn the user that QA was skipped, then continue.
-- **`pass`**: continue to completion.
-- **Script missing/errors**: warn but continue (fail-open).
-
-If ANY gate fails: do NOT mark complete → report what failed + suggest fix. If review wasn't run → run it now before completing.
-
-Re-reviews always dispatch with `model: "sonnet"` (see `review/SKILL.md § Model Selection`).
-
-#### Docs Audit (narrative drift)
-
-Then check the documentation surface for terms that an earlier architectural
-spec marked obsolete:
-
-```bash
-mustard-rt run docs-stale-check
-```
-
-Parse the JSON output and branch on `hits[]`:
-
-- **`hits.length === 0`**: continue.
-- **`hits.length > 0`**: print each hit as `{file}:{line} — {pattern} ({from_spec}) — {hint}` and:
-  - **Default (warn):** surface the list to the user and continue.
-  - **`MUSTARD_DOCS_AUDIT_MODE=strict`:** do NOT finalize — block CLOSE until the docs are updated. Re-run the gate after edits.
-- **Script missing/errors:** warn but continue (fail-open).
-
-The audit registry lives at `.claude/.docs-audit.json` — each closed architectural spec appends an entry there.
-
-#### Surface Accumulated Concerns
-
-Before finalizing, scan the active spec for any `## Concerns` section written during EXECUTE:
-
-- If concerns exist: list them in the completion output under `## Concerns Surfaced`
-- If any concern was classified `BLOCKED` or was never resolved: do NOT complete — report to user first
-- If all concerns are `CONCERN` or `DEFERRED` (non-blocking): note them and proceed
-- This step is a read-only scan — do NOT alter or dismiss concerns during CLOSE
-
-See `.claude/pipeline-config.md` Escalation Statuses for concern classification rules.
+Each step blocks CLOSE on failure (fail-open only on script missing): (1) **Review** ran + APPROVED, zero CRITICAL findings; (2) **Build + tests** — `mustard-rt run verify-pipeline` (exit 1 → stop + report); (3) **QA** — `mustard-rt run qa-run --spec {spec}` (fail → list failing AC + STOP; skip → warn + continue); (4) **Docs audit** — `mustard-rt run docs-stale-check` (hits > 0 + `MUSTARD_DOCS_AUDIT_MODE=strict` → block; default warns + continues); (5) **Concerns** — unresolved `BLOCKED` → block; `CONCERN`/`DEFERRED` → surface + proceed; (6) **Checklist** — any `- [ ]` remaining → ABORT + report unmarked items.
 
 ## Action
 
-1. Locate spec in `.claude/spec/{name}/` (flat layout — no `active/completed/superseded` buckets; status is read from the spec header / SQLite projection)
-2. If none exists → inform user and stop
-3. **Spec Checkpoint — update spec header:**
-   - `### Stage: Close`
-   - `### Outcome: Completed`
-   - `### Checkpoint: {ISO timestamp now}`
-   - **Verify Checklist consistency** — count `- [ ]` lines in `## Checklist`. If any remain, ABORT and report the unmarked items to the user (each item should already have been marked by the executor agent during EXECUTE via `mustard-rt run mark-checklist-item`). Do NOT batch-mark on behalf of the agents. `close-gate.js` enforces this same rule with `MUSTARD_CHECKLIST_GATE_MODE=strict`.
-4. **Entity Registry — update if needed:**
-   - `mustard-rt run sync-registry`
-   - **Schema-aware refresh (conditional):** If the spec's `## Files` section touched any file matching `*.schema.ts`, `*.entity.ts`, `*.prisma`, `*DbContext*.cs`, or `schema.rs`, run `rtk mustard-rt run sync-registry` to refresh `entity-registry.json`. If sync-registry fails (non-zero exit or script missing), log a warning and continue with close — this step is non-blocking.
-5. **Mark spec as `closed-followup`** (stage 1 of two-stage close):
-   ```bash
-   mustard-rt run complete-spec <spec-name>
-   ```
-   - The spec.md header is updated via `emit-pipeline` (Wave 2) — `status: closed-followup` is written into the SQLite projection; no filesystem move happens. The spec dir stays at `.claude/spec/{name}/` regardless of status.
-   - The script snapshots `affectedFiles` from harness events + `git diff --name-only <parent>...HEAD`.
-   - `metrics-tracker` only attributes new tool calls to this spec when `tool_input.file_path ∈ affectedFiles`.
-   - Spec is auto-archived (status flipped to `completed` via `--archive`) when:
-     - `session-cleanup` runs and the spec has been `closed-followup` for more than 24h, OR
-     - A new `/mustard:feature|bugfix|task` invocation runs `mustard-rt run complete-spec <spec-name> --archive` on any pending followups first.
-6. **Pipeline State — emit completion:**
-   - Emit the stage and outcome so the SQLite projection reflects the closed state:
-     ```bash
-     mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Close\"}"
-     mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec-name} --payload "{\"outcome\":\"Completed\"}"
-     mustard-rt run emit-pipeline --kind pipeline.flag.set --spec {spec-name} --payload "{\"flag\":\"followup_open\"}"
-     ```
-   - The `followup_open` flag keeps the spec visible for follow-up edits. No JSON file is deleted here — the `--archive` stage in `mustard-rt run complete-spec` handles archival.
-6b. **Knowledge Capture:**
-   - Review patterns discovered during this pipeline
-   - For each significant pattern/convention/entity discovered:
-     ```bash
-     echo '{"type":"pattern","name":"...","description":"...","source":"{spec-name}"}' | mustard-rt run memory knowledge
-     ```
-   - Focus on: naming conventions used, architectural decisions, integration patterns
-   - Skip trivial or already-known patterns
+1. Locate spec at `.claude/spec/{name}/`. Status from header + SQLite projection.
+2. Update header: Stage `Close`, Outcome `Completed`, Checkpoint `{ISO now}`.
+3. `mustard-rt run sync-registry` if `## Files` touched schemas.
+4. Two-stage close (events only):
 
-6b2. **Lessons Persist — record lessons learned:**
-   - Review what went well or poorly during this pipeline
-   - For each lesson worth remembering across sessions:
-     ```bash
-     echo '{"type":"lesson","content":"<lesson description>","source":"<spec-name>","context":"learned during EXECUTE/CLOSE"}' | mustard-rt run memory decision
-     ```
-   - Focus on: integration gotchas, naming issues discovered, performance pitfalls
-   - Skip trivial or already-captured lessons (max 3 entries)
-
-6c. **Token Economy — RTK report (if available):**
-   - Run `rtk gain --all --format json` via Bash
-   - If RTK available: extract `saved_tokens` and `savings_pct`
-   - Include in output block below
-6d. **Metrics Archive:**
-   - Read metrics from the pipeline state derived from the SQLite event log (`mustard-rt run event-projections --view pipeline-state --spec {spec-name}`)
-   - If metrics exist, ensure `.claude/metrics/` directory exists
-   - Save to `.claude/metrics/{spec-name}.json`:
-     ```json
-     {
-       "name": "{spec-name}",
-       "completedAt": "{ISO timestamp}",
-       "durationMs": "{calculated from startedAt to now}",
-       "apiCalls": "{from metrics}",
-       "retries": "{from metrics}",
-       "pass1": "{true if metrics.retries === 0, otherwise false}",
-       "toolBreakdown": "{from metrics}",
-       "dispatchFailuresByPhase": "{from metrics, if present}",
-       "gate_saves": "{from metrics, if present}",
-       "wave_reentry": "{from metrics, if present}",
-       "skillHits": "{from metrics, if present}",
-       "rtkSavings": { "saved": N, "pct": N }
-     }
-     ```
-   - Set `"pass1": true` if `metrics.retries === 0`, otherwise `"pass1": false`
-   - Omit `dispatchFailuresByPhase`, `gate_saves`, `wave_reentry`, `skillHits` if not present in state metrics
-   - If no metrics in state file, skip silently
-7. **Output — visual feedback:**
-
-7a. **Pipeline Summary (BEFORE banner):**
-
-   ```bash
-   mustard-rt run pipeline-summary --spec-dir .claude/spec/{spec-name}
-   ```
-
-   Print the resulting markdown inline above the banner. The command renders four sections — `## Feito|What's Done`, `## Falta|What's Left`, `## Próximos Passos|Next Steps`, `## Follow-ups Manuais|Manual Follow-ups` (labels follow the spec's `### Lang:`).
-
-   **Fail-open:** if the command exits non-zero, log a warning and continue with the banner — do NOT abort CLOSE.
-
-7b. **Wave Tree:**
-   - Run `mustard-rt run wave-tree --spec-dir .claude/spec/{spec-name}`
-   - Print output inline before the banner
-   - Fail-open (warn, do not abort CLOSE)
-
-   ```
-   ================================================================
-     PIPELINE COMPLETE — {spec-name}
-     Agents: {n} ok | Files: {created} created, {modified} modified
-     [v] Registry updated | [v] Spec status: completed
-     Token Economy: {saved}k saved ({pct}% reduction) — RTK
-   ================================================================
-   ```
-
-   If RTK is not installed or the gain command fails, omit the Token Economy line.
-
-## Cancellation Flow
-
-If the user wants to cancel (not complete):
-- Update spec header: `### Stage: Close`, `### Outcome: Cancelled`
-- Emit cancellation (no filesystem move — status lives in the header + SQLite projection):
-  ```bash
-  mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec-name} --payload "{\"stage\":\"Close\"}"
-  mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec-name} --payload "{\"outcome\":\"Cancelled\"}"
-  ```
-- Output: "Pipeline cancelled. Spec marked Stage=Close / Outcome=Cancelled."
-
-## Results Documentation
-
-On completion, the output must include:
-- Summary of changes (what and why)
-- Files created/modified
-
-### Wave 8 — Epic Auto-Fold
-
-After marking a spec CLOSE, check if the parent epic is now complete:
 ```bash
-mustard-rt run epic-fold --detect
+mustard-rt run complete-spec <spec-name>
+mustard-rt run emit-pipeline --kind pipeline.stage --spec {spec} --payload "{\"stage\":\"Close\"}"
+mustard-rt run emit-pipeline --kind pipeline.outcome --spec {spec} --payload "{\"outcome\":\"Completed\"}"
+mustard-rt run emit-pipeline --kind pipeline.flag.set --spec {spec} --payload "{\"flag\":\"followup_open\"}"
 ```
-If output lists epics ready to fold:
-```bash
-mustard-rt run epic-fold --epic <name>
-```
-This consolidates learning into the `knowledge_patterns` table of the SQLite event store (added via `mustard-rt run memory add ...`) and marks granular events compactable.
 
-## When to Use
+5. Knowledge: one `mustard-rt run memory knowledge` per significant pattern; one `mustard-rt run memory decision` per lesson (max 3 each, skip trivial).
+6. Metrics archive: read pipeline-state projection → save to `.claude/metrics/{spec}.json` (omit missing fields).
+7. Print: `pipeline-summary` → `wave-tree` → banner `PIPELINE COMPLETE — {spec}` with agents/files/registry + optional `rtk gain` token line. All fail-open.
+8. Epic auto-fold (Wave 8): `epic-fold --detect` → if non-empty, `epic-fold --epic <name>` per entry.
 
-- After successful implementation and review
-- To cancel an ongoing pipeline
-- To force close if something went wrong
+## Cancellation
+
+Stage `Close`, Outcome `Cancelled`. Emit `pipeline.stage: Close` + `pipeline.outcome: Cancelled`. No filesystem move.
+
+## INVIOLABLE RULES
+
+- NEVER bypass the verification gate.
+- NEVER move the spec directory — archival is event-only.
+- NEVER batch-mark Checklist items on behalf of agents.
+- Re-reviews always dispatch with `model: "sonnet"`.

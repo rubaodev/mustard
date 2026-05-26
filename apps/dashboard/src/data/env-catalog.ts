@@ -442,13 +442,13 @@ export const ENV_CATALOG: EnvGroup[] = [
     keys: [
       {
         key: 'MUSTARD_SPEC_LANG',
-        label: 'Idioma das specs e da pipeline',
-        default: 'en',
-        options: ['en', 'pt'],
-        desc: 'Idioma usado em specs geradas e headers da pipeline.',
+        label: 'Idioma das specs e da pipeline (BCP-47)',
+        default: 'en-US',
+        options: ['en-US', 'pt-BR'],
+        desc: 'Idioma usado em specs geradas e headers da pipeline (BCP-47).',
         valueDocs: {
-          en: 'Specs e headers em inglês (padrão).',
-          pt: 'Specs e headers em português.',
+          'en-US': 'Specs e headers em inglês (padrão).',
+          'pt-BR': 'Specs e headers em português.',
         },
       },
     ],

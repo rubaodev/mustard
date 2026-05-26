@@ -1067,7 +1067,8 @@ fn render_report_json(results: &[CheckResult]) {
 pub struct DoctorOpts {
     /// Also scan for dead file/script references (slower).
     pub residue: bool,
-    /// Named check to run in isolation (e.g. `skill-discovery`).
+    /// Named check to run in isolation (e.g. `skill-discovery`,
+    /// `claude-paths`, `workspace-leaks`, `i1`).
     pub check: Option<String>,
     /// Output format: `text` (default) or `json`.
     pub format: String,
@@ -1084,12 +1085,23 @@ pub fn run(opts: DoctorOpts) {
 
     // When a specific --check is requested, run only that check.
     if let Some(ref check_name) = opts.check {
+        // W3.T3.4 / T3.8 / T3.9 — the three claude-paths-single-source checks
+        // produce native JSON shapes (not the generic `CheckResult` envelope).
+        // They short-circuit BEFORE the legacy match below so their JSON form
+        // is the only output.
+        if matches!(check_name.as_str(), "claude-paths" | "workspace-leaks" | "i1") {
+            run_typed_check(check_name, &cwd, opts.format == "json");
+            emit_economy(started.elapsed().as_millis(), 1, false);
+            return;
+        }
+
         let result = match check_name.as_str() {
             "skill-discovery" => run_skill_discovery_check(&cwd),
             "wave-integrity" => check_wave_integrity(&claude_dir),
             other => {
                 eprintln!(
-                    "doctor: unknown check '{other}'. Known: skill-discovery, wave-integrity"
+                    "doctor: unknown check '{other}'. Known: skill-discovery, \
+                     wave-integrity, claude-paths, workspace-leaks, i1"
                 );
                 std::process::exit(1);
             }
@@ -1121,17 +1133,171 @@ pub fn run(opts: DoctorOpts) {
         results.push(check_residue(&claude_dir));
     }
 
+    // W3.T3.10 — claude-paths-single-source check trio. Each check renders
+    // its native JSON object under its own top-level key in the JSON path;
+    // in text mode it folds into a `CheckResult` envelope so the OK/WARN/FAIL
+    // summary line still works.
+    let cp_report = crate::run::doctor_claude_paths::run(&cwd);
+    let wl_report = crate::run::doctor_workspace_leaks::run(&cwd);
+    let i1_report = crate::run::doctor_i1::run(&cwd);
+
     if opts.format == "json" {
-        render_report_json(&results);
+        render_combined_json(&results, &cp_report, &wl_report, &i1_report);
     } else {
+        results.push(claude_paths_to_check_result(&cp_report));
+        results.push(workspace_leaks_to_check_result(&wl_report));
+        results.push(i1_to_check_result(&i1_report));
         render_report(&results);
     }
 
-    let any_fail = results.iter().any(|r| r.status == Status::Fail);
-    emit_economy(started.elapsed().as_millis(), results.len(), any_fail);
+    // i1 violations are hard errors — exit-non-zero even when every legacy
+    // check returns OK.
+    let any_fail = results.iter().any(|r| r.status == Status::Fail) || !i1_report.ok;
+    emit_economy(started.elapsed().as_millis(), results.len() + 3, any_fail);
     if any_fail {
         std::process::exit(1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// W3.T3.4 / T3.8 / T3.9 — typed-check JSON path
+// ---------------------------------------------------------------------------
+
+/// Run one of the typed checks (`claude-paths`, `workspace-leaks`, `i1`) and
+/// print its native JSON shape. Text mode renders the same payload as
+/// pretty-printed JSON — the typed checks do not have a separate text format,
+/// callers asking for text get JSON regardless (the typed shape IS the
+/// contract).
+fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
+    let value = match name {
+        "claude-paths" => serde_json::to_value(crate::run::doctor_claude_paths::run(cwd)),
+        "workspace-leaks" => serde_json::to_value(crate::run::doctor_workspace_leaks::run(cwd)),
+        "i1" => {
+            let report = crate::run::doctor_i1::run(cwd);
+            let exit_non_zero = !report.ok;
+            let v = serde_json::to_value(report);
+            // Print first so consumers see the body before we exit.
+            print_typed_value(v, json_format);
+            if exit_non_zero {
+                std::process::exit(1);
+            }
+            return;
+        }
+        _ => return,
+    };
+    print_typed_value(value, json_format);
+}
+
+fn print_typed_value(
+    value: Result<serde_json::Value, serde_json::Error>,
+    _json_format: bool,
+) {
+    let v = value.unwrap_or_else(|_| serde_json::json!({}));
+    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()));
+}
+
+/// Render the default (all-checks) JSON payload. Combines the legacy
+/// `CheckResult` array shape with the three W3 typed reports under fixed
+/// top-level keys (`claude_paths`, `workspace_leaks`, `i1`) so the dashboard
+/// and CI consumers can read each independently.
+fn render_combined_json(
+    legacy: &[CheckResult],
+    cp: &crate::run::doctor_claude_paths::ClaudePathsReport,
+    wl: &crate::run::doctor_workspace_leaks::WorkspaceLeaksReport,
+    i1: &crate::run::doctor_i1::I1Report,
+) {
+    let checks: Vec<serde_json::Value> = legacy
+        .iter()
+        .map(|r| {
+            let status_str = r.status.label().to_ascii_lowercase();
+            let message = if r.details.is_empty() {
+                String::new()
+            } else if r.details.len() == 1 {
+                r.details[0].clone()
+            } else {
+                r.details.join("; ")
+            };
+            json!({
+                "name": r.name,
+                "status": status_str,
+                "message": message,
+                "details": r.details,
+            })
+        })
+        .collect();
+
+    let any_fail = legacy.iter().any(|r| r.status == Status::Fail) || !i1.ok;
+    let any_warn = legacy.iter().any(|r| r.status == Status::Warn)
+        || !cp.divergences.is_empty()
+        || !wl.leaks.is_empty();
+    let overall = if any_fail { "fail" } else if any_warn { "warn" } else { "ok" };
+
+    let violations: Vec<String> = legacy
+        .iter()
+        .filter(|r| r.name == "skill-discovery" && r.status == Status::Warn)
+        .flat_map(|r| r.details.iter())
+        .cloned()
+        .collect();
+
+    let body = json!({
+        "checks": checks,
+        "overall": overall,
+        "violations": violations,
+        // W3.T3.10 — three named, typed reports keyed verbatim.
+        "claude_paths": cp,
+        "workspace_leaks": wl,
+        "i1": i1,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
+    );
+}
+
+/// Project a `ClaudePathsReport` onto the legacy `CheckResult` envelope for
+/// text-mode rendering.
+fn claude_paths_to_check_result(
+    report: &crate::run::doctor_claude_paths::ClaudePathsReport,
+) -> CheckResult {
+    if report.divergences.is_empty() {
+        let mut r = CheckResult::ok("claude-paths");
+        r.details.push("filesystem matches ClaudePaths catalog".to_string());
+        return r;
+    }
+    let details: Vec<String> = report
+        .divergences
+        .iter()
+        .map(|d| format!("{} {} ({})", d.kind, d.path, d.severity))
+        .collect();
+    CheckResult::warn("claude-paths", details)
+}
+
+/// Project a `WorkspaceLeaksReport` onto the legacy `CheckResult` envelope.
+fn workspace_leaks_to_check_result(
+    report: &crate::run::doctor_workspace_leaks::WorkspaceLeaksReport,
+) -> CheckResult {
+    if report.leaks.is_empty() {
+        let mut r = CheckResult::ok("workspace-leaks");
+        r.details.push("no nested .claude/ holds pipeline state".to_string());
+        return r;
+    }
+    let details: Vec<String> = report
+        .leaks
+        .iter()
+        .map(|l| format!("{} -> {}", l.path, l.leaked_entries.join(", ")))
+        .collect();
+    CheckResult::warn("workspace-leaks", details)
+}
+
+/// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard
+/// error: any violation becomes FAIL, never WARN.
+fn i1_to_check_result(report: &crate::run::doctor_i1::I1Report) -> CheckResult {
+    if report.violations.is_empty() {
+        let mut r = CheckResult::ok("i1");
+        r.details.push("no .claude/.claude/ sequence found".to_string());
+        return r;
+    }
+    CheckResult::fail("i1", report.violations.clone())
 }
 
 /// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.

@@ -149,12 +149,18 @@ pub struct WavePaths {
 /// Top-level directory names under `<root>/.claude/`. The list is kept in one
 /// place so [`crate::claude_paths`] consumers (notably `claude_dir_prune`) can
 /// derive their catalog from it instead of hand-maintaining a duplicate.
+///
+/// `.pipeline-states` is included because [`ClaudePaths::pipeline_states_dir`]
+/// exposes it as a first-class accessor — every dir reachable through a
+/// `&self` method on `ClaudePaths` MUST appear here, or the
+/// `doctor --check claude-paths` audit will flag it as unexpected.
 const DOCUMENTED_DIRS: &[&str] = &[
     ".cache",
     ".harness",
     ".metrics",
     ".agent-state",
     ".obsidian",
+    ".pipeline-states",
     "commands",
     "skills",
     "refs",
@@ -229,6 +235,17 @@ impl ClaudePaths {
     #[must_use]
     pub fn harness_dir(&self) -> PathBuf {
         self.claude_dir().join(".harness")
+    }
+
+    /// `<root>/.claude/.harness/mustard.db` — shared harness SQLite DB.
+    ///
+    /// One file: the projection target for every harness event (`events`,
+    /// `specs`, `knowledge_patterns`, …). Dashboard, rt, and cli all open this
+    /// path through `ClaudePaths` so a future relocation only touches the
+    /// accessor.
+    #[must_use]
+    pub fn mustard_db_path(&self) -> PathBuf {
+        self.harness_dir().join("mustard.db")
     }
 
     /// `<root>/.claude/.metrics/` — telemetry rollups.
@@ -787,6 +804,7 @@ mod tests {
             ".metrics",
             ".agent-state",
             ".obsidian",
+            ".pipeline-states",
             "commands",
             "skills",
             "refs",

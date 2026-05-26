@@ -1,6 +1,11 @@
 ---
 name: pipeline-execution
 description: Pipeline phases, dispatch rules, wave system, validate, retry. Use when running /feature, /resume, /approve or any pipeline phase requiring dispatch/wave context.
+tags: [plan, any]
+appliesTo: []
+scope: [plan, code-editing]
+metadata:
+  generated_by: foundation
 disable-model-invocation: true
 source: manual
 ---

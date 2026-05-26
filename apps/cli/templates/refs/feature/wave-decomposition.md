@@ -45,33 +45,7 @@ Before writing the single spec in Full scope, check whether the work should be d
      └── wave-N-{role}/spec.md
    ```
 
-   `wave-plan.md` contains:
-   ```markdown
-   # Wave Plan: {name}
-   ### Stage: Plan
-   ### Outcome: Active
-   ### Scope: full
-   ### Decomposed: yes
-   ### Checkpoint: {ISO now}
-   ### Reason: {decompose.reason}
-
-   ## Summary
-   {1-2 lines: what + why}
-
-   ## Waves
-   ### Wave 1 — {roles of wave 1}
-   Depends on: none
-   Files ({count}): {file1}, {file2}, ...
-
-   ### Wave 2 — {roles of wave 2}
-   Depends on: wave 1
-   Files ({count}): {file3}, ...
-
-   {... for each wave ...}
-
-   ## Rationale
-   {which knowledge entry matched or which threshold triggered; signals from scope-decompose}
-   ```
+   `wave-plan.md` carries the standard spec header (title + Stage `Plan`, Outcome `Active`, Scope `full`, Decomposed `yes`, Checkpoint, Reason) followed by `## Summary` (1-2 lines what + why), `## Waves` (per-wave H3 with Depends on + Files list), and `## Rationale` (knowledge entry matched / threshold triggered / signals from scope-decompose).
 
    Each `wave-N-{role}/spec.md` is a **complete atomic spec** scoped to just that wave's files. Use the same template as Full scope single spec (Summary, Entity Info, Files, Tasks, Dependencies, Boundaries). Reference `../wave-plan.md` at the top as context.
 
