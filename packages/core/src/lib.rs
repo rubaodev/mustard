@@ -35,6 +35,7 @@
 //!   [`knowledge`] (knowledge extraction + the inter-agent context-selection
 //!   API).
 
+pub mod claude_paths;
 pub mod config;
 pub mod economy;
 pub mod env;
@@ -49,8 +50,10 @@ pub mod model;
 pub mod process;
 pub mod projection;
 pub mod reader;
+pub mod skill;
 pub mod spec;
 pub mod telemetry;
+pub mod workspace;
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
@@ -84,4 +87,16 @@ pub use meta::{normalise_lang, read_meta, write_meta, Meta};
 // i18n — central language + tone module for Mustard banners. See `i18n.rs`.
 // Locale is BCP-47 (`pt-BR`/`en-US`); short forms are rejected with
 // `LocaleError::ShortForm` per `project_locale_codes`.
-pub use i18n::{apply_tone, slugify, translate, wave_label, I18n, Locale, LocaleError, Tone};
+pub use i18n::{
+    apply_tone, project_locale, project_locale_from_file, slugify, translate, wave_label, I18n,
+    Locale, LocaleError, Tone,
+};
+
+// Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a
+// `ClaudePaths` once and then asks for a typed accessor instead of joining
+// strings inline. See `claude_paths.rs`.
+pub use claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
+
+// Canonical workspace-root resolver — single source of truth for "the
+// directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
+pub use workspace::{workspace_root, WorkspaceError};

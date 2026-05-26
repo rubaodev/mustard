@@ -1,0 +1,13 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": "PLAN",
+  "scope": "medium (wave plan)",
+  "lang": "pt-BR",
+  "checkpoint": "2026-05-26T03:53:09.444Z",
+  "isWavePlan": true,
+  "totalWaves": 4,
+  "currentWave": 1,
+  "flags": [],
+  "model": "opus"
+}
