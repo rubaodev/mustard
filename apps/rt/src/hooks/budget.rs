@@ -50,49 +50,19 @@
 //! downgrade.
 
 use mustard_core::economy::estimator;
-use mustard_core::economy::writer;
-use mustard_core::economy::{
-    AgentId, ProjectPath, SavingsRecord, SavingsSource, SpecId, WaveId,
-};
 use mustard_core::error::Error;
 use mustard_core::metrics::{MetricLine, emit_metric};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use mustard_core::ClaudePaths;
-use rusqlite::Connection;
-use serde_json::{Map, json};
-use std::path::PathBuf;
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use serde_json::{json};
 
 use crate::run::current_spec;
 use crate::util::{format_gate_message, now_iso8601};
 
-/// Resolve the harness `SQLite` path (mirrors `SqliteEventStore::for_project`'s
-/// private resolver). Env override `MUSTARD_DB_PATH` wins, else the standard
-/// `.claude/.harness/mustard.db` under the project root via [`ClaudePaths`].
-fn economy_db_path(project_dir: &str) -> PathBuf {
-    if let Ok(value) = std::env::var("MUSTARD_DB_PATH") {
-        if !value.trim().is_empty() {
-            return PathBuf::from(value);
-        }
-    }
-    ClaudePaths::for_project(project_dir)
-        .map(|p| p.mustard_db_path())
-        .unwrap_or_default()
-}
-
-/// Open a raw [`Connection`] to the harness DB, applying schema/migrations
-/// via [`SqliteEventStore::for_project`] first. Returns `None` on any
-/// failure — budget telemetry stays best-effort.
-fn open_economy_conn(project_dir: &str) -> Option<Connection> {
-    let _ = SqliteEventStore::for_project(project_dir).ok()?;
-    Connection::open(economy_db_path(project_dir)).ok()
-}
-
-/// Record a `BudgetOutputCut` savings event for an over-budget agent return.
-/// `over_by_lines * average_line_bytes` underestimates a long-tail return, so
-/// we score by the full `dropped_tail` byte count instead — the count we
-/// would have paid for had the agent re-injected the verbose tail into the
-/// parent context. Fail-open on every error path.
+/// Emit a `pipeline.economy.savings.budget-output-cut` NDJSON event for an
+/// over-budget agent return. The `tokens_saved` field carries the estimated
+/// token count we avoided re-injecting into the parent context.
+/// Fail-open on every error path — telemetry never blocks the verdict.
 fn record_output_cut(
     project_dir: &str,
     dropped_tail: &str,
@@ -102,26 +72,30 @@ fn record_output_cut(
     if dropped_tail.is_empty() {
         return;
     }
-    let Some(conn) = open_economy_conn(project_dir) else {
-        return;
-    };
     let saved = i64::from(estimator::estimate_output_tokens(dropped_tail, model_hint.unwrap_or("")));
     let saved = saved.max(1);
-    let rec = SavingsRecord {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
         ts: now_iso8601(),
-        source: SavingsSource::BudgetOutputCut,
-        tokens_saved: saved,
-        model_target: model_hint.map(str::to_string),
-        project_path: ProjectPath::new(project_dir),
-        spec_id: current_spec(project_dir).map(SpecId::new),
-        wave_id: std::env::var("MUSTARD_ACTIVE_WAVE")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(WaveId::new),
-        agent_id: Some(AgentId::new(role_label)),
-        extra: Map::new(),
+        session_id: "unknown".to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: Some("budget".to_string()),
+            actor_type: None,
+        },
+        event: "pipeline.economy.savings.budget-output-cut".to_string(),
+        payload: json!({
+            "source": "BudgetOutputCut",
+            "tokens_saved": saved,
+            "model_target": model_hint,
+            "role": role_label,
+            "spec_id": current_spec(project_dir),
+            "wave_id": std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty()),
+        }),
+        spec: current_spec(project_dir),
     };
-    let _ = writer::record_savings(&conn, rec);
+    let _ = crate::run::event_route::emit(project_dir, &event);
 }
 
 // ---------------------------------------------------------------------------

@@ -43,7 +43,6 @@ use mustard_core::economy::writer;
 use mustard_core::economy::{ApiCostFrame, SpanRecord};
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::telemetry::model::RunAttribution;
 use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -181,22 +180,6 @@ fn build_harness_event(
 /// `tracker` events — `tool.use`, `agent.start`, `agent.stop`,
 /// `subagent.*`, etc.) lands in the per-spec NDJSON sink.
 fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
-    let harness_event = build_harness_event(project_dir, hook_id, event, payload);
-    let _ = crate::run::event_route::emit(project_dir, &harness_event);
-}
-
-/// Emit one harness event onto a caller-held store, best-effort. Kept as a
-/// distinct entry point so a hook invocation that already opened the store
-/// for some other read can still pass it in — the router opens its own
-/// connection internally, so the `_store` arg is now ignored.
-#[allow(clippy::needless_pass_by_value)]
-fn emit_event_via(
-    _store: &SqliteEventStore,
-    project_dir: &str,
-    hook_id: &str,
-    event: &str,
-    payload: Value,
-) {
     let harness_event = build_harness_event(project_dir, hook_id, event, payload);
     let _ = crate::run::event_route::emit(project_dir, &harness_event);
 }
@@ -835,16 +818,7 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     })
                     .unwrap_or_default();
                 let summary: String = tool_response.chars().take(800).collect();
-                // Open the harness store ONCE for this invocation and reuse it
-                // for both the `agent.stop` append and the run writes below,
-                // instead of opening it twice (one for the event append, one
-                // for the run_usage writes).
-                // Best-effort: if the open fails, telemetry is simply skipped.
-                let Ok(store) = SqliteEventStore::for_project(&project) else {
-                    return;
-                };
-                emit_event_via(
-                    &store,
+                emit_event(
                     &project,
                     "subagent-tracker",
                     "agent.stop",
@@ -1394,9 +1368,24 @@ mod tests {
         };
         use mustard_core::model::contract::Observer;
         SkillUsageTracker.observe(&input, &ctx(Trigger::PostToolUse, project));
-        let events = SqliteEventStore::for_project(project)
-            .and_then(|s| s.replay())
-            .unwrap();
-        assert!(events.is_empty());
+        // Non-Skill tool → no `skill.invoked` event emitted; the .events dir is
+        // either absent or contains zero `skill.invoked` NDJSON lines.
+        let session_root = dir.path().join(".claude").join(".session");
+        let mut found = false;
+        if session_root.exists() {
+            for entry in std::fs::read_dir(&session_root).unwrap() {
+                let events_dir = entry.unwrap().path().join(".events");
+                if !events_dir.exists() {
+                    continue;
+                }
+                for f in std::fs::read_dir(&events_dir).unwrap() {
+                    let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+                    if body.lines().any(|l| l.contains("\"event\":\"skill.invoked\"")) {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(!found, "Bash tool must not produce a skill.invoked event");
     }
 }
