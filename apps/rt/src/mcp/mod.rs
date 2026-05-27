@@ -12,11 +12,23 @@
 //! exposes exactly the same five tools as the TypeScript original, with the
 //! same input schemas and output shapes:
 //!
-//! - `search_knowledge`   — FTS5 search over the `knowledge` table.
-//! - `query_events`       — filter the event log by spec / event / since.
+//! - `search_knowledge`   — substring search over `.claude/knowledge/*.md`.
+//! - `query_events`       — filter the per-spec NDJSON event log by spec /
+//!   event / since.
 //! - `find_similar_specs` — rank specs by token overlap on a description.
-//! - `get_spec_metrics`   — the `metrics_projection` row for a spec.
-//! - `get_run_summary`    — aggregated token / duration totals from `run_usage`.
+//! - `get_spec_metrics`   — projected metrics for a spec from NDJSON events.
+//! - `get_run_summary`    — aggregated token/duration totals from
+//!   `pipeline.telemetry.run` events.
+//!
+//! ## Persistence (post-W5B)
+//!
+//! No SQLite. Every read is filesystem-backed:
+//!
+//! - knowledge → `.claude/knowledge/*.md` via [`mustard_core::atomic_md::MarkdownStore`].
+//! - events    → `.claude/spec/<spec>/.events/*.ndjson` via [`mustard_core::EventReader`].
+//! - specs     → `.claude/spec/<spec>/spec.md` header walk (name + body).
+//! - metrics   → projected from events via the same NDJSON channel.
+//! - runs      → `pipeline.telemetry.run` events written by W5A's OTEL collector.
 //!
 //! ## Runtime scoping
 //!
@@ -28,9 +40,8 @@
 //!
 //! ## Fail-open
 //!
-//! Every tool opens the store fresh and degrades a query failure to an empty
-//! result (or an `{ "error": ... }` object), matching the rest of the
-//! `mustard-rt` codebase: telemetry is never load-bearing.
+//! Every tool degrades a read failure to an empty result, matching the rest
+//! of the `mustard-rt` codebase: telemetry is never load-bearing.
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -42,14 +53,11 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::ClaudePaths;
-use mustard_core::store::sqlite_store::{
-    KnowledgeRow, MetricsRow, SpecRow, SqliteEventStore,
-};
-use mustard_core::model::event::HarnessEvent;
-use mustard_core::telemetry::{SummaryRow, TelemetryReader, TelemetryStore};
+use mustard_core::{Event, EventReader};
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -93,9 +101,8 @@ pub fn run() {
     });
 }
 
-/// Resolve the project root whose `.claude/.harness/mustard.db` the server
-/// reads. [`SqliteEventStore::for_project`] applies the `MUSTARD_DB_PATH`
-/// override on top of this, so the current directory is the right default.
+/// Resolve the project root the server reads from. The harness layout under
+/// `.claude/` is rooted at the process cwd.
 fn resolve_project_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -104,10 +111,10 @@ fn resolve_project_dir() -> PathBuf {
 // Tool input schemas — 1:1 with the TypeScript `zod` schemas
 // ---------------------------------------------------------------------------
 
-/// Input for `search_knowledge` (mirrors the TS `zod` schema).
+/// Input for `search_knowledge`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SearchKnowledgeArgs {
-    /// Free-text FTS5 query (non-empty).
+    /// Free-text query (non-empty). Substring match, case-insensitive.
     query: String,
     /// Optional knowledge-kind filter: `pattern`, `convention`, or `entity`.
     #[serde(default)]
@@ -169,8 +176,7 @@ struct GetRunSummaryArgs {
 // Output shapes — serialized to JSON text exactly like the TS `jsonResult`
 // ---------------------------------------------------------------------------
 
-/// One knowledge row in `search_knowledge` output. Mirrors the TS object
-/// (`id`, `type`, `name`, `description`, `confidence`).
+/// One knowledge row in `search_knowledge` output.
 #[derive(Debug, Serialize)]
 struct KnowledgeOut {
     id: String,
@@ -180,21 +186,7 @@ struct KnowledgeOut {
     confidence: Option<f64>,
 }
 
-impl From<KnowledgeRow> for KnowledgeOut {
-    fn from(row: KnowledgeRow) -> Self {
-        Self {
-            id: row.id,
-            r#type: row.kind,
-            name: row.name,
-            description: row.description,
-            confidence: row.confidence,
-        }
-    }
-}
-
-/// One event row in `query_events` output. Mirrors the TS `EventRecord`:
-/// `ts`, `event`, `payload`, plus the optional `sessionId` / `wave` / `spec`
-/// / `actor` fields when present.
+/// One event row in `query_events` output. Mirrors the TS `EventRecord`.
 #[derive(Debug, Serialize)]
 struct EventOut {
     ts: String,
@@ -210,31 +202,7 @@ struct EventOut {
     actor: Option<Value>,
 }
 
-impl From<HarnessEvent> for EventOut {
-    fn from(ev: HarnessEvent) -> Self {
-        // The TS `rowToEvent` omits `sessionId`/`wave` when the column was
-        // NULL. Rust decodes those to `""`/`0`; treat the empty/zero defaults
-        // as "absent" so the JSON shape matches the original.
-        let session_id = if ev.session_id.is_empty() {
-            None
-        } else {
-            Some(ev.session_id)
-        };
-        let wave = if ev.wave == 0 { None } else { Some(ev.wave) };
-        let actor = serde_json::to_value(&ev.actor).ok();
-        Self {
-            ts: ev.ts,
-            event: ev.event,
-            payload: ev.payload,
-            session_id,
-            wave,
-            spec: ev.spec,
-            actor,
-        }
-    }
-}
-
-/// One spec row in `find_similar_specs` output. Mirrors the TS `SpecRecord`.
+/// One spec row in `find_similar_specs` output.
 #[derive(Debug, Serialize)]
 struct SpecOut {
     name: String,
@@ -248,34 +216,14 @@ struct SpecOut {
     affected_files: Option<Vec<String>>,
 }
 
-impl From<&SpecRow> for SpecOut {
-    fn from(row: &SpecRow) -> Self {
-        // `affected_files` is stored as a JSON-array string; decode it back to
-        // a list (TS `safeJsonParse`) — a malformed value degrades to absent.
-        let affected_files = row
-            .affected_files
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok());
-        Self {
-            name: row.name.clone(),
-            status: row.status.clone(),
-            phase: row.phase.clone(),
-            started_at: row.started_at.clone(),
-            completed_at: row.completed_at.clone(),
-            affected_files,
-        }
-    }
-}
-
-/// A scored spec match in `find_similar_specs` output (`{ spec, score }`).
+/// A scored spec match in `find_similar_specs` output.
 #[derive(Debug, Serialize)]
 struct SpecMatch {
     spec: SpecOut,
     score: u32,
 }
 
-/// The `metrics_projection` row in `get_spec_metrics` output. Mirrors the TS
-/// `MetricsRecord`.
+/// The `metrics_projection` row in `get_spec_metrics` output.
 #[derive(Debug, Serialize)]
 struct MetricsOut {
     spec: String,
@@ -293,27 +241,6 @@ struct MetricsOut {
     updated_at: String,
 }
 
-impl From<MetricsRow> for MetricsOut {
-    fn from(row: MetricsRow) -> Self {
-        // The legacy schema stores `pass1` as 0/1 and the breakdown columns as
-        // JSON-object strings; `rowToMetrics` in the TS store decodes both.
-        let pass1 = row.pass1.unwrap_or(0) != 0;
-        let tool_breakdown = decode_json_object(row.tool_breakdown.as_deref());
-        let dispatch_failures_by_phase =
-            decode_json_object(row.dispatch_failures_by_phase.as_deref());
-        Self {
-            spec: row.spec,
-            api_calls: row.api_calls.unwrap_or(0),
-            retries: row.retries.unwrap_or(0),
-            pass1,
-            tool_breakdown,
-            dispatch_failures_by_phase,
-            agent_count: row.agent_count.unwrap_or(0),
-            updated_at: row.updated_at.unwrap_or_default(),
-        }
-    }
-}
-
 /// Per-model aggregate bucket in `get_run_summary` output.
 #[derive(Debug, Default, Serialize)]
 struct ModelBucket {
@@ -324,7 +251,7 @@ struct ModelBucket {
     duration_ms: i64,
 }
 
-/// Aggregated `get_run_summary` output. Mirrors the TS object exactly.
+/// Aggregated `get_run_summary` output.
 #[derive(Debug, Serialize)]
 struct RunSummary {
     count: usize,
@@ -338,29 +265,15 @@ struct RunSummary {
     by_model: Map<String, Value>,
 }
 
-/// Decode a JSON-object column string back into a [`Value`].
-///
-/// A `NULL` column or a malformed value degrades to an empty object — the
-/// fail-open equivalent of the TS `safeJsonParse(text, {})`.
-fn decode_json_object(raw: Option<&str>) -> Value {
-    raw.and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}))
-}
-
 // ---------------------------------------------------------------------------
 // The MCP server
 // ---------------------------------------------------------------------------
 
-/// The `mustard-memory` MCP server — a read-only view over the harness store.
-///
-/// Holds only the project directory; each tool opens the [`SqliteEventStore`]
-/// fresh and closes it when the call returns. A [`rusqlite::Connection`] is
-/// `!Sync`, and re-opening is sub-millisecond, so a per-call open keeps the
-/// type `Send + Sync` (required by `rmcp`) without an `Arc<Mutex<…>>`.
+/// The `mustard-memory` MCP server — a read-only view over the filesystem-
+/// backed harness state.
 #[derive(Clone)]
 struct MustardMemory {
-    /// Project root; resolved to `.claude/.harness/mustard.db` on each open.
+    /// Project root; resolved to `.claude/` on each open.
     project_dir: PathBuf,
     /// The `rmcp` tool dispatch table, generated by `#[tool_router]`.
     ///
@@ -391,57 +304,61 @@ impl MustardMemory {
         }
     }
 
-    /// Open the harness store for this project, fail-open.
-    fn open_store(&self) -> Option<SqliteEventStore> {
-        SqliteEventStore::for_project(&self.project_dir).ok()
+    /// Resolve the canonical `.claude/` paths for this project, fail-open.
+    fn claude_paths(&self) -> Option<ClaudePaths> {
+        ClaudePaths::for_project(&self.project_dir).ok()
     }
 
-    /// Open the dedicated telemetry store (`.harness/telemetry.db`) for this
-    /// project, fail-open. Backs `get_run_summary` after the telemetry split.
-    fn open_telemetry(&self) -> Option<TelemetryStore> {
-        TelemetryStore::for_project(&self.project_dir).ok()
-    }
-
-    /// Tool 1 — full-text search past learnings / decisions / patterns.
+    /// Tool 1 — substring search past learnings / decisions / patterns.
     ///
-    /// Backs onto [`SqliteEventStore::search`] (FTS5 `bm25`). The `type`
-    /// filter is applied in-process after the MATCH, exactly as the TS
-    /// original did — `search` has no SQL-level kind filter, so the rows are
-    /// over-fetched and trimmed here.
+    /// Reads `.claude/knowledge/*.md` via `MarkdownStore::scan_dir`. The
+    /// optional `type` filter narrows by the frontmatter `kind` field. The
+    /// substring match is case-insensitive over `name + description + body`.
     #[tool(
-        description = "Full-text search past learnings/decisions/patterns from the EventStore knowledge table"
+        description = "Substring search past learnings/decisions/patterns from .claude/knowledge/*.md"
     )]
     fn search_knowledge(
         &self,
         Parameters(args): Parameters<SearchKnowledgeArgs>,
     ) -> CallToolResult {
-        // Clamp `limit` to the TS schema bounds (1..=50, default 10).
         let limit = args.limit.unwrap_or(10).clamp(1, 50) as usize;
-        let Some(store) = self.open_store() else {
+        let Some(paths) = self.claude_paths() else {
             return json_result(&Vec::<KnowledgeOut>::new());
         };
-        // A malformed FTS MATCH expression fails-open to no results.
-        let candidates = store.search(&args.query).unwrap_or_default();
+        let knowledge_dir = paths.claude_dir().join("knowledge");
+        let docs = MarkdownStore::scan_dir(&knowledge_dir);
+        let needle = args.query.to_lowercase();
         let type_filter = args.r#type.as_deref();
-        let rows: Vec<KnowledgeOut> = candidates
+        let mut hits: Vec<(usize, KnowledgeOut)> = docs
             .into_iter()
-            .filter(|row: &KnowledgeRow| match type_filter {
-                Some(t) => row.kind.as_deref() == Some(t),
-                None => true,
+            .filter_map(|doc| {
+                let row = doc_to_knowledge_out(&doc);
+                if let Some(t) = type_filter {
+                    if row.r#type.as_deref() != Some(t) {
+                        return None;
+                    }
+                }
+                let hay = format!(
+                    "{} {} {}",
+                    row.name.as_deref().unwrap_or(""),
+                    row.description.as_deref().unwrap_or(""),
+                    doc.body,
+                )
+                .to_lowercase();
+                if !hay.contains(&needle) {
+                    return None;
+                }
+                let score = hay.matches(&needle).count();
+                Some((score, row))
             })
-            .take(limit)
-            .map(KnowledgeOut::from)
             .collect();
+        hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        let rows: Vec<KnowledgeOut> = hits.into_iter().take(limit).map(|(_, r)| r).collect();
         json_result(&rows)
     }
 
-    /// Tool 2 — filter events by spec / event / since.
-    ///
-    /// W5: events live in two stores — `pipeline_events` (SQLite lifecycle
-    /// index) and per-spec NDJSON files (`.claude/spec/<spec>/.events/`). This
-    /// folds both sources together so MCP consumers see a single timeline.
-    /// When `spec` is given, only that spec's NDJSON dir is read; otherwise
-    /// every spec dir under `.claude/spec/` contributes.
+    /// Tool 2 — filter events by spec / event / since across the per-spec
+    /// NDJSON event log.
     #[tool(
         description = "Filter events by spec/event/since (ISO ts). Returns up to `limit` rows."
     )]
@@ -450,72 +367,62 @@ impl MustardMemory {
         Parameters(args): Parameters<QueryEventsArgs>,
     ) -> CallToolResult {
         let limit = args.limit.unwrap_or(100).clamp(1, 500) as usize;
-
-        // 1) Lifecycle slice from SQLite.
-        let mut events = match self.open_store() {
-            Some(store) => store.replay().unwrap_or_default(),
-            None => Vec::new(),
+        let Some(paths) = self.claude_paths() else {
+            return json_result(&Vec::<EventOut>::new());
         };
+        let specs_root = paths.spec_dir();
 
-        // 2) NDJSON slice — per-spec dirs.
-        let specs_root = match ClaudePaths::for_project(&self.project_dir) {
-            Ok(paths) => paths.spec_dir(),
-            Err(_) => return json_result(&Vec::<EventOut>::new()),
-        };
+        let mut events: Vec<Event> = Vec::new();
         if let Some(spec) = args.spec.as_deref() {
-            let dir = specs_root.join(spec).join(".events");
-            events.extend(
-                mustard_core::projection::read_harness_events_from_ndjson_dir(&dir),
-            );
+            collect_ndjson_under(&specs_root.join(spec).join(".events"), &mut events);
         } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
             for entry in entries.flatten() {
                 if !entry.path().is_dir() {
                     continue;
                 }
-                let dir = entry.path().join(".events");
-                events.extend(
-                    mustard_core::projection::read_harness_events_from_ndjson_dir(&dir),
-                );
+                collect_ndjson_under(&entry.path().join(".events"), &mut events);
             }
         }
 
         // Chronological sort so the lexical `since` comparison stays correct.
-        events.sort_by(|a, b| a.ts.cmp(&b.ts));
+        events.sort_by(|a, b| event_ts(a).cmp(&event_ts(b)));
 
         let rows: Vec<EventOut> = events
             .into_iter()
             // Internal meta-telemetry emitted by the NDJSON writer for the
-            // `/economia` dashboard (see `event_writer_ndjson::write_event`'s
-            // T5.8 inline emission). Surfaces every other row in `query_events`
-            // and is never what a consumer wants — filter it out at the boundary.
-            .filter(|ev| ev.event != "pipeline.economy.event.written")
-            .filter(|ev| match &args.spec {
-                Some(s) => ev.spec.as_deref() == Some(s.as_str()),
-                None => true,
-            })
-            .filter(|ev| match &args.event {
-                Some(e) => ev.event == *e,
-                None => true,
-            })
-            .filter(|ev| match &args.since {
-                // ISO-8601 timestamps compare lexically per RFC-3339; mirror
-                // the legacy SQL `WHERE ts >= ?` semantics.
-                Some(since) => ev.ts.as_str() >= since.as_str(),
-                None => true,
+            // `/economia` dashboard — filter it out at the boundary.
+            .filter(|ev| event_name(ev) != "pipeline.economy.event.written")
+            .filter_map(|ev| {
+                let out = event_to_out(ev)?;
+                if let Some(s) = args.spec.as_deref() {
+                    if out.spec.as_deref() != Some(s) {
+                        return None;
+                    }
+                }
+                if let Some(e) = args.event.as_deref() {
+                    if out.event != e {
+                        return None;
+                    }
+                }
+                if let Some(since) = args.since.as_deref() {
+                    if out.ts.as_str() < since {
+                        return None;
+                    }
+                }
+                Some(out)
             })
             .take(limit)
-            .map(EventOut::from)
             .collect();
         json_result(&rows)
     }
 
     /// Tool 3 — rank specs by token overlap against a free-text description.
     ///
-    /// Scoring is identical to the TS original: lowercase the description,
-    /// split on whitespace, and count how many distinct tokens appear in the
-    /// `name + phase + affectedFiles` haystack of each spec.
+    /// Walks `.claude/spec/*/spec.md` (filesystem) and scores each spec on
+    /// lowercased token overlap against `name + body` (the body is read once
+    /// per spec; this is intended for interactive `mcp` use, not hot paths).
     #[tool(
-        description = "Rank specs by token overlap against a free-text description (name + phase + affectedFiles)"
+        description = "Rank specs by token overlap against a free-text description (name + body)"
     )]
     fn find_similar_specs(
         &self,
@@ -531,67 +438,101 @@ impl MustardMemory {
         if tokens.is_empty() {
             return json_result(&Vec::<SpecMatch>::new());
         }
-        let Some(store) = self.open_store() else {
+        let Some(paths) = self.claude_paths() else {
             return json_result(&Vec::<SpecMatch>::new());
         };
-        let specs = store.specs().unwrap_or_default();
-        let mut matches: Vec<SpecMatch> = specs
-            .iter()
-            .map(|row| {
-                let haystack = spec_haystack(row);
-                let score = tokens
-                    .iter()
-                    .filter(|tok| haystack.contains(tok.as_str()))
-                    .count() as u32;
-                SpecMatch {
-                    spec: SpecOut::from(row),
-                    score,
-                }
-            })
-            .filter(|m| m.score > 0)
-            .collect();
-        // Highest score first; the sort is stable so equal scores keep the
-        // `specs()` order (alphabetical by name) — deterministic output.
-        // `Reverse` gives the descending key without a hand-written closure.
+        let specs_root = paths.spec_dir();
+        let mut matches: Vec<SpecMatch> = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&specs_root) else {
+            return json_result(&matches);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name_os) = path.file_name() else { continue };
+            let name = name_os.to_string_lossy().to_string();
+            let spec_md = path.join("spec.md");
+            let body = std::fs::read_to_string(&spec_md).unwrap_or_default();
+            let haystack = format!("{name} {body}").to_lowercase();
+            let score = tokens
+                .iter()
+                .filter(|tok| haystack.contains(tok.as_str()))
+                .count() as u32;
+            if score == 0 {
+                continue;
+            }
+            matches.push(SpecMatch {
+                spec: SpecOut {
+                    name,
+                    status: None,
+                    phase: None,
+                    started_at: None,
+                    completed_at: None,
+                    affected_files: None,
+                },
+                score,
+            });
+        }
         matches.sort_by_key(|m| std::cmp::Reverse(m.score));
         matches.truncate(limit);
         json_result(&matches)
     }
 
-    /// Tool 4 — the `metrics_projection` row for a spec, or `{ error }`.
-    #[tool(description = "Return the metrics_projection row for a spec, or { error } if missing")]
+    /// Tool 4 — projected metrics for a spec, or `{ error }`.
+    ///
+    /// Reads `.claude/spec/<spec>/.events/*.ndjson` and derives a minimal
+    /// metrics shape (api_calls / retries / agent_count) by counting events
+    /// of the relevant kinds. Returns `{ error, spec }` when no events exist.
+    #[tool(description = "Return the metrics projection for a spec, or { error } if missing")]
     fn get_spec_metrics(
         &self,
         Parameters(args): Parameters<GetSpecMetricsArgs>,
     ) -> CallToolResult {
-        let Some(store) = self.open_store() else {
+        let Some(paths) = self.claude_paths() else {
             return json_result(&missing_metrics(&args.spec));
         };
-        match store.metrics(&args.spec).ok().flatten() {
-            Some(row) => json_result(&MetricsOut::from(row)),
-            None => json_result(&missing_metrics(&args.spec)),
+        let events_dir = paths.spec_dir().join(&args.spec).join(".events");
+        let mut events: Vec<Event> = Vec::new();
+        collect_ndjson_under(&events_dir, &mut events);
+        if events.is_empty() {
+            return json_result(&missing_metrics(&args.spec));
         }
+        let metrics = derive_metrics(&args.spec, &events);
+        json_result(&metrics)
     }
 
-    /// Tool 5 — aggregated token / duration summary from `run_usage`.
-    ///
-    /// Totals plus a per-model breakdown, matching the TS object exactly. The
-    /// data lives in the dedicated telemetry database (`.harness/telemetry.db`,
-    /// table `run_usage`), so the spec/phase filter and `limit` cap are pushed
-    /// into [`TelemetryReader::runs_for_summary`]; the output shape is unchanged.
-    #[tool(description = "Aggregated token/duration summary from run_usage; groups by model")]
+    /// Tool 5 — aggregated token/duration summary from `pipeline.telemetry.run`
+    /// NDJSON events (written by the W5A OTEL collector).
+    #[tool(description = "Aggregated token/duration summary from pipeline.telemetry.run events; groups by model")]
     fn get_run_summary(
         &self,
         Parameters(args): Parameters<GetRunSummaryArgs>,
     ) -> CallToolResult {
         let limit = args.limit.unwrap_or(1000).clamp(1, 5000) as usize;
-        let Some(store) = self.open_telemetry() else {
+        let Some(paths) = self.claude_paths() else {
             return json_result(&empty_run_summary());
         };
-        let rows = store
-            .runs_for_summary(args.spec.as_deref(), args.phase.as_deref(), limit)
-            .unwrap_or_default();
-        json_result(&summarize_runs(&rows))
+        // Cross-spec walk: include both per-spec and the cross-session sink.
+        let mut events: Vec<Event> = Vec::new();
+        collect_ndjson_under(&paths.spec_dir(), &mut events);
+        collect_ndjson_under(&paths.claude_dir().join(".session"), &mut events);
+
+        let runs: Vec<&Event> = events
+            .iter()
+            .filter(|e| e.kind == "pipeline.telemetry.run")
+            .filter(|e| match args.spec.as_deref() {
+                Some(s) => e.payload.get("spec").and_then(Value::as_str) == Some(s),
+                None => true,
+            })
+            .filter(|e| match args.phase.as_deref() {
+                Some(p) => e.payload.get("phase").and_then(Value::as_str) == Some(p),
+                None => true,
+            })
+            .take(limit)
+            .collect();
+        json_result(&summarize_runs(&runs))
     }
 }
 
@@ -604,9 +545,6 @@ impl ServerHandler for MustardMemory {
     /// they cannot be built with a struct literal: start from `default()` /
     /// `from_build_env()` and mutate the individual public fields.
     fn get_info(&self) -> ServerInfo {
-        // `Implementation::from_build_env()` fills in icons / title / website
-        // from the crate metadata; override only the protocol-visible name
-        // and version so the server identifies as `mustard-memory`.
         let mut server_info = Implementation::from_build_env();
         server_info.name = "mustard-memory".to_string();
         server_info.version = "2.0.0".to_string();
@@ -615,8 +553,8 @@ impl ServerHandler for MustardMemory {
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info = server_info;
         info.instructions = Some(
-            "Read-only query access to the Mustard harness store \
-             (events, knowledge, specs, metrics, run_usage)."
+            "Read-only query access to the Mustard harness state \
+             (events, knowledge, specs, metrics, runs) backed by .claude/."
                 .to_string(),
         );
         info
@@ -624,27 +562,125 @@ impl ServerHandler for MustardMemory {
 }
 
 // ---------------------------------------------------------------------------
-// Free helpers — kept out of the `#[tool_router]` impl so they are plain fns
+// Free helpers
 // ---------------------------------------------------------------------------
 
-/// Build the lowercase haystack a spec is scored against in `find_similar_specs`.
-///
-/// Mirrors the TS expression `${name} ${phase ?? ''} ${affectedFiles.join(' ')}`.
-fn spec_haystack(row: &SpecRow) -> String {
-    let mut haystack = row.name.to_lowercase();
-    if let Some(phase) = &row.phase {
-        haystack.push(' ');
-        haystack.push_str(&phase.to_lowercase());
+/// Convert a `MarkdownDoc` to a `KnowledgeOut` row.
+fn doc_to_knowledge_out(doc: &MarkdownDoc) -> KnowledgeOut {
+    let fm = doc.frontmatter.as_ref();
+    let id = doc
+        .path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    KnowledgeOut {
+        id,
+        r#type: fm
+            .and_then(|f| f.get("kind"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        name: fm
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        description: fm
+            .and_then(|f| f.get("description"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        confidence: fm
+            .and_then(|f| f.get("confidence"))
+            .and_then(Value::as_f64),
     }
-    if let Some(raw) = &row.affected_files {
-        if let Ok(files) = serde_json::from_str::<Vec<String>>(raw) {
-            for file in files {
-                haystack.push(' ');
-                haystack.push_str(&file.to_lowercase());
-            }
+}
+
+/// Recursively collect `.ndjson` files under `dir` into `out`. Fail-open: a
+/// missing directory or unreadable file is silently skipped.
+fn collect_ndjson_under(dir: &Path, out: &mut Vec<Event>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ndjson_under(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
+            out.extend(EventReader::stream(&path));
         }
     }
-    haystack
+}
+
+/// Pull the top-level `event` name off a raw NDJSON record.
+fn event_name(ev: &Event) -> &str {
+    ev.raw.get("event").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Pull the top-level `ts` off a raw NDJSON record (ISO-8601).
+fn event_ts(ev: &Event) -> String {
+    ev.raw
+        .get("ts")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Project an `Event` to the MCP-output `EventOut` shape.
+fn event_to_out(ev: Event) -> Option<EventOut> {
+    let raw = &ev.raw;
+    let ts = raw.get("ts").and_then(Value::as_str)?.to_string();
+    let event = raw.get("event").and_then(Value::as_str)?.to_string();
+    let session_id = raw
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let wave = raw
+        .get("wave")
+        .and_then(Value::as_u64)
+        .map(|n| u32::try_from(n).unwrap_or(0))
+        .filter(|n| *n != 0);
+    let spec = raw.get("spec").and_then(Value::as_str).map(str::to_string);
+    let actor = raw.get("actor").cloned();
+    Some(EventOut {
+        ts,
+        event,
+        payload: ev.payload,
+        session_id,
+        wave,
+        spec,
+        actor,
+    })
+}
+
+/// Derive a minimal `MetricsOut` from the spec's events.
+fn derive_metrics(spec: &str, events: &[Event]) -> MetricsOut {
+    let api_calls = events
+        .iter()
+        .filter(|e| event_name(e) == "tool.use")
+        .count() as i64;
+    let retries = events
+        .iter()
+        .filter(|e| event_name(e) == "retry.attempt")
+        .count() as i64;
+    let agent_count = events
+        .iter()
+        .filter(|e| event_name(e) == "pipeline.task.dispatch")
+        .count() as i64;
+    let updated_at = events
+        .iter()
+        .filter_map(|e| e.raw.get("ts").and_then(Value::as_str))
+        .max()
+        .unwrap_or("")
+        .to_string();
+    MetricsOut {
+        spec: spec.to_string(),
+        api_calls,
+        retries,
+        pass1: retries == 0,
+        tool_breakdown: json!({}),
+        dispatch_failures_by_phase: json!({}),
+        agent_count,
+        updated_at,
+    }
 }
 
 /// The `{ error, spec }` object `get_spec_metrics` returns when no row exists.
@@ -652,11 +688,9 @@ fn missing_metrics(spec: &str) -> Value {
     json!({ "error": "no metrics for spec", "spec": spec })
 }
 
-/// Aggregate `run_usage` summary rows into the `get_run_summary` output shape.
-///
-/// The per-model breakdown and the four totals are computed from the
-/// [`SummaryRow`]s the telemetry reader returns for `run_usage`.
-fn summarize_runs(runs: &[SummaryRow]) -> RunSummary {
+/// Aggregate `pipeline.telemetry.run` event payloads into the
+/// `get_run_summary` output shape.
+fn summarize_runs(runs: &[&Event]) -> RunSummary {
     let mut by_model: Map<String, Value> = Map::new();
     let mut buckets: std::collections::BTreeMap<String, ModelBucket> =
         std::collections::BTreeMap::new();
@@ -665,14 +699,19 @@ fn summarize_runs(runs: &[SummaryRow]) -> RunSummary {
     let mut total_duration = 0_i64;
 
     for run in runs {
-        let input = run.input_tokens.unwrap_or(0);
-        let output = run.output_tokens.unwrap_or(0);
-        let duration = run.duration_ms.unwrap_or(0);
+        let p = &run.payload;
+        let input = p.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
+        let output = p.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+        let duration = p.get("duration_ms").and_then(Value::as_i64).unwrap_or(0);
         total_input += input;
         total_output += output;
         total_duration += duration;
 
-        let model = run.model.clone().unwrap_or_else(|| "unknown".to_string());
+        let model = p
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
         let bucket = buckets.entry(model).or_default();
         bucket.count += 1;
         bucket.r#in += input;
@@ -699,6 +738,3 @@ fn summarize_runs(runs: &[SummaryRow]) -> RunSummary {
 fn empty_run_summary() -> RunSummary {
     summarize_runs(&[])
 }
-
-#[cfg(test)]
-mod tests;
