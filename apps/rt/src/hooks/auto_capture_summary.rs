@@ -121,12 +121,13 @@ fn task_output(input: &HookInput) -> String {
     String::new()
 }
 
-/// Persist a single captured summary as an `agent_memory` row. Fail-open: a
-/// store/connect error degrades silently.
+/// Persist a single captured summary as an `agent_memory` markdown row.
+/// Fail-open: a write error degrades silently.
 ///
-/// Note: this still uses a direct `rusqlite::Connection` to write to the
-/// `agent_memory` table in `mustard.db`. This is intentional — `agent_memory`
-/// is not an event table and is not in scope for W3C's event-SQLite removal.
+/// W4B migration: persistence moved off SQLite entirely. The summary lands as
+/// a markdown file under `.claude/memory/agent/` via
+/// [`crate::run::memory::persist_agent_memory_md`]. No `rusqlite::Connection`
+/// is opened from this path.
 fn persist(
     cwd: &str,
     session_id: Option<&str>,

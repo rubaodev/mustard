@@ -1,55 +1,52 @@
-//! Single event-routing layer for the W5 split (`pipeline.*` → SQLite,
-//! everything else → per-spec NDJSON).
+//! Single event-routing layer — every harness event lands in per-spec NDJSON.
 //!
 //! ## Why one router
 //!
-//! The W5 split lands two stores for harness events:
+//! Originally the W5 split kept lifecycle (`pipeline.*`) events in SQLite and
+//! everything else in NDJSON. The W6–W8 migration of
+//! `2026-05-26-no-sqlite-git-source-of-truth` collapsed both stores into the
+//! single NDJSON sink under `<spec>/[wave-N-{role}/]events/*.ndjson`, written
+//! by [`crate::run::event_writer_ndjson`].
 //!
-//! - **SQLite** (`pipeline_events` table in `mustard.db`) — the lean lifecycle
-//!   index the dashboard reads by spec.
-//! - **NDJSON** (`<spec>/[wave-N-{role}/]events/*.ndjson`) — the hot-path event
-//!   log written by [`crate::run::event_writer_ndjson`].
+//! Before this module landed, every hook + run-face callsite emitting a
+//! non-`pipeline.*` event funnelled through the old SQLite `EventSink`
+//! variant, which silently dropped non-`pipeline.*` events. That left every
+//! `tool.use`, `agent.start`, `qa.result`, `friction.*`, etc. event going
+//! nowhere.
 //!
-//! Before this module landed, every hook + run-face callsite that wanted to
-//! emit a non-`pipeline.*` event funnelled through
-//! [`mustard_core::store::event_store::EventSink::append`], which silently
-//! dropped any non-`pipeline.*` event (the SQLite sink only handles lifecycle
-//! events under W5). That left every `tool.use`, `agent.start`, `qa.result`,
-//! `friction.*`, etc. event going nowhere.
-//!
-//! This module is the single switch: each callsite calls [`emit`] (or
+//! This module is the single switch. Each callsite calls [`emit`] (or
 //! [`emit_event`] / [`emit_event_with_wave_role`] for the typed-context
-//! variants) and the router does the rest:
+//! variants) and the router classifies + dispatches:
 //!
-//! 1. **`pipeline.*`** → keep the SQLite write path. The router opens the
-//!    store via [`SqliteEventStore::for_project`] and calls [`EventSink::append`].
-//! 2. **Everything else** → calls
-//!    [`crate::run::event_writer_ndjson::write_event`] with the resolved spec /
-//!    wave / session triple.
+//! 1. **Every event** → [`crate::run::event_writer_ndjson::write_event_with_ts`]
+//!    with the resolved spec / wave / session triple.
+//! 2. **`pipeline.*`** is still recognised by [`is_pipeline_event`] so the
+//!    `kind` column carries `"pipeline"` — but the destination is the same
+//!    NDJSON sink as every other event. No SQLite append path remains.
 //!
-//! Both paths are fail-open — the caller's tool execution is never blocked by
-//! a telemetry failure (the SQLite append already swallows errors at every
-//! existing callsite, and the NDJSON writer is already fail-open by design).
+//! All paths are fail-open — the caller's tool execution is never blocked by
+//! a telemetry failure (the NDJSON writer is fail-open by design).
 //!
 //! ## Resolving spec + wave context
 //!
 //! The router resolves spec / wave / session like every other run-face
 //! emitter: env vars first (`MUSTARD_ACTIVE_SPEC`, `MUSTARD_ACTIVE_WAVE`,
 //! `MUSTARD_ACTIVE_WAVE_ROLE`, `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`),
-//! then the SQLite `last_pipeline_scope_for_session` lookup, then the
-//! filesystem `.pipeline-states/*.json` hint — see
-//! [`crate::run::env::current_spec`]. The `HarnessEvent`'s own `spec` /
-//! `session_id` / `wave` fields, when populated, are honoured first.
+//! then the per-spec NDJSON walker's last-known `pipeline.scope` for the
+//! session, then a filesystem fallback — see [`crate::run::env::current_spec`].
+//! The `HarnessEvent`'s own `spec` / `session_id` / `wave` fields, when
+//! populated, are honoured first.
 
 use crate::run::env::{current_spec, project_dir, session_id};
 use crate::run::event_writer_ndjson;
 use mustard_core::model::event::HarnessEvent;
 use std::path::Path;
 
-/// `true` when `event.event` is a lifecycle event that belongs in SQLite.
+/// `true` when `event.event` is a lifecycle event (the `pipeline.` prefix).
 ///
-/// A lifecycle event is any name with the `pipeline.` prefix — the same
-/// classification the W5 [`SqliteEventStore::append`] uses internally.
+/// Lifecycle events all land in the same NDJSON sink as every other event;
+/// this classifier is only used to stamp the row's `kind` column so the
+/// dashboard timeline can colour pipeline rows without re-parsing the name.
 #[must_use]
 pub fn is_pipeline_event(event_name: &str) -> bool {
     event_name.starts_with("pipeline.")
@@ -190,10 +187,10 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
 
 /// Convenience wrapper that resolves the project dir for the caller.
 ///
-/// The vast majority of run-face emitters already shell out to
-/// [`crate::run::env::project_dir`] before calling [`SqliteEventStore::for_project`];
-/// this helper packages the common pattern. Marked `allow(dead_code)` until
-/// the first short-form callsite picks it up — the explicit form
+/// The vast majority of run-face emitters already call
+/// [`crate::run::env::project_dir`] before routing through [`emit`]; this
+/// helper packages the common pattern. Marked `allow(dead_code)` until the
+/// first short-form callsite picks it up — the explicit form
 /// [`emit`]`(&project_dir, ev)` covers every site today.
 #[allow(dead_code)]
 pub fn emit_default(event: &HarnessEvent) -> bool {
