@@ -23,8 +23,96 @@ pub use timeline::{
 pub use waves::project_waves;
 pub use workspace::project_workspace;
 
+use crate::claude_paths::ClaudePaths;
+use crate::events::{Event, EventReader};
+use crate::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use crate::model::view::Phase;
-use crate::model::event::HarnessEvent;
+use serde_json::Value;
+use std::path::Path;
+
+/// Convert one NDJSON [`Event`] to a [`HarnessEvent`] for use by projections.
+///
+/// The NDJSON record stores the event name in `raw["event"]` and the logical
+/// kind in the top-level `kind` field. All other harness fields (`ts`, `spec`,
+/// `wave`, `session_id`, `actor`) are present in `raw` via the flatten.
+/// Unknown / missing fields default safely (fail-open).
+///
+/// W8A-2 (no-sqlite Wave 8): lifted from `apps/rt/src/run/event_projections.rs`
+/// to the shared core so both the rt run-face and the dashboard Tauri layer
+/// can fold over the same canonical event slice without duplicating the
+/// converter.
+#[must_use]
+pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
+    let raw = &e.raw;
+    let get_str = |key: &str| -> String {
+        raw.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    HarnessEvent {
+        v: raw.get("v").and_then(Value::as_u64).unwrap_or(u64::from(SCHEMA_VERSION)) as u32,
+        ts: get_str("ts"),
+        session_id: get_str("session_id"),
+        wave: raw.get("wave").and_then(Value::as_u64).unwrap_or(0) as u32,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: raw.get("actor").and_then(Value::as_str).map(str::to_string),
+            actor_type: None,
+        },
+        event: get_str("event"),
+        payload: e.payload,
+        spec: raw.get("spec").and_then(Value::as_str).map(str::to_string),
+    }
+}
+
+/// Collect every NDJSON event from `<project>/.claude/spec/*/.events/*.ndjson`
+/// into one slice of [`HarnessEvent`].
+///
+/// Walks every spec directory, then every `.events/` subdirectory, streaming
+/// each `.ndjson` file line-by-line via [`EventReader::stream`]. Fail-open:
+/// unreadable files and malformed lines are silently skipped — telemetry is
+/// never load-bearing, the projection callers always render *something*.
+///
+/// W8A-2 (no-sqlite Wave 8): the single canonical replacement for
+/// `SqliteEventStore::for_project(...).replay()`. Both `apps/rt` and the
+/// dashboard Tauri layer consume this — keeping it in `mustard-core` keeps
+/// the projection inputs identical across the two consumers (the regression
+/// W6 caught when the dashboard had its own copy).
+#[must_use]
+pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        return Vec::new();
+    };
+    let spec_root = paths.spec_dir();
+    let Ok(spec_entries) = std::fs::read_dir(&spec_root) else {
+        return Vec::new();
+    };
+
+    let mut events: Vec<HarnessEvent> = Vec::new();
+
+    for spec_entry in spec_entries.flatten() {
+        let spec_dir = spec_entry.path();
+        if !spec_dir.is_dir() {
+            continue;
+        }
+        let events_dir = spec_dir.join(".events");
+        let Ok(ndjson_entries) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for ndjson_entry in ndjson_entries.flatten() {
+            let p = ndjson_entry.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
+                continue;
+            }
+            for e in EventReader::stream(&p) {
+                events.push(ndjson_to_harness(e));
+            }
+        }
+    }
+
+    events
+}
 
 /// Tiny helper used by multiple projections — extract the canonical "to" phase
 /// from a `pipeline.phase` event payload. `pipeline.phase` carries both a

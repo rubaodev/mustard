@@ -1450,8 +1450,9 @@ fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Res
 
 /// Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`) — list
 /// sub-specs linked to `parent` via `spec.link` events. Delegates to
-/// `spec_views::spec_children_v2` which in turn calls
-/// `mustard_core::SpecReader::children_of`.
+/// `spec_views::spec_children_v2`, which now spawns `mustard-rt run
+/// spec-children` (the cross-developer UNION of events + `### Parent:`
+/// headers — see W4A migration notes in `spec_views.rs`).
 #[tauri::command]
 async fn dashboard_spec_children(
     repo_path: String,

@@ -17,9 +17,7 @@
 //! an error.
 
 use crate::run::env::{project_dir, session_id};
-use crate::run::event_projections::{
-    pipeline_state_from_events, read_workspace_events, PipelineStateView,
-};
+use crate::run::event_projections::{pipeline_state_from_events, PipelineStateView};
 use crate::run::event_route;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
@@ -28,6 +26,7 @@ use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineDispatchFailurePayload, SCHEMA_VERSION,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_WAVE_COMPLETE,
 };
+use mustard_core::projection::read_workspace_events;
 use mustard_core::EventReader;
 use serde::Serialize;
 use serde_json::json;

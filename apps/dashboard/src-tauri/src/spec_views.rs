@@ -6,10 +6,13 @@
 //!
 //! `*_v2` adapter family that delegates to `mustard-core`.
 //!
-//! Each `*_v2` function is a thin adapter — it opens a
-//! [`mustard_core::SqliteSpecReader`], runs the projection, and maps the
-//! typed ViewModel into the JSON shape the frontend already expects (so React
-//! contracts stay untouched). The legacy hand-rolled SQL functions
+//! Each `*_v2` function is a thin adapter — it walks
+//! `<project>/.claude/spec/*/.events/*.ndjson` via
+//! [`mustard_core::projection::read_workspace_events`], folds the resulting
+//! slice with the matching projection function (`project_spec_view_with_header`,
+//! `project_waves`, `project_quality`, `project_timeline`, `project_workspace`)
+//! and maps the typed ViewModel into the JSON shape the frontend already
+//! expects (so React contracts stay untouched). The legacy hand-rolled SQL functions
 //! (`spec_card`, `spec_waves`, `spec_quality`, `spec_timeline`,
 //! `workspace_summary`) were removed in Wave 2 of spec
 //! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
@@ -525,61 +528,73 @@ fn sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
 // functions stay alongside until `spec_views_test.rs` is retired.
 // ===========================================================================
 
-/// Wave 4 adapter: build a [`SpecCard`] via `mustard-core`.
+/// W8A-2 adapter: build a [`SpecCard`] via `mustard-core` projections.
 ///
-/// Opens a [`mustard_core::SqliteSpecReader`] keyed by `repo_path`,
-/// projects the per-spec view, then maps the typed ViewModel into the JSON
-/// shape the React frontend already consumes.
+/// Walks the NDJSON workspace, folds the slice into a
+/// [`mustard_core::SpecView`] via `project_spec_view_with_header` (so the
+/// `spec.md` lifecycle header still seeds the view when the event stream is
+/// empty), and maps the typed ViewModel into the JSON shape the React
+/// frontend already consumes.
 ///
-/// Returns `Ok(None)` when the spec has zero events. The `lib.rs` command
-/// converts that to the empty-state JSON payload.
+/// Returns `Ok(None)` when the projection is empty (no event evidence and no
+/// usable header). The `lib.rs` command converts that to the empty-state
+/// JSON payload.
 pub fn spec_card_v2(repo_path: &str, spec: &str) -> Result<Option<SpecCard>, String> {
-    use mustard_core::SpecReader;
-    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
-        .map_err(|e| format!("reader open: {e}"))?;
-    let Some(view) = reader.spec_view(spec).map_err(|e| format!("spec_view: {e}"))? else {
+    let project = std::path::PathBuf::from(repo_path);
+    let events = mustard_core::projection::read_workspace_events(&project);
+    let spec_md = project.join(".claude").join("spec").join(spec).join("spec.md");
+    let view = mustard_core::projection::project_spec_view_with_header(
+        spec,
+        &events,
+        Some(&spec_md),
+        None,
+    );
+    if view.is_empty() {
         return Ok(None);
-    };
+    }
     // Spec `2026-05-21-speccard-use-children-count`: include the sub-spec
     // count up-front so the React card stops fanning out one
-    // `useSpecChildren` query per rendered row. Failure here is non-fatal —
-    // the badge just renders absent.
-    let children_count = reader
-        .children_of(spec)
-        .map(|c| u32::try_from(c.len()).unwrap_or(u32::MAX))
-        .unwrap_or(0);
+    // `useSpecChildren` query per rendered row. Re-fold the event slice on
+    // `spec.link` payloads whose `parent` matches this spec.
+    let children_count: u32 = events
+        .iter()
+        .filter(|e| e.event == "spec.link")
+        .filter_map(|e| e.payload.get("parent").and_then(|p| p.as_str()))
+        .filter(|p| *p == spec)
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX);
     Ok(Some(spec_card_from_view(&view, children_count)))
 }
 
-/// Wave 4 adapter: build the wave list via `mustard-core`. Empty `Vec`
-/// when the spec has no wave events.
+/// W8A-2 adapter: build the wave list via `mustard-core` projections.
+/// Empty `Vec` when the spec has no wave events.
 pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, String> {
-    use mustard_core::SpecReader;
-    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
-        .map_err(|e| format!("reader open: {e}"))?;
-    let waves = reader.waves(spec).map_err(|e| format!("waves: {e}"))?;
+    let project = std::path::PathBuf::from(repo_path);
+    let events = mustard_core::projection::read_workspace_events(&project);
+    let waves = mustard_core::projection::project_waves(spec, &events);
     Ok(waves.iter().map(spec_wave_from_view).collect())
 }
 
-/// Wave 4 adapter: AC roll-up via `mustard-core`.
+/// W8A-2 adapter: AC roll-up via `mustard-core` projections.
 pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityItem>, String> {
-    use mustard_core::SpecReader;
-    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
-        .map_err(|e| format!("reader open: {e}"))?;
-    let rollup = reader.quality(spec).map_err(|e| format!("quality: {e}"))?;
+    let project = std::path::PathBuf::from(repo_path);
+    let events = mustard_core::projection::read_workspace_events(&project);
+    let rollup = mustard_core::projection::project_quality(spec, &events);
     Ok(rollup.criteria.iter().map(quality_item_from_view).collect())
 }
 
-/// Wave 4 adapter: timeline projection via `mustard-core`. `All` window;
-/// the dashboard does its own client-side filtering when it needs a narrower
-/// view.
+/// W8A-2 adapter: timeline projection via `mustard-core` projections.
+/// `All` window; the dashboard does its own client-side filtering when it
+/// needs a narrower view.
 pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineNode>, String> {
-    use mustard_core::SpecReader;
-    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
-        .map_err(|e| format!("reader open: {e}"))?;
-    let nodes = reader
-        .timeline(spec, mustard_core::TimeWindow::All)
-        .map_err(|e| format!("timeline: {e}"))?;
+    let project = std::path::PathBuf::from(repo_path);
+    let events = mustard_core::projection::read_workspace_events(&project);
+    let nodes = mustard_core::projection::project_timeline(
+        spec,
+        &events,
+        mustard_core::TimeWindow::All,
+    );
     Ok(nodes.iter().map(timeline_node_from_view).collect())
 }
 
@@ -590,8 +605,8 @@ pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineN
 /// spec-children` so the Tauri command stays a thin subprocess wrapper (same
 /// pattern as [`dashboard_spec_wave_files_run`] / [`dashboard_wikilink_extract_run`]).
 ///
-/// Previously this delegated directly to [`mustard_core::SpecReader::children_of`],
-/// which queried only SQLite. Sub-specs created by `/mustard:tactical-fix`
+/// Previously this delegated to a `SpecReader::children_of` projection that
+/// queried only SQLite. Sub-specs created by `/mustard:tactical-fix`
 /// (which write the `### Parent:` header at create time but don't always
 /// have a `spec.link` event in the local store yet — e.g. another developer
 /// pulled the files but not the SQLite db) were invisible.
@@ -759,12 +774,13 @@ pub fn dashboard_metrics_wave_status_run(
 /// stays populated after a CLOSE. Returns the mustard-core result unchanged
 /// when the override fails-soft (DB missing / schema mismatch).
 pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String> {
-    use mustard_core::SpecReader;
-    let reader = mustard_core::SqliteSpecReader::for_project(repo_path)
-        .map_err(|e| format!("reader open: {e}"))?;
-    let summary = reader
-        .workspace_summary()
-        .map_err(|e| format!("workspace_summary: {e}"))?;
+    let project = std::path::PathBuf::from(repo_path);
+    let events = mustard_core::projection::read_workspace_events(&project);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map_or(0_i64, |d| d.as_millis().min(i64::MAX as u128) as i64);
+    let summary = mustard_core::projection::project_workspace(&events, now_ms);
     let mut out = workspace_summary_from_view(&summary);
 
     // Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):

@@ -542,6 +542,17 @@ impl SpecView {
             is_wave_plan: false,
         }
     }
+
+    /// `true` when the view holds no event evidence — both timestamps absent.
+    ///
+    /// W8A-2 (no-sqlite Wave 8): supersedes the dashboard's previous reliance
+    /// on `SqliteSpecReader::spec_view` returning `Ok(None)` for an unknown
+    /// spec. With the reader gone, callers project unconditionally and use
+    /// this predicate to decide whether to surface an empty-state payload.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.started_at.is_none() && self.last_event_at.is_none()
+    }
 }
 
 /// Lean per-spec view — the shape rendered in the Specs list, the workspace

@@ -20,14 +20,14 @@ use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::model::view::{Phase, Stage};
 use mustard_core::model::event::{
-    Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
-    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
-    EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
-    EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
-    PipelineCompletePayload, PipelineDispatchFailurePayload,
+    HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE,
+    EVENT_PIPELINE_PAUSE, EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE,
+    EVENT_PIPELINE_STATUS, EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH,
+    EVENT_PIPELINE_WAVE_COMPLETE, PipelineCompletePayload, PipelineDispatchFailurePayload,
 };
-use mustard_core::projection::project_spec_view_with_header;
-use mustard_core::{Event, EventReader};
+use mustard_core::projection::{
+    project_spec_view_with_header, read_workspace_events as core_read_workspace_events,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -40,78 +40,15 @@ const FINDING_CONFIDENCE: f64 = 0.7;
 /// Per-wave event cap, matching `DEFAULT_AGENT_EVENT_LIMIT`.
 const AGENT_EVENT_LIMIT: usize = 40;
 
-/// Convert one NDJSON [`Event`] to a [`HarnessEvent`] for use by projections.
+/// Re-export of [`mustard_core::projection::read_workspace_events`] under the
+/// crate path so existing rt callers (`resume_bootstrap`, `spec_children_tree`,
+/// the projection `project` dispatcher below) continue to use the short name.
 ///
-/// The NDJSON record stores the event name in `raw["event"]` and the logical
-/// kind in the top-level `kind` field. All other harness fields (`ts`, `spec`,
-/// `wave`, `session_id`, `actor`) are present in `raw` via the flatten.
-/// Unknown / missing fields default safely (fail-open).
-pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
-    let raw = &e.raw;
-    let get_str = |key: &str| -> String {
-        raw.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
-    HarnessEvent {
-        v: raw.get("v").and_then(Value::as_u64).unwrap_or(SCHEMA_VERSION as u64) as u32,
-        ts: get_str("ts"),
-        session_id: get_str("session_id"),
-        wave: raw.get("wave").and_then(Value::as_u64).unwrap_or(0) as u32,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: raw.get("actor").and_then(Value::as_str).map(str::to_string),
-            actor_type: None,
-        },
-        event: get_str("event"),
-        payload: e.payload,
-        spec: raw.get("spec").and_then(Value::as_str).map(str::to_string),
-    }
-}
-
-/// Collect all NDJSON events from `.claude/spec/*/.events/*.ndjson` under `cwd`.
-///
-/// Walks every spec directory, then every `.events/` subdirectory, streaming
-/// each `.ndjson` file line-by-line. Converts to [`HarnessEvent`] for
-/// compatibility with existing projection folds. Fail-open: unreadable files
-/// and malformed lines are silently skipped.
-///
-/// `pub(crate)` since W8A-1 (no-sqlite Wave 8): `resume_bootstrap` and
-/// `spec_children_tree` consume this in place of the deleted
-/// `SqliteEventStore::for_project(...).replay()`.
+/// W8A-2 (no-sqlite Wave 8): the canonical walker moved to `mustard-core` so
+/// both the rt crate and the dashboard Tauri layer can fold over the same
+/// event slice without duplicating the converter logic.
 pub(crate) fn read_workspace_events(cwd: &Path) -> Vec<HarnessEvent> {
-    let Ok(paths) = ClaudePaths::for_project(cwd) else {
-        return Vec::new();
-    };
-    let spec_root = paths.spec_dir();
-    let Ok(spec_entries) = std::fs::read_dir(&spec_root) else {
-        return Vec::new();
-    };
-
-    let mut events: Vec<HarnessEvent> = Vec::new();
-
-    for spec_entry in spec_entries.flatten() {
-        let spec_dir = spec_entry.path();
-        if !spec_dir.is_dir() {
-            continue;
-        }
-        let events_dir = spec_dir.join(".events");
-        let Ok(ndjson_entries) = std::fs::read_dir(&events_dir) else {
-            continue;
-        };
-        for ndjson_entry in ndjson_entries.flatten() {
-            let p = ndjson_entry.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
-                continue;
-            }
-            for e in EventReader::stream(&p) {
-                events.push(ndjson_to_harness(e));
-            }
-        }
-    }
-
-    events
+    core_read_workspace_events(cwd)
 }
 
 /// `buildAgentVisibility` — recent events of a wave plus high-confidence
