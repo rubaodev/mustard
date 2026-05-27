@@ -14,9 +14,9 @@
 
 use crate::run::env::{current_spec, session_id};
 use crate::util::now_iso8601;
+use mustard_core::events::reader::EventReader;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -95,20 +95,57 @@ fn save(cwd: &Path, spec: Option<&str>, file: &BaselineFile) -> std::io::Result<
 }
 
 /// Look up the latest historical duration_ms for `operation`.
+///
+/// W7C: replaced `SqliteEventStore::replay` with a per-spec NDJSON walk via
+/// [`EventReader`]. Iterates every `<cwd>/.claude/spec/*/.events/*.ndjson`
+/// file, filters for `pipeline.economy.operation.invoked` with the matching
+/// `payload.operation`, and returns the duration whose `ts` is most recent.
 fn historical_duration_ms(cwd: &Path, operation: &str) -> Option<i64> {
-    let store = SqliteEventStore::for_project(cwd.to_string_lossy().as_ref()).ok()?;
-    let events = store.replay().ok()?;
-    events
-        .into_iter()
-        .rev()
-        .find(|e| {
-            e.event == "pipeline.economy.operation.invoked"
-                && e.payload
+    let spec_root = cwd.join(".claude").join("spec");
+    let entries = std::fs::read_dir(&spec_root).ok()?;
+    let mut latest_ts = String::new();
+    let mut latest_dur: Option<i64> = None;
+    for spec_entry in entries.flatten() {
+        let events_dir = spec_entry.path().join(".events");
+        let Ok(files) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+                continue;
+            }
+            for ev in EventReader::stream(&path) {
+                let ev_name = ev
+                    .raw
+                    .get("event")
+                    .and_then(Value::as_str)
+                    .unwrap_or(ev.kind.as_str());
+                if ev_name != "pipeline.economy.operation.invoked" {
+                    continue;
+                }
+                let payload = &ev.payload;
+                if payload
                     .get("operation")
                     .and_then(Value::as_str)
-                    .is_some_and(|s| s == operation)
-        })
-        .and_then(|e| e.payload.get("duration_ms").and_then(Value::as_i64))
+                    .map_or(true, |s| s != operation)
+                {
+                    continue;
+                }
+                let ts = ev
+                    .raw
+                    .get("ts")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if ts > latest_ts {
+                    latest_ts = ts;
+                    latest_dur = payload.get("duration_ms").and_then(Value::as_i64);
+                }
+            }
+        }
+    }
+    latest_dur
 }
 
 /// CLI entry.
