@@ -118,18 +118,18 @@ pub fn init_with_templates(
                 return Ok(());
             }
             ExistingAction::Merge => {
-                let count = copy_dir(templates_dir, &claude_path, false, &[".github"])?;
+                let count = copy_dir(templates_dir, &claude_path, false, &[".github", ".claude"])?;
                 let gh = install_github_templates(templates_dir, &project_path)?;
                 report_copy(count, gh, false);
             }
             ExistingAction::Overwrite => {
-                let count = copy_dir(templates_dir, &claude_path, true, &[".github"])?;
+                let count = copy_dir(templates_dir, &claude_path, true, &[".github", ".claude"])?;
                 let gh = install_github_templates(templates_dir, &project_path)?;
                 report_copy(count, gh, true);
             }
         }
     } else {
-        let count = copy_dir(templates_dir, &claude_path, true, &[".github"])?;
+        let count = copy_dir(templates_dir, &claude_path, true, &[".github", ".claude"])?;
         let gh = install_github_templates(templates_dir, &project_path)?;
         report_copy(count, gh, true);
     }
@@ -727,6 +727,46 @@ mod tests {
         .unwrap();
 
         assert!(!dry.join(".claude").exists(), "dry-run wrote nothing");
+    }
+
+    /// Regression guard for the `.claude/.claude/` nesting bug (I1 rule).
+    ///
+    /// When `templates/` contains a `.claude/` sub-directory (e.g. a subproject
+    /// guard added during development), a naive recursive copy propagates it into
+    /// the target, producing `<project>/.claude/.claude/` — which violates the
+    /// workspace model. This test fails before the fix (`.claude` missing from
+    /// the exclude list) and passes after it.
+    #[test]
+    fn init_does_not_create_nested_claude_dir() {
+        let work = tempdir().unwrap();
+
+        // Use a real templates dir that mirrors the bug: templates/ has a .claude/
+        // subdir with a file in it.
+        let templates = work.path().join("templates");
+        // Build the normal payload.
+        fs::create_dir_all(templates.join("commands")).unwrap();
+        fs::write(templates.join("CLAUDE.md"), "# rules").unwrap();
+        fs::write(templates.join("settings.json"), "{}").unwrap();
+        fs::write(templates.join("commands/feature.md"), "feature").unwrap();
+        // Inject the offending .claude/ inside templates/.
+        fs::create_dir_all(templates.join(".claude/commands")).unwrap();
+        fs::write(templates.join(".claude/commands/notes.md"), "boilerplate").unwrap();
+
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        init_with_templates(
+            &project,
+            &templates,
+            &InitOptions { yes: true, ..InitOptions::default() },
+        )
+        .unwrap();
+
+        let nested = project.join(".claude").join(".claude");
+        assert!(
+            !nested.exists(),
+            ".claude/.claude/ must not be created — I1 rule violated"
+        );
     }
 
     #[test]
