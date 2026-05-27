@@ -19,7 +19,6 @@ use crate::report::Report;
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::model::view::{Phase, Stage};
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -1419,13 +1418,9 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // pipeline_state_from_events tests — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
+    // (W2-rename adapted to &[HarnessEvent] signature; W15-tactical dropped
+    //  SqliteEventStore plumbing — tests build event vectors directly.)
     // -----------------------------------------------------------------------
-
-    use mustard_core::store::event_store::EventSink;
-
-    fn store_in_dir(dir: &std::path::Path) -> SqliteEventStore {
-        SqliteEventStore::new(dir.join("mustard.db")).unwrap()
-    }
 
     fn pipeline_ev(event: &str, spec: &str, payload: Value) -> HarnessEvent {
         HarnessEvent {
@@ -1443,26 +1438,25 @@ mod tests {
     /// Test 1 — no events for spec → None.
     #[test]
     fn ps_no_events_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-        assert!(pipeline_state_from_events(&store, "ghost-spec", None).is_none());
+        let events: Vec<HarnessEvent> = Vec::new();
+        assert!(pipeline_state_from_events(&events, "ghost-spec", None).is_none());
     }
 
     /// Test 2 — scope + status events only → fields populated, tasks empty, current_wave=1.
     #[test]
     fn ps_scope_and_status_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_SCOPE, "spec-a",
-            json!({ "scope": "full", "lang": "en", "model": "claude-opus-4-5" }),
-        )).unwrap();
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_STATUS, "spec-a",
-            json!({ "to": "active" }),
-        )).unwrap();
+        let events = vec![
+            pipeline_ev(
+                EVENT_PIPELINE_SCOPE, "spec-a",
+                json!({ "scope": "full", "lang": "en", "model": "claude-opus-4-5" }),
+            ),
+            pipeline_ev(
+                EVENT_PIPELINE_STATUS, "spec-a",
+                json!({ "to": "active" }),
+            ),
+        ];
 
-        let view = pipeline_state_from_events(&store, "spec-a", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-a", None).unwrap();
         assert_eq!(view.scope.as_deref(), Some("full"));
         assert_eq!(view.lang.as_deref(), Some("en"));
         assert_eq!(view.model.as_deref(), Some("claude-opus-4-5"));
@@ -1475,18 +1469,18 @@ mod tests {
     /// Test 3 — wave progression → completed_waves=[1,2], current_wave=3.
     #[test]
     fn ps_wave_progression() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_WAVE_COMPLETE, "spec-b",
-            json!({ "wave": 1 }),
-        )).unwrap();
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_WAVE_COMPLETE, "spec-b",
-            json!({ "wave": 2 }),
-        )).unwrap();
+        let events = vec![
+            pipeline_ev(
+                EVENT_PIPELINE_WAVE_COMPLETE, "spec-b",
+                json!({ "wave": 1 }),
+            ),
+            pipeline_ev(
+                EVENT_PIPELINE_WAVE_COMPLETE, "spec-b",
+                json!({ "wave": 2 }),
+            ),
+        ];
 
-        let view = pipeline_state_from_events(&store, "spec-b", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-b", None).unwrap();
         assert_eq!(view.completed_waves, vec![1u32, 2u32]);
         assert_eq!(view.current_wave, 3);
     }
@@ -1494,24 +1488,21 @@ mod tests {
     /// Test 4 — task lifecycle: dispatch + complete → status=completed with timestamps.
     #[test]
     fn ps_task_lifecycle_dispatch_then_complete() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-
         let mut dispatch_ev = pipeline_ev(
             EVENT_PIPELINE_TASK_DISPATCH, "spec-c",
             json!({ "name": "implement-auth", "agent": "general-purpose", "wave": 1 }),
         );
         dispatch_ev.ts = "2026-05-20T10:00:00.000Z".to_string();
-        store.append(&dispatch_ev).unwrap();
 
         let mut complete_ev = pipeline_ev(
             EVENT_PIPELINE_TASK_COMPLETE, "spec-c",
             json!({ "name": "implement-auth", "duration_ms": 5000 }),
         );
         complete_ev.ts = "2026-05-20T10:05:00.000Z".to_string();
-        store.append(&complete_ev).unwrap();
 
-        let view = pipeline_state_from_events(&store, "spec-c", None).unwrap();
+        let events = vec![dispatch_ev, complete_ev];
+
+        let view = pipeline_state_from_events(&events, "spec-c", None).unwrap();
         assert_eq!(view.tasks.len(), 1);
         let task = &view.tasks[0];
         assert_eq!(task.name, "implement-auth");
@@ -1524,60 +1515,46 @@ mod tests {
     /// Test 5 — conflicting status events → last wins.
     #[test]
     fn ps_last_status_wins() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_STATUS, "spec-d",
-            json!({ "to": "active" }),
-        )).unwrap();
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_STATUS, "spec-d",
-            json!({ "to": "completed" }),
-        )).unwrap();
+        let events = vec![
+            pipeline_ev(
+                EVENT_PIPELINE_STATUS, "spec-d",
+                json!({ "to": "active" }),
+            ),
+            pipeline_ev(
+                EVENT_PIPELINE_STATUS, "spec-d",
+                json!({ "to": "completed" }),
+            ),
+        ];
 
-        let view = pipeline_state_from_events(&store, "spec-d", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-d", None).unwrap();
         assert_eq!(view.status.as_deref(), Some("completed"));
     }
 
     /// Test 6 — stale dispatch_failure (>10 min old) → cleared in view.
     #[test]
     fn ps_stale_dispatch_failure_cleared() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
         // Use a timestamp far in the past (2020-01-01) to guarantee staleness.
-        store.append(&pipeline_ev(
+        let events = vec![pipeline_ev(
             EVENT_PIPELINE_DISPATCH_FAILURE, "spec-e",
             json!({ "reason": "timeout", "at": "2020-01-01T00:00:00.000Z" }),
-        )).unwrap();
+        )];
 
-        let view = pipeline_state_from_events(&store, "spec-e", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-e", None).unwrap();
         assert!(view.last_dispatch_failure.is_none(), "stale failure should be cleared");
     }
 
     /// Test 7 — fresh dispatch_failure (<10 min old) → preserved in view.
     #[test]
     fn ps_fresh_dispatch_failure_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-
-        // Use a recent timestamp relative to now. We compute "now - 30s" as a
-        // known-good recent time by querying system time.
-        let now_ms = crate::util::now_millis() as i64;
-        let recent_secs = (now_ms / 1000) - 30; // 30 seconds ago
-        let y = 1970u64 + (recent_secs as u64 / 31_536_000);
-        // Rough but sufficient: just use a very recent ISO string close to now.
-        // The most reliable approach: build from known-good recent milliseconds.
-        // We use the `now_iso8601` helper from util to get the current time as the
-        // failure timestamp — this guarantees it's always fresh.
+        // Use the current time as the failure timestamp — guarantees freshness.
         let recent_ts = crate::util::now_iso8601();
-        let _ = y; // suppress warning
 
-        store.append(&pipeline_ev(
+        let events = vec![pipeline_ev(
             EVENT_PIPELINE_DISPATCH_FAILURE, "spec-f",
             json!({ "reason": "budget exceeded", "at": recent_ts }),
-        )).unwrap();
+        )];
 
-        let view = pipeline_state_from_events(&store, "spec-f", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-f", None).unwrap();
         assert!(view.last_dispatch_failure.is_some(), "fresh failure should be preserved");
         assert_eq!(
             view.last_dispatch_failure.as_ref().unwrap().reason.as_deref(),
@@ -1588,22 +1565,21 @@ mod tests {
     /// Test — pipeline.complete sets closed_at and affected_files in the view.
     #[test]
     fn ps_pipeline_complete_sets_closed_at_and_files() {
-        use mustard_core::model::event::EVENT_PIPELINE_COMPLETE;
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_STATUS, "spec-complete",
-            json!({ "to": "closed-followup" }),
-        )).unwrap();
-        store.append(&pipeline_ev(
-            EVENT_PIPELINE_COMPLETE, "spec-complete",
-            json!({
-                "closedAt": "2026-05-20T12:00:00.000Z",
-                "affectedFiles": ["src/foo.rs", "src/bar.rs"]
-            }),
-        )).unwrap();
+        let events = vec![
+            pipeline_ev(
+                EVENT_PIPELINE_STATUS, "spec-complete",
+                json!({ "to": "closed-followup" }),
+            ),
+            pipeline_ev(
+                EVENT_PIPELINE_COMPLETE, "spec-complete",
+                json!({
+                    "closedAt": "2026-05-20T12:00:00.000Z",
+                    "affectedFiles": ["src/foo.rs", "src/bar.rs"]
+                }),
+            ),
+        ];
 
-        let view = pipeline_state_from_events(&store, "spec-complete", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-complete", None).unwrap();
         assert_eq!(view.status.as_deref(), Some("closed-followup"));
         assert_eq!(view.closed_at.as_deref(), Some("2026-05-20T12:00:00.000Z"));
         assert_eq!(view.affected_files, vec!["src/foo.rs", "src/bar.rs"]);
@@ -1612,50 +1588,46 @@ mod tests {
     /// Test — closed_at fallback: status==closed-followup but no pipeline.complete event.
     #[test]
     fn ps_closed_at_falls_back_to_last_status_ts() {
-        use mustard_core::model::event::EVENT_PIPELINE_COMPLETE;
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
         // Emit a pipeline.status event with a known timestamp.
         let mut status_ev = pipeline_ev(
             EVENT_PIPELINE_STATUS, "spec-fallback",
             json!({ "to": "closed-followup" }),
         );
         status_ev.ts = "2026-05-20T09:30:00.000Z".to_string();
-        store.append(&status_ev).unwrap();
+        let mut events = vec![status_ev];
         // No pipeline.complete event.
 
-        let view = pipeline_state_from_events(&store, "spec-fallback", None).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-fallback", None).unwrap();
         assert_eq!(view.status.as_deref(), Some("closed-followup"));
         // closed_at should fall back to the pipeline.status event's ts.
         assert_eq!(view.closed_at.as_deref(), Some("2026-05-20T09:30:00.000Z"));
         assert!(view.affected_files.is_empty(), "no affectedFiles when no complete event");
 
         // Sanity: if pipeline.complete IS present, it wins over the fallback.
-        store.append(&pipeline_ev(
+        events.push(pipeline_ev(
             EVENT_PIPELINE_COMPLETE, "spec-fallback",
             json!({ "closedAt": "2026-05-20T10:00:00.000Z", "affectedFiles": [] }),
-        )).unwrap();
-        let view2 = pipeline_state_from_events(&store, "spec-fallback", None).unwrap();
+        ));
+        let view2 = pipeline_state_from_events(&events, "spec-fallback", None).unwrap();
         assert_eq!(view2.closed_at.as_deref(), Some("2026-05-20T10:00:00.000Z"));
     }
 
     /// Test 8 — is_wave_plan via FS when no pipeline.scope event present.
     #[test]
     fn ps_is_wave_plan_via_fs_fallback() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store_in_dir(dir.path());
         // Add any event so the spec is present.
-        store.append(&pipeline_ev(
+        let events = vec![pipeline_ev(
             EVENT_PIPELINE_STATUS, "spec-g",
             json!({ "to": "active" }),
-        )).unwrap();
+        )];
 
         // Create the spec dir with wave-plan.md.
+        let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path().join("spec-dir");
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("wave-plan.md"), "# Wave Plan\n").unwrap();
 
-        let view = pipeline_state_from_events(&store, "spec-g", Some(&spec_dir)).unwrap();
+        let view = pipeline_state_from_events(&events, "spec-g", Some(&spec_dir)).unwrap();
         assert_eq!(view.is_wave_plan, Some(true));
     }
 }
