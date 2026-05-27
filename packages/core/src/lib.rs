@@ -52,6 +52,7 @@ pub mod projection;
 pub mod reader;
 pub mod skill;
 pub mod spec;
+pub mod summary;
 pub mod telemetry;
 pub mod workspace;
 
