@@ -9,11 +9,11 @@
 
 use crate::run::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
 use crate::run::env::{current_spec, session_id};
+use crate::run::event_route;
 use crate::util::now_iso8601;
+use mustard_core::events::reader::EventReader;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use mustard_core::telemetry::store::TelemetryStore;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -58,59 +58,107 @@ fn save(cwd: &Path, spec: Option<&str>, file: &BaselineFile) -> std::io::Result<
         .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
-/// Median of up to N samples for `operation` from the event store.
+/// Median of up to N samples for `operation` from the NDJSON event log.
+///
+/// W7B: replaced the SQLite `SqliteEventStore::replay` with an
+/// [`EventReader`] walk over every per-spec NDJSON file under
+/// `<cwd>/.claude/spec/*/.events/`. The filter is the same — events whose
+/// name is `pipeline.economy.operation.invoked` with the matching
+/// `payload.operation`. Returns `(median, sample_count)`.
 fn median_duration_ms(cwd: &Path, operation: &str, take: usize) -> (i64, usize) {
-    let Ok(store) = SqliteEventStore::for_project(cwd.to_string_lossy().as_ref()) else {
+    let mut samples: Vec<(String, i64)> = Vec::new(); // (ts, duration_ms) for ordering
+    let spec_root = cwd.join(".claude").join("spec");
+    let Ok(specs) = std::fs::read_dir(&spec_root) else {
         return (0, 0);
     };
-    let Ok(events) = store.replay() else {
-        return (0, 0);
-    };
-    let mut durations: Vec<i64> = events
-        .iter()
-        .rev()
-        .filter(|e| {
-            e.event == "pipeline.economy.operation.invoked"
-                && e.payload
+    for spec_entry in specs.flatten() {
+        let events_dir = spec_entry.path().join(".events");
+        let Ok(files) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+                continue;
+            }
+            for ev in EventReader::stream(&path) {
+                let ev_name = ev
+                    .raw
+                    .get("event")
+                    .and_then(Value::as_str)
+                    .unwrap_or(ev.kind.as_str());
+                if ev_name != "pipeline.economy.operation.invoked" {
+                    continue;
+                }
+                let payload = &ev.payload;
+                if payload
                     .get("operation")
                     .and_then(Value::as_str)
-                    .is_some_and(|s| s == operation)
-        })
-        .take(take)
-        .filter_map(|e| e.payload.get("duration_ms").and_then(Value::as_i64))
-        .collect();
-    if durations.is_empty() {
+                    .map_or(true, |s| s != operation)
+                {
+                    continue;
+                }
+                let ts = ev
+                    .raw
+                    .get("ts")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(d) = payload.get("duration_ms").and_then(Value::as_i64) {
+                    samples.push((ts, d));
+                }
+            }
+        }
+    }
+    if samples.is_empty() {
         return (0, 0);
     }
+    // Sort by ts desc — most recent first — then take N samples.
+    samples.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut durations: Vec<i64> = samples.into_iter().take(take).map(|(_, d)| d).collect();
     durations.sort_unstable();
     let mid = durations.len() / 2;
     (durations[mid], durations.len())
 }
 
-/// W11.T11.3 — write one `economy_savings` row per reconciled `(wave_id,
-/// operation)` pair, materialising the per-wave savings the dashboard
-/// `/economia` Deep Refactor tab reads. The savings figure is the positive
-/// delta between the historical baseline and the new median (in ms,
-/// reinterpreted as "tokens saved" — the schema column is generic enough to
-/// hold either unit; the dashboard labels it "Tokens economizados" so the
-/// number reads as token-equivalent friction removed by the wave's work).
+/// W7B (was W11.T11.3) — emit one `pipeline.economy.savings.wave` NDJSON
+/// event per reconciled `(wave_id, operation)` pair. The dashboard
+/// `apps/dashboard/src-tauri/src/economy.rs::per_wave_from_events` consumes
+/// exactly this event kind for the `/economia` Deep Refactor tab. The
+/// savings figure is the positive delta between the historical baseline and
+/// the new median (in ms, reinterpreted as token-equivalent friction).
 ///
-/// Fail-open: a missing telemetry.db or a SQL error degrades to a no-op so the
-/// JSON report still prints.
+/// Fail-open: each event is routed through `event_route::emit`; routing
+/// failures degrade silently per the router contract.
 fn record_savings(cwd: &Path, wave: u32, records: &[ReconcileRecord]) {
-    let Ok(store) = TelemetryStore::for_project(cwd) else { return };
+    let cwd_str = cwd.to_string_lossy().into_owned();
     let measured_at: i64 = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis())) as i64;
     let wave_id = format!("W{wave}");
     for r in records {
         let savings: i64 = (r.old_duration_ms - r.new_duration_ms).max(0);
-        let _ = store.conn().execute(
-            "INSERT OR REPLACE INTO economy_savings \
-                 (wave_id, operation, savings_tokens, measured_at) \
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![&wave_id, &r.operation, savings, measured_at],
-        );
+        let payload = json!({
+            "wave_id": wave_id,
+            "operation": r.operation,
+            "savings_tokens": savings,
+            "measured_at": measured_at,
+        });
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: now_iso8601(),
+            session_id: session_id(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Orchestrator,
+                id: Some("economy-reconcile".to_string()),
+                actor_type: None,
+            },
+            event: "pipeline.economy.savings.wave".to_string(),
+            payload,
+            spec: current_spec(&cwd_str),
+        };
+        let _ = event_route::emit(&cwd_str, &event);
     }
 }
 

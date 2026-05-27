@@ -21,10 +21,13 @@
 //! has a different output shape (`--all --format json`) and is read-only.
 
 use mustard_core::economy::{self, sources::rtk as rtk_source, sources::IngestContext};
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::process::{Command, Stdio};
 
 use crate::run::env::{current_spec, project_dir, session_id};
+use crate::run::event_route;
+use crate::util::now_iso8601;
 
 /// Normalised `rtk gain` summary — the fields `metrics.js` consumed.
 #[derive(Debug, Clone)]
@@ -170,17 +173,25 @@ fn persist_savings() {
         return;
     }
 
-    let conn = match economy::store::open_for(&cwd) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("rtk_gain: economy::store::open_for failed ({e}); skipping persist");
-            return;
-        }
-    };
+    // W7B: each record becomes one `pipeline.economy.savings.rtk-rewrite`
+    // NDJSON event via the shared payload builder. Fail-open per record.
     for rec in records {
-        if let Err(e) = economy::writer::record_savings(&conn, rec) {
-            eprintln!("rtk_gain: record_savings failed: {e}");
-        }
+        let (event_name, payload) = economy::writer::savings_event(&rec);
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: now_iso8601(),
+            session_id: session_id(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Orchestrator,
+                id: Some("rtk-gain".to_string()),
+                actor_type: None,
+            },
+            event: event_name,
+            payload,
+            spec: current_spec(&cwd),
+        };
+        let _ = event_route::emit(&cwd, &event);
     }
 }
 

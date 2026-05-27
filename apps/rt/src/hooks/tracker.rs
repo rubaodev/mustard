@@ -39,12 +39,10 @@
 use crate::run::current_spec;
 use crate::util::now_iso8601;
 use mustard_core::economy::estimator;
-use mustard_core::economy::writer;
-use mustard_core::economy::{ApiCostFrame, SpanRecord};
+use mustard_core::economy::writer as economy_writer;
+use mustard_core::economy::SpanRecord;
 use mustard_core::error::Error;
 use mustard_core::fs;
-use mustard_core::telemetry::model::RunAttribution;
-use mustard_core::telemetry::{writer as telemetry_writer, TelemetryStore};
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
@@ -52,17 +50,17 @@ use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Finalise an agent's Task dispatch as one `run_usage` row in `telemetry.db`,
-/// derived from the PostToolUse(Task) payload. `model` is the model id the
-/// dispatch ran under (may be empty — pricing falls through to `(0, 0)`).
-/// `input_bytes` and `output_bytes` are the byte sizes of `tool_input` /
-/// `tool_response`; `input_tokens` / `output_tokens` come from the API usage
-/// payload when present, else estimated from the byte size. Fail-open.
+/// Finalise an agent's Task dispatch as one `pipeline.economy.run` NDJSON
+/// event. The companion channel to the OTEL collector's
+/// `pipeline.telemetry.run` — same payload shape so the dashboard reader
+/// (`mustard_core::economy::reader::*`) aggregates both transparently.
 ///
-/// Wave 2 (telemetry-separation): the run lands in `telemetry.db` via
-/// `economy::writer::record_run` (which delegates to the telemetry writer),
-/// in the `run_usage` table. The function opens its own `TelemetryStore` —
-/// `project_dir` is needed for the open.
+/// W7B of [[2026-05-26-no-sqlite-git-source-of-truth]] replaced the previous
+/// SQLite `telemetry.db` write with this NDJSON emit. `model` is the model
+/// id the dispatch ran under (may be empty — pricing falls through to
+/// `(0, 0)`). `api_input_tokens` / `api_output_tokens` come from the
+/// Anthropic `usage` payload when present, else are estimated from byte
+/// size. Fail-open: a routing failure simply drops the telemetry.
 fn record_task_run(
     project_dir: &str,
     session_id: Option<&str>,
@@ -73,6 +71,9 @@ fn record_task_run(
     output_text: &str,
     api_input_tokens: Option<i64>,
     api_output_tokens: Option<i64>,
+    wave_id: Option<&str>,
+    agent_id: Option<&str>,
+    tool_use_id: Option<&str>,
     is_error: bool,
 ) {
     let input_tokens = api_input_tokens
@@ -88,6 +89,16 @@ fn record_task_run(
         .saturating_add(out_micros_per_m.saturating_mul(output_tokens))
         / 1_000_000;
     let ts = now_iso8601();
+    let mut extra = Map::new();
+    if let Some(w) = wave_id {
+        extra.insert("wave_id".to_string(), Value::String(w.to_string()));
+    }
+    if let Some(a) = agent_id {
+        extra.insert("agent_id".to_string(), Value::String(a.to_string()));
+    }
+    if let Some(t) = tool_use_id {
+        extra.insert("tool_use_id".to_string(), Value::String(t.to_string()));
+    }
     let rec = SpanRecord {
         ts: ts.clone(),
         session_id: session_id.map(str::to_string),
@@ -105,18 +116,10 @@ fn record_task_run(
         cache_creation_input_tokens: None,
         cost_usd_micros: Some(cost_usd_micros),
         is_error,
-        extra: Map::new(),
+        extra,
     };
-    // Writer side: open the dedicated telemetry store and write one `run_usage`
-    // row. `record_run` and `record_api_cost` are aliases that land the *same*
-    // `INSERT OR REPLACE`-keyed row (on `span_id`), so issuing both was a wasted
-    // write — the second silently overwrote the first with identical data. A
-    // single `record_api_cost` carries the cost (`cost_usd_micros` is set on
-    // `rec`) and signals external/adapter provenance. Best-effort: a store-open
-    // failure simply drops the telemetry.
-    if let Ok(store) = TelemetryStore::for_project(project_dir) {
-        let _ = writer::record_api_cost(store.conn(), rec as ApiCostFrame);
-    }
+    let (event_name, payload) = economy_writer::run_event(&rec);
+    emit_event(project_dir, "tracker", &event_name, payload);
 }
 
 // ===========================================================================
@@ -206,30 +209,14 @@ fn extract_tool_use_id(input: &HookInput) -> Option<String> {
         .map(str::to_string)
 }
 
-/// UPSERT one write-time attribution stamp into `telemetry.db`'s
-/// `run_attribution`, keyed on `(session_id, tool_use_id)`. Telemetry is never
-/// load-bearing — the caller wraps this in `let _ = ...`.
-fn upsert_run_attribution(
-    project_dir: &str,
-    session_id: &str,
-    tool_use_id: &str,
-    spec: Option<String>,
-    wave_id: Option<String>,
-    agent_id: Option<String>,
-) -> Result<(), mustard_core::error::Error> {
-    let store = TelemetryStore::for_project(project_dir)?;
-    telemetry_writer::upsert_attribution(
-        store.conn(),
-        &RunAttribution {
-            session_id: session_id.to_string(),
-            tool_use_id: tool_use_id.to_string(),
-            spec,
-            wave_id,
-            agent_id,
-            updated_at: i64::try_from(now_millis()).ok(),
-        },
-    )
-}
+// W7B: the legacy `upsert_run_attribution` (which wrote a row into
+// `telemetry.db.run_attribution` keyed on `(session_id, tool_use_id)`) was
+// deleted. Attribution now travels INLINE with each run event — `record_task_run`
+// promotes `wave_id` / `agent_id` / `tool_use_id` into the
+// `pipeline.economy.run` payload, and the OTEL collector does the same for
+// `pipeline.telemetry.run`. The dashboard reader resolves attribution off
+// those keys directly (W5#8 two-tier fallback already covers the late-binding
+// case in `apps/dashboard/src-tauri/src/telemetry.rs`).
 
 // ===========================================================================
 // tool-use-counter — Check on (.*) PreToolUse + Subagent lifecycle
@@ -791,22 +778,9 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     payload["tool_use_id"] = json!(tu);
                 }
                 emit_event(&project, "subagent-tracker", "agent.start", payload);
-
-                // Write-time attribution stamp. Telemetry is never load-bearing
-                // (`let _ = ...`): a missing session/tool_use_id or a store
-                // failure simply means the run falls back to unattributed.
-                if let (Some(session), Some(tool_use)) =
-                    (input.session_id.as_deref(), tool_use_id.as_deref())
-                {
-                    let _ = upsert_run_attribution(
-                        &project,
-                        session,
-                        tool_use,
-                        spec.clone(),
-                        wave_id.clone(),
-                        Some(agent_id.clone()),
-                    );
-                }
+                // W7B: legacy SQLite `run_attribution` UPSERT removed.
+                // Attribution travels inline on each run event (see
+                // `record_task_run` in PostToolUse below).
             }
             Some(Trigger::PostToolUse) if is_dispatch => {
                 let tool_response = input
@@ -824,11 +798,10 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     "agent.stop",
                     json!({ "summary": summary }),
                 );
-                // Finalise the dispatch into telemetry.db's `run_usage` (W2):
-                // one `record_api_cost` derived from the
-                // payload. Token counts come from the Anthropic `usage`
-                // payload when the harness forwards it, else are estimated
-                // from byte sizes. Best-effort — never blocks the verdict.
+                // Finalise the dispatch as one `pipeline.economy.run` NDJSON event
+                // (W7B). Token counts come from the Anthropic `usage` payload when
+                // the harness forwards it, else are estimated from byte sizes.
+                // Best-effort — never blocks the verdict.
                 let tool_input_text = serde_json::to_string(tool_input).unwrap_or_default();
                 let model_str = match tool_input.get("model").unwrap_or(&Value::Null) {
                     Value::String(s) => s.clone(),
@@ -850,7 +823,7 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     .unwrap_or(false);
                 // Synthesise a span id when the harness doesn't supply one —
                 // `request_id` is preferred, then a `{session}-{ts}-task`
-                // composite that stays unique under `INSERT OR REPLACE`.
+                // composite that stays unique on the event channel.
                 let span_id = input
                     .raw
                     .get("request_id")
@@ -859,6 +832,19 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                         let sid = input.session_id.as_deref().unwrap_or("unknown");
                         format!("{sid}-{}-task", now_iso8601())
                     }, str::to_string);
+                // Attribution: re-derive in PostToolUse so the run event carries
+                // wave_id / agent_id / tool_use_id inline (replaces the SQLite
+                // `run_attribution` UPSERT — W7B).
+                let post_wave_id = current_wave_id();
+                let post_subagent_type = tool_input
+                    .get("subagent_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let post_agent_id = tool_input
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .map_or_else(|| post_subagent_type.to_string(), str::to_string);
+                let post_tool_use_id = extract_tool_use_id(input);
                 record_task_run(
                     &project,
                     input.session_id.as_deref(),
@@ -869,6 +855,9 @@ impl mustard_core::model::contract::Observer for SubagentTracker {
                     &tool_response,
                     api_input_tokens,
                     api_output_tokens,
+                    post_wave_id.as_deref(),
+                    Some(post_agent_id.as_str()),
+                    post_tool_use_id.as_deref(),
                     is_error,
                 );
             }

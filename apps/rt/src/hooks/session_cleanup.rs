@@ -39,9 +39,35 @@ use mustard_core::fs;
 use mustard_core::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::run::current_spec;
+use crate::run::event_route;
+use crate::util::now_iso8601;
+
+/// Build + route a `HarnessEvent` from `(event_name, payload)` produced by an
+/// `economy::writer::*_event` builder. Fail-open per the router's contract.
+fn emit_economy_event(cwd: &str, hook_id: &str, event_name: &str, payload: Value) {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: "unknown".to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: Some(hook_id.to_string()),
+            actor_type: None,
+        },
+        event: event_name.to_string(),
+        payload,
+        spec: current_spec(cwd),
+    };
+    let _ = event_route::emit(cwd, &event);
+}
 
 /// `.compact-state` files older than this are pruned — 24 hours.
 const ONE_DAY_MS: u128 = 24 * 60 * 60 * 1000;
@@ -373,20 +399,12 @@ fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
     if frames.is_empty() {
         return;
     }
-    // Wave 2 (telemetry-separation): `record_api_cost` now writes `run_usage`
-    // in telemetry.db, so open the dedicated telemetry store (not mustard.db).
-    let store = match mustard_core::telemetry::TelemetryStore::for_project(cwd) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("session_cleanup: TelemetryStore::for_project failed: {e}");
-            return;
-        }
-    };
+    // W7B: each frame becomes one `pipeline.economy.run` NDJSON event via
+    // the shared payload builder. The router stamps spec/session/wave from
+    // the harness env, fail-open per call.
     for frame in frames {
-        if let Err(e) = economy::writer::record_api_cost(store.conn(), frame) {
-            eprintln!("session_cleanup: record_api_cost failed: {e}");
-            // Keep looping — a single bad row must not lose the rest.
-        }
+        let (event_name, payload) = economy::writer::run_event(&frame);
+        emit_economy_event(cwd, "session-cleanup", &event_name, payload);
     }
 }
 
@@ -419,18 +437,12 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
         return;
     }
 
-    let conn = match economy::store::open_for(cwd) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("session_cleanup: economy::store::open_for failed ({e}); skipping rtk persist");
-            return;
-        }
-    };
+    // W7B: emit one `pipeline.economy.savings.rtk-rewrite` NDJSON event per
+    // record. The router fail-opens per call; a malformed record does not
+    // block the rest.
     for rec in records {
-        if let Err(e) = economy::writer::record_savings(&conn, rec) {
-            eprintln!("session_cleanup: record_savings failed: {e}");
-            // Keep looping — a single bad row must not lose the rest.
-        }
+        let (event_name, payload) = economy::writer::savings_event(&rec);
+        emit_economy_event(cwd, "session-cleanup", &event_name, payload);
     }
 }
 

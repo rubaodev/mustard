@@ -37,10 +37,13 @@ use mustard_core::economy::{
     sources::time::now_iso,
 };
 use mustard_core::fs;
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
 use crate::run::env::current_spec;
+use crate::run::event_route;
+use crate::util::now_iso8601;
 
 /// Dispatch `mustard-rt run recipe-match`.
 pub fn run(entity: Option<&str>, operation: Option<&str>, subproject: Option<&str>) {
@@ -190,16 +193,22 @@ fn persist_injection_savings(matched: &Value, cwd: &Path) {
         extra: Map::new(),
     };
 
-    let conn = match economy::store::open_for(&cwd_str) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("recipe_match: economy::store::open_for failed ({e}); skipping persist");
-            return;
-        }
+    let (event_name, payload) = economy::writer::savings_event(&record);
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: "unknown".to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("recipe-match".to_string()),
+            actor_type: None,
+        },
+        event: event_name,
+        payload,
+        spec: current_spec(&cwd_str),
     };
-    if let Err(e) = economy::writer::record_savings(&conn, record) {
-        eprintln!("recipe_match: record_savings failed: {e}");
-    }
+    let _ = event_route::emit(&cwd_str, &event);
 }
 
 /// Wave-4 delegation: route the recipe match through the unified

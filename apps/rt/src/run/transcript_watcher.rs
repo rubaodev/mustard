@@ -34,12 +34,38 @@
 
 use mustard_core::economy::{self, sources::transcript, sources::IngestContext};
 use mustard_core::fs;
+use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+
+use crate::run::current_spec;
+use crate::run::event_route;
+use crate::util::now_iso8601;
+
+/// Emit one `pipeline.economy.run` NDJSON event for `payload`, routed by
+/// `event_route::emit` under `project_dir`. Fail-open per the router.
+fn emit_run_event(project_dir: &str, event_name: &str, payload: Value) {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: now_iso8601(),
+        session_id: "unknown".to_string(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("transcript-watcher".to_string()),
+            actor_type: None,
+        },
+        event: event_name.to_string(),
+        payload,
+        spec: current_spec(project_dir),
+    };
+    let _ = event_route::emit(project_dir, &event);
+}
 
 /// How long [`recv_timeout`] blocks before re-checking the shutdown flag.
 /// Short enough that an out-of-band kill propagates quickly, long enough that
@@ -103,19 +129,10 @@ fn ingest_one(path: &Path) {
     if frames.is_empty() {
         return;
     }
-    // Wave 2 (telemetry-separation): `record_api_cost` now writes `run_usage`
-    // in telemetry.db, so open the dedicated telemetry store (not mustard.db).
-    let store = match mustard_core::telemetry::TelemetryStore::for_project(&cwd) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("transcript_watcher: TelemetryStore::for_project failed: {e}");
-            return;
-        }
-    };
+    // W7B: each frame becomes one `pipeline.economy.run` NDJSON event.
     for frame in frames {
-        if let Err(e) = economy::writer::record_api_cost(store.conn(), frame) {
-            eprintln!("transcript_watcher: record_api_cost failed: {e}");
-        }
+        let (event_name, payload) = economy::writer::run_event(&frame);
+        emit_run_event(&cwd, &event_name, payload);
     }
 }
 
@@ -214,28 +231,20 @@ fn enumerate_jsonl(project_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Backfill every transcript currently in `project_dir` into telemetry.db's
-/// `run_usage` table for `project_path`. Returns `(files_processed, frames_persisted)`.
+/// Backfill every transcript currently in `project_dir` as NDJSON
+/// `pipeline.economy.run` events for `project_path`. Returns
+/// `(files_processed, frames_persisted)`.
 ///
-/// Fail-open per file: a malformed transcript line emits an `eprintln!` warning
-/// from `transcript::ingest` and the surrounding files still process. Opens the
-/// DB once and reuses the connection for every frame across every file.
+/// W7B: replaced the SQLite `run_usage` write with one NDJSON event per
+/// frame. Fail-open per file — a malformed transcript line emits an
+/// `eprintln!` warning from `transcript::ingest` and the surrounding files
+/// still process.
 fn backfill_once(project_dir: &Path, project_path: &str) -> (usize, usize) {
     let paths = enumerate_jsonl(project_dir);
     if paths.is_empty() {
         return (0, 0);
     }
     let ctx = IngestContext::for_project(project_path);
-    // Wave 2 (telemetry-separation): backfill `run_usage` rows into telemetry.db.
-    let store = match mustard_core::telemetry::TelemetryStore::for_project(project_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "transcript-backfill: TelemetryStore::for_project({project_path}) failed: {e}; aborting backfill"
-            );
-            return (0, 0);
-        }
-    };
     let mut files_processed = 0usize;
     let mut frames_persisted = 0usize;
     for path in &paths {
@@ -251,15 +260,9 @@ fn backfill_once(project_dir: &Path, project_path: &str) -> (usize, usize) {
         };
         files_processed += 1;
         for frame in frames {
-            match economy::writer::record_api_cost(store.conn(), frame) {
-                Ok(()) => frames_persisted += 1,
-                Err(e) => {
-                    eprintln!(
-                        "transcript-backfill: record_api_cost failed for {}: {e}",
-                        path.display()
-                    );
-                }
-            }
+            let (event_name, payload) = economy::writer::run_event(&frame);
+            emit_run_event(project_path, &event_name, payload);
+            frames_persisted += 1;
         }
     }
     (files_processed, frames_persisted)
