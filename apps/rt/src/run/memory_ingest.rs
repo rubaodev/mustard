@@ -1,21 +1,16 @@
-//! `mustard-rt run memory-ingest` — one-shot JSON → SQLite migration.
+//! `mustard-rt run memory-ingest` — one-shot legacy JSON → markdown migration.
 //!
-//! Reads the three legacy JSON files (if they exist) and inserts their entries
-//! into the Wave 6a SQLite tables:
+//! W4B: SQLite sinks removed. Reads the three legacy JSON files (when they
+//! exist) and the legacy `.claude/.agent-memory/` rolling JSON dir, and emits
+//! one markdown file per entry under `.claude/{memory,knowledge}/` via
+//! [`mustard_core::atomic_md::MarkdownStore`].
 //!
-//! | Source JSON | Target table |
-//! |-------------|--------------|
-//! | `.claude/knowledge.json` | `knowledge_patterns` |
-//! | `.claude/memory/decisions.json` | `memory_decisions` |
-//! | `.claude/memory/lessons.json` | `memory_lessons` |
-//!
-//! Wave 7 adds the `--agent-memory` flag (deep-refactor T7.4): walks
-//! `.claude/.agent-memory/` (the legacy rolling-cap-20 JSON sink written by
-//! the `memory agent` subcommand) and forwards each entry into the
-//! `agent_memory` SQLite table introduced in W0.T0.5. The directory is
-//! removed on success. Fail-open per entry — a corrupted JSON file lands in
-//! `errors` but does not abort the rest, and a partial sweep leaves the dir
-//! alone so the caller can retry.
+//! | Source JSON                     | Destination dir                          |
+//! |---------------------------------|------------------------------------------|
+//! | `.claude/knowledge.json`        | `.claude/knowledge/`                     |
+//! | `.claude/memory/decisions.json` | `.claude/memory/decisions/`              |
+//! | `.claude/memory/lessons.json`   | `.claude/memory/lessons/`                |
+//! | `.claude/.agent-memory/*.json`  | `.claude/memory/agent/`                  |
 //!
 //! With `--delete`, each source file is removed after a successful ingest.
 //! A bad JSON in one file is reported in `errors` and does not abort the rest.
@@ -23,28 +18,50 @@
 //! `{ "ingested": { "knowledge": N, "decisions": M, "lessons": K, "agent_memory": Z }, "deleted": bool, "errors": [...] }`.
 
 use crate::run::env::project_dir as env_project_dir;
+use mustard_core::atomic_md::frontmatter::Frontmatter;
+use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::claude_paths::ClaudePaths;
-use crate::run::memory::{
-    ensure_agent_memory_fts, insert_agent_memory, insert_decision, insert_lesson,
-    upsert_knowledge_pattern,
-};
 use mustard_core::fs;
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use rusqlite::Connection;
-use serde_json::{Value, json};
+use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+
+// ---------------------------------------------------------------------------
+// Slug + doc helpers (kept local to keep memory_ingest self-contained)
+// ---------------------------------------------------------------------------
+
+fn fnv1a8(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:016x}", h).chars().take(8).collect()
+}
+
+fn slug_for(captured_at: &str, content: &str) -> String {
+    let ts_compact: String = captured_at
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    format!("{ts_compact}-{}", fnv1a8(content))
+}
+
+fn write_md(dir: &Path, slug: &str, fm: Map<String, Value>, body: String) -> std::io::Result<()> {
+    fs::create_dir_all(dir).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let dest = dir.join(format!("{slug}.md"));
+    let doc = MarkdownDoc {
+        path: dest.clone(),
+        frontmatter: Some(Frontmatter(Value::Object(fm))),
+        body,
+    };
+    MarkdownStore::write_atomic(&dest, &doc)
+}
 
 // ---------------------------------------------------------------------------
 // Per-file ingest helpers
 // ---------------------------------------------------------------------------
 
-/// Ingest `.claude/knowledge.json` → `knowledge_patterns`.
-///
-/// Each entry is expected to have at least a `name` string. The stored pattern
-/// is `"{name}: {description}"` mirroring how `run_knowledge` formats it.
-/// Fields preserved from JSON when present: `confidence`, `lastSeen` /
-/// `updatedAt`, `createdAt`.
-fn ingest_knowledge(conn: &Connection, claude_dir: &Path, errors: &mut Vec<Value>) -> usize {
+fn ingest_knowledge(claude_dir: &Path, errors: &mut Vec<Value>) -> usize {
     let path = claude_dir.join("knowledge.json");
     if !path.exists() {
         return 0;
@@ -67,37 +84,50 @@ fn ingest_knowledge(conn: &Connection, claude_dir: &Path, errors: &mut Vec<Value
         Some(a) => a.clone(),
         None => return 0,
     };
+    let dest_dir = claude_dir.join("knowledge");
 
     let mut count = 0usize;
     for entry in &entries {
-        let name = entry.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
-        let description =
-            entry.get("description").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let description = entry
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if name.is_empty() || description.is_empty() {
             continue;
         }
-        let pattern = format!("{name}: {description}");
         let confidence = entry
             .get("confidence")
             .and_then(Value::as_f64)
             .filter(|&c| (0.0..=1.0).contains(&c))
             .unwrap_or(0.3);
         let source = entry.get("source").and_then(Value::as_str).map(str::to_string);
-        let last_seen = entry
+        let captured_at = entry
             .get("lastSeen")
             .or_else(|| entry.get("updatedAt"))
             .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let created_at = entry
-            .get("createdAt")
-            .and_then(Value::as_str)
-            .unwrap_or(last_seen.as_str())
-            .to_string();
-        let ts = if last_seen.is_empty() { crate::util::now_iso8601() } else { last_seen };
-        let cat = if created_at.is_empty() { ts.clone() } else { created_at };
+            .map(str::to_string)
+            .unwrap_or_else(crate::util::now_iso8601);
 
-        match upsert_knowledge_pattern(conn, &pattern, confidence, source.as_deref(), &ts, &cat) {
+        let mut fm = Map::new();
+        fm.insert("kind".into(), json!("pattern"));
+        fm.insert("name".into(), json!(name));
+        fm.insert("captured_at".into(), json!(captured_at));
+        fm.insert("confidence".into(), json!(confidence));
+        if let Some(s) = source {
+            fm.insert("source".into(), json!(s));
+        }
+        fm.insert("status".into(), json!("active"));
+        let pattern = format!("{name}: {description}");
+        let slug = slug_for(&captured_at, &pattern);
+        match write_md(&dest_dir, &slug, fm, format!("{description}\n")) {
             Ok(()) => count += 1,
             Err(e) => errors.push(json!({
                 "file": "knowledge.json",
@@ -109,12 +139,9 @@ fn ingest_knowledge(conn: &Connection, claude_dir: &Path, errors: &mut Vec<Value
     count
 }
 
-/// Ingest a `memory/{decisions,lessons}.json` → `memory_decisions` /
-/// `memory_lessons`. `table_label` is for error reporting only.
 fn ingest_memory_file(
-    conn: &Connection,
     file_path: &Path,
-    table_label: &str,
+    dest_dir: &Path,
     is_decision: bool,
     errors: &mut Vec<Value>,
 ) -> usize {
@@ -123,7 +150,7 @@ fn ingest_memory_file(
     }
     let file_name = file_path
         .file_name()
-        .map_or_else(|| table_label.to_string(), |n| n.to_string_lossy().to_string());
+        .map_or_else(String::new, |n| n.to_string_lossy().to_string());
     let raw = match fs::read_to_string(file_path) {
         Ok(t) => t,
         Err(e) => {
@@ -143,26 +170,39 @@ fn ingest_memory_file(
         None => return 0,
     };
 
+    let kind = if is_decision { "decision" } else { "lesson" };
     let mut count = 0usize;
     for entry in &entries {
-        let content = entry.get("content").and_then(Value::as_str).unwrap_or("").to_string();
+        let content = entry
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if content.is_empty() {
             continue;
         }
         let source = entry.get("source").and_then(Value::as_str).map(str::to_string);
         let context = entry.get("context").and_then(Value::as_str).map(str::to_string);
-        let at = entry
+        let captured_at = entry
             .get("at")
             .or_else(|| entry.get("timestamp"))
             .and_then(Value::as_str)
-            .map(str::to_string);
+            .map(str::to_string)
+            .unwrap_or_else(crate::util::now_iso8601);
 
-        let result = if is_decision {
-            insert_decision(conn, &content, source.as_deref(), context.as_deref(), at.as_deref())
-        } else {
-            insert_lesson(conn, &content, source.as_deref(), context.as_deref(), at.as_deref())
-        };
-        match result {
+        let mut fm = Map::new();
+        fm.insert("kind".into(), json!(kind));
+        fm.insert("captured_at".into(), json!(captured_at));
+        if let Some(s) = source {
+            fm.insert("source".into(), json!(s));
+        }
+        if let Some(c) = context {
+            fm.insert("context".into(), json!(c));
+        }
+        fm.insert("status".into(), json!("active"));
+
+        let slug = slug_for(&captured_at, &content);
+        match write_md(dest_dir, &slug, fm, format!("{content}\n")) {
             Ok(()) => count += 1,
             Err(e) => errors.push(json!({
                 "file": file_name,
@@ -174,33 +214,7 @@ fn ingest_memory_file(
     count
 }
 
-// ---------------------------------------------------------------------------
-// Wave 7 — agent-memory JSON → `agent_memory` SQLite table
-// ---------------------------------------------------------------------------
-
-/// Per-file walk of `.claude/.agent-memory/` (excluding `_index.json` and
-/// `_queue.json`) inserting each entry into the `agent_memory` table.
-///
-/// Schema mapping:
-///
-/// | JSON field             | `agent_memory` column |
-/// |------------------------|-----------------------|
-/// | `session` (8-char)     | `session_id`          |
-/// | `pipeline`             | `spec`                |
-/// | `wave`                 | `wave`                |
-/// | `agent_type`           | `role`                |
-/// | `summary`              | `summary`             |
-/// | `details` (object)     | `details` (JSON text) |
-/// | (n/a — default)        | `confidence = 0.5`    |
-/// | (n/a — default)        | `status = 'active'`   |
-/// | `timestamp`            | `at` / `last_used`    |
-///
-/// Returns the number of inserted rows; per-file failures land in `errors`.
-fn ingest_agent_memory_dir(
-    conn: &Connection,
-    agent_dir: &Path,
-    errors: &mut Vec<Value>,
-) -> (usize, Vec<PathBuf>) {
+fn ingest_agent_memory_dir(agent_dir: &Path, dest_dir: &Path, errors: &mut Vec<Value>) -> (usize, Vec<PathBuf>) {
     let mut count = 0usize;
     let mut consumed: Vec<PathBuf> = Vec::new();
     if !agent_dir.exists() {
@@ -213,7 +227,6 @@ fn ingest_agent_memory_dir(
             return (count, consumed);
         }
     };
-
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name_os) = path.file_name() else { continue };
@@ -222,7 +235,6 @@ fn ingest_agent_memory_dir(
             continue;
         }
         if name == "_index.json" || name == "_queue.json" {
-            // Index file is bookkeeping — it gets deleted with the directory.
             consumed.push(path.clone());
             continue;
         }
@@ -242,30 +254,40 @@ fn ingest_agent_memory_dir(
         };
         let summary = v.get("summary").and_then(Value::as_str).unwrap_or("").to_string();
         if summary.is_empty() {
-            // Nothing useful to migrate — still consume the file.
             consumed.push(path.clone());
             continue;
         }
-        let session = v.get("session").and_then(Value::as_str);
-        let spec = v.get("pipeline").and_then(Value::as_str).filter(|s| !s.is_empty());
-        let wave = v.get("wave").and_then(Value::as_i64);
-        let role = v.get("agent_type").and_then(Value::as_str);
-        let details_text = v.get("details").map(ToString::to_string);
-        let at = v.get("timestamp").and_then(Value::as_str);
+        let captured_at = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(crate::util::now_iso8601);
+        let mut fm = Map::new();
+        if let Some(s) = v.get("session").and_then(Value::as_str) {
+            fm.insert("session_id".into(), json!(s));
+        }
+        if let Some(s) = v.get("pipeline").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            fm.insert("spec".into(), json!(s));
+        }
+        if let Some(w) = v.get("wave").and_then(Value::as_i64) {
+            fm.insert("wave".into(), json!(w));
+        }
+        if let Some(r) = v.get("agent_type").and_then(Value::as_str) {
+            fm.insert("role".into(), json!(r));
+        }
+        fm.insert("summary".into(), json!(summary));
+        fm.insert("confidence".into(), json!(0.5));
+        fm.insert("status".into(), json!("active"));
+        fm.insert("at".into(), json!(captured_at.clone()));
+        fm.insert("last_used".into(), json!(captured_at.clone()));
+        let body = v
+            .get("details")
+            .map(|d| d.to_string())
+            .unwrap_or_default();
 
-        match insert_agent_memory(
-            conn,
-            session,
-            spec,
-            wave,
-            role,
-            &summary,
-            details_text.as_deref(),
-            0.5,
-            None,
-            at,
-        ) {
-            Ok(_) => {
+        let slug = slug_for(&captured_at, &summary);
+        match write_md(dest_dir, &slug, fm, body) {
+            Ok(()) => {
                 count += 1;
                 consumed.push(path.clone());
             }
@@ -282,57 +304,27 @@ fn ingest_agent_memory_dir(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// `mustard-rt run memory-ingest [--delete] [--agent-memory]`.
-///
-/// `--agent-memory` switches the run to the Wave 7 agent-memory migration
-/// path (legacy `.claude/.agent-memory/` JSON → `agent_memory` SQLite table).
-/// On full success the source directory is removed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MemoryIngestOpts {
+    pub delete: bool,
+    pub agent_memory: bool,
+}
+
 pub fn run_with(opts: MemoryIngestOpts) {
     let cwd = env_project_dir();
     let claude = ClaudePaths::for_project(Path::new(&cwd))
         .map(|p| p.claude_dir())
         .unwrap_or_else(|_| ClaudePaths::compose_unchecked(Path::new(&cwd)).claude_dir());
 
-    let store = match SqliteEventStore::for_project(&cwd) {
-        Ok(s) => s,
-        Err(e) => {
-            let out = json!({
-                "ingested": { "knowledge": 0, "decisions": 0, "lessons": 0, "agent_memory": 0 },
-                "deleted": false,
-                "errors": [{ "file": "(store)", "error": e.to_string() }]
-            });
-            println!("{out}");
-            return;
-        }
-    };
-    let db_path = store.path().to_path_buf();
-    let conn = match Connection::open(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            let out = json!({
-                "ingested": { "knowledge": 0, "decisions": 0, "lessons": 0, "agent_memory": 0 },
-                "deleted": false,
-                "errors": [{ "file": "(connection)", "error": e.to_string() }]
-            });
-            println!("{out}");
-            return;
-        }
-    };
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-
-    // Agent-memory mode is the W7 path: walks `.claude/.agent-memory/` and
-    // forwards each entry into `agent_memory`, then removes the directory.
     if opts.agent_memory {
-        let _ = ensure_agent_memory_fts(&conn);
-        let agent_dir = claude.join(".agent-memory");
-        let dir_existed = agent_dir.exists();
+        let agent_src = claude.join(".agent-memory");
+        let dest = claude.join("memory").join("agent");
+        let dir_existed = agent_src.exists();
         let mut errors: Vec<Value> = Vec::new();
-        let (count, _consumed) = ingest_agent_memory_dir(&conn, &agent_dir, &mut errors);
+        let (count, _consumed) = ingest_agent_memory_dir(&agent_src, &dest, &mut errors);
         let deleted = if dir_existed && errors.is_empty() {
-            std::fs::remove_dir_all(&agent_dir).is_ok()
+            std::fs::remove_dir_all(&agent_src).is_ok()
         } else {
-            // Directory absent (nothing to clean) — surface deleted=true so the
-            // AC's "post-condition: dir absent" check stays satisfied either way.
             !dir_existed
         };
         let out = json!({
@@ -347,18 +339,9 @@ pub fn run_with(opts: MemoryIngestOpts) {
         return;
     }
 
-    run_legacy(&conn, &claude, opts.delete);
+    run_legacy(&claude, opts.delete);
 }
 
-/// Options for [`run_with`].
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MemoryIngestOpts {
-    pub delete: bool,
-    pub agent_memory: bool,
-}
-
-/// Back-compat shim — kept for callers that imported the pre-W7 signature
-/// directly (e.g. external tests). `mod.rs` now uses [`run_with`] instead.
 #[allow(dead_code)]
 pub fn run(delete: bool) {
     run_with(MemoryIngestOpts {
@@ -367,28 +350,23 @@ pub fn run(delete: bool) {
     });
 }
 
-/// Legacy path: the pre-W7 ingest of `knowledge.json` + `decisions.json` +
-/// `lessons.json`. The caller has already opened the SQLite store and
-/// validated `.claude/` exists.
-fn run_legacy(conn: &Connection, claude: &Path, delete: bool) {
+fn run_legacy(claude: &Path, delete: bool) {
     let mem = claude.join("memory");
-
     let mut errors: Vec<Value> = Vec::new();
     let knowledge_path = claude.join("knowledge.json");
     let decisions_path = mem.join("decisions.json");
     let lessons_path = mem.join("lessons.json");
+    let decisions_dest = mem.join("decisions");
+    let lessons_dest = mem.join("lessons");
 
     let knowledge_ok = knowledge_path.exists();
     let decisions_ok = decisions_path.exists();
     let lessons_ok = lessons_path.exists();
 
-    let knowledge_count = ingest_knowledge(conn, claude, &mut errors);
-    let decisions_count =
-        ingest_memory_file(conn, &decisions_path, "decisions", true, &mut errors);
-    let lessons_count =
-        ingest_memory_file(conn, &lessons_path, "lessons", false, &mut errors);
+    let knowledge_count = ingest_knowledge(claude, &mut errors);
+    let decisions_count = ingest_memory_file(&decisions_path, &decisions_dest, true, &mut errors);
+    let lessons_count = ingest_memory_file(&lessons_path, &lessons_dest, false, &mut errors);
 
-    // Determine which files had errors (to skip deletion).
     let knowledge_had_error =
         errors.iter().any(|e| e.get("file").and_then(Value::as_str) == Some("knowledge.json"));
     let decisions_had_error =
@@ -398,16 +376,13 @@ fn run_legacy(conn: &Connection, claude: &Path, delete: bool) {
 
     let mut deleted_any = false;
     if delete {
-        if knowledge_ok && !knowledge_had_error
-            && fs::remove_file(&knowledge_path).is_ok() {
+        if knowledge_ok && !knowledge_had_error && fs::remove_file(&knowledge_path).is_ok() {
             deleted_any = true;
         }
-        if decisions_ok && !decisions_had_error
-            && fs::remove_file(&decisions_path).is_ok() {
+        if decisions_ok && !decisions_had_error && fs::remove_file(&decisions_path).is_ok() {
             deleted_any = true;
         }
-        if lessons_ok && !lessons_had_error
-            && fs::remove_file(&lessons_path).is_ok() {
+        if lessons_ok && !lessons_had_error && fs::remove_file(&lessons_path).is_ok() {
             deleted_any = true;
         }
     }

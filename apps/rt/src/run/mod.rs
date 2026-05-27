@@ -1566,6 +1566,7 @@ pub fn dispatch(cmd: RunCmd) {
                 limit,
                 by_role,
                 note,
+                feedback_path: None,
             },
         ),
         RunCmd::MemoryIngest { delete, agent_memory } => {

@@ -1,20 +1,20 @@
-//! `stop_observer` — SubagentStop reinforcement observer (W8.T8.5).
+//! `stop_observer` — SubagentStop reinforcement observer (W4B migration).
 //!
-//! When a subagent stops, we scan its terminal output for any `agent_memory`
-//! row whose `summary` substring already lives in the project's memory store
-//! and bump its `last_used` timestamp. This signals "this memory was used in
-//! this run" to the W8.T8.6 promotion logic and the W7 lazy-decay model.
+//! Walks `.claude/memory/agent/*.md` via [`MarkdownStore`] and updates
+//! `last_used` in frontmatter for any document whose `summary` is a substring
+//! of the subagent's terminal output. Signals "this memory was used in this
+//! run" to the W8.T8.6 promotion logic and the W7 lazy-decay model.
 //!
 //! Pure [`Observer`] — never blocks.
 
+use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
-use std::path::Path;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 
-/// The W8 stop-observer hook.
 pub struct StopObserver;
 
-/// Resolve the project dir for an invocation.
 fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
     if !ctx.project_dir.is_empty() {
         return ctx.project_dir.clone();
@@ -25,8 +25,6 @@ fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
     }
 }
 
-/// Best-effort extraction of the subagent's final output. The SubagentStop
-/// payload shape varies; probe common locations.
 fn final_output(input: &HookInput) -> String {
     for key in ["result", "final_output", "output", "tool_response", "tool_result"] {
         if let Some(v) = input.raw.get(key) {
@@ -45,57 +43,44 @@ fn final_output(input: &HookInput) -> String {
     String::new()
 }
 
-/// Walk `agent_memory` and bump `last_used` for every row whose `summary` is
-/// a substring of `text`. Fail-open: errors degrade silently.
+fn agent_dir(cwd: &str) -> Option<PathBuf> {
+    ClaudePaths::for_project(Path::new(cwd))
+        .ok()
+        .map(|p| p.claude_dir().join("memory").join("agent"))
+}
+
+/// Walk `.claude/memory/agent/*.md` and bump `last_used` for every doc whose
+/// `summary` is a substring of `text`. Fail-open: per-file errors degrade
+/// silently.
 fn bump_last_used(cwd: &str, text: &str) {
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => match ClaudePaths::for_project(Path::new(cwd)) {
-            Ok(paths) => paths.mustard_db_path(),
-            Err(_) => return,
-        },
-    };
-    if !db_path.exists() {
+    let Some(dir) = agent_dir(cwd) else { return };
+    if !dir.exists() {
         return;
     }
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
-        return;
-    };
-    // Pull a bounded set of recent rows — bumping every row in the table for a
-    // long-lived project is wasteful.
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT id, summary FROM agent_memory \
-         WHERE status = 'active' \
-         ORDER BY at DESC LIMIT 200",
-    ) else {
-        return;
-    };
-    let rows: Vec<(i64, String)> = match stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-    {
-        Ok(it) => it.filter_map(std::result::Result::ok).collect(),
-        Err(_) => return,
-    };
     let now = crate::util::now_iso8601();
-    for (id, summary) in rows {
+    for doc in MarkdownStore::scan_dir(&dir) {
+        let Some(fm) = &doc.frontmatter else { continue };
+        let Some(summary) = fm.get_str("summary") else { continue };
         let trimmed = summary.trim();
         if trimmed.len() < 6 {
             continue;
         }
-        if text.contains(trimmed) {
-            let _ = conn.execute(
-                "UPDATE agent_memory SET last_used = ?1 WHERE id = ?2",
-                rusqlite::params![now, id],
-            );
+        if !text.contains(trimmed) {
+            continue;
         }
+        // Load full doc, update last_used, re-write atomically.
+        let Ok(mut full) = MarkdownStore::read_one(&doc.path) else { continue };
+        if let Some(fm2) = &mut full.frontmatter {
+            if let Value::Object(map) = &mut fm2.0 {
+                map.insert("last_used".into(), json!(now.clone()));
+            }
+        }
+        let _ = MarkdownStore::write_atomic(&doc.path, &full);
     }
 }
 
-/// Emit `pipeline.economy.operation.invoked`. Fail-open.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use serde_json::json;
-
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
@@ -129,20 +114,17 @@ impl Observer for StopObserver {
 // W8.T8.6 — SessionEnd consolidation
 // ---------------------------------------------------------------------------
 
-/// The W8 SessionEnd consolidation observer.
+/// SessionEnd consolidation observer.
 ///
-/// Promotes high-confidence (`>= 0.85`) `agent_memory` rows captured during the
-/// session into permanent `memory_decisions` / `memory_lessons` rows, then
-/// marks the source rows as `promoted` so they are not promoted twice.
+/// Promotes high-confidence (`>= 0.85`) `.claude/memory/agent/*.md` rows
+/// captured during the session into permanent decision / lesson markdown
+/// files, then flips the source row's `status` to `promoted` so it is not
+/// promoted twice.
 pub struct SessionEndConsolidate;
 
-/// Confidence threshold — at or above this, an `agent_memory` row is promoted
-/// to a permanent decision/lesson on `SessionEnd`.
 pub const PROMOTION_CONFIDENCE_THRESHOLD: f64 = 0.85;
 
-/// Classify a summary as a decision or a lesson. Heuristic: if the leading
-/// verb / keyword looks imperative ("Use", "Adopt", "Prefer", "Reject"), it's
-/// a decision; otherwise it's a lesson.
+/// Classify a summary as decision or lesson. Imperative verbs → decision.
 fn classify(summary: &str) -> &'static str {
     let head = summary
         .trim_start()
@@ -154,70 +136,100 @@ fn classify(summary: &str) -> &'static str {
         "use", "adopt", "prefer", "reject", "switch", "ban", "require", "enforce",
     ];
     if decision_verbs.iter().any(|v| *v == head_lower) {
-        "memory_decisions"
+        "decisions"
     } else {
-        "memory_lessons"
+        "lessons"
     }
 }
 
-/// Promote eligible rows. Fail-open on every step.
+fn fnv1a8(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:016x}", h).chars().take(8).collect()
+}
+
+fn slug_for(captured_at: &str, content: &str) -> String {
+    let ts_compact: String = captured_at
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    format!("{ts_compact}-{}", fnv1a8(content))
+}
+
 fn promote_high_confidence(cwd: &str) -> usize {
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => match ClaudePaths::for_project(Path::new(cwd)) {
-            Ok(paths) => paths.mustard_db_path(),
-            Err(_) => return 0,
-        },
-    };
-    if !db_path.exists() {
+    let Some(dir) = agent_dir(cwd) else { return 0 };
+    if !dir.exists() {
         return 0;
     }
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
+    let Ok(cp) = ClaudePaths::for_project(Path::new(cwd)) else {
         return 0;
     };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT id, summary, details, spec FROM agent_memory \
-         WHERE status = 'active' AND confidence >= ?1",
-    ) else {
-        return 0;
-    };
-    let rows: Vec<(i64, String, Option<String>, Option<String>)> = match stmt
-        .query_map(rusqlite::params![PROMOTION_CONFIDENCE_THRESHOLD], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
-        }) {
-        Ok(it) => it.filter_map(std::result::Result::ok).collect(),
-        Err(_) => return 0,
-    };
+    let memory_root = cp.claude_dir().join("memory");
     let now = crate::util::now_iso8601();
     let mut promoted = 0usize;
-    for (id, summary, details, spec) in rows {
+
+    for doc in MarkdownStore::scan_dir(&dir) {
+        let Some(fm) = &doc.frontmatter else { continue };
+        let status = fm
+            .get_str("status")
+            .map(str::to_string)
+            .unwrap_or_else(|| "active".to_string());
+        if status != "active" {
+            continue;
+        }
+        let confidence = fm
+            .as_object()
+            .and_then(|o| o.get("confidence"))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        if confidence < PROMOTION_CONFIDENCE_THRESHOLD {
+            continue;
+        }
+        let summary = fm.get_str("summary").map(str::to_string).unwrap_or_default();
+        let spec = fm.get_str("spec").map(str::to_string);
+        // Body of source doc becomes "details".
+        let details = MarkdownStore::read_one(&doc.path)
+            .map(|d| d.body)
+            .unwrap_or_default();
         let table = classify(&summary);
-        let content = if let Some(d) = details {
-            format!("{summary}\n\n{d}")
-        } else {
+        let content = if details.is_empty() {
             summary.clone()
+        } else {
+            format!("{summary}\n\n{details}")
         };
         let source = spec.unwrap_or_else(|| "agent_memory_promotion".to_string());
-        // `memory_decisions` / `memory_lessons` schema: (id, content, source, context, at)
-        let sql = format!(
-            "INSERT INTO {table} (content, source, context, at) VALUES (?1, ?2, ?3, ?4)"
-        );
-        if conn
-            .execute(
-                &sql,
-                rusqlite::params![content, source, Option::<String>::None, now],
-            )
-            .is_ok()
-        {
-            let _ = conn.execute(
-                "UPDATE agent_memory SET status = 'promoted' WHERE id = ?1",
-                rusqlite::params![id],
-            );
+        let dest_dir = memory_root.join(table);
+        if std::fs::create_dir_all(&dest_dir).is_err() {
+            continue;
+        }
+        let slug = slug_for(&now, &content);
+        let dest_path = dest_dir.join(format!("{slug}.md"));
+        let kind = if table == "decisions" { "decision" } else { "lesson" };
+        let mut new_fm = serde_json::Map::new();
+        new_fm.insert("kind".into(), json!(kind));
+        new_fm.insert("captured_at".into(), json!(now.clone()));
+        new_fm.insert("source".into(), json!(source));
+        new_fm.insert("status".into(), json!("active"));
+        let new_doc = MarkdownDoc {
+            path: dest_path.clone(),
+            frontmatter: Some(mustard_core::atomic_md::frontmatter::Frontmatter(
+                Value::Object(new_fm),
+            )),
+            body: format!("{content}\n"),
+        };
+        if MarkdownStore::write_atomic(&dest_path, &new_doc).is_ok() {
+            // Flip source to promoted.
+            if let Ok(mut src_doc) = MarkdownStore::read_one(&doc.path) {
+                if let Some(src_fm) = &mut src_doc.frontmatter {
+                    if let Value::Object(map) = &mut src_fm.0 {
+                        map.insert("status".into(), json!("promoted"));
+                    }
+                }
+                let _ = MarkdownStore::write_atomic(&doc.path, &src_doc);
+            }
             promoted += 1;
         }
     }
@@ -239,42 +251,38 @@ impl Observer for SessionEndConsolidate {
 }
 
 // ---------------------------------------------------------------------------
-// W8.T8.7 — PreCompact: add up to 3 recent agent_memory entries to the snapshot
+// W8.T8.7 — PreCompact: surface up to 3 recent memories as injected context
 // ---------------------------------------------------------------------------
 
-/// The W8 PreCompact memory snippet — surfaces the three most-recently-used
-/// `agent_memory` rows as additional context just before the compaction.
-/// Registered separately from `pre_compact` so the W8 deliverable lands inside
-/// its declared file boundary (`stop_observer.rs`).
 pub struct PreCompactMemorySnippet;
 
-/// Read at most 3 active `agent_memory` summaries ordered by `last_used DESC`.
 fn recent_agent_memory(cwd: &str) -> Vec<String> {
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => match ClaudePaths::for_project(Path::new(cwd)) {
-            Ok(paths) => paths.mustard_db_path(),
-            Err(_) => return Vec::new(),
-        },
-    };
-    if !db_path.exists() {
+    let Some(dir) = agent_dir(cwd) else { return Vec::new() };
+    if !dir.exists() {
         return Vec::new();
     }
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
-        return Vec::new();
-    };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT summary FROM agent_memory \
-         WHERE status = 'active' \
-         ORDER BY COALESCE(last_used, at) DESC LIMIT 3",
-    ) else {
-        return Vec::new();
-    };
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0));
-    match rows {
-        Ok(it) => it.filter_map(std::result::Result::ok).collect(),
-        Err(_) => Vec::new(),
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for doc in MarkdownStore::scan_dir(&dir) {
+        let Some(fm) = &doc.frontmatter else { continue };
+        let status = fm
+            .get_str("status")
+            .map(str::to_string)
+            .unwrap_or_else(|| "active".to_string());
+        if status != "active" {
+            continue;
+        }
+        let Some(summary) = fm.get_str("summary").map(str::to_string) else {
+            continue;
+        };
+        let ts = fm
+            .get_str("last_used")
+            .or_else(|| fm.get_str("at"))
+            .map(str::to_string)
+            .unwrap_or_default();
+        rows.push((ts, summary));
     }
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.into_iter().take(3).map(|(_, s)| s).collect()
 }
 
 impl mustard_core::model::contract::Check for PreCompactMemorySnippet {
@@ -307,65 +315,56 @@ impl mustard_core::model::contract::Check for PreCompactMemorySnippet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::params;
+    use serde_json::Value;
     use tempfile::tempdir;
 
-    fn seed_row(conn: &rusqlite::Connection, summary: &str) -> i64 {
-        // Apply the W0 DDL for agent_memory if not already present (in unit
-        // tests we apply the schema inline without opening the full store).
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS agent_memory ( \
-                id INTEGER PRIMARY KEY AUTOINCREMENT, \
-                session_id TEXT, spec TEXT, wave INTEGER, role TEXT, \
-                summary TEXT NOT NULL, details TEXT, \
-                confidence REAL NOT NULL DEFAULT 0.5, \
-                status TEXT NOT NULL DEFAULT 'active', \
-                at TEXT NOT NULL, last_used TEXT \
-            );",
-        )
-        .unwrap();
-        let now = crate::util::now_iso8601();
-        conn.execute(
-            "INSERT INTO agent_memory (summary, at, last_used) VALUES (?1, ?2, ?2)",
-            params![summary, now],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
+    fn write_memory(dir: &Path, slug: &str, summary: &str, last_used: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{slug}.md"));
+        let mut fm = serde_json::Map::new();
+        fm.insert("summary".into(), json!(summary));
+        fm.insert("confidence".into(), json!(0.5));
+        fm.insert("status".into(), json!("active"));
+        fm.insert("at".into(), json!(last_used));
+        fm.insert("last_used".into(), json!(last_used));
+        let doc = MarkdownDoc {
+            path: path.clone(),
+            frontmatter: Some(mustard_core::atomic_md::frontmatter::Frontmatter(
+                Value::Object(fm),
+            )),
+            body: String::new(),
+        };
+        MarkdownStore::write_atomic(&path, &doc).unwrap();
+        path
     }
 
     #[test]
     fn bump_last_used_updates_matching_row() {
         let dir = tempdir().unwrap();
-        let db_dir = dir.path().join(".claude").join(".harness");
-        std::fs::create_dir_all(&db_dir).unwrap();
-        let db_path = db_dir.join("mustard.db");
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let id = seed_row(&conn, "MUSTARD-W8-MARKER-XYZZY-PROOF");
-        // Snapshot the original last_used.
-        let before: String = conn
-            .query_row(
-                "SELECT last_used FROM agent_memory WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
+        std::fs::write(dir.path().join("mustard.json"), b"{}").unwrap();
+        let agent = dir.path().join(".claude").join("memory").join("agent");
+        let path = write_memory(
+            &agent,
+            "test",
+            "MUSTARD-W8-MARKER-XYZZY-PROOF",
+            "2026-05-25T00:00:00.000Z",
+        );
+        let before = MarkdownStore::read_one(&path)
+            .unwrap()
+            .frontmatter
+            .and_then(|f| f.get_str("last_used").map(str::to_string))
             .unwrap();
-        drop(conn);
 
-        // Sleep a couple ms to ensure ISO8601 differs at the second/ms level
-        // on platforms with coarse clocks.
         std::thread::sleep(std::time::Duration::from_millis(20));
         bump_last_used(
             &dir.path().to_string_lossy(),
             "stuff before MUSTARD-W8-MARKER-XYZZY-PROOF stuff after",
         );
 
-        let conn2 = rusqlite::Connection::open(&db_path).unwrap();
-        let after: String = conn2
-            .query_row(
-                "SELECT last_used FROM agent_memory WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
+        let after = MarkdownStore::read_one(&path)
+            .unwrap()
+            .frontmatter
+            .and_then(|f| f.get_str("last_used").map(str::to_string))
             .unwrap();
         assert_ne!(after, before, "last_used should have advanced");
     }

@@ -127,22 +127,8 @@ fn build_summary() -> String {
 
 /// Persist the interrupted-at row via the W7 helper. Fail-open at every step.
 fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => match ClaudePaths::for_project(Path::new(cwd)) {
-            Ok(paths) => paths.mustard_db_path(),
-            Err(_) => return,
-        },
-    };
-    // Open the raw connection directly — no event-store dependency.
-    // The DB might not exist yet on a brand-new project; fail-open silently.
-    if !db_path.exists() {
-        return;
-    }
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
-        return;
-    };
-    let _ = crate::run::memory::ensure_agent_memory_fts(&conn);
+    // W4B migration: persist as `.claude/memory/agent/{slug}.md` via the
+    // shared helper (no SQLite).
     let spec = crate::run::env::current_spec(cwd);
     let wave_num: Option<i64> = std::env::var("MUSTARD_ACTIVE_WAVE")
         .ok()
@@ -150,17 +136,16 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
     let role = std::env::var("MUSTARD_ACTIVE_WAVE_ROLE")
         .ok()
         .filter(|s| !s.is_empty());
-    let _ = crate::run::memory::insert_agent_memory(
-        &conn,
+    let _ = crate::run::memory::persist_agent_memory_md(
+        cwd,
         session_id,
         spec.as_deref(),
         wave_num,
         role.as_deref(),
         summary,
         None,
-        0.7, // mid-band confidence — interrupt context is useful but not load-bearing.
+        0.7,
         Some("active"),
-        None,
     );
 }
 

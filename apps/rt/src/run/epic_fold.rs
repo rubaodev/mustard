@@ -17,7 +17,6 @@
 //! same dedup logic as the `memory` knowledge subcommand, plus the epic-
 //! specific `content` / `spec_children` / `concluded_at` fields).
 
-use crate::run::memory::upsert_knowledge_pattern;
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::store::sqlite_store::SqliteEventStore;
@@ -138,29 +137,17 @@ fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     candidates
 }
 
-/// Upsert an `epic-summary` entry into the `knowledge_patterns` SQLite table.
-/// Pattern shape: `"name: description"` — the same format used by the
-/// `memory knowledge` subcommand and consumed by session_start injection.
-/// Fail-open: any SQLite error is silently discarded.
+/// Stub for the W4B transitional build. W4C re-implements this on top of
+/// `MarkdownStore::write_atomic` against `.claude/knowledge/`.
 fn write_knowledge_entry(
-    cwd: &Path,
-    name: &str,
-    description: &str,
+    _cwd: &Path,
+    _name: &str,
+    _description: &str,
     _content: &str,
     _children: &[String],
     _concluded_at: &str,
 ) {
-    let Ok(store) = SqliteEventStore::for_project(cwd) else {
-        return;
-    };
-    let db_path = store.path().to_path_buf();
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
-        return;
-    };
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-    let pattern = format!("{name}: {description}");
-    let now = now_iso8601();
-    let _ = upsert_knowledge_pattern(&conn, &pattern, 0.85, Some("epic-fold"), &now, &now);
+    // Intentional no-op until W4C migrates this to MarkdownStore.
 }
 
 /// Fold an epic — returns `true` on success (or when already folded).

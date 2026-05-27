@@ -135,29 +135,18 @@ fn persist(
     summary: &str,
     details: Option<&str>,
 ) {
-    let db_path = match std::env::var("MUSTARD_DB_PATH") {
-        Ok(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => match ClaudePaths::for_project(Path::new(cwd)) {
-            Ok(paths) => paths.mustard_db_path(),
-            Err(_) => return,
-        },
-    };
-    let Ok(conn) = rusqlite::Connection::open(&db_path) else {
-        return;
-    };
-    // Ensure the FTS5 mirror exists (lazy init from W7).
-    let _ = crate::run::memory::ensure_agent_memory_fts(&conn);
-    let _ = crate::run::memory::insert_agent_memory(
-        &conn,
+    // W4B migration: persistence moved off SQLite — write a markdown row in
+    // `.claude/memory/agent/` via the shared helper.
+    let _ = crate::run::memory::persist_agent_memory_md(
+        cwd,
         session_id,
         spec,
         None,
         role,
         summary,
         details,
-        0.7, // confidence — auto-captured returns get a mid-band default.
+        0.7,
         Some("active"),
-        None,
     );
 }
 
