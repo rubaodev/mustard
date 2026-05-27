@@ -44,8 +44,6 @@
 use crate::run::env::{current_spec, project_dir, session_id};
 use crate::run::event_writer_ndjson;
 use mustard_core::model::event::HarnessEvent;
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
 use std::path::Path;
 
 /// `true` when `event.event` is a lifecycle event that belongs in SQLite.
@@ -123,25 +121,17 @@ fn current_wave_number() -> Option<u32> {
         .and_then(|s| s.parse::<u32>().ok())
 }
 
-/// Route one [`HarnessEvent`] to the right sink (SQLite for `pipeline.*`,
-/// NDJSON for everything else).
+/// Route one [`HarnessEvent`] to the NDJSON sink.
 ///
 /// `project_dir_path` is the absolute project root — the canonical place to
 /// resolve it is [`crate::run::env::project_dir`].
 ///
-/// Returns `true` when the event landed somewhere (the SQLite append
-/// succeeded, OR the NDJSON write returned a [`event_writer_ndjson::WriteOutcome`]).
+/// Returns `true` when the NDJSON write succeeded.
 /// Callers may ignore the return value: every error is swallowed — telemetry
 /// is never load-bearing.
 pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
-    if is_pipeline_event(&event.event) {
-        return SqliteEventStore::for_project(project_dir_path)
-            .and_then(|store| store.append(event))
-            .is_ok();
-    }
-
-    // NDJSON path — resolve fields from the event first, then fall back to the
-    // ambient process state.
+    // All events (including `pipeline.*`) are now routed to NDJSON.
+    // The `is_pipeline_event` classifier is still used for `kind` tagging.
     let project = Path::new(project_dir_path);
     let spec_owned = event.spec.clone().or_else(|| current_spec(project_dir_path));
     let spec = spec_owned.as_deref().filter(|s| !s.is_empty());
@@ -260,8 +250,8 @@ mod tests {
         assert!(!is_pipeline_event("agent.start"));
     }
 
-    /// Routing a non-pipeline event lands an NDJSON file under
-    /// `<project>/.claude/spec/<spec>/.events/`, never touches SQLite.
+    /// Routing a `tool.use` event lands an NDJSON file under
+    /// `<project>/.claude/spec/<spec>/.events/`.
     #[test]
     fn routes_tool_event_to_ndjson_under_spec_dir() {
         let dir = tempdir().unwrap();
@@ -276,46 +266,23 @@ mod tests {
         assert!(events_dir.exists(), "NDJSON .events dir must exist");
         let files: Vec<_> = std::fs::read_dir(&events_dir).unwrap().collect();
         assert!(!files.is_empty(), "expected at least one NDJSON file");
-
-        // SQLite must NOT have received the non-pipeline event.
-        let db = paths.harness_dir().join("mustard.db");
-        // The store may not exist at all (router didn't open it for tool.use);
-        // if it does exist, no row should be present for `tool.use` either.
-        if db.exists() {
-            let store = SqliteEventStore::new(&db).unwrap();
-            for ev in store.replay().unwrap() {
-                assert_ne!(ev.event, "tool.use", "tool.use must not land in SQLite");
-            }
-        }
     }
 
-    /// Routing a `pipeline.*` event lands SQLite (and never NDJSON).
+    /// Routing a `pipeline.*` event also lands in NDJSON (W2A: all events → NDJSON).
     #[test]
-    fn routes_pipeline_event_to_sqlite_not_ndjson() {
+    fn routes_pipeline_event_to_ndjson() {
         let dir = tempdir().unwrap();
         let ok = emit(
             dir.path().to_str().unwrap(),
             &event("pipeline.scope", Some("pipe-spec")),
         );
-        assert!(ok);
+        assert!(ok, "pipeline.scope should land in NDJSON");
 
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        // NDJSON dir must NOT have been created for a pipeline.* event.
         let events_dir = paths.for_spec("pipe-spec").unwrap().events_dir();
-        assert!(
-            !events_dir.exists(),
-            "pipeline.* events should never land in NDJSON"
-        );
-
-        // SQLite must contain the event.
-        let db = paths.harness_dir().join("mustard.db");
-        assert!(db.exists(), "SQLite must have been opened");
-        let store = SqliteEventStore::new(&db).unwrap();
-        let events = store.replay().unwrap();
-        assert!(
-            events.iter().any(|e| e.event == "pipeline.scope"),
-            "pipeline.scope must be present in SQLite replay"
-        );
+        assert!(events_dir.exists(), "NDJSON .events dir must exist for pipeline.* too");
+        let files: Vec<_> = std::fs::read_dir(&events_dir).unwrap().collect();
+        assert!(!files.is_empty(), "expected at least one NDJSON file for pipeline.scope");
     }
 
     /// `classify_kind` covers session/scope/etc — kept as a pure-classifier

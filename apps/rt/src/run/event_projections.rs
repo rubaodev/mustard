@@ -1,7 +1,7 @@
 //! `mustard-rt run event-projections` — a port of `scripts/event-projections.js`.
 //!
-//! Read-only projections over the harness event log
-//! (`.claude/.harness/mustard.db`). Each view derives a JSON document from
+//! Read-only projections over the harness NDJSON event log
+//! (`.claude/spec/*/.events/*.ndjson`). Each view derives a JSON document from
 //! the replayed events; the CLI prints it to stdout. Exit `0` always
 //! (fail-open).
 //!
@@ -21,12 +21,14 @@ use mustard_core::ClaudePaths;
 use mustard_core::model::view::{Phase, Stage};
 use mustard_core::store::sqlite_store::SqliteEventStore;
 use mustard_core::model::event::{
-    HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
+    Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
+    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
     PipelineCompletePayload, PipelineDispatchFailurePayload,
 };
 use mustard_core::projection::project_spec_view_with_header;
+use mustard_core::{Event, EventReader};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -39,11 +41,74 @@ const FINDING_CONFIDENCE: f64 = 0.7;
 /// Per-wave event cap, matching `DEFAULT_AGENT_EVENT_LIMIT`.
 const AGENT_EVENT_LIMIT: usize = 40;
 
-/// Replay the harness event log under `cwd`.
+/// Convert one NDJSON [`Event`] to a [`HarnessEvent`] for use by projections.
+///
+/// The NDJSON record stores the event name in `raw["event"]` and the logical
+/// kind in the top-level `kind` field. All other harness fields (`ts`, `spec`,
+/// `wave`, `session_id`, `actor`) are present in `raw` via the flatten.
+/// Unknown / missing fields default safely (fail-open).
+fn ndjson_to_harness(e: Event) -> HarnessEvent {
+    let raw = &e.raw;
+    let get_str = |key: &str| -> String {
+        raw.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    HarnessEvent {
+        v: raw.get("v").and_then(Value::as_u64).unwrap_or(SCHEMA_VERSION as u64) as u32,
+        ts: get_str("ts"),
+        session_id: get_str("session_id"),
+        wave: raw.get("wave").and_then(Value::as_u64).unwrap_or(0) as u32,
+        actor: Actor {
+            kind: ActorKind::Hook,
+            id: raw.get("actor").and_then(Value::as_str).map(str::to_string),
+            actor_type: None,
+        },
+        event: get_str("event"),
+        payload: e.payload,
+        spec: raw.get("spec").and_then(Value::as_str).map(str::to_string),
+    }
+}
+
+/// Collect all NDJSON events from `.claude/spec/*/.events/*.ndjson` under `cwd`.
+///
+/// Walks every spec directory, then every `.events/` subdirectory, streaming
+/// each `.ndjson` file line-by-line. Converts to [`HarnessEvent`] for
+/// compatibility with existing projection folds. Fail-open: unreadable files
+/// and malformed lines are silently skipped.
 fn read_events(cwd: &Path) -> Vec<HarnessEvent> {
-    SqliteEventStore::for_project(cwd)
-        .and_then(|store| store.replay())
-        .unwrap_or_default()
+    let Ok(paths) = ClaudePaths::for_project(cwd) else {
+        return Vec::new();
+    };
+    let spec_root = paths.spec_dir();
+    let Ok(spec_entries) = std::fs::read_dir(&spec_root) else {
+        return Vec::new();
+    };
+
+    let mut events: Vec<HarnessEvent> = Vec::new();
+
+    for spec_entry in spec_entries.flatten() {
+        let spec_dir = spec_entry.path();
+        if !spec_dir.is_dir() {
+            continue;
+        }
+        let events_dir = spec_dir.join(".events");
+        let Ok(ndjson_entries) = std::fs::read_dir(&events_dir) else {
+            continue;
+        };
+        for ndjson_entry in ndjson_entries.flatten() {
+            let p = ndjson_entry.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
+                continue;
+            }
+            for e in EventReader::stream(&p) {
+                events.push(ndjson_to_harness(e));
+            }
+        }
+    }
+
+    events
 }
 
 /// `buildAgentVisibility` — recent events of a wave plus high-confidence
@@ -711,20 +776,14 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
     // --- Pass 2: disk fallback for specs absent from the event stream ---
     //
     // Glob `.claude/spec/*/spec.md` + `wave-plan.md`. For each spec whose
-    // directory name is not already in `per_spec`, call the canonical core
-    // projection with the header fallback enabled. This covers the "git pull
-    // brings a new spec from a teammate; no local event has been emitted yet"
-    // case. Side-effect: a synthetic `pipeline.status` event is written to
-    // the local SQLite store so subsequent reads are O(1).
+    // directory name is not already in `per_spec`, delegate to the canonical
+    // core projection with the header fallback enabled. This covers the "git
+    // pull brings a new spec from a teammate; no local event has been emitted
+    // yet" case.
     let spec_root = ClaudePaths::for_project(cwd)
         .map(|p| p.spec_dir())
         .unwrap_or_else(|_| cwd.to_path_buf());
     if let Ok(rd) = std::fs::read_dir(&spec_root) {
-        // Open the local SQLite store once for the synthetic emit sink.
-        // Fail-open: if the store cannot be opened, the fallback still runs
-        // (without emitting) — we just pass `None` as the sink.
-        let store_opt = SqliteEventStore::for_project(cwd).ok();
-
         for entry in rd.flatten() {
             let spec_dir = entry.path();
             if !spec_dir.is_dir() { continue; }
@@ -749,14 +808,13 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
                 continue; // no readable spec file — skip
             };
 
-            // Delegate to the canonical core projection (parses header, emits
-            // synthetic event). `events` is the full slice; the function
-            // filters by spec_name internally.
+            // Delegate to the canonical core projection (parses header).
+            // No SQLite sink — the filesystem header is the source of truth.
             let view = project_spec_view_with_header(
                 &spec_name,
                 events,
                 Some(spec_md_path.as_path()),
-                store_opt.as_ref().map(|s| s as &dyn mustard_core::store::event_store::EventSink),
+                None,
             );
 
             // Extract the stage string. Use Debug formatting to match the
@@ -1003,23 +1061,27 @@ pub struct PipelineStateView {
 /// Ten minutes in milliseconds — the stale-failure cutoff matching the `/resume` Step 0 contract.
 const DISPATCH_FAILURE_TTL_MS: i64 = 10 * 60 * 1_000;
 
-/// Derive a [`PipelineStateView`] for `spec` by folding its event stream.
+/// Derive a [`PipelineStateView`] for `spec` by folding a pre-fetched event
+/// slice. This is the canonical implementation used by all new call sites.
 ///
-/// Queries events ordered by `id ASC` (insertion order). Fail-open on
-/// malformed payloads — a bad row is logged to stderr and skipped, never
-/// panicked. Returns `None` when no events exist for the spec.
+/// Fail-open on malformed payloads — a bad event is logged to stderr and
+/// skipped. Returns `None` when no events exist for the spec.
 ///
 /// `spec_dir` is an optional filesystem path to the spec directory
-/// (`.claude/spec/{spec}` — flat layout). When provided and `wave-plan.md` exists
-/// there, `is_wave_plan` is set to `true` even if no `pipeline.scope` event
-/// recorded it yet.
+/// (`.claude/spec/{spec}` — flat layout). When provided and `wave-plan.md`
+/// exists there, `is_wave_plan` is set to `true` even if no `pipeline.scope`
+/// event recorded it yet.
 #[must_use]
-pub fn pipeline_state_for_spec(
-    store: &SqliteEventStore,
+pub fn pipeline_state_from_events(
+    events: &[HarnessEvent],
     spec: &str,
     spec_dir: Option<&std::path::Path>,
 ) -> Option<PipelineStateView> {
-    let events = store.query(Some(spec)).unwrap_or_default();
+    // Filter to events for this spec only.
+    let events: Vec<&HarnessEvent> = events
+        .iter()
+        .filter(|e| e.spec.as_deref() == Some(spec))
+        .collect();
     if events.is_empty() {
         return None;
     }
@@ -1036,7 +1098,7 @@ pub fn pipeline_state_for_spec(
     // fallback when status=="closed-followup" but no pipeline.complete exists.
     let mut last_status_ts: Option<String> = None;
 
-    for ev in &events {
+    for ev in events {
         match ev.event.as_str() {
             EVENT_PIPELINE_SCOPE => {
                 // Lenient: missing fields default via #[serde(default)].
@@ -1051,7 +1113,7 @@ pub fn pipeline_state_for_spec(
                         if p.total_waves.is_some() { view.total_waves = p.total_waves; }
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_SCOPE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_SCOPE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1066,7 +1128,7 @@ pub fn pipeline_state_for_spec(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_STATUS} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_STATUS} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1077,7 +1139,7 @@ pub fn pipeline_state_for_spec(
                         view.affected_files = p.affected_files;
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_COMPLETE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_COMPLETE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1101,7 +1163,7 @@ pub fn pipeline_state_for_spec(
                         task.status = "pending".to_string();
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_TASK_DISPATCH} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_TASK_DISPATCH} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1123,7 +1185,7 @@ pub fn pipeline_state_for_spec(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_TASK_COMPLETE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_TASK_COMPLETE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1137,7 +1199,7 @@ pub fn pipeline_state_for_spec(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_WAVE_COMPLETE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_WAVE_COMPLETE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1150,7 +1212,7 @@ pub fn pipeline_state_for_spec(
                         raw_failure = Some((p, at));
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_DISPATCH_FAILURE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_DISPATCH_FAILURE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1164,7 +1226,7 @@ pub fn pipeline_state_for_spec(
                         view.pause_reason = p.reason;
                     }
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_PAUSE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_PAUSE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1174,7 +1236,7 @@ pub fn pipeline_state_for_spec(
                 ) {
                     Ok(p) => view.resume_mode = Some(p.mode),
                     Err(e) => {
-                        eprintln!("[pipeline_state_for_spec] bad {EVENT_PIPELINE_RESUME_MODE} payload for {spec}: {e}");
+                        eprintln!("[pipeline_state_from_events] bad {EVENT_PIPELINE_RESUME_MODE} payload for {spec}: {e}");
                     }
                 }
             }
@@ -1356,7 +1418,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // pipeline_state_for_spec tests — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
+    // pipeline_state_from_events tests — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
     // -----------------------------------------------------------------------
 
     use mustard_core::store::event_store::EventSink;
@@ -1383,7 +1445,7 @@ mod tests {
     fn ps_no_events_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_in_dir(dir.path());
-        assert!(pipeline_state_for_spec(&store, "ghost-spec", None).is_none());
+        assert!(pipeline_state_from_events(&store, "ghost-spec", None).is_none());
     }
 
     /// Test 2 — scope + status events only → fields populated, tasks empty, current_wave=1.
@@ -1400,7 +1462,7 @@ mod tests {
             json!({ "to": "active" }),
         )).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-a", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-a", None).unwrap();
         assert_eq!(view.scope.as_deref(), Some("full"));
         assert_eq!(view.lang.as_deref(), Some("en"));
         assert_eq!(view.model.as_deref(), Some("claude-opus-4-5"));
@@ -1424,7 +1486,7 @@ mod tests {
             json!({ "wave": 2 }),
         )).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-b", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-b", None).unwrap();
         assert_eq!(view.completed_waves, vec![1u32, 2u32]);
         assert_eq!(view.current_wave, 3);
     }
@@ -1449,7 +1511,7 @@ mod tests {
         complete_ev.ts = "2026-05-20T10:05:00.000Z".to_string();
         store.append(&complete_ev).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-c", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-c", None).unwrap();
         assert_eq!(view.tasks.len(), 1);
         let task = &view.tasks[0];
         assert_eq!(task.name, "implement-auth");
@@ -1473,7 +1535,7 @@ mod tests {
             json!({ "to": "completed" }),
         )).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-d", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-d", None).unwrap();
         assert_eq!(view.status.as_deref(), Some("completed"));
     }
 
@@ -1488,7 +1550,7 @@ mod tests {
             json!({ "reason": "timeout", "at": "2020-01-01T00:00:00.000Z" }),
         )).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-e", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-e", None).unwrap();
         assert!(view.last_dispatch_failure.is_none(), "stale failure should be cleared");
     }
 
@@ -1515,7 +1577,7 @@ mod tests {
             json!({ "reason": "budget exceeded", "at": recent_ts }),
         )).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-f", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-f", None).unwrap();
         assert!(view.last_dispatch_failure.is_some(), "fresh failure should be preserved");
         assert_eq!(
             view.last_dispatch_failure.as_ref().unwrap().reason.as_deref(),
@@ -1541,7 +1603,7 @@ mod tests {
             }),
         )).unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-complete", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-complete", None).unwrap();
         assert_eq!(view.status.as_deref(), Some("closed-followup"));
         assert_eq!(view.closed_at.as_deref(), Some("2026-05-20T12:00:00.000Z"));
         assert_eq!(view.affected_files, vec!["src/foo.rs", "src/bar.rs"]);
@@ -1562,7 +1624,7 @@ mod tests {
         store.append(&status_ev).unwrap();
         // No pipeline.complete event.
 
-        let view = pipeline_state_for_spec(&store, "spec-fallback", None).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-fallback", None).unwrap();
         assert_eq!(view.status.as_deref(), Some("closed-followup"));
         // closed_at should fall back to the pipeline.status event's ts.
         assert_eq!(view.closed_at.as_deref(), Some("2026-05-20T09:30:00.000Z"));
@@ -1573,7 +1635,7 @@ mod tests {
             EVENT_PIPELINE_COMPLETE, "spec-fallback",
             json!({ "closedAt": "2026-05-20T10:00:00.000Z", "affectedFiles": [] }),
         )).unwrap();
-        let view2 = pipeline_state_for_spec(&store, "spec-fallback", None).unwrap();
+        let view2 = pipeline_state_from_events(&store, "spec-fallback", None).unwrap();
         assert_eq!(view2.closed_at.as_deref(), Some("2026-05-20T10:00:00.000Z"));
     }
 
@@ -1593,7 +1655,7 @@ mod tests {
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("wave-plan.md"), "# Wave Plan\n").unwrap();
 
-        let view = pipeline_state_for_spec(&store, "spec-g", Some(&spec_dir)).unwrap();
+        let view = pipeline_state_from_events(&store, "spec-g", Some(&spec_dir)).unwrap();
         assert_eq!(view.is_wave_plan, Some(true));
     }
 }

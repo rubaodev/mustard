@@ -17,12 +17,7 @@
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs;
 use mustard_core::meta;
-use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::store::event_store::EventSink;
-use mustard_core::store::sqlite_store::SqliteEventStore;
-use rusqlite::params;
 use serde::Serialize;
-use serde_json::json;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -83,8 +78,6 @@ pub struct ActiveSpecsOutput {
     pub specs: Vec<ActiveSpec>,
     #[serde(rename = "parentMap")]
     pub parent_map: HashMap<String, String>,
-    #[serde(rename = "backfilledCount")]
-    pub backfilled_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -621,158 +614,6 @@ fn make_unique_from_chars(s: &str, used: &HashMap<String, String>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// SQLite backfill
-// ---------------------------------------------------------------------------
-
-/// For each spec that has no `pipeline.stage` or `pipeline.status` events in
-/// the store, emit synthetic backfill events derived from the spec header.
-///
-/// Returns the count of specs that were backfilled.
-///
-/// Fail-open: any store error is printed to stderr; 0 backfills reported.
-fn backfill_sqlite(specs: &[SpecCandidate], root: &Path) -> usize {
-    let store = match SqliteEventStore::for_project(root) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("active-specs: WARN: cannot open event store for backfill: {e}");
-            return 0;
-        }
-    };
-
-    let mut backfilled = 0usize;
-    let sid = crate::run::env::session_id();
-
-    for spec in specs {
-        let has_events = match has_pipeline_events(store.conn(), &spec.name) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!(
-                    "active-specs: WARN: cannot query events for {}: {e}",
-                    spec.name
-                );
-                continue;
-            }
-        };
-
-        if has_events {
-            continue;
-        }
-
-        // Determine timestamp: Checkpoint header > mtime of spec.md > now
-        let ts = determine_timestamp(&spec.header.checkpoint, &spec.spec_md);
-        let stage = spec.header.stage.clone().unwrap_or_else(|| "Plan".to_string());
-
-        // Emit pipeline.stage
-        let stage_event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: ts.clone(),
-            session_id: sid.clone(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Orchestrator,
-                id: Some("active-specs-backfill".to_string()),
-                actor_type: None,
-            },
-            event: "pipeline.stage".to_string(),
-            payload: json!({
-                "stage": stage.to_ascii_lowercase(),
-                "source": "backfill-from-filesystem"
-            }),
-            spec: Some(spec.name.clone()),
-        };
-        let _ = store.append(&stage_event);
-
-        // Emit pipeline.status
-        let status_event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: ts.clone(),
-            session_id: sid.clone(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Orchestrator,
-                id: Some("active-specs-backfill".to_string()),
-                actor_type: None,
-            },
-            event: "pipeline.status".to_string(),
-            payload: json!({
-                "to": "approved",
-                "source": "backfill-from-filesystem"
-            }),
-            spec: Some(spec.name.clone()),
-        };
-        let _ = store.append(&status_event);
-
-        backfilled += 1;
-    }
-
-    backfilled
-}
-
-/// Returns `true` if the spec already has at least one `pipeline.stage` or
-/// `pipeline.status` event in the store. W5: lifecycle rows live in
-/// `pipeline_events` (column `kind`), not in the retired `events` table.
-fn has_pipeline_events(
-    conn: &rusqlite::Connection,
-    spec_name: &str,
-) -> rusqlite::Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pipeline_events \
-         WHERE spec = ?1 \
-         AND kind IN ('pipeline.stage','pipeline.status') \
-         LIMIT 1",
-        params![spec_name],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
-}
-
-/// Determine the best timestamp for a backfill event.
-///
-/// Priority: `### Checkpoint:` header value (if valid ISO-ish) > mtime of
-/// `spec.md` > current time.
-fn determine_timestamp(checkpoint: &Option<String>, spec_md: &Path) -> String {
-    // Try checkpoint
-    if let Some(cp) = checkpoint.as_deref() {
-        let cp = cp.trim();
-        // Accept anything that looks like YYYY-MM-DDT...
-        if cp.len() >= 10 && cp.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return cp.to_string();
-        }
-    }
-    // Try mtime
-    if let Ok(meta) = std::fs::metadata(spec_md) {
-        if let Ok(mtime) = meta.modified() {
-            use std::time::{Duration, UNIX_EPOCH};
-            let dur = mtime.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
-            let secs = dur.as_secs();
-            let millis = dur.subsec_millis();
-            // Use the same algorithm as util::now_iso8601
-            return format_unix_ts(secs, millis);
-        }
-    }
-    // Fallback to now
-    crate::util::now_iso8601()
-}
-
-/// Format a Unix timestamp (secs + millis) as ISO-8601 UTC string.
-fn format_unix_ts(secs: u64, millis: u32) -> String {
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
-}
-
-// ---------------------------------------------------------------------------
 // Status derivation
 // ---------------------------------------------------------------------------
 
@@ -974,8 +815,6 @@ pub struct ActiveSpecsOpts {
     pub format: String,
     /// Project root directory (default: cwd).
     pub root: PathBuf,
-    /// When `true`, skip the SQLite backfill step.
-    pub no_backfill: bool,
 }
 
 /// Main entry point for `mustard-rt run active-specs`.
@@ -993,14 +832,7 @@ pub fn run(opts: ActiveSpecsOpts) {
         spec_date_prefix(&b.name).cmp(spec_date_prefix(&a.name))
     });
 
-    // 4. Backfill SQLite unless --no-backfill
-    let backfilled_count = if opts.no_backfill {
-        0
-    } else {
-        backfill_sqlite(&candidates, root)
-    };
-
-    // 5. Collect all unique parents for alias resolution
+    // 4. Collect all unique parents for alias resolution
     let parents: Vec<String> = candidates
         .iter()
         .filter_map(|c| c.header.parent.clone())
@@ -1100,7 +932,6 @@ pub fn run(opts: ActiveSpecsOpts) {
     let output = ActiveSpecsOutput {
         specs,
         parent_map: parent_aliases.into_iter().map(|(k, v)| (v, k)).collect(),
-        backfilled_count,
     };
 
     match opts.format.as_str() {
@@ -1124,7 +955,6 @@ pub fn run(opts: ActiveSpecsOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::store::sqlite_store::SqliteEventStore;
     use tempfile::tempdir;
 
     // -----------------------------------------------------------------------
@@ -1353,52 +1183,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // backfill SQLite idempotency test
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn backfill_sqlite_idempotent_second_call_emits_zero() {
-        let td = tempdir().unwrap();
-        // Create a spec on disk
-        make_spec_dir(
-            td.path(),
-            "my-test-spec",
-            "# Test\n\n### Stage: Plan\n### Outcome: Active\n",
-        );
-        let candidates = vec![SpecCandidate {
-            name: "my-test-spec".to_string(),
-            spec_dir: td.path().join(".claude").join("spec").join("my-test-spec"),
-            spec_md: td
-                .path()
-                .join(".claude")
-                .join("spec")
-                .join("my-test-spec")
-                .join("spec.md"),
-            is_wave_plan: false,
-            header: SpecHeader {
-                stage: Some("Plan".to_string()),
-                outcome: Some("Active".to_string()),
-                scope: None,
-                parent: None,
-                checkpoint: None,
-            },
-        }];
-
-        // First backfill: should insert 2 events for 1 spec
-        let count1 = backfill_sqlite(&candidates, td.path());
-        assert_eq!(count1, 1, "first backfill should process 1 spec");
-
-        // Second backfill: events already present, should be idempotent
-        let count2 = backfill_sqlite(&candidates, td.path());
-        assert_eq!(count2, 0, "second backfill must be idempotent (0 new)");
-
-        // Verify the store has exactly 2 events for this spec
-        let store = SqliteEventStore::for_project(td.path()).unwrap();
-        let events = store.query(Some("my-test-spec")).unwrap();
-        assert_eq!(events.len(), 2, "exactly 2 backfill events");
-    }
-
-    // -----------------------------------------------------------------------
     // T3.4 — malformed + closed-followup inclusion tests
     // -----------------------------------------------------------------------
 
@@ -1476,7 +1260,6 @@ mod tests {
         let opts = ActiveSpecsOpts {
             format: "json".to_string(),
             root: td.path().to_path_buf(),
-            no_backfill: true,
         };
 
         // Capture stdout via manual pipeline: call run() and check the candidates
