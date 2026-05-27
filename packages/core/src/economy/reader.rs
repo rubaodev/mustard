@@ -1,83 +1,229 @@
-//! Reader side of the economy domain.
+//! NDJSON-backed economy readers.
 //!
-//! Six query functions, each taking `(conn, scope)` and returning a typed
-//! aggregate. The match-on-scope shape is the same in every function:
+//! W7A of [[2026-05-26-no-sqlite-git-source-of-truth]] migrated every reader
+//! off `rusqlite::Connection`. Each function now takes the project root
+//! [`Path`] + an [`EconomyScope`] and walks the per-spec NDJSON event log
+//! under `<project_root>/.claude/spec/*/.events/*.ndjson` (plus the
+//! cross-spec session sink at `<project_root>/.claude/.session/*/.events/*.ndjson`).
 //!
-//! ```ignore
-//! match scope {
-//!     EconomyScope::Project(_)
-//!     | EconomyScope::Spec { .. }
-//!     | EconomyScope::Wave { .. } => /* single-project SQL */,
-//!     EconomyScope::AllProjects(projects) => /* MultiProjectReader fan-out */,
-//! }
-//! ```
+//! Event kinds consumed by each function:
 //!
-//! The single-project SQL stays *minimal* — no projection beyond what the
-//! aggregate needs. The intent is that hooks, dashboards, and tests all call
-//! the same six entry points; UI-specific shaping happens on the consumer
-//! side.
+//! | Function | Kinds |
+//! |---|---|
+//! | [`economy_summary`] | `pipeline.telemetry.metric` (measured), `pipeline.telemetry.run` + `pipeline.economy.run` (estimated), `pipeline.economy.savings.*` (savings) |
+//! | [`per_agent_costs`] | `pipeline.telemetry.run` + `pipeline.economy.run` |
+//! | [`per_spec_costs`] | `pipeline.telemetry.run` + `pipeline.economy.run` |
+//! | [`per_wave_costs`] | `pipeline.telemetry.run` + `pipeline.economy.run` |
+//! | [`savings_breakdown`] | `pipeline.economy.savings.*` |
+//! | [`context_routing_quality`] | `pipeline.telemetry.run` (cache hit), `pipeline.economy.context.frame` (prefix/retry ratios) |
 //!
-//! ## Wave 3 — self-attributed reads, no JOIN
+//! The two `*.run` kinds are aliases: the OTEL collector writes
+//! `pipeline.telemetry.run` for measured spans, the tracker hook writes
+//! `pipeline.economy.run` for estimated spans. The shape is identical, so
+//! a single union filter picks up both.
 //!
-//! The per-spec / per-wave / per-agent roll-ups (and the cost half of
-//! `economy_summary`) used to read the `spans` table in `mustard.db` and
-//! recover spec/wave/agent through the legacy W4 attribution CTE (a `spans`
-//! LEFT JOIN on the agent-launch event). Telemetry now lives in a dedicated
-//! `telemetry.db` whose `run_usage` table is **self-attributed** — `spec` /
-//! `wave_id` / `agent_id` are stamped at write time (Wave 2) and backfilled for
-//! history — so the read is a plain `GROUP BY` via
-//! [`crate::telemetry::reader`]. The savings (`savings_records`) and
-//! context-frame (`context_cost_frames`) aggregations still read the passed
-//! `mustard.db` connection: those tables are not telemetry.
+//! ## Fail-open contract
+//!
+//! Missing event directories, unreadable NDJSON lines, and parse failures
+//! all degrade silently — every read returns the partial aggregate it could
+//! compute. The only way a reader returns `Err` is via the
+//! [`MultiProjectReader`] fan-out's closure contract, which is itself
+//! fail-open per project.
 
-use rusqlite::Connection;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::telemetry::{self, TelemetryStore};
+use serde_json::Value;
+
+use crate::error::Result;
+use crate::events::reader::EventReader;
+use crate::events::types::Event;
 
 use super::model::{
     AgentCost, ContextRoutingMetrics, EconomySummary, SavingsBreakdown, SavingsBySource,
     SavingsSource, SessionCost, SpecCost, WaveCost,
 };
 use super::multi_project::MultiProjectReader;
-use super::scope::{AgentId, EconomyScope, SpecId, WaveId};
+use super::scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
 
-/// Open the dedicated telemetry store for the project a scope is rooted at.
+// ===========================================================================
+// Internal event-name helpers
+// ===========================================================================
+
+/// Event names that carry a run-usage payload (estimated or measured).
+const RUN_KINDS: &[&str] = &["pipeline.telemetry.run", "pipeline.economy.run"];
+
+/// Event-name prefix for the savings family.
+const SAVINGS_PREFIX: &str = "pipeline.economy.savings.";
+
+/// Event name for the context-frame channel.
+const CONTEXT_FRAME_KIND: &str = "pipeline.economy.context.frame";
+
+/// Event name for the OTEL metric channel (cost.usage / token.usage / etc.).
+const TELEMETRY_METRIC_KIND: &str = "pipeline.telemetry.metric";
+
+/// Read the canonical event name from an [`Event`]. NDJSON writers emit a
+/// top-level `"event"` field; if absent (older payloads), fall back to the
+/// `kind` discriminator which the OTEL collector sets to the same value.
+fn event_name(ev: &Event) -> &str {
+    ev.raw
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or(ev.kind.as_str())
+}
+
+// ===========================================================================
+// Filesystem walk
+// ===========================================================================
+
+/// All `.ndjson` files under `<root>/.claude/spec/*/.events/`,
+/// `<root>/.claude/spec/*/wave-*/events/`, and
+/// `<root>/.claude/.session/*/.events/` — the three canonical event sinks.
 ///
-/// Single-project scopes carry their own root; `AllProjects` is handled by the
-/// fan-out before this is reached, so its first path is a safe bootstrap. The
-/// `MUSTARD_TELEMETRY_DB_PATH` env override is honoured by
-/// [`TelemetryStore::for_project`], which is what the reader tests rely on.
-fn open_telemetry(scope: &EconomyScope) -> Result<TelemetryStore> {
-    let project = scope
-        .project_paths()
-        .first()
-        .map(|p| p.as_path().to_path_buf())
-        .unwrap_or_default();
-    TelemetryStore::for_project(project)
+/// Returns paths in stable filesystem order (no sort guarantee — readers
+/// must not depend on ordering across files).
+fn ndjson_paths(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let claude_dir = root.join(".claude");
+
+    // Per-spec channel.
+    let spec_root = claude_dir.join("spec");
+    if let Ok(specs) = std::fs::read_dir(&spec_root) {
+        for spec_entry in specs.flatten() {
+            let spec_path = spec_entry.path();
+            if !spec_path.is_dir() {
+                continue;
+            }
+            collect_events_in(&spec_path.join(".events"), &mut out);
+            // Wave subdirs — `wave-N-{role}/events/` shape.
+            if let Ok(waves) = std::fs::read_dir(&spec_path) {
+                for wave_entry in waves.flatten() {
+                    let wp = wave_entry.path();
+                    if !wp.is_dir() {
+                        continue;
+                    }
+                    let name = wp.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !name.starts_with("wave-") {
+                        continue;
+                    }
+                    collect_events_in(&wp.join("events"), &mut out);
+                    collect_events_in(&wp.join(".events"), &mut out);
+                }
+            }
+        }
+    }
+
+    // Cross-spec session sink (used by the OTEL collector when no spec is
+    // active).
+    let session_root = claude_dir.join(".session");
+    if let Ok(sessions) = std::fs::read_dir(&session_root) {
+        for session_entry in sessions.flatten() {
+            let sp = session_entry.path();
+            if !sp.is_dir() {
+                continue;
+            }
+            collect_events_in(&sp.join(".events"), &mut out);
+        }
+    }
+
+    out
 }
 
-/// `(spec, wave)` filter for the telemetry `run_usage` reads, derived from the
-/// scope. Wave scope yields both; Spec yields the spec only; Project/AllProjects
-/// yield neither.
-fn telemetry_filter(scope: &EconomyScope) -> (Option<String>, Option<String>) {
-    (
-        scope.spec_filter().map(|s| s.0.clone()),
-        scope.wave_filter().map(|w| w.0.clone()),
-    )
+/// Push every `*.ndjson` file in `dir` onto `out`. No-op when `dir` is
+/// absent or unreadable.
+fn collect_events_in(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("ndjson") {
+            out.push(p);
+        }
+    }
 }
+
+/// Collect every NDJSON event under `root`. The walk is bounded — each
+/// file is read line-by-line via [`EventReader::stream`] (no full-file
+/// load), and only the parsed `Event`s are kept in memory.
+///
+/// Returned as a `Vec` rather than an iterator because the path borrow
+/// inside [`EventReader::stream`] does not survive the closure (Rust 2024
+/// `impl Trait` lifetime capture).
+fn walk_events(root: &Path) -> Vec<Event> {
+    let mut out: Vec<Event> = Vec::new();
+    for path in ndjson_paths(root) {
+        for ev in EventReader::stream(&path) {
+            out.push(ev);
+        }
+    }
+    out
+}
+
+// ===========================================================================
+// Scope filtering helpers
+// ===========================================================================
+
+/// `(spec_filter, wave_filter)` derived from a scope. Project / AllProjects
+/// scopes return `(None, None)` — readers then aggregate everything they see.
+fn scope_filters(scope: &EconomyScope) -> (Option<&str>, Option<&str>) {
+    match scope {
+        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => (None, None),
+        EconomyScope::Spec { spec, .. } => (Some(spec.0.as_str()), None),
+        EconomyScope::Wave { spec, wave, .. } => (Some(spec.0.as_str()), Some(wave.0.as_str())),
+    }
+}
+
+/// Test whether an event's payload matches the spec/wave filters.
+fn matches_scope(payload: &Value, spec_f: Option<&str>, wave_f: Option<&str>) -> bool {
+    if let Some(want) = spec_f {
+        let got = payload
+            .get("spec")
+            .or_else(|| payload.get("spec_id"))
+            .and_then(Value::as_str);
+        if got != Some(want) {
+            return false;
+        }
+    }
+    if let Some(want) = wave_f {
+        let got = payload
+            .get("wave_id")
+            .or_else(|| payload.get("wave"))
+            .and_then(Value::as_str);
+        if got != Some(want) {
+            return false;
+        }
+    }
+    true
+}
+
+// `scope_project_path` was deleted along with the SQLite reader — callers
+// receive the project root explicitly as the first argument now.
+
+// ===========================================================================
+// Public readers
+// ===========================================================================
 
 /// Top-level summary — total cost, total tokens, total savings, top 3 agents.
 ///
+/// Mirrors the legacy SQLite path:
+///
+/// * **Unfiltered (Project / AllProjects)** — headline cost + tokens come
+///   from MEASURED OTEL metrics (`claude_code.cost.usage` /
+///   `.token.usage`); `by_session` is populated from the same metrics
+///   enriched with the spec list from `pipeline.{telemetry,economy}.run`.
+/// * **Spec / Wave** — headline cost + tokens come from ESTIMATED run
+///   events filtered by the scope.
+///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for a database failure.
+/// Returns `Ok` always — every IO failure degrades to the partial aggregate.
 #[allow(clippy::too_many_lines)]
-pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<EconomySummary> {
+pub fn economy_summary(project_root: &Path, scope: EconomyScope) -> Result<EconomySummary> {
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
-        let per_project = reader.fan_out(projects, |c, project| {
-            economy_summary(c, EconomyScope::Project(project.clone()))
+        let per_project = reader.fan_out(projects, |root, proj| {
+            economy_summary(root, EconomyScope::Project(proj.clone()))
         });
         let mut acc = EconomySummary::default();
         for s in per_project.values() {
@@ -86,114 +232,95 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
             acc.total_tokens_saved += s.total_tokens_saved;
             acc.span_count += s.span_count;
             acc.top_agents_by_cost.extend(s.top_agents_by_cost.clone());
-            // Per-project summaries are unfiltered (Project scope), so each
-            // already carries its own measured `by_session` / freshness.
             acc.by_session.extend(s.by_session.clone());
             acc.last_updated_ms = acc.last_updated_ms.max(s.last_updated_ms);
-            // Freshest estimated ingestion across the fan-out. `max` of
-            // two Options picks the larger Some, or any Some over None.
             acc.last_estimated_ms = acc.last_estimated_ms.max(s.last_estimated_ms);
         }
-        // Re-sort and truncate top agents after the merge.
         acc.top_agents_by_cost
             .sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
         acc.top_agents_by_cost.truncate(3);
-        // Re-sort + cap the merged sessions the same way the single-project
-        // path does (top by USD descending).
         acc.by_session
             .sort_by(|a, b| b.usd.partial_cmp(&a.usd).unwrap_or(std::cmp::Ordering::Equal));
         acc.by_session.truncate(8);
         return Ok(acc);
     }
-    // Run count always comes from telemetry.db's self-attributed
-    // `run_usage` (Wave 3): it's a count of dispatched runs, meaningful
-    // at every scope. The estimated cost/token totals from the same
-    // query are only used when the scope filters by spec or wave.
-    let (spec_f, wave_f) = telemetry_filter(&scope);
-    let tele = open_telemetry(&scope)?;
-    let (est_cost, est_tokens, span_count) = telemetry::reader::scoped_totals(
-        tele.conn(),
-        spec_f.as_deref(),
-        wave_f.as_deref(),
-    )?;
 
-    // For an unfiltered (project-wide / single-project) scope the
-    // headline cost + token totals come from the MEASURED `usage_totals`
-    // OTEL counters (Anthropic's billed `claude_code.cost.usage` /
-    // `.token.usage`), which carry no spec/wave dimension. When the scope
-    // DOES filter by spec or wave we fall back to the ESTIMATED
-    // `run_usage` totals — `usage_totals` cannot be attributed to a spec.
+    let (spec_f, wave_f) = scope_filters(&scope);
     let unfiltered = spec_f.is_none() && wave_f.is_none();
+
+    // Collect once — economy_summary touches every aggregate, so a single
+    // pass keeps the IO bound at one walk per call.
+    let events: Vec<Event> = walk_events(project_root);
+
+    // ── Estimated run-usage totals (always computed; used for span_count and
+    //    as the cost fallback at filtered scope) ──
+    let mut est_cost_micros: i64 = 0;
+    let mut est_tokens: i64 = 0;
+    let mut span_count: i64 = 0;
+    let mut last_estimated_ms: Option<i64> = None;
+    for ev in &events {
+        if !RUN_KINDS.contains(&event_name(ev)) {
+            continue;
+        }
+        if !matches_scope(&ev.payload, spec_f, wave_f) {
+            continue;
+        }
+        span_count += 1;
+        est_cost_micros += ev
+            .payload
+            .get("cost_usd_micros")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        est_tokens += ev
+            .payload
+            .get("input_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            + ev.payload
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+        if let Some(ts_ms) = run_event_started_at_ms(ev) {
+            last_estimated_ms = Some(last_estimated_ms.map_or(ts_ms, |cur| cur.max(ts_ms)));
+        }
+    }
+
+    // ── Measured totals (only at unfiltered scope) ──
+    let (measured_cost_micros, measured_tokens, last_updated_ms, by_session): (
+        i64,
+        i64,
+        Option<i64>,
+        Vec<SessionCost>,
+    ) = if unfiltered {
+        measured_totals_and_sessions(&events)
+    } else {
+        (0, 0, None, Vec::new())
+    };
+
     let (total_cost, total_tokens) = if unfiltered {
-        let measured_cost_usd = telemetry::reader::cost_total(tele.conn())?;
-        let measured_tokens = telemetry::reader::token_total(tele.conn())?;
-        // `usage_totals` carries cost in USD and tokens as a float
-        // counter; `EconomySummary` is micro-USD + integer tokens.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let cost_micros = (measured_cost_usd * 1_000_000.0).round() as i64;
-        #[allow(clippy::cast_possible_truncation)]
-        let tokens = measured_tokens.round() as i64;
-        (cost_micros, tokens)
+        (measured_cost_micros, measured_tokens)
     } else {
-        (est_cost, est_tokens)
+        (est_cost_micros, est_tokens)
     };
 
-    // MEASURED cost-by-session + freshness — populated ONLY at the
-    // unfiltered (project) scope, since `usage_totals` carries no
-    // spec/wave dimension. At spec/wave scope these stay empty/None.
-    // `last_estimated_ms` follows the same scope rule because the
-    // staleness banner that consumes it only makes sense when both
-    // freshness signals are available.
-    let last_estimated_ms = if unfiltered {
-        telemetry::reader::last_run_usage_ts(tele.conn())
-    } else {
-        None
-    };
-    // Top sessions by USD, capped so the UI list stays compact.
-    let (by_session, last_updated_ms) = if unfiltered {
-        let sessions = telemetry::reader::cost_by_session(tele.conn())?
-            .into_iter()
-            .filter(|(_, usd)| *usd > 0.0)
-            .take(8)
-            .map(|(session_id, usd)| {
-                // Same telemetry.db connection — never cross into mustard.db
-                // from a telemetry read. Both helpers are fail-open at the
-                // SQL layer, so a degraded row still surfaces the cost.
-                let last_at_ms =
-                    telemetry::reader::session_last_at(tele.conn(), &session_id)
-                        .unwrap_or(None);
-                let specs = telemetry::reader::specs_for_session(tele.conn(), &session_id)
-                    .unwrap_or_default();
-                SessionCost {
-                    session_id,
-                    usd,
-                    last_at_ms,
-                    specs,
-                }
-            })
-            .collect();
-        let fresh = telemetry::reader::freshness(tele.conn())?;
-        (sessions, fresh)
-    } else {
-        (Vec::new(), None)
-    };
+    // ── Savings total ──
+    let mut total_saved: i64 = 0;
+    for ev in &events {
+        if !event_name(ev).starts_with(SAVINGS_PREFIX) {
+            continue;
+        }
+        if !matches_scope(&ev.payload, spec_f, wave_f) {
+            continue;
+        }
+        total_saved += ev
+            .payload
+            .get("tokens_saved")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+    }
 
-    // Savings aggregation always uses `savings_records` directly —
-    // the table carries native `spec_id` and `wave_id` columns so
-    // every scope variant has a real, non-tautological filter.
-    let savings_sql = format!(
-        "SELECT COALESCE(SUM(tokens_saved), 0) FROM savings_records {}",
-        savings_where(&scope)
-    );
-    let total_saved: i64 = conn
-        .query_row(
-            &savings_sql,
-            rusqlite::params_from_iter(savings_params(&scope).iter()),
-            |r| r.get(0),
-        )
-        .map_err(Error::from)?;
-
-    let top = per_agent_costs(conn, scope)?
+    // ── Top 3 agents by cost (reuses per_agent_costs to stay DRY) ──
+    let top = per_agent_costs(project_root, scope.clone())?
         .into_iter()
         .take(3)
         .collect::<Vec<_>>();
@@ -205,32 +332,140 @@ pub fn economy_summary(conn: &Connection, scope: EconomyScope) -> Result<Economy
         span_count,
         top_agents_by_cost: top,
         by_session,
-        last_updated_ms,
-        last_estimated_ms,
+        last_updated_ms: if unfiltered { last_updated_ms } else { None },
+        last_estimated_ms: if unfiltered { last_estimated_ms } else { None },
     })
 }
 
-/// Per-agent cost roll-up, ordered by cost descending.
+/// Aggregate measured totals + per-session enrichment from a pre-collected
+/// event slice. Returns `(cost_micros, tokens, last_updated_ms, by_session)`.
 ///
-/// Reads telemetry.db's self-attributed `run_usage` (Wave 3): each row carries
-/// its own `agent_id` (stamped at write time, backfilled for history), so the
-/// roll-up is a plain `GROUP BY agent_id`. Rows with a `NULL`/empty `agent_id`
-/// are excluded — they have no agent to attribute to, matching the legacy
-/// behaviour. A Wave scope additionally filters on `wave_id`.
+/// Measured metrics carry float USD / float token counters; we round to the
+/// integer transport units (`micro-USD` and `i64 tokens`) the dashboard
+/// expects.
+fn measured_totals_and_sessions(events: &[Event]) -> (i64, i64, Option<i64>, Vec<SessionCost>) {
+    let mut cost_usd: f64 = 0.0;
+    let mut tokens: f64 = 0.0;
+    let mut last_updated_ms: Option<i64> = None;
+    let mut per_session_cost: BTreeMap<String, f64> = BTreeMap::new();
+    let mut per_session_last_at: BTreeMap<String, i64> = BTreeMap::new();
+    let mut per_session_specs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for ev in events {
+        let name = event_name(ev);
+        if name == TELEMETRY_METRIC_KIND {
+            let metric = ev.payload.get("metric").and_then(Value::as_str).unwrap_or("");
+            let sum = ev.payload.get("sum").and_then(Value::as_f64).unwrap_or(0.0);
+            let session_id = ev
+                .payload
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let updated_at = ev
+                .payload
+                .get("updated_at")
+                .or_else(|| ev.payload.get("ts_bucket"))
+                .and_then(Value::as_i64);
+
+            if metric == "claude_code.cost.usage" {
+                cost_usd += sum;
+                if !session_id.is_empty() {
+                    *per_session_cost.entry(session_id.clone()).or_insert(0.0) += sum;
+                    if let Some(ts) = updated_at {
+                        let entry = per_session_last_at.entry(session_id.clone()).or_insert(0);
+                        if ts > *entry {
+                            *entry = ts;
+                        }
+                    }
+                }
+                if let Some(ts) = updated_at {
+                    last_updated_ms = Some(last_updated_ms.map_or(ts, |cur| cur.max(ts)));
+                }
+            } else if metric == "claude_code.token.usage" {
+                tokens += sum;
+                if let Some(ts) = updated_at {
+                    last_updated_ms = Some(last_updated_ms.map_or(ts, |cur| cur.max(ts)));
+                }
+            }
+        } else if RUN_KINDS.contains(&name) {
+            // Enrich per-session spec list from run events.
+            let session_id = ev
+                .payload
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if session_id.is_empty() {
+                continue;
+            }
+            if let Some(spec) = ev.payload.get("spec").and_then(Value::as_str) {
+                per_session_specs
+                    .entry(session_id)
+                    .or_default()
+                    .insert(spec.to_string());
+            }
+        }
+    }
+
+    let cost_micros = (cost_usd * 1_000_000.0).round() as i64;
+    let tokens_int = tokens.round() as i64;
+
+    // Build the `by_session` vector ordered by USD descending, capped to 8.
+    let mut sessions: Vec<SessionCost> = per_session_cost
+        .into_iter()
+        .filter(|(_, usd)| *usd > 0.0)
+        .map(|(session_id, usd)| {
+            let last_at_ms = per_session_last_at.get(&session_id).copied();
+            let specs: Vec<String> = per_session_specs
+                .get(&session_id)
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default();
+            SessionCost {
+                session_id,
+                usd,
+                last_at_ms,
+                specs,
+            }
+        })
+        .collect();
+    sessions.sort_by(|a, b| b.usd.partial_cmp(&a.usd).unwrap_or(std::cmp::Ordering::Equal));
+    sessions.truncate(8);
+
+    (cost_micros, tokens_int, last_updated_ms, sessions)
+}
+
+/// Extract an epoch-ms timestamp from a run event's payload, trying
+/// `started_at` (the canonical column) then `ts` (ISO-8601 string).
+fn run_event_started_at_ms(ev: &Event) -> Option<i64> {
+    if let Some(v) = ev.payload.get("started_at").and_then(Value::as_i64) {
+        return Some(v);
+    }
+    let ts = ev.payload.get("ts").and_then(Value::as_str)?;
+    let ms = super::writer::iso_to_epoch_ms(ts);
+    if ms == 0 {
+        None
+    } else {
+        Some(ms)
+    }
+}
+
+/// Per-agent cost roll-up. Ordered by cost descending.
+///
+/// Reads `pipeline.{telemetry,economy}.run` events, grouping by
+/// `payload.agent_id` (set at write time by both the OTEL collector and the
+/// tracker hook). Rows missing an agent id are dropped.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for a database failure.
-#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
-pub fn per_agent_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<AgentCost>> {
+/// Returns `Ok` always — every IO failure degrades to the partial aggregate.
+pub fn per_agent_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<AgentCost>> {
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
-        let per_project = reader.fan_out(projects, |c, project| {
-            per_agent_costs(c, EconomyScope::Project(project.clone()))
+        let per_project = reader.fan_out(projects, |root, proj| {
+            per_agent_costs(root, EconomyScope::Project(proj.clone()))
         });
-        // Merge by agent_id.
-        let mut merged: std::collections::HashMap<String, AgentCost> =
-            std::collections::HashMap::new();
+        let mut merged: HashMap<String, AgentCost> = HashMap::new();
         for rows in per_project.values() {
             for row in rows {
                 let entry = merged.entry(row.agent_id.0.clone()).or_insert(AgentCost {
@@ -248,37 +483,60 @@ pub fn per_agent_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Ag
         out.sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
         return Ok(out);
     }
-    let (_, wave_f) = telemetry_filter(&scope);
-    let tele = open_telemetry(&scope)?;
-    let groups =
-        telemetry::reader::runs_by_agent_scoped(tele.conn(), None, wave_f.as_deref())?;
-    Ok(groups
-        .into_iter()
-        .map(|g| AgentCost {
-            agent_id: AgentId(g.key),
-            cost_usd_micros: g.cost_usd_micros,
-            tokens: g.tokens,
-            span_count: g.run_count,
-        })
-        .collect())
+
+    let (spec_f, wave_f) = scope_filters(&scope);
+    let mut by_agent: HashMap<String, AgentCost> = HashMap::new();
+    for ev in walk_events(project_root) {
+        if !RUN_KINDS.contains(&event_name(&ev)) {
+            continue;
+        }
+        if !matches_scope(&ev.payload, spec_f, wave_f) {
+            continue;
+        }
+        let Some(agent_id) = payload_agent_id(&ev.payload) else {
+            continue;
+        };
+        let cost = ev
+            .payload
+            .get("cost_usd_micros")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let tokens = ev
+            .payload
+            .get("input_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            + ev.payload
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+        let entry = by_agent.entry(agent_id.clone()).or_insert(AgentCost {
+            agent_id: AgentId(agent_id),
+            cost_usd_micros: 0,
+            tokens: 0,
+            span_count: 0,
+        });
+        entry.cost_usd_micros += cost;
+        entry.tokens += tokens;
+        entry.span_count += 1;
+    }
+    let mut out: Vec<AgentCost> = by_agent.into_values().collect();
+    out.sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
+    Ok(out)
 }
 
-/// Per-spec cost roll-up. Meaningful for [`EconomyScope::Project`] and
-/// [`EconomyScope::AllProjects`]; returns a single-row result when the scope
-/// is already constrained to a spec.
+/// Per-spec cost roll-up. Newest spec first; cost desc on tie.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for a database failure.
-#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
-pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<SpecCost>> {
+/// Returns `Ok` always.
+pub fn per_spec_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<SpecCost>> {
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
-        let per_project = reader.fan_out(projects, |c, project| {
-            per_spec_costs(c, EconomyScope::Project(project.clone()))
+        let per_project = reader.fan_out(projects, |root, proj| {
+            per_spec_costs(root, EconomyScope::Project(proj.clone()))
         });
-        let mut merged: std::collections::HashMap<String, SpecCost> =
-            std::collections::HashMap::new();
+        let mut merged: HashMap<String, SpecCost> = HashMap::new();
         for rows in per_project.values() {
             for row in rows {
                 let entry = merged.entry(row.spec_id.0.clone()).or_insert(SpecCost {
@@ -291,16 +549,10 @@ pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Spe
                 entry.cost_usd_micros += row.cost_usd_micros;
                 entry.tokens += row.tokens;
                 entry.span_count += row.span_count;
-                // Keep the freshest `started_at` across the fan-out.
-                // `max` on `Option<i64>` picks the larger `Some` (or any
-                // `Some` over `None`), which is what the UI's
-                // "newest first" sort expects.
                 entry.last_started_at = entry.last_started_at.max(row.last_started_at);
             }
         }
         let mut out: Vec<SpecCost> = merged.into_values().collect();
-        // Sort by recency desc; cost desc breaks ties so two specs sharing
-        // the freshest timestamp still rank deterministically.
         out.sort_by(|a, b| {
             b.last_started_at
                 .cmp(&a.last_started_at)
@@ -308,23 +560,51 @@ pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Spe
         });
         return Ok(out);
     }
-    // Self-attributed `run_usage` (Wave 3): GROUP BY the native `spec`
-    // column. A Wave scope additionally filters on `wave_id`.
-    let (_, wave_f) = telemetry_filter(&scope);
-    let tele = open_telemetry(&scope)?;
-    let groups = telemetry::reader::runs_by_spec_scoped(tele.conn(), wave_f.as_deref())?;
-    let mut out: Vec<SpecCost> = groups
-        .into_iter()
-        .map(|g| SpecCost {
-            spec_id: SpecId(g.key),
-            cost_usd_micros: g.cost_usd_micros,
-            tokens: g.tokens,
-            span_count: g.run_count,
-            last_started_at: g.last_started_at,
-        })
-        .collect();
-    // Newest spec first; cost desc as the tiebreaker for equal/None
-    // timestamps (matches `AllProjects` branch ordering).
+
+    let (_, wave_f) = scope_filters(&scope);
+    let mut by_spec: HashMap<String, SpecCost> = HashMap::new();
+    for ev in walk_events(project_root) {
+        if !RUN_KINDS.contains(&event_name(&ev)) {
+            continue;
+        }
+        if !matches_scope(&ev.payload, None, wave_f) {
+            continue;
+        }
+        let Some(spec) = ev.payload.get("spec").and_then(Value::as_str) else {
+            continue;
+        };
+        let cost = ev
+            .payload
+            .get("cost_usd_micros")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let tokens = ev
+            .payload
+            .get("input_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            + ev.payload
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+        let started_at = run_event_started_at_ms(&ev);
+        let entry = by_spec.entry(spec.to_string()).or_insert(SpecCost {
+            spec_id: SpecId(spec.to_string()),
+            cost_usd_micros: 0,
+            tokens: 0,
+            span_count: 0,
+            last_started_at: None,
+        });
+        entry.cost_usd_micros += cost;
+        entry.tokens += tokens;
+        entry.span_count += 1;
+        entry.last_started_at = match (entry.last_started_at, started_at) {
+            (Some(cur), Some(new)) => Some(cur.max(new)),
+            (None, Some(new)) => Some(new),
+            (cur, None) => cur,
+        };
+    }
+    let mut out: Vec<SpecCost> = by_spec.into_values().collect();
     out.sort_by(|a, b| {
         b.last_started_at
             .cmp(&a.last_started_at)
@@ -333,26 +613,18 @@ pub fn per_spec_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Spe
     Ok(out)
 }
 
-/// Per-wave cost roll-up. The wave id is the run row's own `wave_id` column
-/// (self-attributed at write time), so runs dispatched into a child wave from a
-/// parent-spec context are correctly bucketed.
-///
-/// Regression-tested by `parent_spec_child_wave_attribution` in
-/// `tests/economy_attribution.rs` (AC-6, absorbed from the superseded
-/// `metrics-writers-pipeline-key` spec).
+/// Per-wave cost roll-up. Ordered by cost desc.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for a database failure.
-#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
-pub fn per_wave_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<WaveCost>> {
+/// Returns `Ok` always.
+pub fn per_wave_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<WaveCost>> {
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
-        let per_project = reader.fan_out(projects, |c, project| {
-            per_wave_costs(c, EconomyScope::Project(project.clone()))
+        let per_project = reader.fan_out(projects, |root, proj| {
+            per_wave_costs(root, EconomyScope::Project(proj.clone()))
         });
-        let mut merged: std::collections::HashMap<(String, String), WaveCost> =
-            std::collections::HashMap::new();
+        let mut merged: HashMap<(String, String), WaveCost> = HashMap::new();
         for rows in per_project.values() {
             for row in rows {
                 let key = (row.spec_id.0.clone(), row.wave_id.0.clone());
@@ -372,39 +644,77 @@ pub fn per_wave_costs(_conn: &Connection, scope: EconomyScope) -> Result<Vec<Wav
         out.sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
         return Ok(out);
     }
-    // Self-attributed `run_usage` (Wave 3): GROUP BY (spec, wave_id).
-    // Each row carries the wave it was dispatched against, which is the
-    // answer the parent-spec/child-wave regression case needs.
-    let (_, wave_f) = telemetry_filter(&scope);
-    let tele = open_telemetry(&scope)?;
-    let groups = telemetry::reader::runs_by_wave_scoped(tele.conn(), wave_f.as_deref())?;
-    Ok(groups
-        .into_iter()
-        .map(|g| WaveCost {
-            spec_id: SpecId(g.spec),
-            wave_id: WaveId(g.wave_id),
-            cost_usd_micros: g.cost_usd_micros,
-            tokens: g.tokens,
-            span_count: g.run_count,
-        })
-        .collect())
+
+    let (_, wave_f) = scope_filters(&scope);
+    let mut by_wave: HashMap<(String, String), WaveCost> = HashMap::new();
+    for ev in walk_events(project_root) {
+        if !RUN_KINDS.contains(&event_name(&ev)) {
+            continue;
+        }
+        let Some(spec) = ev.payload.get("spec").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(wave) = ev
+            .payload
+            .get("wave_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        if let Some(want) = wave_f {
+            if wave != want {
+                continue;
+            }
+        }
+        let cost = ev
+            .payload
+            .get("cost_usd_micros")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let tokens = ev
+            .payload
+            .get("input_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            + ev.payload
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+        let entry = by_wave
+            .entry((spec.to_string(), wave.to_string()))
+            .or_insert(WaveCost {
+                spec_id: SpecId(spec.to_string()),
+                wave_id: WaveId(wave.to_string()),
+                cost_usd_micros: 0,
+                tokens: 0,
+                span_count: 0,
+            });
+        entry.cost_usd_micros += cost;
+        entry.tokens += tokens;
+        entry.span_count += 1;
+    }
+    let mut out: Vec<WaveCost> = by_wave.into_values().collect();
+    out.sort_by_key(|b| std::cmp::Reverse(b.cost_usd_micros));
+    Ok(out)
 }
 
-/// Savings roll-up by [`SavingsSource`].
+/// Savings breakdown by [`SavingsSource`].
 ///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for a database failure.
-#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
-pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<SavingsBreakdown> {
+/// Returns `Ok` always.
+pub fn savings_breakdown(
+    project_root: &Path,
+    scope: EconomyScope,
+) -> Result<SavingsBreakdown> {
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
-        let per_project = reader.fan_out(projects, |c, project| {
-            savings_breakdown(c, EconomyScope::Project(project.clone()))
+        let per_project = reader.fan_out(projects, |root, proj| {
+            savings_breakdown(root, EconomyScope::Project(proj.clone()))
         });
         let mut total = 0i64;
-        let mut per_source: std::collections::HashMap<SavingsSource, (i64, i64)> =
-            std::collections::HashMap::new();
+        let mut per_source: HashMap<SavingsSource, (i64, i64)> = HashMap::new();
         for b in per_project.values() {
             total += b.total_tokens_saved;
             for row in &b.per_source {
@@ -427,52 +737,72 @@ pub fn savings_breakdown(conn: &Connection, scope: EconomyScope) -> Result<Savin
             per_source: rows,
         });
     }
-    let savings_where_sql = savings_where(&scope);
-    let bind_params = savings_params(&scope);
-    let sql = format!(
-        "SELECT source, COALESCE(SUM(tokens_saved), 0), COUNT(*) \
-         FROM savings_records {savings_where_sql} \
-         GROUP BY source"
-    );
-    let mut stmt = conn.prepare(&sql)?;
+
+    let (spec_f, wave_f) = scope_filters(&scope);
     let mut total = 0i64;
-    let mut per_source = Vec::new();
-    let rows = stmt.query_map(
-        rusqlite::params_from_iter(bind_params.iter()),
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
-    )?;
-    for row in rows.filter_map(std::result::Result::ok) {
-        if let Some(source) = SavingsSource::from_str_opt(&row.0) {
-            total += row.1;
-            per_source.push(SavingsBySource {
-                source,
-                tokens_saved: row.1,
-                event_count: row.2,
-            });
+    let mut per_source: HashMap<SavingsSource, (i64, i64)> = HashMap::new();
+    for ev in walk_events(project_root) {
+        let name = event_name(&ev);
+        if !name.starts_with(SAVINGS_PREFIX) {
+            continue;
         }
+        if !matches_scope(&ev.payload, spec_f, wave_f) {
+            continue;
+        }
+        let source_str = ev
+            .payload
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| name.strip_prefix(SAVINGS_PREFIX).map(|s| s.replace('-', "_")));
+        let Some(source) = source_str.and_then(|s| SavingsSource::from_str_opt(&s)) else {
+            continue;
+        };
+        let saved = ev
+            .payload
+            .get("tokens_saved")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        total += saved;
+        let entry = per_source.entry(source).or_insert((0, 0));
+        entry.0 += saved;
+        entry.1 += 1;
     }
-    per_source.sort_by_key(|b| std::cmp::Reverse(b.tokens_saved));
+    let mut rows: Vec<SavingsBySource> = per_source
+        .into_iter()
+        .map(|(source, (tokens_saved, event_count))| SavingsBySource {
+            source,
+            tokens_saved,
+            event_count,
+        })
+        .collect();
+    rows.sort_by_key(|b| std::cmp::Reverse(b.tokens_saved));
     Ok(SavingsBreakdown {
         total_tokens_saved: total,
-        per_source,
+        per_source: rows,
     })
 }
 
-/// Context-routing quality metrics — cache hit ratio, prefix-stable ratio,
-/// retry overhead, all expressed in permille (0–1000) for integer transport.
+/// Context-routing quality metrics (cache hit, prefix stable, retry overhead).
+///
+/// Cache-hit ratio comes from run events
+/// (`cache_read_input_tokens / (input_tokens + cache_read_input_tokens)`).
+/// Prefix-stable and retry-overhead ratios come from
+/// `pipeline.economy.context.frame` events — when no frame events exist
+/// (today's reality, because no production caller emits them yet), those
+/// ratios are 0, matching the SQLite-era behaviour where the table was empty.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Sqlite`] for a database failure.
-#[allow(clippy::needless_pass_by_value)] // EconomyScope is consumed by the fan-out branch; callers own the value
+/// Returns `Ok` always.
 pub fn context_routing_quality(
-    conn: &Connection,
+    project_root: &Path,
     scope: EconomyScope,
 ) -> Result<ContextRoutingMetrics> {
     if let EconomyScope::AllProjects(ref projects) = scope {
         let reader = MultiProjectReader::new();
-        let per_project = reader.fan_out(projects, |c, project| {
-            context_routing_quality(c, EconomyScope::Project(project.clone()))
+        let per_project = reader.fan_out(projects, |root, proj| {
+            context_routing_quality(root, EconomyScope::Project(proj.clone()))
         });
         let mut acc = ContextRoutingMetrics::default();
         let mut weight_total = 0i64;
@@ -491,379 +821,325 @@ pub fn context_routing_quality(
         }
         return Ok(acc);
     }
-    let (frame_where, frame_params) = frames_scope_where(&scope);
-    let sql = format!(
-        "SELECT \
-            COALESCE(SUM(prompt_size_bytes), 0), \
-            COALESCE(SUM(prefix_stable_bytes), 0), \
-            COALESCE(SUM(retry_overhead_bytes), 0), \
-            COUNT(*) \
-         FROM context_cost_frames {frame_where}"
-    );
-    let (prompt_sum, prefix_sum, retry_sum, frame_count): (i64, i64, i64, i64) = conn
-        .query_row(
-            &sql,
-            rusqlite::params_from_iter(frame_params.iter()),
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .map_err(Error::from)?;
 
-    // Cache-hit ratio comes from telemetry.db's `run_usage` (Wave 3).
-    // `run_usage` has no native wave column on this read path either, so
-    // a Wave-scoped caller still collapses to the spec roll-up — same
-    // denominator behaviour as before, just sourced self-attributed.
-    let (spec_f, _) = telemetry_filter(&scope);
-    let tele = open_telemetry(&scope)?;
-    let cache_hit_ratio_permille =
-        telemetry::reader::cache_hit_ratio_permille_for_spec(tele.conn(), spec_f.as_deref())?;
+    let (spec_f, wave_f) = scope_filters(&scope);
+    let mut prompt_sum: i64 = 0;
+    let mut prefix_sum: i64 = 0;
+    let mut retry_sum: i64 = 0;
+    let mut frame_count: i64 = 0;
+    let mut input_sum: i64 = 0;
+    let mut cache_sum: i64 = 0;
 
-    // Intentional truncation: permille is always in 0..=1000, well within i64.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    for ev in walk_events(project_root) {
+        let name = event_name(&ev);
+        if name == CONTEXT_FRAME_KIND {
+            if !matches_scope(&ev.payload, spec_f, wave_f) {
+                continue;
+            }
+            prompt_sum += ev
+                .payload
+                .get("prompt_size_bytes")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            prefix_sum += ev
+                .payload
+                .get("prefix_stable_bytes")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            retry_sum += ev
+                .payload
+                .get("retry_overhead_bytes")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            frame_count += 1;
+        } else if RUN_KINDS.contains(&name) {
+            // Cache hit ratio uses spec filter only (run events do not carry
+            // wave_id reliably across all writers — match legacy behaviour).
+            if !matches_scope(&ev.payload, spec_f, None) {
+                continue;
+            }
+            input_sum += ev
+                .payload
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            cache_sum += ev
+                .payload
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+        }
+    }
+
     let permille = |num: i64, den: i64| -> i64 {
         if den <= 0 {
             0
         } else {
-            ((num as f64) * 1000.0 / (den as f64)) as i64
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            let v = ((num as f64) * 1000.0 / (den as f64)) as i64;
+            v
         }
     };
+    let cache_den = input_sum + cache_sum;
 
     Ok(ContextRoutingMetrics {
         prefix_stable_ratio_permille: permille(prefix_sum, prompt_sum),
-        cache_hit_ratio_permille,
+        cache_hit_ratio_permille: permille(cache_sum, cache_den),
         retry_overhead_ratio_permille: permille(retry_sum, prompt_sum),
         frame_count,
     })
 }
 
-// ---------------------------------------------------------------------------
-// Shared scope-to-SQL helpers for the NON-telemetry tables that still live in
-// `mustard.db` (`savings_records`, `context_cost_frames`). The span-based
-// reads moved to `telemetry::reader` (self-attributed `run_usage`, Wave 3), so
-// there is no longer a spans↔events JOIN to express here.
-//
-// Each helper returns `(where_clause, params)` where `params` is the exact
-// list of bind values referenced by the SQL — no `?2 = ?2` tautologies, no
-// `NULL IS NULL` placeholders. Callers feed the params into rusqlite via
-// `params_from_iter`, so the helper's `Vec` length matches the SQL's `?N`
-// count for every scope variant.
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Payload helpers
+// ===========================================================================
 
-/// Builds the `WHERE` clause + bind list for `context_cost_frames`
-/// (which has native `spec_id` and `wave_id` columns).
-fn frames_scope_where(scope: &EconomyScope) -> (&'static str, Vec<String>) {
-    match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => ("", Vec::new()),
-        EconomyScope::Spec { spec, .. } => ("WHERE spec_id = ?1", vec![spec.0.clone()]),
-        EconomyScope::Wave { spec, wave, .. } => (
-            "WHERE spec_id = ?1 AND wave_id = ?2",
-            vec![spec.0.clone(), wave.0.clone()],
-        ),
+/// Pull the agent id out of a run payload. Tries the top-level `agent_id`
+/// first (the shape `pipeline.economy.run` writes), then the lenient
+/// `extra.agent_id` (OTEL `pipeline.telemetry.run`).
+fn payload_agent_id(payload: &Value) -> Option<String> {
+    if let Some(id) = payload
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(id.to_string());
     }
+    payload
+        .get("extra")
+        .and_then(|e| e.get("agent_id"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
-/// Builds the `WHERE` clause for `savings_records`.
-///
-/// `savings_records` carries native `spec_id` + `wave_id` columns, so every
-/// scope variant gets a real, non-tautological filter. Pair with
-/// [`savings_params`] to bind the right number of positional params.
-fn savings_where(scope: &EconomyScope) -> &'static str {
-    match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => "",
-        EconomyScope::Spec { .. } => "WHERE spec_id = ?1",
-        EconomyScope::Wave { .. } => "WHERE spec_id = ?1 AND wave_id = ?2",
-    }
+// Suppress the unused-import lint when `payload_agent_id` is the only thing
+// using `ProjectPath` (it isn't today, but the marker keeps the import path
+// stable as readers evolve).
+#[allow(dead_code)]
+fn _project_path_alive(p: &ProjectPath) -> &Path {
+    p.as_path()
 }
 
-/// Positional bind list for the `savings_records` SQL built by
-/// [`savings_where`] — length matches the number of `?N` placeholders.
-fn savings_params(scope: &EconomyScope) -> Vec<String> {
-    match scope {
-        EconomyScope::Project(_) | EconomyScope::AllProjects(_) => Vec::new(),
-        EconomyScope::Spec { spec, .. } => vec![spec.0.clone()],
-        EconomyScope::Wave { spec, wave, .. } => vec![spec.0.clone(), wave.0.clone()],
-    }
-}
+// ===========================================================================
+// Tests — inline fixtures, no SQLite, no external test crate
+// ===========================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::economy::model::SavingsRecord;
-    use crate::economy::scope::{AgentId, ProjectPath};
-    use crate::economy::writer::record_savings;
-    use crate::store::sqlite_store::SqliteEventStore;
-    use crate::telemetry::TelemetryWriter;
-    use crate::telemetry::model::{RunUsage, UsageMetric};
-    use crate::telemetry::writer::upsert_usage_metric;
-    use rusqlite::Connection;
-    use serde_json::Map;
+    use std::fs;
     use tempfile::tempdir;
 
-    fn fresh_conn(dir: &std::path::Path) -> Connection {
-        let _store = SqliteEventStore::new(dir.join("mustard.db")).unwrap();
-        Connection::open(dir.join("mustard.db")).unwrap()
+    /// Plant `lines` (NDJSON content) at `<root>/.claude/spec/{spec}/.events/seed.ndjson`.
+    fn plant_spec_events(root: &Path, spec: &str, lines: &[&str]) {
+        let dir = root.join(".claude").join("spec").join(spec).join(".events");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("seed.ndjson"), lines.join("\n")).unwrap();
     }
 
-    /// Seed one `run_usage` row into the telemetry.db the economy reader opens
-    /// for a project (`{project}/.claude/.harness/telemetry.db`). Wave 3 moved
-    /// every span-based aggregation onto the self-attributed `run_usage` table,
-    /// so the reader no longer touches the legacy `spans` table.
-    fn seed_run(dir: &std::path::Path, id: &str, spec: &str, cost: i64, tokens: i64) {
-        let store = TelemetryStore::for_project(dir).unwrap();
-        store
-            .record_run(&RunUsage {
-                trace_id: None,
-                span_id: id.into(),
-                parent_span_id: None,
-                name: None,
-                started_at: Some(0),
-                ended_at: None,
-                duration_ms: None,
-                attributes: None,
-                spec: Some(spec.into()),
-                phase: None,
-                model: Some("claude-3-5-sonnet".into()),
-                input_tokens: Some(tokens),
-                output_tokens: Some(0),
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                cost_usd_micros: Some(cost),
-                is_error: false,
-                project_path: None,
-                ts_iso: Some("2026-05-21T00:00:00Z".into()),
-                session_id: None,
-                wave_id: None,
-                tool_use_id: None,
-                agent_id: Some("explore".into()),
-            })
-            .unwrap();
-    }
-
-    /// Seed one MEASURED `usage_totals` counter row (Anthropic's billed OTEL
-    /// metric) into the same telemetry.db. `cost.usage` is USD, `token.usage`
-    /// is a token count — both float counters with no spec/wave dimension.
-    fn seed_measured(dir: &std::path::Path, metric: &str, sum: f64) {
-        seed_measured_at(dir, metric, sum, "sess-1", 0);
-    }
-
-    /// Same as [`seed_measured`] but with an explicit `session_id` + `updated_at`
-    /// so the per-session enrichment test can populate distinct sessions.
-    fn seed_measured_at(
-        dir: &std::path::Path,
-        metric: &str,
-        sum: f64,
-        session_id: &str,
-        updated_at: i64,
-    ) {
-        let store = TelemetryStore::for_project(dir).unwrap();
-        upsert_usage_metric(
-            store.conn(),
-            &UsageMetric {
-                metric: metric.into(),
-                model: Some("claude-3-5-sonnet".into()),
-                session_id: Some(session_id.into()),
-                sum,
-                updated_at: Some(updated_at),
-            },
-        )
-        .unwrap();
-    }
-
-    /// Seed one `run_usage` row carrying an explicit `session_id` so the
-    /// per-session enrichment can pick up its specs.
-    fn seed_run_for_session(
-        dir: &std::path::Path,
-        span_id: &str,
-        spec: &str,
-        session_id: &str,
-    ) {
-        let store = TelemetryStore::for_project(dir).unwrap();
-        store
-            .record_run(&RunUsage {
-                trace_id: None,
-                span_id: span_id.into(),
-                parent_span_id: None,
-                name: None,
-                started_at: Some(0),
-                ended_at: None,
-                duration_ms: None,
-                attributes: None,
-                spec: Some(spec.into()),
-                phase: None,
-                model: Some("claude-3-5-sonnet".into()),
-                input_tokens: Some(10),
-                output_tokens: Some(0),
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                cost_usd_micros: Some(100),
-                is_error: false,
-                project_path: None,
-                ts_iso: Some("2026-05-22T00:00:00Z".into()),
-                session_id: Some(session_id.into()),
-                wave_id: None,
-                tool_use_id: None,
-                agent_id: Some("explore".into()),
-            })
-            .unwrap();
+    /// Plant cross-spec session events at `<root>/.claude/.session/{slug}/.events/seed.ndjson`.
+    fn plant_session_events(root: &Path, slug: &str, lines: &[&str]) {
+        let dir = root.join(".claude").join(".session").join(slug).join(".events");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("seed.ndjson"), lines.join("\n")).unwrap();
     }
 
     #[test]
-    fn economy_summary_unfiltered_uses_measured_totals() {
-        // Project scope (no spec/wave filter): headline cost + tokens come from
-        // the MEASURED `usage_totals`, NOT the ESTIMATED `run_usage` sums.
+    fn summary_reads_measured_totals_from_ndjson() {
         let dir = tempdir().unwrap();
-        let conn = fresh_conn(dir.path());
-        // Estimated run_usage: cost 3000 micros, 300 tokens — must be ignored.
-        seed_run(dir.path(), "s1", "spec-A", 1000, 100);
-        seed_run(dir.path(), "s2", "spec-A", 2000, 200);
-        // Measured: $49.00 cost, 1234 tokens.
-        seed_measured(dir.path(), "claude_code.cost.usage", 49.0);
-        seed_measured(dir.path(), "claude_code.token.usage", 1234.0);
-        record_savings(
-            &conn,
-            SavingsRecord {
-                ts: "2026-05-21T00:00:00Z".into(),
-                source: SavingsSource::RtkRewrite,
-                tokens_saved: 500,
-                model_target: None,
-                project_path: ProjectPath::new("/tmp/p"),
-                spec_id: None,
-                wave_id: None,
-                agent_id: None,
-                extra: Map::new(),
-            },
-        )
-        .unwrap();
-
+        // Measured: cost.usage = $49, token.usage = 1234 tokens — cross-spec
+        // (session sink, matching OTEL collector behaviour).
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.cost.usage","session_id":"sess-A","sum":49.0,"updated_at":2000}}"#,
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.token.usage","session_id":"sess-A","sum":1234.0,"updated_at":2000}}"#,
+            ],
+        );
         let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
-        let summary = economy_summary(&conn, scope).unwrap();
-        // Measured cost: $49.00 -> 49_000_000 micro-USD (not the 3000 estimate).
-        assert_eq!(summary.total_cost_usd_micros, 49_000_000);
-        // Measured tokens: 1234 (not the 300 estimate).
-        assert_eq!(summary.total_tokens, 1234);
-        // Run count + savings still come from run_usage / savings_records.
-        assert_eq!(summary.span_count, 2);
-        assert_eq!(summary.total_tokens_saved, 500);
+        let s = economy_summary(dir.path(), scope).unwrap();
+        assert_eq!(s.total_cost_usd_micros, 49_000_000);
+        assert_eq!(s.total_tokens, 1234);
     }
 
     #[test]
-    fn economy_summary_spec_scope_uses_estimated_run_usage() {
-        // Spec scope: usage_totals has no spec dimension, so the totals stay on
-        // the ESTIMATED run_usage path even when measured counters are present.
+    fn savings_breakdown_reads_ndjson() {
         let dir = tempdir().unwrap();
-        let conn = fresh_conn(dir.path());
-        seed_run(dir.path(), "s1", "spec-A", 1000, 100);
-        seed_run(dir.path(), "s2", "spec-A", 2000, 200);
-        // Measured present but must NOT leak into a spec-scoped summary.
-        seed_measured(dir.path(), "claude_code.cost.usage", 49.0);
-        seed_measured(dir.path(), "claude_code.token.usage", 1234.0);
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.savings.rtk-rewrite","event":"pipeline.economy.savings.rtk-rewrite","payload":{"source":"rtk_rewrite","tokens_saved":100}}"#,
+                r#"{"kind":"pipeline.economy.savings.rtk-rewrite","event":"pipeline.economy.savings.rtk-rewrite","payload":{"source":"rtk_rewrite","tokens_saved":200}}"#,
+                r#"{"kind":"pipeline.economy.savings.bash-guard-block","event":"pipeline.economy.savings.bash-guard-block","payload":{"source":"bash_guard_block","tokens_saved":50}}"#,
+            ],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let b = savings_breakdown(dir.path(), scope).unwrap();
+        assert_eq!(b.total_tokens_saved, 350);
+        assert_eq!(b.per_source.len(), 2);
+        let rtk = &b.per_source[0]; // RtkRewrite is the larger one
+        assert_eq!(rtk.source, SavingsSource::RtkRewrite);
+        assert_eq!(rtk.tokens_saved, 300);
+        assert_eq!(rtk.event_count, 2);
+    }
 
+    #[test]
+    fn per_spec_costs_groups_run_events_by_spec() {
+        let dir = tempdir().unwrap();
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":50,"output_tokens":50,"agent_id":"explore","started_at":1000}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","payload":{"spec":"spec-A","cost_usd_micros":2000,"input_tokens":100,"output_tokens":100,"agent_id":"plan","started_at":2000}}"#,
+            ],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let rows = per_spec_costs(dir.path(), scope).unwrap();
+        assert_eq!(rows.len(), 1);
+        let spec_a = &rows[0];
+        assert_eq!(spec_a.spec_id.0, "spec-A");
+        assert_eq!(spec_a.cost_usd_micros, 3000);
+        assert_eq!(spec_a.tokens, 300);
+        assert_eq!(spec_a.span_count, 2);
+        assert_eq!(spec_a.last_started_at, Some(2000));
+    }
+
+    #[test]
+    fn per_agent_costs_groups_run_events_by_agent() {
+        let dir = tempdir().unwrap();
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":50,"output_tokens":50,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","cost_usd_micros":2000,"input_tokens":100,"output_tokens":100,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","cost_usd_micros":500,"input_tokens":25,"output_tokens":25,"agent_id":"plan"}}"#,
+            ],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let rows = per_agent_costs(dir.path(), scope).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Sorted by cost desc — explore (3000) first.
+        assert_eq!(rows[0].agent_id.0, "explore");
+        assert_eq!(rows[0].cost_usd_micros, 3000);
+        assert_eq!(rows[0].tokens, 300);
+        assert_eq!(rows[0].span_count, 2);
+        assert_eq!(rows[1].agent_id.0, "plan");
+        assert_eq!(rows[1].cost_usd_micros, 500);
+    }
+
+    #[test]
+    fn per_wave_costs_groups_run_events_by_wave() {
+        let dir = tempdir().unwrap();
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","wave_id":"w1","cost_usd_micros":1000,"input_tokens":50,"output_tokens":50,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","wave_id":"w2","cost_usd_micros":2000,"input_tokens":100,"output_tokens":100,"agent_id":"plan"}}"#,
+            ],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let rows = per_wave_costs(dir.path(), scope).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Sorted by cost desc — w2 first.
+        assert_eq!(rows[0].wave_id.0, "w2");
+        assert_eq!(rows[0].cost_usd_micros, 2000);
+        assert_eq!(rows[1].wave_id.0, "w1");
+    }
+
+    #[test]
+    fn context_routing_cache_hit_from_run_events() {
+        let dir = tempdir().unwrap();
+        // input_tokens=200, cache_read_input_tokens=800 → cache_hit ratio = 800/(200+800) = 800
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[r#"{"kind":"pipeline.telemetry.run","event":"pipeline.telemetry.run","payload":{"spec":"spec-A","cost_usd_micros":0,"input_tokens":200,"output_tokens":0,"cache_read_input_tokens":800,"agent_id":"explore"}}"#],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let m = context_routing_quality(dir.path(), scope).unwrap();
+        assert_eq!(m.cache_hit_ratio_permille, 800);
+        assert_eq!(m.frame_count, 0); // no context-frame events planted
+    }
+
+    #[test]
+    fn savings_breakdown_at_spec_scope_filters_by_payload_spec_id() {
+        let dir = tempdir().unwrap();
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.savings.rtk-rewrite","event":"pipeline.economy.savings.rtk-rewrite","payload":{"source":"rtk_rewrite","tokens_saved":100,"spec_id":"spec-A"}}"#,
+                r#"{"kind":"pipeline.economy.savings.rtk-rewrite","event":"pipeline.economy.savings.rtk-rewrite","payload":{"source":"rtk_rewrite","tokens_saved":999,"spec_id":"spec-OTHER"}}"#,
+            ],
+        );
         let scope = EconomyScope::Spec {
             project: ProjectPath::new(dir.path()),
             spec: SpecId::new("spec-A"),
         };
-        let summary = economy_summary(&conn, scope).unwrap();
-        // Estimated run_usage totals (3000 micros, 300 tokens), not measured.
-        assert_eq!(summary.total_cost_usd_micros, 3000);
-        assert_eq!(summary.total_tokens, 300);
-        assert_eq!(summary.span_count, 2);
+        let b = savings_breakdown(dir.path(), scope).unwrap();
+        assert_eq!(b.total_tokens_saved, 100);
+        assert_eq!(b.per_source.len(), 1);
     }
 
     #[test]
-    fn economy_summary_aggregates_spans_and_savings() {
+    fn economy_summary_aggregates_savings_runs_and_measured() {
         let dir = tempdir().unwrap();
-        let conn = fresh_conn(dir.path());
-        seed_run(dir.path(), "s1", "spec-A", 1000, 100);
-        seed_run(dir.path(), "s2", "spec-A", 2000, 200);
-        // Measured totals so the unfiltered project scope has a real headline.
-        seed_measured(dir.path(), "claude_code.cost.usage", 0.003);
-        seed_measured(dir.path(), "claude_code.token.usage", 300.0);
-        record_savings(
-            &conn,
-            SavingsRecord {
-                ts: "2026-05-21T00:00:00Z".into(),
-                source: SavingsSource::RtkRewrite,
-                tokens_saved: 500,
-                model_target: None,
-                project_path: ProjectPath::new("/tmp/p"),
-                spec_id: Some(SpecId::new("spec-A")),
-                wave_id: None,
-                agent_id: Some(AgentId::new("explore")),
-                extra: Map::new(),
-            },
-        )
-        .unwrap();
-
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":50,"output_tokens":50,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","payload":{"spec":"spec-A","cost_usd_micros":2000,"input_tokens":100,"output_tokens":100,"agent_id":"plan"}}"#,
+                r#"{"kind":"pipeline.economy.savings.rtk-rewrite","event":"pipeline.economy.savings.rtk-rewrite","payload":{"source":"rtk_rewrite","tokens_saved":500}}"#,
+            ],
+        );
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.cost.usage","session_id":"sess-A","sum":0.003,"updated_at":1234}}"#],
+        );
         let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
-        let summary = economy_summary(&conn, scope).unwrap();
-        assert_eq!(summary.total_cost_usd_micros, 3000);
-        assert_eq!(summary.total_tokens, 300);
-        assert_eq!(summary.total_tokens_saved, 500);
-        assert_eq!(summary.span_count, 2);
+        let s = economy_summary(dir.path(), scope).unwrap();
+        // unfiltered → measured cost
+        assert_eq!(s.total_cost_usd_micros, 3000);
+        assert_eq!(s.span_count, 2);
+        assert_eq!(s.total_tokens_saved, 500);
+        assert_eq!(s.top_agents_by_cost.len(), 2);
+        assert_eq!(s.top_agents_by_cost[0].agent_id.0, "plan");
     }
 
     #[test]
-    fn by_session_populated_with_specs_and_last_at_at_project_scope() {
-        // Project (unfiltered) scope must enrich each `by_session` row with the
-        // per-session freshness (`usage_totals.updated_at`) and the distinct
-        // specs the session worked on (`run_usage.spec`). Spec/wave scope keeps
-        // `by_session` empty, so this only exercises the unfiltered path.
+    fn economy_summary_at_spec_scope_uses_estimated_run_usage() {
         let dir = tempdir().unwrap();
-        let conn = fresh_conn(dir.path());
-        // Session A — measured cost 12 USD at updated_at=2000; two specs.
-        seed_measured_at(dir.path(), "claude_code.cost.usage", 12.0, "sess-A", 2000);
-        seed_run_for_session(dir.path(), "r1", "spec-Alpha", "sess-A");
-        seed_run_for_session(dir.path(), "r2", "spec-Beta", "sess-A");
-        seed_run_for_session(dir.path(), "r3", "spec-Alpha", "sess-A");
-        // Session B — measured cost 1 USD at updated_at=1000; one spec.
-        seed_measured_at(dir.path(), "claude_code.cost.usage", 1.0, "sess-B", 1000);
-        seed_run_for_session(dir.path(), "r4", "spec-Gamma", "sess-B");
-
-        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
-        let summary = economy_summary(&conn, scope).unwrap();
-        // Ordered by USD descending: sess-A (12) before sess-B (1).
-        assert_eq!(summary.by_session.len(), 2);
-        let a = &summary.by_session[0];
-        assert_eq!(a.session_id, "sess-A");
-        assert_eq!(a.last_at_ms, Some(2000));
-        assert_eq!(a.specs, vec!["spec-Alpha".to_string(), "spec-Beta".into()]);
-        let b = &summary.by_session[1];
-        assert_eq!(b.session_id, "sess-B");
-        assert_eq!(b.last_at_ms, Some(1000));
-        assert_eq!(b.specs, vec!["spec-Gamma".to_string()]);
-    }
-
-    #[test]
-    fn savings_breakdown_groups_by_source() {
-        let dir = tempdir().unwrap();
-        let conn = fresh_conn(dir.path());
-        for src in [
-            SavingsSource::RtkRewrite,
-            SavingsSource::RtkRewrite,
-            SavingsSource::BashGuardBlock,
-        ] {
-            record_savings(
-                &conn,
-                SavingsRecord {
-                    ts: "2026-05-21T00:00:00Z".into(),
-                    source: src,
-                    tokens_saved: 100,
-                    model_target: None,
-                    project_path: ProjectPath::new("/tmp/p"),
-                    spec_id: None,
-                    wave_id: None,
-                    agent_id: None,
-                    extra: Map::new(),
-                },
-            )
-            .unwrap();
-        }
-        let breakdown =
-            savings_breakdown(&conn, EconomyScope::Project(ProjectPath::new(dir.path())))
-                .unwrap();
-        assert_eq!(breakdown.total_tokens_saved, 300);
-        assert_eq!(breakdown.per_source.len(), 2);
-        // First entry is the larger one (RtkRewrite, 200 saved).
-        assert_eq!(breakdown.per_source[0].source, SavingsSource::RtkRewrite);
-        assert_eq!(breakdown.per_source[0].tokens_saved, 200);
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","payload":{"spec":"spec-A","cost_usd_micros":1000,"input_tokens":50,"output_tokens":50,"agent_id":"explore"}}"#,
+                r#"{"kind":"pipeline.economy.run","event":"pipeline.economy.run","payload":{"spec":"spec-A","cost_usd_micros":2000,"input_tokens":100,"output_tokens":100,"agent_id":"plan"}}"#,
+            ],
+        );
+        // Plant measured at session scope — must NOT leak into spec-scoped summary.
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.cost.usage","session_id":"sess-A","sum":99.0,"updated_at":2000}}"#],
+        );
+        let scope = EconomyScope::Spec {
+            project: ProjectPath::new(dir.path()),
+            spec: SpecId::new("spec-A"),
+        };
+        let s = economy_summary(dir.path(), scope).unwrap();
+        // Estimated, NOT measured.
+        assert_eq!(s.total_cost_usd_micros, 3000);
+        assert_eq!(s.total_tokens, 300);
+        assert_eq!(s.span_count, 2);
+        assert_eq!(s.by_session.len(), 0); // empty at filtered scope
     }
 }

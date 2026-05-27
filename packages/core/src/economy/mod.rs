@@ -1,21 +1,18 @@
 //! Economy domain — single source of truth for every cost/savings signal.
 //!
-//! Wave 1 of the `economia-moat-unification` spec: this module consolidates
-//! the four record types (spans, savings, context-cost frames, API-cost
-//! frames) under one writer/reader pair, with [`EconomyScope`] as the
-//! cross-cutting query selector and [`estimator`] providing a token-count
-//! preview backed by `tiktoken-rs`.
-//!
-//! Layered the same way the rest of `mustard-core` is split:
+//! W7A of [[2026-05-26-no-sqlite-git-source-of-truth]] migrated the four
+//! record types (spans, savings, context-cost frames, API-cost frames) off
+//! SQLite and onto the per-spec NDJSON event channel. The split is now:
 //!
 //! - [`model`] — pure `serde` records and aggregate types.
 //! - [`scope`] — [`EconomyScope`] enum + newtype ids.
-//! - [`writer`] — 4 `record_*` functions; the only writers in the system.
-//! - [`reader`] — 6 query functions; the only readers in the system.
+//! - [`writer`] — pure payload builders (`*_event` functions returning
+//!   `(event_name, Value)`) consumed by the rt-side `event_route::emit`.
+//! - [`reader`] — NDJSON-backed query functions.
 //! - [`estimator`] — `tiktoken-rs` wrapper + pricing lookup table.
-//! - [`multi_project`] — fan-out over many project DBs for
+//! - [`multi_project`] — fan-out over project roots for
 //!   [`EconomyScope::AllProjects`].
-//! - [`sources`] — placeholder for W3 ingestion adapters.
+//! - [`sources`] — ingestion adapters for external cost streams.
 
 pub mod estimator;
 pub mod model;
@@ -23,11 +20,10 @@ pub mod multi_project;
 pub mod reader;
 pub mod scope;
 pub mod sources;
-pub mod store;
 pub mod writer;
 
 // Re-exports — consumers `use mustard_core::economy::{…}` without remembering
-// which submodule owns each name. Same shape as `store::*` and `model::*`.
+// which submodule owns each name.
 pub use estimator::{
     estimate_input_tokens, estimate_output_tokens, model_pricing_usd_micros_per_million,
 };
@@ -42,5 +38,6 @@ pub use reader::{
     savings_breakdown,
 };
 pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
-pub use store::open_for;
-pub use writer::{record_api_cost, record_context_cost, record_run, record_savings};
+pub use writer::{
+    context_frame_event, injection_savings_tokens, iso_to_epoch_ms, run_event, savings_event,
+};

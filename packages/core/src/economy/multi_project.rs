@@ -1,45 +1,35 @@
-//! Fan-out reader across multiple project databases.
+//! Fan-out reader across multiple project roots (NDJSON edition).
 //!
-//! Backs [`EconomyScope::AllProjects`](super::scope::EconomyScope::AllProjects)
-//! — given a list of project roots, open each `.claude/.harness/mustard.db`
-//! read-only, run the same single-project query against it, and merge the
-//! per-project results into one aggregate.
+//! W7A of [[2026-05-26-no-sqlite-git-source-of-truth]] retired the
+//! `Connection`-based fan-out. The new shape takes a closure receiving a
+//! project root [`Path`] (no SQLite open) so it composes with the rest of the
+//! NDJSON readers in [`super::reader`].
 //!
 //! ## Why a struct
 //!
-//! The fan-out logic is stateless (just a loop over project paths), but
-//! keeping it inside [`MultiProjectReader`] lets the W5 dashboard inject a
-//! mocked reader for tests, and lets a later wave swap the sequential loop
-//! for `rayon` parallelism without touching every call site. The struct has
-//! no fields today; future state (a connection cache, a per-project
-//! timeout) can land here without an API break.
+//! Statefulness today is zero. The struct exists so a future wave can swap
+//! the sequential loop for `rayon` parallelism, add a per-project cache, or
+//! plug in a deduplication step without an API break.
 //!
-//! ## Read-only guarantee
+//! ## Fail-open guarantee
 //!
-//! Every connection is opened with `SQLITE_OPEN_READ_ONLY` so the fan-out
-//! cannot corrupt a sibling project's DB. A project whose DB cannot be
-//! opened — missing, permissions denied, locked — is skipped (fail-open)
-//! rather than aborting the merge; the merged result simply omits that
-//! project.
+//! A project whose root cannot be read — missing, permissions denied — is
+//! silently skipped, exactly as the SQLite-era reader skipped missing DBs.
+//! The aggregate result simply omits that project.
 
 use std::collections::HashMap;
+use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
-
-use crate::error::{Result, fail_open};
+use crate::error::{fail_open, Result};
 
 use super::scope::ProjectPath;
-
-/// Suffix of the harness DB relative to a project root.
-const DB_REL_PATH: &str = ".claude/.harness/mustard.db";
 
 /// Stateless fan-out helper. See module docs.
 #[derive(Debug, Default)]
 pub struct MultiProjectReader;
 
 impl MultiProjectReader {
-    /// Build a fresh reader. No I/O — opening the per-project connections is
-    /// deferred to [`Self::fan_out`].
+    /// Build a fresh reader.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -48,36 +38,21 @@ impl MultiProjectReader {
     /// Run `query` against every project in `projects`, returning a map of
     /// per-project results.
     ///
-    /// The closure receives the open connection AND the [`ProjectPath`] it
-    /// belongs to. Callers that recurse back into a per-scope reader MUST use
-    /// the supplied path to build the inner scope — passing `projects[0]`
-    /// (or any fixed index) silently mis-attributes every iteration after
-    /// the first. Today this is masked because the per-project SQL does not
-    /// filter on path, but the moment a path filter lands the bug becomes
-    /// observable; the closure signature makes the right path mechanical.
+    /// The closure receives the absolute project root path AND the originating
+    /// [`ProjectPath`] so callers can recurse into per-scope readers without
+    /// mis-attributing the inner scope.
     ///
-    /// Projects whose database cannot be opened (or whose query returns an
-    /// error) are silently skipped — the call is fail-open. A successful run
-    /// with zero entries in the map means every project failed to open, not
-    /// that every project returned no rows.
-    ///
-    /// The loop is sequential by design (W1 — paralleling is a W7+ debt).
+    /// Projects whose query returns `Err` are silently skipped (fail-open).
+    /// A successful run with zero entries in the map means every project
+    /// errored, not that every project produced an empty result.
     pub fn fan_out<T, F>(&self, projects: &[ProjectPath], query: F) -> HashMap<ProjectPath, T>
     where
-        F: Fn(&Connection, &ProjectPath) -> Result<T>,
+        F: Fn(&Path, &ProjectPath) -> Result<T>,
     {
         let mut out: HashMap<ProjectPath, T> = HashMap::new();
         for project in projects {
-            let db_path = project.as_path().join(DB_REL_PATH);
-            let Ok(conn) = Connection::open_with_flags(
-                &db_path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            ) else {
-                continue; // Fail-open: missing project DB is not fatal.
-            };
-            // Fail-open per project: a query failure on one DB must not
-            // poison the rest. The fallback (`None`) is filtered out below.
-            let result: Option<T> = fail_open(query(&conn, project).map(Some), None);
+            let root = project.as_path();
+            let result: Option<T> = fail_open(query(root, project).map(Some), None);
             if let Some(value) = result {
                 out.insert(project.clone(), value);
             }
@@ -86,10 +61,6 @@ impl MultiProjectReader {
     }
 
     /// Like [`Self::fan_out`], but also produce an aggregate via `merge`.
-    ///
-    /// `merge` is called with the per-project values in iteration order;
-    /// projects that failed to open contribute nothing. The aggregate is
-    /// `None` if every project failed.
     pub fn fan_out_merge<T, F, M>(
         &self,
         projects: &[ProjectPath],
@@ -98,14 +69,11 @@ impl MultiProjectReader {
     ) -> (HashMap<ProjectPath, T>, Option<T>)
     where
         T: Clone,
-        F: Fn(&Connection, &ProjectPath) -> Result<T>,
+        F: Fn(&Path, &ProjectPath) -> Result<T>,
         M: Fn(T, T) -> T,
     {
         let per_project = self.fan_out(projects, query);
-        let aggregate = per_project
-            .values()
-            .cloned()
-            .reduce(merge);
+        let aggregate = per_project.values().cloned().reduce(merge);
         (per_project, aggregate)
     }
 }
@@ -113,66 +81,44 @@ impl MultiProjectReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::sqlite_store::SqliteEventStore;
     use tempfile::tempdir;
 
-    fn make_project(name: &str) -> tempfile::TempDir {
-        let dir = tempdir().unwrap();
-        let project_root = dir.path().join(name);
-        crate::fs::create_dir_all(project_root.join(".claude/.harness")).unwrap();
-        let _store = SqliteEventStore::new(project_root.join(DB_REL_PATH)).unwrap();
-        // Re-pack: callers want the project root, not the temp root.
-        // Hand back the original TempDir; the project lives under `name`.
-        dir
-    }
-
     #[test]
-    fn fan_out_skips_missing_projects_silently() {
+    fn fan_out_skips_projects_whose_query_errors() {
         let reader = MultiProjectReader::new();
-        let projects = vec![
-            ProjectPath::new("/definitely/not/a/path/at/all"),
-        ];
-        let out = reader.fan_out(&projects, |_, _| Ok::<_, crate::error::Error>(1u32));
-        assert!(out.is_empty(), "missing project DB must be silently skipped");
+        let projects = vec![ProjectPath::new("/definitely/not/a/path/at/all")];
+        let out = reader.fan_out(&projects, |_, _| {
+            Err::<u32, _>(crate::error::Error::NotFound("nope".into()))
+        });
+        assert!(out.is_empty(), "every project errored → map must be empty");
     }
 
     #[test]
     fn fan_out_returns_one_row_per_real_project() {
-        let dir_a = make_project("a");
-        let dir_b = make_project("b");
-        let path_a = ProjectPath::new(dir_a.path().join("a"));
-        let path_b = ProjectPath::new(dir_b.path().join("b"));
+        let dir_a = tempdir().unwrap();
+        let dir_b = tempdir().unwrap();
+        let path_a = ProjectPath::new(dir_a.path());
+        let path_b = ProjectPath::new(dir_b.path());
 
         let reader = MultiProjectReader::new();
-        let out = reader.fan_out(
-            &[path_a.clone(), path_b.clone()],
-            |conn, _project| {
-                // Trivial query: how many tables does the DB have?
-                let count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                Ok(count)
-            },
-        );
+        let out = reader.fan_out(&[path_a.clone(), path_b.clone()], |_root, _proj| {
+            Ok::<_, crate::error::Error>(42u32)
+        });
         assert_eq!(out.len(), 2);
-        assert!(out[&path_a] > 0);
-        assert!(out[&path_b] > 0);
+        assert_eq!(out[&path_a], 42);
+        assert_eq!(out[&path_b], 42);
     }
 
     #[test]
     fn fan_out_merge_aggregates_when_provided_a_merge_fn() {
-        let dir_a = make_project("a");
-        let dir_b = make_project("b");
-        let path_a = ProjectPath::new(dir_a.path().join("a"));
-        let path_b = ProjectPath::new(dir_b.path().join("b"));
+        let dir_a = tempdir().unwrap();
+        let dir_b = tempdir().unwrap();
+        let path_a = ProjectPath::new(dir_a.path());
+        let path_b = ProjectPath::new(dir_b.path());
 
         let reader = MultiProjectReader::new();
         let (per_project, aggregate) = reader.fan_out_merge(
-            &[path_a.clone(), path_b.clone()],
+            &[path_a, path_b],
             |_, _| Ok::<_, crate::error::Error>(5i64),
             |a, b| a + b,
         );
