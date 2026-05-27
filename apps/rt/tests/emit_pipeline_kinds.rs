@@ -6,8 +6,13 @@
 //! - Emitting the legacy `pipeline.phase` writes TWO rows (the legacy event,
 //!   tagged `legacy_alias=true`, plus the equivalent `pipeline.stage`), both
 //!   sharing the same timestamp + session id (AC-W2-6).
+//!
+//! W8A-3 (no-sqlite Wave 8): the assertion path moved from
+//! `SqliteEventStore::query` to a workspace NDJSON walk
+//! ([`mustard_core::projection::read_workspace_events`]). The fold over the
+//! emitted events stays byte-identical.
 
-use mustard_core::store::sqlite_store::SqliteEventStore;
+use mustard_core::model::event::HarnessEvent;
 use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
@@ -37,6 +42,17 @@ fn emit(project: &Path, kind: &str, spec: &str, payload: &str) -> std::process::
         .expect("run mustard-rt")
 }
 
+/// Read every NDJSON event under `<project>/.claude/spec/<spec>/.events/`
+/// and return only the rows whose `spec` payload field matches `spec`.
+///
+/// Equivalent to the legacy `SqliteEventStore::query(Some(spec))`.
+fn events_for_spec(project: &Path, spec: &str) -> Vec<HarnessEvent> {
+    mustard_core::projection::read_workspace_events(project)
+        .into_iter()
+        .filter(|e| e.spec.as_deref() == Some(spec))
+        .collect()
+}
+
 #[test]
 fn emit_new_stage_kind_writes_single_row() {
     let tmp = project_dir();
@@ -50,8 +66,7 @@ fn emit_new_stage_kind_writes_single_row() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let store = SqliteEventStore::for_project(project).expect("open store");
-    let events = store.query(Some(spec)).expect("query");
+    let events = events_for_spec(project, spec);
 
     let stage_rows: Vec<_> = events.iter().filter(|e| e.event == "pipeline.stage").collect();
     assert_eq!(stage_rows.len(), 1, "exactly one pipeline.stage row (no duplication)");
@@ -75,8 +90,7 @@ fn emit_legacy_phase_writes_legacy_and_new_rows_same_timestamp() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let store = SqliteEventStore::for_project(project).expect("open store");
-    let events = store.query(Some(spec)).expect("query");
+    let events = events_for_spec(project, spec);
 
     let phase_rows: Vec<_> = events.iter().filter(|e| e.event == "pipeline.phase").collect();
     let stage_rows: Vec<_> = events.iter().filter(|e| e.event == "pipeline.stage").collect();
@@ -120,8 +134,7 @@ fn emit_legacy_status_terminal_aliases_to_outcome() {
     let out = emit(project, "pipeline.status", spec, r#"{"to":"completed"}"#);
     assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
 
-    let store = SqliteEventStore::for_project(project).expect("open store");
-    let events = store.query(Some(spec)).expect("query");
+    let events = events_for_spec(project, spec);
 
     let status_rows: Vec<_> = events.iter().filter(|e| e.event == "pipeline.status").collect();
     let outcome_rows: Vec<_> = events.iter().filter(|e| e.event == "pipeline.outcome").collect();

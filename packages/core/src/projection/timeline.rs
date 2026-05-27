@@ -91,7 +91,7 @@ pub fn read_harness_events_from_ndjson_dir(events_dir: &Path) -> Vec<HarnessEven
             events.push(HarnessEvent {
                 v: SCHEMA_VERSION,
                 ts: record.ts,
-                session_id: String::new(),
+                session_id: record.session_id.unwrap_or_default(),
                 wave: record.wave.unwrap_or(0),
                 actor: Actor {
                     kind: ActorKind::Hook,
@@ -200,6 +200,12 @@ struct NdjsonRecord {
     spec: Option<String>,
     #[serde(default)]
     wave: Option<u32>,
+    /// W8A-3 (no-sqlite Wave 8): populated so per-window event filters in
+    /// `amend_finalize` can match a `HarnessEvent` back to its emitting
+    /// session. The legacy reader defaulted this to the empty string, which
+    /// silently broke session-scoped folds.
+    #[serde(default)]
+    session_id: Option<String>,
     #[serde(default)]
     parent_id: Option<i64>,
     #[serde(default)]

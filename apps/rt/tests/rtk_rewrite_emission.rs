@@ -18,7 +18,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use rusqlite::Connection;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -245,7 +244,11 @@ fn rtk_rewrite_strict_passes_through_rtk_prefixed() {
 }
 
 /// Strict mode denies before the rewrite path runs, so no `rtk-rewrite`
-/// telemetry event should ever land in the store.
+/// event should ever land in the NDJSON sink.
+///
+/// W8A-3 (no-sqlite Wave 8): assertion path migrated from `SELECT COUNT(*)
+/// FROM events WHERE event = 'rtk-rewrite'` to a `walk_ndjson` scan over
+/// `.claude/`. Verdict-side semantics are unchanged.
 #[test]
 fn rtk_rewrite_strict_emits_no_rewrite_event() {
     if !rtk_available() {
@@ -253,18 +256,21 @@ fn rtk_rewrite_strict_emits_no_rewrite_event() {
         return;
     }
     let tmp = TempDir::new().expect("create tempdir");
-    let (db_path, _stdout) = run_hook_with_mode(&tmp, "git status", "strict");
-    // In strict mode, the gate denies before any rewrite — the SQLite event
-    // store should not carry an `rtk-rewrite` event for this run.
-    if db_path.exists() {
-        let conn = Connection::open(&db_path).expect("open sqlite");
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM events WHERE event = 'rtk-rewrite'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        assert_eq!(count, 0, "strict mode must NOT emit rtk-rewrite events");
-    }
+    let (_db_path, _stdout) = run_hook_with_mode(&tmp, "git status", "strict");
+
+    // In strict mode, the gate denies before any rewrite — no NDJSON sink
+    // should carry an `rtk-rewrite` event for this run.
+    let claude_dir = tmp.path().join(".claude");
+    let mut rewrite_count = 0usize;
+    walk_ndjson(&claude_dir, &mut |body| {
+        for line in body.lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if record.get("event").and_then(Value::as_str) == Some("rtk-rewrite") {
+                rewrite_count += 1;
+            }
+        }
+    });
+    assert_eq!(rewrite_count, 0, "strict mode must NOT emit rtk-rewrite events");
 }
