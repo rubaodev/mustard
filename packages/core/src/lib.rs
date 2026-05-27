@@ -37,6 +37,7 @@
 
 pub mod claude_paths;
 pub mod config;
+pub mod events;
 pub mod economy;
 pub mod env;
 pub mod error;
@@ -118,3 +119,8 @@ pub use workspace::{workspace_root, WorkspaceError};
 // git alongside each spec. Re-exported at root so consumers can write
 // `mustard_core::SpecSummaryDoc` without knowing the sub-module path.
 pub use summary::SpecSummaryDoc;
+
+// NDJSON event primitives — shared by all no-sqlite sub-specs (W2-W7).
+// `Event` is the single row unit; `EventReader` provides streaming, cached,
+// and filtered access without loading full files into memory.
+pub use events::{Event, EventReader};
