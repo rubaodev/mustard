@@ -21,6 +21,7 @@ pub mod backup_specs;
 pub mod blob_spill;
 pub mod bugfix_cache;
 pub mod claude_dir_prune;
+pub mod refresh_claude;
 pub mod close_orchestrate;
 pub mod context_budget;
 pub mod economy_capture_baseline;
@@ -1338,6 +1339,26 @@ pub enum RunCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Refresh stale `.claude/` installs after edits in `apps/cli/templates/`.
+    ///
+    /// Walks `apps/cli/templates/{refs,commands/mustard,skills}/**`, SHA-256
+    /// compares each source against the consumer `.claude/<sub>/`, and copies
+    /// divergent files. Generated artefacts (`entity-registry.json`, caches)
+    /// and volatile state dirs are excluded. Emits `{copied, skipped,
+    /// conflicts, errors}` JSON. Fail-open; exit code is always 0.
+    #[command(name = "refresh-claude")]
+    RefreshClaude {
+        /// Target consumer directory (the project whose `.claude/` to refresh).
+        /// Defaults to the current working directory.
+        #[arg(long)]
+        target: Option<PathBuf>,
+        /// Preview only — compare and report, but do NOT write any files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Override the templates source directory (defaults to auto-discovery).
+        #[arg(long = "templates-dir")]
+        templates_dir: Option<PathBuf>,
+    },
     /// W5.T5.7a — Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
     MaintDeps {
@@ -1961,6 +1982,13 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::AdaptCursor { repo, dry_run } => {
             adapt_cursor::run(adapt_cursor::AdaptCursorOpts { repo, dry_run });
+        }
+        RunCmd::RefreshClaude { target, dry_run, templates_dir } => {
+            refresh_claude::run(refresh_claude::RefreshClaudeOpts {
+                target,
+                dry_run,
+                templates_dir,
+            });
         }
         RunCmd::MaintDeps { dry_run } => {
             maint_deps::run(maint_deps::MaintDepsOpts { dry_run });

@@ -44,6 +44,7 @@
       "Bash",
       "Bash(mustard-rt run event-projections:*)",
       "Bash(mustard-rt run qa-run:*)",
+      "Bash(mustard-rt run refresh-claude:*)",
       "Edit(/.claude/skills/grill-with-docs/**)"
     ],
     "deny": [
