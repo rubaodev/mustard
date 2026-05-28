@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use crate::commands::add::{self, AddOptions};
 use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
+use crate::commands::install_grammars::{self, InstallGrammarsArgs};
 use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
 use crate::commands::review::{self, ReviewOptions};
 use crate::commands::update::{self, UpdateOptions};
@@ -87,6 +88,18 @@ enum Commands {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+    /// Suggest tree-sitter grammar repos for languages detected in the project.
+    ///
+    /// Mustard never downloads or compiles grammars — it only prints the
+    /// canonical repository and a shell-ready install command for each
+    /// detected language. See `mustard_core::ast::GrammarLoader` for how the
+    /// regression gate consumes the grammars once they are installed.
+    #[command(name = "install-grammars")]
+    InstallGrammars {
+        /// Project root to scan. Defaults to the current working directory.
+        #[arg(long = "project-root")]
+        project_root: Option<std::path::PathBuf>,
+    },
 }
 
 /// Parse process arguments and dispatch to the matching subcommand.
@@ -135,6 +148,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                 dry_run,
             },
         ),
+        Commands::InstallGrammars { project_root } => {
+            install_grammars::run(InstallGrammarsArgs { project_root })
+        }
     }
 }
 

@@ -55,7 +55,7 @@ Critérios binários (pass/fail), executáveis e independentes. Comandos shell s
 - [ ] AC-A-15: Spec sem `## Funções tocadas` → fallback usa funções públicas tocadas pelo diff; gate funciona sem panic em fixture de spec legada — Command: TBD-em-wave-0 (fixture + W4 integração)
 - [ ] AC-A-16: `mustard_core::ast::detect_stub_patterns` detecta `None`, `vec![]`, `Default::default()`, `unimplemented!()`, `todo!()` em função pública declarada como preservada — via queries `.scm` resolvidas pelo `GrammarLoader` para a linguagem do arquivo. Quando grammar não instalada localmente, fallback usa `vocabulary::scan` (W1, camada `pattern`) sobre o escopo do diff; fail-open, nunca panic — Command: `bash -c 'cd /c/Atiz/mustard && cargo test -p mustard-core ast::stub_detect::test_detect_all_patterns_with_fallback'` (entregue em W1.5)
 - [ ] AC-A-17: `mustard_core::ast::GrammarLoader::from_project(root)` resolve dinamicamente grammars instaladas pelo usuário (`~/.config/tree-sitter/config.json` via `tree_sitter_loader::Loader::find_all_languages`), filtradas pelo stack detectado em `detect_libs`. Linguagem detectada mas sem grammar instalada → warning na telemetria + fail-open. **Zero match hardcoded de linguagem no código** ([[feedback_mustard_agnostic]]) — Command: `bash -c 'cd /c/Atiz/mustard && cargo test -p mustard-core ast::loader::test_agnostic_discovery_and_missing_grammar_fail_open'` (entregue em W1.5)
-- [ ] AC-A-18: `mustard install-grammars` (CLI helper opcional) lê o stack detectado em `detect_libs` e guia o usuário a clonar+compilar grammars das linguagens detectadas via `tree-sitter init` + `tree-sitter generate`. Mustard **não** baixa nem compila grammars — apenas sugere os repos canônicos e o comando shell — Command: TBD-em-wave-8_5 (`apps/cli/src/commands/install_grammars.rs`)
+- [x] AC-A-18: `mustard install-grammars` (CLI helper opcional) lê o stack detectado e guia o usuário a clonar+compilar grammars das linguagens detectadas via `tree-sitter generate`. Mustard **não** baixa nem compila grammars — apenas sugere os repos canônicos e o comando shell — Command: `cargo test -p mustard-cli --lib commands::install_grammars::tests::test_known_languages_table_and_fallback -- --exact` (W8.5, verde 2026-05-27 — catálogo agnóstico em `apps/cli/templates/grammars-suggestions.json`, embedded via `include_str!` com override per-project em `.claude/grammars-suggestions.json`)
 
 ## Plano
 
@@ -221,6 +221,10 @@ Adicionados em 2026-05-27 após W7 verde:
 - **Thresholds via TOML em `[thresholds]`** (W7 follow-up #2, ~60 LOC, opcional) — expor `LINE_CHANGE_THRESHOLD` + severity mappings via `.claude/vocab/regression.toml#thresholds`. Cobre AC-A-13 com mais profundidade. Custo > ganho hoje; não bloqueia.
 - **Critério de snapshot mais robusto** (W7 follow-up #3, ~10 LOC, opcional) — migrar `line_changes > N` para `body_emptied = (after_lines == 0 || after_lines × 3 < before_lines)` em `moment_three_signals`. Captura o caso `rtk_summary` (corpo pequeno esvaziado, borderline com threshold atual).
 - **review-w7-report.md em warn-zone** — `.claude/spec/2026-05-27-mustard-v4-foundation/review-w7-report.md` tem 240 linhas (warn ≥ 200, strict ≥ 400). Não é regressão; o relatório é canon empírico W7 e quebrar em sub-arquivos perderia legibilidade. Aceito conscientemente.
+
+Adicionado em 2026-05-27 após W8.5 verde:
+
+- **Override JSON merge (não wholesale replace)** (W8.5 follow-up #1, ~30 LOC, opcional) — `<project>/.claude/grammars-suggestions.json` hoje substitui o catálogo embedded inteiro. Melhor seria fazer merge: override define apenas as entries que diferem, o resto vem do embedded. Cobre o caso "user quer adicionar UMA grammar" sem reescrever as 10. *Como aplicar:* em `GrammarsCatalog::load`, parse override + clonar embedded + sobrescrever por lang_id.
 
 <!-- wikilinks-footer-start -->
 - [feedback_mustard_agnostic](?) ⚠ não resolvido

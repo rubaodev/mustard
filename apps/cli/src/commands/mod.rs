@@ -11,6 +11,7 @@ pub mod add;
 pub mod config;
 pub mod git_flow;
 pub mod init;
+pub mod install_grammars;
 pub mod install_nerd_font;
 pub mod review;
 pub mod update;
