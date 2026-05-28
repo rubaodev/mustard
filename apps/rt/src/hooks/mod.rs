@@ -14,7 +14,7 @@
 //!   validation), [`path_guard`] (sensitive-file + boundary gates),
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
 //!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
-//!   [`enforce_registry`] (the entity-registry pre-pipeline gate).
+//!   [`enforce_entity_registry`] (the entity-registry pre-pipeline gate).
 //! - Wave 5: the session-lifecycle families — [`session_start`] (harness-init
 //!   / session-memory / spec-hygiene), [`knowledge`] (session-knowledge /
 //!   -inc / memory-auto-extract), [`session_cleanup`] (`SessionEnd` cleanup),

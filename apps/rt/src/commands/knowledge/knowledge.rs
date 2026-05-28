@@ -10,8 +10,7 @@
 //! Missing or unparseable registry → `{"entities":[],"totalWithDescription":0,"totalScanned":0}`.
 //! Process exits 0 in all paths.
 
-use mustard_core::io::fs;
-use mustard_core::ClaudePaths;
+use mustard_core::domain::entity_registry::EntityRegistry;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -47,35 +46,15 @@ pub struct GlossaryOutput {
 // ---------------------------------------------------------------------------
 
 fn load_entities(root: &std::path::Path, filter: Option<&str>) -> GlossaryOutput {
-    let Ok(paths) = ClaudePaths::for_project(root) else {
+    let registry = EntityRegistry::load(root);
+    // v4 entities live under the `e` map (the prior top-level walk never saw
+    // them in a real registry — the writer emits entities only under `e`).
+    let Some(obj) = registry.entities() else {
         return GlossaryOutput {
             entities: Vec::new(),
             total_with_description: 0,
             total_scanned: 0,
         };
-    };
-    let path = paths.entity_registry_json_path();
-    let Ok(text) = fs::read_to_string(&path) else {
-        return GlossaryOutput {
-            entities: Vec::new(),
-            total_with_description: 0,
-            total_scanned: 0,
-        }
-    };
-    let Ok(registry): Result<Value, _> = serde_json::from_str(&text) else {
-        return GlossaryOutput {
-            entities: Vec::new(),
-            total_with_description: 0,
-            total_scanned: 0,
-        }
-    };
-
-    let Some(obj) = registry.as_object() else {
-        return GlossaryOutput {
-            entities: Vec::new(),
-            total_with_description: 0,
-            total_scanned: 0,
-        }
     };
 
     let filter_lower = filter.map(|f| f.to_ascii_lowercase());
@@ -235,7 +214,7 @@ mod tests {
         let td = tempdir().unwrap();
         write_registry(
             td.path(),
-            r#"{"_meta":{"version":"4.0"},"User":{"description":"A user entity"},"Post":{"description":"A post entity"}}"#,
+            r#"{"_meta":{"version":"4.0"},"e":{"User":{"description":"A user entity"},"Post":{"description":"A post entity"},"_placeholder":{}}}"#,
         );
         let output = load_entities(td.path(), None);
         assert_eq!(output.total_scanned, 2);
@@ -247,7 +226,7 @@ mod tests {
         let td = tempdir().unwrap();
         write_registry(
             td.path(),
-            r#"{"Alpha":{"description":"Alpha entity"},"Beta":{"description":"Beta entity"},"Gamma":{"description":"Gamma entity"}}"#,
+            r#"{"e":{"Alpha":{"description":"Alpha entity"},"Beta":{"description":"Beta entity"},"Gamma":{"description":"Gamma entity"}}}"#,
         );
         let output = load_entities(td.path(), Some("BETA"));
         assert_eq!(output.entities.len(), 1);
@@ -259,7 +238,7 @@ mod tests {
         let td = tempdir().unwrap();
         write_registry(
             td.path(),
-            r#"{"Alpha":{"description":"contains special keyword"},"Beta":{"description":"no match here"}}"#,
+            r#"{"e":{"Alpha":{"description":"contains special keyword"},"Beta":{"description":"no match here"}}}"#,
         );
         let output = load_entities(td.path(), Some("special"));
         assert_eq!(output.entities.len(), 1);
@@ -271,7 +250,7 @@ mod tests {
         let td = tempdir().unwrap();
         write_registry(
             td.path(),
-            r#"{"Zeta":{},"Alpha":{},"Mango":{}}"#,
+            r#"{"e":{"Zeta":{},"Alpha":{},"Mango":{}}}"#,
         );
         let output = load_entities(td.path(), None);
         let names: Vec<&str> = output.entities.iter().map(|e| e.name.as_str()).collect();
@@ -291,7 +270,7 @@ mod tests {
         let td = tempdir().unwrap();
         write_registry(
             td.path(),
-            r#"{"User":{"description":"A user","refs":[{"path":"src/models/user.ts"}]}}"#,
+            r#"{"e":{"User":{"description":"A user","refs":[{"path":"src/models/user.ts"}]}}}"#,
         );
         let output = load_entities(td.path(), None);
         assert_eq!(output.entities[0].reference, "src/models/user.ts");
@@ -319,7 +298,7 @@ mod tests {
         let td = tempdir().unwrap();
         write_registry(
             td.path(),
-            r#"{"Alpha":{"description":"has desc"},"Beta":{},"Gamma":{"description":"also has desc"}}"#,
+            r#"{"e":{"Alpha":{"description":"has desc"},"Beta":{},"Gamma":{"description":"also has desc"}}}"#,
         );
         let output = load_entities(td.path(), None);
         assert_eq!(output.total_scanned, 3);

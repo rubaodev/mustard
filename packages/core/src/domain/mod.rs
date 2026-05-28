@@ -1,5 +1,6 @@
 pub mod regression_check;
 pub mod meta;
+pub mod entity_registry;
 pub mod knowledge;
 pub mod vocabulary;
 pub mod spec;

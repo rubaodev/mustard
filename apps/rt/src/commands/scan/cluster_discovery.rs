@@ -125,7 +125,7 @@ pub fn discover_clusters(
                             clusters.iter().take(max_clusters()).cloned().collect();
                         // Re-apply subprojectName on cache hit: a cold-path
                         // caller (no name) may have populated the cache first;
-                        // the warm caller (sync_registry) re-runs with the
+                        // the warm caller (sync_entity_registry) re-runs with the
                         // real name and expects the tag in the output.
                         if let Some(name) = subproject_name {
                             for cluster in &mut out {

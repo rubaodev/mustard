@@ -25,34 +25,17 @@ use super::file_utils;
 use super::interpret;
 use super::project_conventions::compute_project_conventions;
 use super::{load_scanner, EntityInfo, EnumInfo, ScanResult};
+use mustard_core::domain::entity_registry::{EntityRegistry, RegistryDoc};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// The registry `_meta` block — a `Serialize` struct so the key order
-/// (`version`, `generated`, `generator`) is byte-stable, matching the JS
-/// `buildRegistry` output rather than `serde_json`'s alphabetical `Map` order.
-#[derive(Debug, Serialize)]
-struct RegistryMeta {
-    version: &'static str,
-    generated: String,
-    generator: &'static str,
-}
-
-/// The whole `entity-registry.json` v4.0 document, in JS key order.
-#[derive(Debug, Serialize)]
-struct Registry {
-    #[serde(rename = "_meta")]
-    meta: RegistryMeta,
-    #[serde(rename = "_patterns")]
-    patterns: Value,
-    #[serde(rename = "_enums")]
-    enums: Value,
-    e: Value,
-}
+// The v4 document shape (`_meta`/`_patterns`/`_enums`/`e`, byte-stable key
+// order, `version: "4.0"`) is owned by `mustard_core::domain::entity_registry`
+// ([`RegistryDoc`]). This module only assembles the three payload objects from
+// its scan results.
 
 /// One subproject as discovered for the registry scan.
 struct Subproject {
@@ -75,19 +58,16 @@ pub fn run(root: &Path, force: bool) {
     };
     let registry_path = paths.entity_registry_json_path();
 
-    // 1. Read the current registry (for the populated-check + version upgrade).
-    let current: Option<Value> = fs::read_to_string(&registry_path)
+    // 1. Read the current registry (for the populated-check + version upgrade)
+    //    through the canonical v4 reader.
+    let current: Option<EntityRegistry> = fs::read_to_string(&registry_path)
         .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok());
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .map(EntityRegistry::from_value);
 
     // Auto-force when the on-disk registry predates v4.0.
     let mut force = force;
-    if let Some(version) = current
-        .as_ref()
-        .and_then(|r| r.get("_meta"))
-        .and_then(|m| m.get("version"))
-        .and_then(Value::as_str)
-    {
+    if let Some(version) = current.as_ref().and_then(EntityRegistry::version) {
         if version < "4.0" {
             println!("Registry at v{version} — upgrading to v4.0.");
             force = true;
@@ -97,16 +77,9 @@ pub fn run(root: &Path, force: bool) {
     // 2. Skip when already populated and not forced.
     if let Some(ref reg) = current {
         if !force {
-            let entity_count = reg
-                .get("e")
-                .and_then(Value::as_object)
-                .map_or(0, |e| e.keys().filter(|k| !k.starts_with('_')).count());
+            let entity_count = reg.entity_count();
             if entity_count > 0 {
-                let version = reg
-                    .get("_meta")
-                    .and_then(|m| m.get("version"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
+                let version = reg.version().unwrap_or("?");
                 println!(
                     "Registry v{version} populated ({entity_count} entities). \
                      Use --force to regenerate."
@@ -234,18 +207,14 @@ pub fn run(root: &Path, force: bool) {
     }
     let (enriched, scanned) = enrich_descriptions(&mut registry.e, root, &visit_contents);
 
-    // 6. Write the output.
-    match serde_json::to_string_pretty(&registry) {
-        Ok(json) => {
-            if fs::write_atomic(&registry_path, format!("{json}\n").as_bytes()).is_err() {
-                eprintln!("sync-registry: failed to write {}", registry_path.display());
-                return;
-            }
-        }
-        Err(_) => {
-            eprintln!("sync-registry: failed to serialize registry");
-            return;
-        }
+    // 6. Write the output — `RegistryDoc` owns the byte-stable serialization
+    //    and the atomic write to `<root>/.claude/entity-registry.json`.
+    if let Err(e) = registry.write(root) {
+        eprintln!(
+            "sync-registry: failed to write {}: {e}",
+            registry_path.display()
+        );
+        return;
     }
 
     let e_count = registry.e.as_object().map_or(0, serde_json::Map::len);
@@ -323,7 +292,7 @@ impl MergedStack {
 }
 
 /// Build the `entity-registry.json` v4.0 document — a port of `buildRegistry()`.
-fn build_registry(scan_results: &BTreeMap<String, MergedStack>) -> Registry {
+fn build_registry(scan_results: &BTreeMap<String, MergedStack>) -> RegistryDoc {
     let mut patterns = serde_json::Map::new();
     let mut enums = serde_json::Map::new();
     let mut entities = serde_json::Map::new();
@@ -403,17 +372,14 @@ fn build_registry(scan_results: &BTreeMap<String, MergedStack>) -> Registry {
 
     // BTreeMap iteration above is alphabetical, so `_enums` / `e` keys come out
     // sorted (matching the JS `sortKeys`). The top-level + `_meta` key order is
-    // pinned by the `Registry` / `RegistryMeta` structs.
-    Registry {
-        meta: RegistryMeta {
-            version: "4.0",
-            generated: mustard_core::time::now_iso8601()[..10].to_string(),
-            generator: "mustard-rt run sync-registry",
-        },
-        patterns: Value::Object(patterns),
-        enums: Value::Object(enums),
-        e: Value::Object(entities),
-    }
+    // pinned by `RegistryDoc` / `RegistryMeta` in core.
+    RegistryDoc::new(
+        mustard_core::time::now_iso8601()[..10].to_string(),
+        "mustard-rt run sync-registry",
+        Value::Object(patterns),
+        Value::Object(enums),
+        Value::Object(entities),
+    )
 }
 
 /// Compress an enum value list — a port of `_compressValues` (>8 ⇒ first 5 + count).

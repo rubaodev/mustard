@@ -21,7 +21,7 @@
 //!    extraction (cached cold-path; fail-open when no model is available).
 //!
 //! The contract data types ([`EntityInfo`], [`EnumInfo`], …) are unchanged —
-//! callers in [`crate::commands::scan::sync_registry`] consume the same shapes as
+//! callers in [`crate::commands::scan::sync_entity_registry`] consume the same shapes as
 //! before, so the registry JSON stays byte-stable across the rewrite.
 
 pub mod cluster_discovery;
@@ -129,7 +129,7 @@ pub struct ServiceInfo {
 }
 
 /// The combined output of a full scan — mirrors the legacy object shape so
-/// `sync_registry::build_registry` consumes the same fields as before.
+/// `sync_entity_registry::build_registry` consumes the same fields as before.
 ///
 /// `routes` / `dtos` / `services` / `architecture` are carried but no longer
 /// populated by the generic interpreter (the JS scanners that populated them
@@ -162,14 +162,14 @@ pub struct ScanResult {
 /// Base contract for the scanner subsystem.
 ///
 /// Today there is one concrete implementor — [`InterpretedScanner`] — but the
-/// trait surface stays so the `sync_registry` pipeline can swap in
+/// trait surface stays so the `sync_entity_registry` pipeline can swap in
 /// alternative interpreters (e.g. a future "fast path" or "offline"
 /// implementation) without touching its call sites.
 pub trait Scanner {
     /// Run the full scan pipeline and return the merged [`ScanResult`].
     ///
     /// The default implementation runs [`file_utils::visit`] itself; callers
-    /// that already visited the tree (e.g. `sync_registry`) should use
+    /// that already visited the tree (e.g. `sync_entity_registry`) should use
     /// [`scan_with_visited`](Scanner::scan_with_visited) to avoid double work.
     ///
     /// Production callers always go through `scan_with_visited`; the default
@@ -247,7 +247,7 @@ impl Scanner for InterpretedScanner {
         // The patterns overlay carries `clusterLabels`, `dominant`, `edges`
         // (any subset). The outer caller layers in the cluster discovery
         // output / folder frequency / conventions, so we only return the
-        // overlay here — `sync_registry` does the merge.
+        // overlay here — `sync_entity_registry` does the merge.
         let patterns = interpreted.patterns_overlay;
 
         ScanResult {
@@ -555,5 +555,5 @@ pub mod scan_precompute;
 pub mod scan_recipes_validate;
 pub mod scan_structural;
 pub mod sync_detect;
-pub mod sync_registry;
+pub mod sync_entity_registry;
 pub mod recipe_match;

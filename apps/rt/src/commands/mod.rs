@@ -1407,7 +1407,7 @@ pub enum RunCmd {
 pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::SyncDetect { root } => scan::sync_detect::run(&root),
-        RunCmd::SyncRegistry { root, force } => scan::sync_registry::run(&root, force),
+        RunCmd::SyncRegistry { root, force } => scan::sync_entity_registry::run(&root, force),
         RunCmd::DiffContext {
             parent,
             subproject,

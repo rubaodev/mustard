@@ -11,7 +11,7 @@ use crate::hooks::observe::auto_capture_summary::AutoCaptureSummary;
 use crate::hooks::bash::bash_guard::BashGuard;
 use crate::hooks::task::budget::BudgetGuard;
 use crate::hooks::write::close_gate::CloseGate;
-use crate::hooks::write::enforce_registry::EnforceRegistry;
+use crate::hooks::write::enforce_entity_registry::EnforceEntityRegistry;
 use crate::hooks::session::knowledge::Knowledge;
 use crate::hooks::task::model_routing::ModelRoutingGate;
 use crate::hooks::observe::notification::Notification;
@@ -280,7 +280,7 @@ impl Registry {
                 id: "enforce_registry",
                 // `enforce-registry` — PreToolUse(Skill) pre-pipeline gate.
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
-                check: Some(Box::new(EnforceRegistry)),
+                check: Some(Box::new(EnforceEntityRegistry)),
                 observer: None,
             },
             // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the

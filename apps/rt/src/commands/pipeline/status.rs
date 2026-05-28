@@ -13,6 +13,7 @@
 //! Every IO/parse failure produces a graceful fallback value. The process
 //! always exits 0 — a status command must never block work.
 
+use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -293,27 +294,13 @@ fn registry_meta(root: &Path) -> RegistryMeta {
         };
     };
 
-    let version = v
-        .get("_meta")
-        .and_then(|m| m.get("version"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
-    let generated_at = v
-        .get("_meta")
-        .and_then(|m| m.get("generatedAt"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-
-    let entity_count = v
-        .as_object()
-        .map_or(0, |obj| obj.keys().filter(|k| !k.starts_with('_')).count());
-
+    // Queries go through the canonical v4 reader. The prior entity count walked
+    // the document root — wrong for v4, where entities live under `e`.
+    let registry = EntityRegistry::from_value(v);
     RegistryMeta {
-        version,
-        generated_at,
-        entity_count,
+        version: registry.version().unwrap_or("unknown").to_string(),
+        generated_at: registry.generated_at().unwrap_or("").to_string(),
+        entity_count: registry.entity_count(),
     }
 }
 
@@ -662,7 +649,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("entity-registry.json"),
-            r#"{"_meta":{"version":"4.0","generatedAt":"2026-05-23T00:00:00Z"},"User":{},"Post":{}}"#,
+            r#"{"_meta":{"version":"4.0","generatedAt":"2026-05-23T00:00:00Z"},"e":{"User":{},"Post":{}}}"#,
         )
         .unwrap();
         let meta = registry_meta(td.path());

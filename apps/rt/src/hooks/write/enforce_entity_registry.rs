@@ -1,4 +1,4 @@
-//! `enforce_registry` — the entity-registry pre-pipeline gate.
+//! `enforce_entity_registry` — the entity-registry pre-pipeline gate.
 //!
 //! ## Scope (b3 Wave 4, Skill family)
 //!
@@ -26,6 +26,7 @@
 //! (like `bash-safety` / `file-guard`). The dispatcher repasses the verdict.
 
 use mustard_core::platform::error::Error;
+use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use serde_json::Value;
@@ -37,16 +38,17 @@ use crate::util::format_gate_message;
 const PIPELINE_SKILLS: &[&str] = &["mustard:feature", "mustard:bugfix", "feature", "bugfix"];
 
 /// The entity-registry gate module.
-pub struct EnforceRegistry;
+pub struct EnforceEntityRegistry;
 
-/// Validate a parsed `entity-registry.json` value. Returns the deny reason on
+/// Validate a parsed `entity-registry.json`. Returns the deny reason on
 /// failure, or `None` when the registry is valid. Port of `validateRegistry`.
-fn validate_registry(registry: &Value) -> Option<String> {
-    // Version must start with `3.`.
-    let version = registry
-        .get("_meta")
-        .and_then(|m| m.get("version"))
-        .and_then(|v| v.as_str());
+///
+/// All queries go through the canonical [`EntityRegistry`] v4 reader:
+/// `_meta.version`, the `e` entity count (which already excludes the
+/// `_placeholder` sentinel), and a non-empty `_patterns`.
+fn validate_registry(registry: &EntityRegistry) -> Option<String> {
+    // Version must start with `3.` or `4.`.
+    let version = registry.version();
     if !version.is_some_and(|v| v.starts_with("3.") || v.starts_with("4.")) {
         return Some(format_gate_message(
             "Registry Gate",
@@ -61,12 +63,9 @@ fn validate_registry(registry: &Value) -> Option<String> {
 
     let is_v4_plus = version.is_some_and(|v| v.starts_with("4."));
 
-    // Entities exist (`registry.e`, excluding the `_placeholder` key).
+    // Entities exist (`e`, excluding `_`-prefixed sentinels like `_placeholder`).
     // v4 uses `_patterns` as the primary index — entities are optional.
-    let entity_count = registry
-        .get("e")
-        .and_then(Value::as_object)
-        .map_or(0, |obj| obj.keys().filter(|k| *k != "_placeholder").count());
+    let entity_count = registry.entity_count();
     if entity_count == 0 && !is_v4_plus {
         return Some(format_gate_message(
             "Registry Gate",
@@ -77,11 +76,7 @@ fn validate_registry(registry: &Value) -> Option<String> {
     }
 
     // `_patterns` must be a non-empty object.
-    let has_patterns = registry
-        .get("_patterns")
-        .and_then(Value::as_object)
-        .is_some_and(|obj| !obj.is_empty());
-    if !has_patterns {
+    if !registry.has_patterns() {
         return Some(format_gate_message(
             "Registry Gate",
             &format!(
@@ -131,13 +126,13 @@ fn registry_verdict(input: &HookInput, cwd: &str) -> Verdict {
     let Ok(registry) = serde_json::from_str::<Value>(&text) else {
         return Verdict::Allow;
     };
-    match validate_registry(&registry) {
+    match validate_registry(&EntityRegistry::from_value(registry)) {
         Some(reason) => Verdict::Deny { reason },
         None => Verdict::Allow,
     }
 }
 
-impl Check for EnforceRegistry {
+impl Check for EnforceEntityRegistry {
     /// Gate a `PreToolUse(Skill)` invocation of a pipeline skill on the
     /// entity-registry's presence and validity. Always strict — no mode.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
@@ -193,7 +188,7 @@ mod tests {
     fn blocks_pipeline_skill_when_registry_missing() {
         let dir = tempdir().unwrap();
         let (input, ctx) = skill_input("feature", dir.path().to_str().unwrap());
-        let verdict = EnforceRegistry.evaluate(&input, &ctx).expect("no error");
+        let verdict = EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error");
         assert!(verdict.is_blocking(), "missing registry must block");
     }
 
@@ -202,7 +197,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (input, ctx) = skill_input("some-random-skill", dir.path().to_str().unwrap());
         assert_eq!(
-            EnforceRegistry.evaluate(&input, &ctx).expect("no error"),
+            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -221,7 +216,7 @@ mod tests {
         let (input, ctx) =
             skill_input("mustard:feature", dir.path().to_str().unwrap());
         assert_eq!(
-            EnforceRegistry.evaluate(&input, &ctx).expect("no error"),
+            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -230,44 +225,44 @@ mod tests {
 
     #[test]
     fn stale_version_is_blocked() {
-        let reason = validate_registry(&json!({
+        let reason = validate_registry(&EntityRegistry::from_value(json!({
             "_meta": { "version": "2.0" },
             "e": { "User": {} },
             "_patterns": { "x": {} },
-        }))
+        })))
         .expect("stale version must fail");
         assert!(reason.contains("outdated"));
     }
 
     #[test]
     fn no_entities_is_blocked() {
-        let reason = validate_registry(&json!({
+        let reason = validate_registry(&EntityRegistry::from_value(json!({
             "_meta": { "version": "3.1" },
             "e": { "_placeholder": {} },
             "_patterns": { "x": {} },
-        }))
+        })))
         .expect("no entities must fail");
         assert!(reason.contains("no entities"));
     }
 
     #[test]
     fn no_patterns_is_blocked() {
-        let reason = validate_registry(&json!({
+        let reason = validate_registry(&EntityRegistry::from_value(json!({
             "_meta": { "version": "3.1" },
             "e": { "User": {} },
             "_patterns": {},
-        }))
+        })))
         .expect("no patterns must fail");
         assert!(reason.contains("_patterns"));
     }
 
     #[test]
     fn valid_registry_passes_validation() {
-        assert!(validate_registry(&json!({
+        assert!(validate_registry(&EntityRegistry::from_value(json!({
             "_meta": { "version": "3.2" },
             "e": { "User": {}, "Order": {} },
             "_patterns": { "drizzle": { "discovered": [] } },
-        }))
+        })))
         .is_none());
     }
 
@@ -286,7 +281,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            EnforceRegistry.evaluate(&input, &ctx).expect("no error"),
+            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -301,7 +296,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            EnforceRegistry.evaluate(&input, &ctx).expect("no error"),
+            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }

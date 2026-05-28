@@ -10,7 +10,7 @@
 //!
 //! The Wave 4 resolver consumes the adjacency + id table to walk the graph
 //! and assemble per-agent context; this module is the build/validate face,
-//! exposed both as a library (for `sync_registry` / future enrichment passes
+//! exposed both as a library (for `sync_entity_registry` / future enrichment passes
 //! to call) and as the `mustard-rt run graph-index` subcommand.
 //!
 //! ## Fail-open

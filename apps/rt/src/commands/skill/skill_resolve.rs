@@ -31,11 +31,11 @@
 
 use crate::shared::context::project_dir;
 use mustard_core::io::fs as mfs;
+use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::domain::skill::discover::collect_skill_md;
 use mustard_core::domain::skill::frontmatter::{parse as parse_fm, SkillFrontmatter, SkillScope, SkillTag};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -96,8 +96,21 @@ pub fn resolve(
     top_k: usize,
 ) -> Vec<ResolvedSkill> {
     let tokens = tokenise(intent);
-    let entity_names = entity_names_for_intent(project, &tokens);
-    let cluster_labels = cluster_labels_for_subproject(project, subproject);
+    // Single canonical read of the entity-registry (v4). Entity names come from
+    // the `e` map; cluster labels from `_patterns.{stack}.discovered[]`. The
+    // prior hand-rolled `entity_names` walk iterated the document root and so
+    // never matched in a v4 registry (entities live under `e`) — fixed here.
+    let registry = EntityRegistry::load(project);
+    let entity_names: Vec<String> = registry
+        .entity_names()
+        .into_iter()
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            tokens.iter().any(|t| lower.contains(t.as_str()))
+        })
+        .map(str::to_string)
+        .collect();
+    let cluster_labels = registry.cluster_labels(subproject);
     let active_scope = phase
         .and_then(SkillScope::parse)
         .or(Some(SkillScope::CodeEditing));
@@ -184,69 +197,6 @@ fn tokenise(intent: &str) -> Vec<String> {
         out.push(buf);
     }
     out
-}
-
-/// Cross intent tokens against `entity-registry.json` to surface entity
-/// hits the skill might target.
-fn entity_names_for_intent(project: &Path, tokens: &[String]) -> Vec<String> {
-    let Ok(paths) = ClaudePaths::for_project(project) else {
-        return Vec::new();
-    };
-    let registry_path = paths.entity_registry_json_path();
-    let Ok(text) = mfs::read_to_string(&registry_path) else {
-        return Vec::new();
-    };
-    let Ok(value): Result<Value, _> = serde_json::from_str(&text) else {
-        return Vec::new();
-    };
-    let Some(obj) = value.as_object() else {
-        return Vec::new();
-    };
-    let mut hits: Vec<String> = Vec::new();
-    for (key, _) in obj {
-        if key.starts_with('_') {
-            continue;
-        }
-        let lower = key.to_ascii_lowercase();
-        if tokens.iter().any(|t| lower.contains(t.as_str())) {
-            hits.push(key.clone());
-        }
-    }
-    hits
-}
-
-/// Read cluster labels for the subproject from `entity-registry.json`. Empty
-/// when the registry is absent or the subproject has no clusters.
-fn cluster_labels_for_subproject(project: &Path, subproject: Option<&str>) -> Vec<String> {
-    let Ok(paths) = ClaudePaths::for_project(project) else {
-        return Vec::new();
-    };
-    let registry_path = paths.entity_registry_json_path();
-    let Ok(text) = mfs::read_to_string(&registry_path) else {
-        return Vec::new();
-    };
-    let Ok(value): Result<Value, _> = serde_json::from_str(&text) else {
-        return Vec::new();
-    };
-    let mut labels: BTreeSet<String> = BTreeSet::new();
-    if let Some(patterns) = value.get("_patterns").and_then(Value::as_object) {
-        for (_stack, body) in patterns {
-            let Some(arr) = body.get("discovered").and_then(Value::as_array) else {
-                continue;
-            };
-            for cluster in arr {
-                if let (Some(sub), Some(label)) = (subproject, cluster.get("subprojectName").and_then(Value::as_str)) {
-                    if !sub.ends_with(label) && label != sub {
-                        continue;
-                    }
-                }
-                if let Some(label) = cluster.get("label").and_then(Value::as_str) {
-                    labels.insert(label.to_ascii_lowercase());
-                }
-            }
-        }
-    }
-    labels.into_iter().collect()
 }
 
 // ---------------------------------------------------------------------------
