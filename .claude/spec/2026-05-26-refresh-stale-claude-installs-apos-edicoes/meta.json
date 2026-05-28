@@ -1,9 +1,0 @@
-{
-  "stage": "Close",
-  "outcome": "Completed",
-  "phase": null,
-  "scope": "light",
-  "lang": "pt-BR",
-  "checkpoint": "2026-05-26T16:21:15.524Z",
-  "parent": "2026-05-26-template-agnostic-audit"
-}
