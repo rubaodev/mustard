@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod checklist;
 pub mod doctor;
 pub mod review;
 pub mod skill;
@@ -25,7 +26,6 @@ pub mod scan;
 pub mod agent_prompt_render;
 pub mod amend_finalize;
 pub mod i18n_translate;
-pub mod task_checklist;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -34,7 +34,6 @@ mod diff_context;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
-mod mark_checklist_item;
 mod migrate_spec_headers;
 mod migrate_to_meta;
 mod recipe_match;
@@ -1550,7 +1549,7 @@ pub fn dispatch(cmd: RunCmd) {
             item,
             line,
             cwd,
-        } => mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
+        } => checklist::mark_checklist_item::run(spec.as_deref(), item.as_deref(), line, cwd.as_deref()),
         RunCmd::WaveTree { spec_dir, format } => wave::wave_tree::run(&spec_dir, &format),
         RunCmd::WaveDependency => wave::wave_dependency::run(),
         RunCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
@@ -1918,7 +1917,7 @@ pub fn dispatch(cmd: RunCmd) {
             maint::maint_validate::run(maint::maint_validate::MaintValidateOpts { dry_run });
         }
         RunCmd::TaskChecklist { domain } => {
-            task_checklist::run(task_checklist::TaskChecklistOpts { domain });
+            checklist::task_checklist::run(checklist::task_checklist::TaskChecklistOpts { domain });
         }
         RunCmd::BugfixCache { hash, summary, files } => {
             review::bugfix_cache::run(review::bugfix_cache::BugfixCacheOpts { hash, summary, files });
