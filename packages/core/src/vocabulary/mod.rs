@@ -189,6 +189,26 @@ pub struct VocabularyDoc {
     /// Every `[[layer]]` table entry, in document order.
     #[serde(default, rename = "layer")]
     pub layers: Vec<VocabLayer>,
+    /// Optional `[thresholds]` table (W7#2). Tunes the gate's numeric knobs
+    /// — currently just `line_change_threshold` — without recompiling the
+    /// binary. Absent in the seed catalogue; the gate falls back to its
+    /// hard-coded defaults when fields are missing.
+    #[serde(default)]
+    pub thresholds: GateThresholds,
+}
+
+/// Optional `[thresholds]` block consumed by `gate_regression_check`.
+///
+/// Every field is `Option<_>` so partial overrides work: a `regression.toml`
+/// can tune only `line_change_threshold` without supplying placeholders for
+/// future knobs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct GateThresholds {
+    /// Moment-3 line-change threshold. Snapshot deltas whose `line_changes`
+    /// strictly exceed this value fire a signal (W7#3 keeps the `body_emptied`
+    /// short-circuit on top). Defaults to the gate's hard-coded `5`.
+    #[serde(default, rename = "line_change")]
+    pub line_change_threshold: Option<usize>,
 }
 
 impl VocabularyDoc {
@@ -223,6 +243,21 @@ impl VocabularyDoc {
     #[must_use]
     pub fn layer(&self, kind: Layer) -> Option<&VocabLayer> {
         self.layers.iter().find(|l| l.kind == kind)
+    }
+
+    /// Return the term list for `kind` as borrowed `&str` slices in document
+    /// order. Empty `Vec` when the layer is absent — callers that need to
+    /// distinguish "absent" from "empty" should use [`Self::layer`] instead.
+    ///
+    /// Added to deduplicate the inline `[semantic]` / `[pattern]` walks that
+    /// `subagent_inject` and `agent_prompt_render` used to ship (W5#2). The
+    /// returned slices borrow from `self`; callers that need owned strings
+    /// can `.iter().map(|s| s.to_string()).collect()`.
+    #[must_use]
+    pub fn layer_terms(&self, kind: Layer) -> Vec<&str> {
+        self.layer(kind)
+            .map(|l| l.terms.iter().map(String::as_str).collect())
+            .unwrap_or_default()
     }
 }
 

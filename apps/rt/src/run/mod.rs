@@ -578,6 +578,14 @@ pub enum RunCmd {
         /// Moment to evaluate: 1 (pre-edit), 2 (during diff), 3 (after child return).
         #[arg(long, default_value_t = 1)]
         moment: u8,
+        /// W5#3 — wave directory (e.g. `.claude/spec/<spec>/wave-5-rt`) used
+        /// only with `--moment 3`. When set, the subcommand inspects that
+        /// wave's `_review-spans.md` ledger via
+        /// `review_spans::check_consolidation` and exits non-zero (2) when any
+        /// row registered a red verdict. Lets close-gate scripts invoke the
+        /// span-level decision without going through the `SubagentStop` hook.
+        #[arg(long = "wave-dir")]
+        wave_dir: Option<String>,
     },
     /// Match an entity + operation to a code recipe skeleton.
     RecipeMatch {
@@ -1637,8 +1645,27 @@ pub fn dispatch(cmd: RunCmd) {
             dependency_precheck::run(spec.as_deref(), subproject.as_deref());
         }
         RunCmd::WaveSizeCheck { spec_dir } => wave_size_check::run(spec_dir.as_deref()),
-        RunCmd::GateRegressionCheck { spec, moment } => {
+        RunCmd::GateRegressionCheck {
+            spec,
+            moment,
+            wave_dir,
+        } => {
             use crate::run::gate_regression_check::{self, GateInput, Moment};
+            // W5#3: Moment-3 + --wave-dir path consults the on-disk
+            // `_review-spans.md` ledger via `review_spans::check_consolidation`.
+            // Exits 0 when consolidation is allowed (no red rows) and 2 when
+            // blocked. This is the close-gate path; ledger lives on disk so
+            // we don't need diff + snapshots in argv.
+            if moment == 3 {
+                if let Some(wd) = wave_dir {
+                    use crate::run::review_spans::{check_consolidation, ConsolidationCheck};
+                    let path = std::path::PathBuf::from(wd);
+                    match check_consolidation(&path) {
+                        ConsolidationCheck::Allowed => std::process::exit(0),
+                        ConsolidationCheck::Blocked { .. } => std::process::exit(2),
+                    }
+                }
+            }
             let spec_path = std::path::PathBuf::from(".claude/spec").join(&spec).join("spec.md");
             let plan_text = std::fs::read_to_string(&spec_path).unwrap_or_default();
             let moment_enum = match moment {

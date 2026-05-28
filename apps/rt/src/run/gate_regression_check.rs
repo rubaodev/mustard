@@ -387,7 +387,12 @@ fn pattern_label(p: StubPattern) -> &'static str {
 // Moment 3 — snapshot delta
 // ---------------------------------------------------------------------------
 
-fn moment_three_signals(before: &Snapshot, after: &Snapshot, locale: Locale) -> Vec<Signal> {
+fn moment_three_signals(
+    before: &Snapshot,
+    after: &Snapshot,
+    locale: Locale,
+    threshold: usize,
+) -> Vec<Signal> {
     let diff = compare_snapshots(before, after);
     let template = i18n::translate("gate.signal.snapshot", locale);
     let mut signals: Vec<Signal> = Vec::new();
@@ -395,16 +400,25 @@ fn moment_three_signals(before: &Snapshot, after: &Snapshot, locale: Locale) -> 
         match delta.change {
             ChangeKind::Modified { line_changes } => {
                 // W7#3: signal fires when either (a) line_changes exceeds the
-                // raw threshold, OR (b) the function's body emptied — i.e. the
-                // post body is <= 1/3 of the pre body (or zero). Pattern (b)
-                // catches small bodies that shrink past 100% but stay under the
-                // raw 5-line threshold (the `rtk_summary` case surfaced in W7).
+                // configured threshold, OR (b) the function's body emptied —
+                // i.e. the post body is <= 1/3 of the pre body (or zero).
+                // Pattern (b) catches small bodies that shrink past 100% but
+                // stay under the raw threshold (the `rtk_summary` case).
+                //
+                // W7#2: `threshold` is sourced from `[thresholds]` in
+                // `.claude/vocab/regression.toml` when present, otherwise
+                // falls back to `LINE_CHANGE_THRESHOLD`.
                 let before_lines = line_count(delta.before.as_ref());
                 let after_lines = line_count(delta.after.as_ref());
                 let body_emptied =
                     after_lines == 0 || after_lines.saturating_mul(3) < before_lines;
-                if line_changes > LINE_CHANGE_THRESHOLD || body_emptied {
-                    signals.push(snapshot_signal(template, &delta, line_changes));
+                if line_changes > threshold || body_emptied {
+                    signals.push(snapshot_signal_with_threshold(
+                        template,
+                        &delta,
+                        line_changes,
+                        threshold,
+                    ));
                 }
             }
             ChangeKind::Removed => {
@@ -421,6 +435,54 @@ fn moment_three_signals(before: &Snapshot, after: &Snapshot, locale: Locale) -> 
         }
     }
     signals
+}
+
+/// W7#2 helper: read the line-change threshold from
+/// `<project>/.claude/vocab/regression.toml#[thresholds]`. Falls back to
+/// [`LINE_CHANGE_THRESHOLD`] when the file is missing, malformed, or the
+/// `[thresholds]` table is absent — never errors out.
+fn load_line_change_threshold(project_root: &Path) -> usize {
+    let path = project_root
+        .join(".claude")
+        .join("vocab")
+        .join("regression.toml");
+    mustard_core::vocabulary::VocabularyDoc::load_from_file(&path)
+        .ok()
+        .and_then(|doc| doc.thresholds.line_change_threshold)
+        .unwrap_or(LINE_CHANGE_THRESHOLD)
+}
+
+/// W7#2: thin wrapper that scales severity against the configured threshold.
+fn snapshot_signal_with_threshold(
+    template: &str,
+    delta: &FunctionDelta,
+    line_changes: usize,
+    threshold: usize,
+) -> Signal {
+    let before_lines = line_count(delta.before.as_ref());
+    let after_lines = line_count(delta.after.as_ref());
+    let before_str = before_lines.to_string();
+    let after_str = after_lines.to_string();
+    let message = interpolate(
+        template,
+        &[
+            ("function", &delta.qualifier),
+            ("before_lines", &before_str),
+            ("after_lines", &after_str),
+        ],
+    );
+    let severity = if line_changes > threshold.saturating_mul(2) {
+        Severity::High
+    } else {
+        Severity::Medium
+    };
+    Signal {
+        source: Layer::Snapshot,
+        severity,
+        span: None,
+        message,
+        evidence: delta.qualifier.clone(),
+    }
 }
 
 fn snapshot_signal(template: &str, delta: &FunctionDelta, line_changes: usize) -> Signal {
@@ -596,7 +658,8 @@ pub fn run(input: GateInput, moment: Moment) -> Result<RegressionVerdict, GateEr
     }
     if matches!(moment, Moment::Three) {
         if let (Some(before), Some(after)) = (&input.before_snapshot, &input.after_snapshot) {
-            signals.extend(moment_three_signals(before, after, locale));
+            let threshold = load_line_change_threshold(&project_root);
+            signals.extend(moment_three_signals(before, after, locale, threshold));
         }
     }
 
@@ -933,7 +996,7 @@ mod tests {
         let mut after = Snapshot::empty(PathBuf::from("spec.md"), "1".into());
         after.insert(mk(&post_body));
 
-        let signals = moment_three_signals(&before, &after, Locale::PtBr);
+        let signals = moment_three_signals(&before, &after, Locale::PtBr, LINE_CHANGE_THRESHOLD);
         assert!(
             !signals.is_empty(),
             "expected ≥1 snapshot signal on 30→1 line shrink"
@@ -1178,7 +1241,8 @@ mod tests {
             captured_pairs > 0,
             "fixture-slice helper must capture at least one declared function"
         );
-        let m3_signals = moment_three_signals(&before, &after, locale);
+        let m3_signals =
+            moment_three_signals(&before, &after, locale, LINE_CHANGE_THRESHOLD);
         let m3_fired = !m3_signals.is_empty();
         let m3_evidence: Vec<String> = m3_signals.iter().map(|s| s.evidence.clone()).collect();
 

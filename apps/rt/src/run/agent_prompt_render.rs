@@ -688,37 +688,26 @@ fn vocabulary_inject_block(project: &Path, locale: i18n::Locale) -> String {
 /// covered by [`gate_regression_check::build_vocab_matcher`] on the scan
 /// side; this helper only needs the term names for display.
 fn read_vocab_layers_for_inject(project: &Path) -> (Vec<String>, Vec<String>) {
+    // W5#2: dedup'd via `VocabularyDoc::layer_terms` shared with
+    // `subagent_inject::read_vocab_layers`.
     let toml_path = project
         .join(".claude")
         .join("vocab")
         .join("regression.toml");
-    let mut semantic: Vec<String> = Vec::new();
-    let mut pattern: Vec<String> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(&toml_path) {
-        let mut current: Option<&'static str> = None;
-        for raw in text.lines() {
-            let line = raw.trim();
-            if let Some(rest) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-                current = match rest.trim() {
-                    "semantic" => Some("semantic"),
-                    "pattern" => Some("pattern"),
-                    _ => None,
-                };
-                continue;
-            }
-            if let Some(layer) = current {
-                let trimmed = line.trim().trim_end_matches(',').trim();
-                if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-                    let term = trimmed[1..trimmed.len() - 1].to_string();
-                    match layer {
-                        "semantic" => semantic.push(term),
-                        "pattern" => pattern.push(term),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
+    let (mut semantic, mut pattern) =
+        match mustard_core::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
+            Ok(doc) => (
+                doc.layer_terms(mustard_core::vocabulary::Layer::Semantic)
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<String>>(),
+                doc.layer_terms(mustard_core::vocabulary::Layer::Pattern)
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<String>>(),
+            ),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
     if semantic.is_empty() && pattern.is_empty() {
         semantic = vec![
             "fail-open".into(),

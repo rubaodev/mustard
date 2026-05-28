@@ -250,35 +250,28 @@ fn vocabulary_inject_block(project: &Path, locale: Locale) -> String {
 /// fresh project (matches [`gate_regression_check::build_vocab_matcher`]'s
 /// fallback contract).
 fn read_vocab_layers(project: &Path) -> (Vec<String>, Vec<String>) {
+    // W5#2: dedup'd via `VocabularyDoc::layer_terms`. The inline TOML walk
+    // this function used to ship lives in `mustard_core::vocabulary` now —
+    // both `subagent_inject` and `agent_prompt_render` flow through the
+    // same accessor.
     let toml_path = project
         .join(".claude")
         .join("vocab")
         .join("regression.toml");
-    let mut semantic: Vec<String> = Vec::new();
-    let mut pattern: Vec<String> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(&toml_path) {
-        let mut current: Option<&'static str> = None;
-        for raw in text.lines() {
-            let line = raw.trim();
-            if let Some(rest) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-                current = match rest.trim() {
-                    "semantic" => Some("semantic"),
-                    "pattern" => Some("pattern"),
-                    _ => None,
-                };
-                continue;
-            }
-            if let Some(layer) = current {
-                if let Some(term) = parse_toml_string_entry(line) {
-                    match layer {
-                        "semantic" => semantic.push(term),
-                        "pattern" => pattern.push(term),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
+    let (mut semantic, mut pattern) =
+        match mustard_core::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
+            Ok(doc) => (
+                doc.layer_terms(mustard_core::vocabulary::Layer::Semantic)
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<String>>(),
+                doc.layer_terms(mustard_core::vocabulary::Layer::Pattern)
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<String>>(),
+            ),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
     if semantic.is_empty() && pattern.is_empty() {
         semantic = vec![
             "fail-open".into(),
@@ -289,15 +282,6 @@ fn read_vocab_layers(project: &Path) -> (Vec<String>, Vec<String>) {
         pattern = vec!["None".into(), "Vec::new()".into(), "Default::default()".into()];
     }
     (semantic, pattern)
-}
-
-/// Parse a `"term"` entry inside a one-line TOML array. `None` on non-match.
-fn parse_toml_string_entry(line: &str) -> Option<String> {
-    let trimmed = line.trim().trim_end_matches(',').trim();
-    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        return Some(trimmed[1..trimmed.len() - 1].to_string());
-    }
-    None
 }
 
 /// Resolve the active wave directory for the project. Reads the

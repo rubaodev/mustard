@@ -446,14 +446,22 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
     let entries = fs::read_dir(&spec_root).ok()?;
     let normalized_edit = file_path.replace('\\', "/");
 
+    // W5#4: collect every Active+open spec that ships a `## Boundaries` (or
+    // `## Limites`) block, then keep ONLY the most-recently-checkpointed one.
+    // Without this, `read_dir`'s alphabetical order makes an older spec
+    // (`2026-05-26-deep-refactor-followups`) outrank a newer active spec
+    // (`2026-05-27-mustard-v4-foundation`) and warn about edits the newer
+    // spec authorised. Recency uses `### Checkpoint:` when present; falls
+    // back to the date prefix in the directory name (`YYYY-MM-DD`), then
+    // to the name itself.
+    let mut best: Option<(String, String, Vec<String>)> = None;
+    let mut best_key: String = String::new();
     for entry in entries.into_iter().filter(|e| e.is_dir) {
         let dir_name = entry.file_name.clone();
         let spec_file = entry.path.join("spec.md");
         let Ok(content) = fs::read_to_string(&spec_file) else {
             continue;
         };
-        // Active-spec filter (W4#7). A None return means the spec has no
-        // recognisable header — treat as legacy and keep scanning.
         if let Some(state) = spec::parse_state(&content) {
             let stage_ok = matches!(
                 state.stage,
@@ -470,44 +478,70 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
         if lines.is_empty() {
             continue;
         }
-        // Does the edited file match any declared boundary?
-        let mut matched = false;
-        for pattern in &lines {
-            let pattern = pattern.replace('\\', "/");
-            if pattern.is_empty() {
-                continue;
-            }
-            if pattern.ends_with('/') {
-                if normalized_edit.contains(&pattern) || normalized_edit.starts_with(&pattern) {
-                    matched = true;
-                    break;
-                }
-                continue;
-            }
-            if pattern.contains('*') || pattern.contains('?') {
-                if glob_loose_match(&normalized_edit, &pattern) {
-                    matched = true;
-                    break;
-                }
-                continue;
-            }
-            if normalized_edit.ends_with(&pattern) || normalized_edit == pattern {
+        let recency_key = recency_key_for_spec(&content, &dir_name);
+        if recency_key > best_key {
+            best_key = recency_key;
+            best = Some((dir_name, content, lines));
+        }
+    }
+    let (dir_name, _content, lines) = best?;
+
+    // Does the edited file match any declared boundary?
+    let mut matched = false;
+    for pattern in &lines {
+        let pattern = pattern.replace('\\', "/");
+        if pattern.is_empty() {
+            continue;
+        }
+        if pattern.ends_with('/') {
+            if normalized_edit.contains(&pattern) || normalized_edit.starts_with(&pattern) {
                 matched = true;
                 break;
             }
+            continue;
         }
-        if matched {
-            return None;
+        if pattern.contains('*') || pattern.contains('?') {
+            if glob_loose_match(&normalized_edit, &pattern) {
+                matched = true;
+                break;
+            }
+            continue;
         }
-        // No match in this spec — the first spec with a boundary section wins.
-        let rel_edited = file_path.replace('\\', "/");
-        return Some(format!(
-            "\"{rel_edited}\" is outside the boundaries declared in spec \
-             \"{dir_name}\". Declared: {}. Verify this edit is intentional.",
-            lines.join(", ")
-        ));
+        if normalized_edit.ends_with(&pattern) || normalized_edit == pattern {
+            matched = true;
+            break;
+        }
     }
-    None
+    if matched {
+        return None;
+    }
+    let rel_edited = file_path.replace('\\', "/");
+    Some(format!(
+        "\"{rel_edited}\" is outside the boundaries declared in spec \
+         \"{dir_name}\". Declared: {}. Verify this edit is intentional.",
+        lines.join(", ")
+    ))
+}
+
+/// W5#4 helper: a lexicographically-comparable recency key. Prefers an ISO
+/// `### Checkpoint:` header (so `2026-05-28T10:00:00.000Z` sorts above
+/// `2026-05-27T17:56:09.926Z`); falls back to the directory name prefix
+/// (`YYYY-MM-DD-…` already sorts correctly); never panics. Returned `String`
+/// is meaningful only against other keys produced by this same function.
+fn recency_key_for_spec(content: &str, dir_name: &str) -> String {
+    for line in content.lines().take(50) {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("### Checkpoint:")
+            .or_else(|| trimmed.strip_prefix("###Checkpoint:"))
+        {
+            let value = rest.trim();
+            if !value.is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    dir_name.to_string()
 }
 
 /// Extract the cleaned bullet lines of a spec's `## Boundaries` block.
@@ -1339,5 +1373,94 @@ mod tests {
             ..HookInput::default()
         };
         PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
+    }
+
+    // --- W5#4: boundary resolver picks the most recent active spec ---------
+
+    #[test]
+    fn check_boundaries_picks_newer_active_spec_over_older() {
+        let root = tempdir().unwrap();
+        let spec_dir = root.path().join(".claude").join("spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+
+        // Older spec (alphabetically first, Active, declares one boundary).
+        let older = spec_dir.join("2026-05-26-old-active");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::write(
+            older.join("spec.md"),
+            "# Old\n### Stage: Plan\n### Outcome: Active\n### Checkpoint: 2026-05-26T10:00:00.000Z\n## Boundaries\n- `apps/rt/src/run/old_only.rs`\n",
+        )
+        .unwrap();
+
+        // Newer spec (Active, declares a DIFFERENT boundary covering the edit).
+        let newer = spec_dir.join("2026-05-28-new-active");
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(
+            newer.join("spec.md"),
+            "# New\n### Stage: Execute\n### Outcome: Active\n### Checkpoint: 2026-05-28T09:00:00.000Z\n## Boundaries\n- `apps/rt/src/hooks/post_edit.rs`\n",
+        )
+        .unwrap();
+
+        // An edit to `post_edit.rs` is declared by the NEWER spec, not the
+        // older one. With the W5#4 fix the resolver picks the newer spec and
+        // returns `None` (allowed); pre-fix it would warn under the older
+        // spec's boundaries.
+        let edit_path = root
+            .path()
+            .join("apps")
+            .join("rt")
+            .join("src")
+            .join("hooks")
+            .join("post_edit.rs");
+        let cwd = root.path().to_str().unwrap();
+        let result = check_boundaries(edit_path.to_str().unwrap(), cwd);
+        assert!(
+            result.is_none(),
+            "newer active spec authorised the edit but resolver still warned: {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_boundaries_warns_when_newer_active_spec_excludes_the_edit() {
+        let root = tempdir().unwrap();
+        let spec_dir = root.path().join(".claude").join("spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+
+        let older = spec_dir.join("2026-05-26-old-active");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::write(
+            older.join("spec.md"),
+            "# Old\n### Stage: Plan\n### Outcome: Active\n### Checkpoint: 2026-05-26T10:00:00.000Z\n## Boundaries\n- `apps/rt/src/hooks/post_edit.rs`\n",
+        )
+        .unwrap();
+
+        let newer = spec_dir.join("2026-05-28-new-active");
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(
+            newer.join("spec.md"),
+            "# New\n### Stage: Execute\n### Outcome: Active\n### Checkpoint: 2026-05-28T09:00:00.000Z\n## Boundaries\n- `apps/rt/src/run/something_else.rs`\n",
+        )
+        .unwrap();
+
+        // The OLDER spec would have authorised the edit; the NEWER spec
+        // doesn't. Recency wins ⇒ warning surfaces with the newer slug.
+        let edit_path = root
+            .path()
+            .join("apps")
+            .join("rt")
+            .join("src")
+            .join("hooks")
+            .join("post_edit.rs");
+        let cwd = root.path().to_str().unwrap();
+        let result = check_boundaries(edit_path.to_str().unwrap(), cwd);
+        let warning = result.expect("expected a warning under newer spec boundaries");
+        assert!(
+            warning.contains("2026-05-28-new-active"),
+            "warning should cite the newer spec, got: {warning}"
+        );
+        assert!(
+            !warning.contains("2026-05-26-old-active"),
+            "older spec must not appear in the warning, got: {warning}"
+        );
     }
 }
