@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod pipeline;
 pub mod event;
 pub mod wave;
 pub mod spec;
@@ -20,13 +21,11 @@ pub mod agent_prompt_render;
 pub mod amend_finalize;
 mod analyze_validation;
 pub mod bugfix_cache;
-pub mod close_orchestrate;
 pub mod context_budget;
 pub mod economy_capture_baseline;
 pub mod economy_reconcile;
 pub mod economy_report;
 pub mod i18n_translate;
-pub mod pipeline_prelude;
 pub mod review_dispatch;
 pub mod skill_cache;
 pub mod skill_fetch;
@@ -59,18 +58,14 @@ mod memory_ingest;
 mod metrics;
 mod metrics_wave_status;
 pub(crate) mod otel;
-mod pipeline_state_ingest;
-mod pipeline_summary;
 mod qa_run;
 mod qa_run_all;
 mod recipe_match;
-pub mod resume_bootstrap;
 mod review_prefetch;
 mod review_result;
 // Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
 pub mod review_spans;
 mod rtk_gain;
-mod status;
 mod scan_finalize;
 mod scan_md_validate;
 mod scan_orchestrate;
@@ -89,7 +84,6 @@ mod sync_registry;
 // Spec A v4 / W6 — token-budget primitive used by `resume_bootstrap`.
 pub mod token_budget;
 mod transcript_watcher;
-mod verify_pipeline;
 
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -1567,7 +1561,7 @@ pub fn dispatch(cmd: RunCmd) {
             memory_ingest::run_with(memory_ingest::MemoryIngestOpts { delete, agent_memory });
         }
         RunCmd::PipelineStateIngest { delete: _ } => {
-            pipeline_state_ingest::run(pipeline_state_ingest::PipelineStateIngestOpts);
+            pipeline::pipeline_state_ingest::run(pipeline::pipeline_state_ingest::PipelineStateIngestOpts);
         }
         RunCmd::EpicFold { detect, epic } => wave::epic_fold::run(detect, epic.as_deref()),
         RunCmd::SpecExtract {
@@ -1668,9 +1662,9 @@ pub fn dispatch(cmd: RunCmd) {
             wave,
             format,
         } => event::event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
-        RunCmd::VerifyPipeline { format } => verify_pipeline::run(&format),
+        RunCmd::VerifyPipeline { format } => pipeline::verify_pipeline::run(&format),
         RunCmd::PipelineSummary { spec_dir, format, self_test } => {
-            pipeline_summary::run(spec_dir.as_deref(), &format, self_test);
+            pipeline::pipeline_summary::run(spec_dir.as_deref(), &format, self_test);
         }
         RunCmd::ReviewResult {
             spec,
@@ -1747,7 +1741,7 @@ pub fn dispatch(cmd: RunCmd) {
             spec::active_specs::run(spec::active_specs::ActiveSpecsOpts { format, root });
         }
         RunCmd::Status { harness, format, root } => {
-            status::run(status::StatusOpts { harness, format, root });
+            pipeline::status::run(pipeline::status::StatusOpts { harness, format, root });
         }
         RunCmd::SkillsList { format, root } => {
             // Delegate to the existing skills::run with the "list" subcommand,
@@ -1782,7 +1776,7 @@ pub fn dispatch(cmd: RunCmd) {
                 review_prefetch::run(review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
             }
         }
-        RunCmd::ResumeBootstrap { spec, json } => resume_bootstrap::run(&spec, json),
+        RunCmd::ResumeBootstrap { spec, json } => pipeline::resume_bootstrap::run(&spec, json),
         RunCmd::AgentPromptRender {
             spec,
             wave,
@@ -1919,7 +1913,7 @@ pub fn dispatch(cmd: RunCmd) {
         }
         // --- W5 deep-refactor: T5.1–T5.16 -------------------------------------
         RunCmd::CloseOrchestrate { spec, skip_docs } => {
-            close_orchestrate::run(close_orchestrate::CloseOrchestrateOpts { spec, skip_docs });
+            pipeline::close_orchestrate::run(pipeline::close_orchestrate::CloseOrchestrateOpts { spec, skip_docs });
         }
         RunCmd::ReviewDispatch { pr, spec, subproject } => {
             review_dispatch::run(review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
@@ -2033,7 +2027,7 @@ pub fn dispatch(cmd: RunCmd) {
             }
         },
         RunCmd::PipelinePrelude { spec, phase } => {
-            pipeline_prelude::run(pipeline_prelude::PreludeOpts { spec, phase });
+            pipeline::pipeline_prelude::run(pipeline::pipeline_prelude::PreludeOpts { spec, phase });
         }
         RunCmd::SpecStatusBackfill { source, dry_run, spec } => {
             spec::spec_status_backfill::run_cli(spec::spec_status_backfill::BackfillOpts {
