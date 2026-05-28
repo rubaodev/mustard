@@ -3,7 +3,7 @@
 //!
 //! ## Why this exists (followup-2 § Trace rico)
 //!
-//! The existing `metrics-tracker` (in [`crate::hooks::task::tracker`]) emits a
+//! The existing `metrics_observer` (in [`crate::hooks::task::metrics_observer`]) emits a
 //! `tool.use` heartbeat with the PreToolUse *intent* — command string, file
 //! path, description. The dashboard `<ExecutionTrace>` rendered this raw JSON
 //! because the *result* side (Bash stdout, Edit diff, Read content) never
@@ -101,7 +101,7 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-/// Resolve the project dir the same way [`crate::hooks::task::tracker`] does — the
+/// Resolve the project dir the same way [`crate::hooks::task::common`] does — the
 /// harness `cwd`, falling back to `"."`.
 fn project_dir(input: &HookInput) -> String {
     match input.cwd.as_deref() {

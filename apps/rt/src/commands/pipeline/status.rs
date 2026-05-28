@@ -38,9 +38,10 @@ pub struct StatusOpts {
 fn hook_description(name: &str) -> &'static str {
     match name {
         "bash_guard" => "Blocks dangerous Bash; redirects grep/ls/cat to native tools; rewrites via rtk; commit gate",
-        "model_routing" => "Blocks model upgrades vs routing table; downgrades allowed opt-in",
-        "tracker" => "Blocks Explore agents at 15-20 tool uses; emits agent/tool/skill telemetry",
-        "budget" => "Blocks Task prompts over per-role budget; advisory over 40% model window",
+        "model_routing_gate" => "Blocks model upgrades vs routing table; downgrades allowed opt-in",
+        "tool_use_counter" => "Blocks Explore agents at 15 tool uses (warn at 12)",
+        "main_context_counter" => "Enforces L0 delegation; warns/denies un-delegated main-context tool calls",
+        "context_budget_gate" => "Blocks Task prompts over per-role budget; advisory over 40% model window",
         "close_gate" => "Closes pipeline only if QA + build pass and checklist complete",
         "entity_registry_gate" => "Blocks /feature, /bugfix if registry missing or version < 3.x",
         "size_gate" => "Warns specs > 500 lines; validates skill YAML frontmatter",
@@ -59,9 +60,9 @@ fn hook_description(name: &str) -> &'static str {
 fn hook_mode_env(name: &str) -> Option<&'static str> {
     match name {
         "bash_guard" => Some("MUSTARD_COMMIT_GATE_MODE"),
-        "model_routing" => Some("MUSTARD_MODEL_ROUTING_MODE"),
-        "tracker" => Some("MUSTARD_TRACKER_MODE"),
-        "budget" => Some("MUSTARD_MAIN_BUDGET_MODE"),
+        "model_routing_gate" => Some("MUSTARD_MODEL_GATE_MODE"),
+        "main_context_counter" => Some("MUSTARD_MAIN_BUDGET_MODE"),
+        "context_budget_gate" => Some("CONTEXT_BUDGET_MODE"),
         "close_gate" => Some("MUSTARD_CHECKLIST_GATE_MODE"),
         "entity_registry_gate" => Some("MUSTARD_ENTITY_REGISTRY_GATE_MODE"),
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
@@ -154,13 +155,13 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 /// Map an event name to the primary enforcement module name it dispatches.
 fn event_to_module(event: &str) -> &'static str {
     match event {
-        "PreToolUse" => "bash_guard + model_routing + tracker + budget + close_gate + path_guard",
+        "PreToolUse" => "bash_guard + model_routing_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_guard",
         "PostToolUse" => "post_edit + knowledge",
         "SessionStart" => "session_start",
         "SessionEnd" => "session_cleanup + knowledge",
         "PreCompact" => "pre_compact",
-        "SubagentStart" => "tracker",
-        "SubagentStop" => "tracker",
+        "SubagentStart" => "tool_use_counter + main_context_counter",
+        "SubagentStop" => "tool_use_counter + main_context_counter",
         "UserPromptSubmit" => "prompt_gate",
         _ => "(dispatcher)",
     }

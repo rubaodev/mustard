@@ -9,11 +9,11 @@
 use crate::hooks::observe::amend_capture::AmendCapture;
 use crate::hooks::observe::auto_capture_summary::AutoCaptureSummary;
 use crate::hooks::bash::bash_guard::BashGuard;
-use crate::hooks::task::budget::BudgetGuard;
+use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
 use crate::hooks::session::knowledge::Knowledge;
-use crate::hooks::task::model_routing::ModelRoutingGate;
+use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification::Notification;
 use crate::hooks::write::path_guard::PathGuard;
 use crate::hooks::write::post_edit::PostEdit;
@@ -23,15 +23,17 @@ use crate::hooks::session::prompt_gate::PromptGate;
 use crate::hooks::session::session_cleanup::SessionCleanup;
 use crate::hooks::session::session_start::SessionStart;
 use crate::hooks::write::size_gate::SizeGate;
-use crate::hooks::task::skills_audit::SkillsAudit;
+use crate::hooks::task::skills_advisory::SkillsAdvisory;
 use crate::hooks::session::spec_hygiene::SpecHygiene;
 use crate::hooks::observe::stop::Stop;
 use crate::hooks::observe::stop_observer::{PreCompactMemorySnippet, SessionEndConsolidate, StopObserver};
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::observe::tool_result::ToolResult;
-use crate::hooks::task::tracker::{
-    MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
-};
+use crate::hooks::task::main_context_counter::MainContextCounter;
+use crate::hooks::task::metrics_observer::MetricsObserver;
+use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
+use crate::hooks::task::subagent_observer::SubagentObserver;
+use crate::hooks::task::tool_use_counter::ToolUseCounter;
 use crate::hooks::observe::wikilink_footer::WikilinkFooter;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
 
@@ -129,7 +131,7 @@ impl Registry {
             },
             // ── Wave 3: Task / Subagent family ───────────────────────────────
             Module {
-                id: "budget",
+                id: "context_budget_gate",
                 // `context-budget` (PreToolUse(Task) prompt-size gate) +
                 // `output-budget` (PostToolUse(Task) return-size advisory).
                 // Both flow through the `Check` — the over-budget advisory is
@@ -141,11 +143,11 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Task")),
                     (Trigger::PostToolUse, ToolMatch::Named("Agent")),
                 ],
-                check: Some(Box::new(BudgetGuard)),
+                check: Some(Box::new(ContextBudgetGate)),
                 observer: None,
             },
             Module {
-                id: "model_routing",
+                id: "model_routing_gate",
                 // `model-routing-gate` — PreToolUse(Task) model-selection gate.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
@@ -181,7 +183,7 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "subagent_tracker",
+                id: "subagent_observer",
                 // `subagent-tracker` — `agent.start` / `agent.stop` telemetry.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
@@ -190,10 +192,10 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Agent")),
                 ],
                 check: None,
-                observer: Some(Box::new(SubagentTracker)),
+                observer: Some(Box::new(SubagentObserver)),
             },
             Module {
-                id: "metrics_tracker",
+                id: "metrics_observer",
                 // `metrics-tracker` — `tool.use` heartbeat after a tool runs.
                 applies_to: &[
                     (Trigger::PostToolUse, ToolMatch::Named("Bash")),
@@ -204,14 +206,14 @@ impl Registry {
                     (Trigger::PostToolUse, ToolMatch::Named("Read")),
                 ],
                 check: None,
-                observer: Some(Box::new(MetricsTracker)),
+                observer: Some(Box::new(MetricsObserver)),
             },
             Module {
-                id: "skill_usage_tracker",
+                id: "skill_usage_observer",
                 // `skill-usage-tracker` — `skill.invoked` event per Skill call.
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("Skill"))],
                 check: None,
-                observer: Some(Box::new(SkillUsageTracker)),
+                observer: Some(Box::new(SkillUsageObserver)),
             },
             Module {
                 id: "tool_result",
@@ -231,13 +233,13 @@ impl Registry {
                 observer: Some(Box::new(ToolResult)),
             },
             Module {
-                id: "skills_audit",
+                id: "skills_advisory",
                 // `recommended-skills-audit` — advisory count on PreToolUse(Task).
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
                     (Trigger::PreToolUse, ToolMatch::Named("Agent")),
                 ],
-                check: Some(Box::new(SkillsAudit)),
+                check: Some(Box::new(SkillsAdvisory)),
                 observer: None,
             },
             // ── Wave 4: Write/Edit family ────────────────────────────────────
@@ -543,7 +545,7 @@ mod tests {
     fn task_family_applies_on_pre_tool_use_task() {
         let registry = Registry::new();
         let ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Task"));
-        for want in ["budget", "model_routing", "subagent_tracker", "skills_audit"] {
+        for want in ["context_budget_gate", "model_routing_gate", "subagent_observer", "skills_advisory"] {
             assert!(ids.contains(&want), "missing {want}");
         }
     }
@@ -559,10 +561,10 @@ mod tests {
     }
 
     #[test]
-    fn skill_post_tool_use_runs_skill_usage_tracker() {
+    fn skill_post_tool_use_runs_skill_usage_observer() {
         let registry = Registry::new();
         let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("Skill"));
-        assert!(ids.contains(&"skill_usage_tracker"));
+        assert!(ids.contains(&"skill_usage_observer"));
     }
 
     #[test]
@@ -570,15 +572,15 @@ mod tests {
         let registry = Registry::new();
         for id in [
             "bash_guard",
-            "budget",
-            "model_routing",
+            "context_budget_gate",
+            "model_routing_gate",
             "tool_use_counter",
             "main_context_counter",
-            "subagent_tracker",
-            "metrics_tracker",
-            "skill_usage_tracker",
+            "subagent_observer",
+            "metrics_observer",
+            "skill_usage_observer",
             "tool_result",
-            "skills_audit",
+            "skills_advisory",
             "size_gate",
             "path_guard",
             "close_gate",

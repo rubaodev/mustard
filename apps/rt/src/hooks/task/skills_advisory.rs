@@ -1,4 +1,4 @@
-//! `skills_audit` — the recommended-skills count advisory.
+//! `skills_advisory` — the recommended-skills count advisory.
 //!
 //! ## Scope (b3 Wave 3, Task family)
 //!
@@ -16,7 +16,7 @@
 //!
 //! ## Contract
 //!
-//! [`SkillsAudit`] implements [`Check`] — but it can only ever return `Allow`
+//! [`SkillsAdvisory`] implements [`Check`] — but it can only ever return `Allow`
 //! or `Warn`, never `Deny`. It is a `Check` (not an `Observer`) because the
 //! warn surfaces in the agent's context, which only a `Verdict` can carry.
 
@@ -34,7 +34,7 @@ use mustard_core::time::now_iso8601;
 const WARN_THRESHOLD: usize = 10;
 
 /// The recommended-skills audit module.
-pub struct SkillsAudit;
+pub struct SkillsAdvisory;
 
 /// Extract skill names from a Task prompt. Port of `extractSkills`.
 ///
@@ -226,7 +226,7 @@ fn resolve_skill_bytes(project_dir: &str, name: &str) -> Option<u64> {
     None
 }
 
-impl Check for SkillsAudit {
+impl Check for SkillsAdvisory {
     /// Audit the recommended-skills list of a `PreToolUse(Task)` dispatch.
     ///
     /// Advisory only — returns `Warn` above the threshold, `Allow` otherwise.
@@ -364,7 +364,7 @@ mod tests {
     fn under_threshold_allows() {
         let (input, ctx) = task_prompt("recommended_skills: [a, b, c]");
         assert_eq!(
-            SkillsAudit.evaluate(&input, &ctx).expect("no error"),
+            SkillsAdvisory.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -378,7 +378,7 @@ mod tests {
             .join(", ");
         let (input, ctx) = task_prompt(&format!("recommended_skills: [{list}]"));
         assert_eq!(
-            SkillsAudit.evaluate(&input, &ctx).expect("no error"),
+            SkillsAdvisory.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -391,7 +391,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(", ");
         let (input, ctx) = task_prompt(&format!("recommended_skills: [{list}]"));
-        match SkillsAudit.evaluate(&input, &ctx).expect("no error") {
+        match SkillsAdvisory.evaluate(&input, &ctx).expect("no error") {
             Verdict::Warn { message } => {
                 assert!(message.contains("recommended-skills"));
                 assert!(message.contains("11>10"));
@@ -409,7 +409,7 @@ mod tests {
             .join(", ");
         let (input, ctx) = task_prompt(&format!("recommended_skills: [{list}]"));
         assert!(
-            !SkillsAudit
+            !SkillsAdvisory
                 .evaluate(&input, &ctx)
                 .expect("no error")
                 .is_blocking()
@@ -429,7 +429,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            SkillsAudit.evaluate(&input, &ctx).expect("no error"),
+            SkillsAdvisory.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -443,7 +443,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            SkillsAudit.evaluate(&input, &ctx).expect("no error"),
+            SkillsAdvisory.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }

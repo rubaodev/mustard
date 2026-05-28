@@ -1,4 +1,4 @@
-//! `model_routing` — the model-selection gate for Task dispatches.
+//! `model_routing_gate` — the model-selection gate for Task dispatches.
 //!
 //! ## Scope (b3 Wave 3, Task family)
 //!

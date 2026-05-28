@@ -6,10 +6,12 @@
 //! exists to remove.
 //!
 //! - Waves 1-2: [`bash_guard`] — the Bash-tool family.
-//! - Wave 3: the Task / Subagent family — [`budget`] (prompt/return size),
-//!   [`model_routing`] (model-selection gate), [`tracker`] (tool-use /
-//!   main-context counters + agent/tool telemetry), [`skills_audit`]
-//!   (recommended-skills count advisory).
+//! - Wave 3: the Task / Subagent family — `context_budget_gate` (prompt/return
+//!   size), `model_routing_gate` (model-selection gate), the tool-use /
+//!   main-context counters (`tool_use_counter`, `main_context_counter`) plus
+//!   the agent/tool/skill observers (`subagent_observer`, `metrics_observer`,
+//!   `skill_usage_observer`), and `skills_advisory` (recommended-skills count
+//!   advisory).
 //! - Wave 4: the Write/Edit family — [`size_gate`] (spec/skill size + skill
 //!   validation), [`path_guard`] (sensitive-file + boundary gates),
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /

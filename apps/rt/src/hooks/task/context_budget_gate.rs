@@ -1,4 +1,4 @@
-//! `budget` — the consolidated Task-prompt / agent-return size module.
+//! `context_budget_gate` — the consolidated Task-prompt / agent-return size module.
 //!
 //! ## Scope (b3 Wave 3, Task family)
 //!
@@ -16,14 +16,15 @@
 //! mirror `__tests__/integration.test.js` (Suite 2 / Suite 3) and
 //! `hooks.test.js` ("context-budget.js metrics emission") case by case.
 //!
-//! ## Budget↔tracker boundary
+//! ## Budget↔counter boundary
 //!
-//! `budget` owns only **size of a prompt** and **size of a return**. The
-//! tool-use / main-context *count* caps live in [`crate::hooks::task::tracker`] —
-//! see that module's header for the rationale. There is deliberately no
+//! `context_budget_gate` owns only **size of a prompt** and **size of a
+//! return**. The tool-use / main-context *count* caps live in
+//! [`crate::hooks::task::tool_use_counter`] / [`crate::hooks::task::main_context_counter`] —
+//! see those modules' headers for the rationale. There is deliberately no
 //! counting logic here.
 //!
-//! ## `BudgetGuard` is a `Check` for both budgets
+//! ## `ContextBudgetGate` is a `Check` for both budgets
 //!
 //! `context-budget` is a gate (`Check`) on `PreToolUse(Task)`. `output-budget`
 //! is an advisory on `PostToolUse(Task)` — it never blocks and never rewrites.
@@ -35,10 +36,10 @@
 //! the consolidated binary two JSON objects could leave one invocation).
 //!
 //! Wave 5 resolves it: `output-budget` is now part of the `Check` path. On
-//! `PostToolUse(Task)` [`BudgetGuard::evaluate`] emits the return-size metric
+//! `PostToolUse(Task)` [`ContextBudgetGate::evaluate`] emits the return-size metric
 //! and, when over budget, returns a [`Verdict::Inject`] carrying the advisory.
 //! The dispatcher folds that `Inject` into the single `Outcome`, so exactly
-//! one JSON object is emitted per invocation. `BudgetGuard` no longer
+//! one JSON object is emitted per invocation. `ContextBudgetGate` no longer
 //! implements [`Observer`].
 //!
 //! ## Mode
@@ -472,7 +473,7 @@ fn output_role_label(role: Role, subagent_type: &str) -> String {
 /// The `output-budget` advisory, computed for a `PostToolUse(Task)`
 /// invocation. Returns the over-budget advisory text + the metric line to
 /// emit, or `None` when the return is within budget (the JS still emits a
-/// `passed` metric, reproduced by [`BudgetGuard::observe`]).
+/// `passed` metric, reproduced by [`ContextBudgetGate::observe`]).
 struct OutputBudgetResult {
     /// The advisory text, present only when over budget.
     advisory: Option<String>,
@@ -596,9 +597,9 @@ fn metric_cwd_opt(input: &HookInput) -> Option<&str> {
 // ---------------------------------------------------------------------------
 
 /// The consolidated Task-size enforcement module.
-pub struct BudgetGuard;
+pub struct ContextBudgetGate;
 
-impl Check for BudgetGuard {
+impl Check for ContextBudgetGate {
     /// Both budgets, dispatched by trigger:
     ///
     /// - `PreToolUse(Task)` → `context-budget`: gate the dispatch on prompt
@@ -708,7 +709,7 @@ mod tests {
 
     fn verdict_for(subagent: &str, prompt_len: usize, description: &str) -> Verdict {
         let (input, ctx) = task_input(subagent, prompt_len, description);
-        BudgetGuard
+        ContextBudgetGate
             .evaluate(&input, &ctx)
             .expect("check never errors")
     }
@@ -829,7 +830,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            BudgetGuard.evaluate(&input, &ctx).expect("no error"),
+            ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -857,7 +858,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            BudgetGuard.evaluate(&input, &ctx).expect("no error"),
+            ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -871,7 +872,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            BudgetGuard.evaluate(&input, &ctx).expect("no error"),
+            ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -950,7 +951,7 @@ mod tests {
             trigger: Some(Trigger::PostToolUse),
             workspace_root: None,
         };
-        match BudgetGuard.evaluate(&input, &ctx).expect("no error") {
+        match ContextBudgetGate.evaluate(&input, &ctx).expect("no error") {
             Verdict::Inject { context } => {
                 assert!(context.contains("Output Budget"));
                 assert!(context.contains("Explore"));
@@ -975,7 +976,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            BudgetGuard.evaluate(&input, &ctx).expect("no error"),
+            ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
