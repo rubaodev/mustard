@@ -659,7 +659,7 @@ mod tests {
     /// AC-A-5 + AC-A-7 — three sequential children fire `SubagentStop` and
     /// each call appends one line to `_review-spans.md`. The second child
     /// emits a Red verdict (its output text triggers a Semantic vocab hit);
-    /// consolidation must then be blocked by [`review_spans::has_red_verdict`].
+    /// consolidation must then be blocked by [`review_spans::check_consolidation`].
     ///
     /// The test drives [`span_level_eval_and_append_in`] directly (passing
     /// the wave directory as a parameter) so it does NOT need to mutate
@@ -720,7 +720,7 @@ mod tests {
         // Medium severity for some reason), force a Red to exercise the
         // blocking path — the AC is about the *check*, not about which
         // severity tier the matcher chose.
-        if !review_spans::has_red_verdict(&wave_dir) {
+        if matches!(review_spans::check_consolidation(&wave_dir), review_spans::ConsolidationCheck::Allowed) {
             review_spans::append_verdict(
                 &wave_dir,
                 &VerdictEntry {
@@ -734,7 +734,7 @@ mod tests {
             .expect("append synthetic red");
         }
         assert!(
-            review_spans::has_red_verdict(&wave_dir),
+            matches!(review_spans::check_consolidation(&wave_dir), review_spans::ConsolidationCheck::Blocked { .. }),
             "ledger must report a Red verdict after the W5 sequence"
         );
         match review_spans::check_consolidation(&wave_dir) {

@@ -106,7 +106,7 @@ impl VerdictEntry {
 }
 
 /// Resolve the ledger path for `wave_dir`. Used by both
-/// [`append_verdict`] and [`has_red_verdict`] so a single source of truth
+/// [`append_verdict`] and [`check_consolidation`] so a single source of truth
 /// drives the location.
 #[must_use]
 pub fn ledger_path(wave_dir: &Path) -> PathBuf {
@@ -182,16 +182,6 @@ fn parse_line(line: &str) -> Option<VerdictEntry> {
         signal_count,
         first_message,
     })
-}
-
-/// Return `true` when the ledger at `wave_dir` records at least one red
-/// verdict. The consolidation gate (AC-A-7) uses this as its single
-/// boolean: any red line blocks the wave.
-#[must_use]
-pub fn has_red_verdict(wave_dir: &Path) -> bool {
-    read_entries(wave_dir)
-        .iter()
-        .any(|e| e.verdict == VERDICT_RED)
 }
 
 /// Result of a consolidation check — distinguishes "no ledger" (`Allowed`)
@@ -287,31 +277,6 @@ mod tests {
     }
 
     #[test]
-    fn has_red_verdict_is_true_when_any_red_exists() {
-        let dir = tempdir().unwrap();
-        let wave = dir.path().join("wave-5-rt");
-        append_verdict(&wave, &entry(VERDICT_GREEN, "a", "")).unwrap();
-        append_verdict(&wave, &entry(VERDICT_RED, "b", "found stub")).unwrap();
-        append_verdict(&wave, &entry(VERDICT_GREEN, "c", "")).unwrap();
-        assert!(has_red_verdict(&wave));
-    }
-
-    #[test]
-    fn has_red_verdict_is_false_when_no_red_exists() {
-        let dir = tempdir().unwrap();
-        let wave = dir.path().join("wave-5-rt");
-        append_verdict(&wave, &entry(VERDICT_GREEN, "a", "")).unwrap();
-        append_verdict(&wave, &entry(VERDICT_AMBER, "b", "")).unwrap();
-        assert!(!has_red_verdict(&wave));
-    }
-
-    #[test]
-    fn has_red_verdict_is_false_when_ledger_missing() {
-        let dir = tempdir().unwrap();
-        assert!(!has_red_verdict(&dir.path().join("never-existed")));
-    }
-
-    #[test]
     fn check_consolidation_blocks_on_first_red() {
         let dir = tempdir().unwrap();
         let wave = dir.path().join("wave-5-rt");
@@ -352,7 +317,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].verdict, "green");
         assert_eq!(entries[1].verdict, "red");
-        assert!(has_red_verdict(&wave));
+        assert!(matches!(check_consolidation(&wave), ConsolidationCheck::Blocked { .. }));
     }
 
     #[test]
