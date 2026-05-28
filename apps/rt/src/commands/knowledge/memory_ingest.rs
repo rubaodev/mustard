@@ -18,7 +18,7 @@
 //! `{ "ingested": { "knowledge": N, "decisions": M, "lessons": K, "agent_memory": Z }, "deleted": bool, "errors": [...] }`.
 
 use crate::shared::context::project_dir as env_project_dir;
-use crate::util::slug::slug_for;
+use crate::util::slug;
 use mustard_core::io::atomic_md::frontmatter::Frontmatter;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -110,7 +110,7 @@ fn ingest_knowledge(claude_dir: &Path, errors: &mut Vec<Value>) -> usize {
         }
         fm.insert("status".into(), json!("active"));
         let pattern = format!("{name}: {description}");
-        let slug = slug_for(&captured_at, &pattern);
+        let slug = slug::slug_for(&captured_at, &pattern);
         match write_md(&dest_dir, &slug, fm, format!("{description}\n")) {
             Ok(()) => count += 1,
             Err(e) => errors.push(json!({
@@ -185,7 +185,7 @@ fn ingest_memory_file(
         }
         fm.insert("status".into(), json!("active"));
 
-        let slug = slug_for(&captured_at, &content);
+        let slug = slug::slug_for(&captured_at, &content);
         match write_md(dest_dir, &slug, fm, format!("{content}\n")) {
             Ok(()) => count += 1,
             Err(e) => errors.push(json!({
@@ -269,7 +269,7 @@ fn ingest_agent_memory_dir(agent_dir: &Path, dest_dir: &Path, errors: &mut Vec<V
             .map(|d| d.to_string())
             .unwrap_or_default();
 
-        let slug = slug_for(&captured_at, &summary);
+        let slug = slug::slug_for(&captured_at, &summary);
         match write_md(dest_dir, &slug, fm, body) {
             Ok(()) => {
                 count += 1;

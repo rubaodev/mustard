@@ -32,7 +32,7 @@
 use crate::shared::context::project_dir;
 use mustard_core::io::fs as mfs;
 use mustard_core::domain::entity_registry::EntityRegistry;
-use mustard_core::domain::skill::discover::collect_skill_md;
+use mustard_core::domain::skill::discover;
 use mustard_core::domain::skill::frontmatter::{parse as parse_fm, SkillFrontmatter, SkillScope, SkillTag};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
@@ -163,7 +163,7 @@ fn discover_skills(project: &Path, subproject: Option<&str>) -> Vec<(PathBuf, Sk
 
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for root in roots {
-        for candidate in collect_skill_md(&root) {
+        for candidate in discover::collect_skill_md(&root) {
             let Ok(text) = mfs::read_to_string(&candidate) else {
                 continue;
             };

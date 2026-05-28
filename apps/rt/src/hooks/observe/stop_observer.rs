@@ -9,7 +9,7 @@
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::events::economy;
-use crate::util::slug::slug_for;
+use crate::util::slug;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
@@ -173,7 +173,7 @@ fn promote_high_confidence(cwd: &str) -> usize {
         if std::fs::create_dir_all(&dest_dir).is_err() {
             continue;
         }
-        let slug = slug_for(&now, &content);
+        let slug = slug::slug_for(&now, &content);
         let dest_path = dest_dir.join(format!("{slug}.md"));
         let kind = if table == "decisions" { "decision" } else { "lesson" };
         let mut new_fm = serde_json::Map::new();

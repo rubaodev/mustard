@@ -19,7 +19,7 @@
 //! (POSIX fallback). Exit is always `0` (fail-open).
 
 use crate::shared::context::{current_spec, project_dir, session_id};
-use crate::util::slug::slug_for;
+use crate::util::slug;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::atomic_md::frontmatter::Frontmatter;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
@@ -290,7 +290,7 @@ fn write_decision_or_lesson(
         return false;
     }
     let captured_at = now_iso8601();
-    let slug = slug_for(&captured_at, content);
+    let slug = slug::slug_for(&captured_at, content);
     let dest = dir.join(format!("{slug}.md"));
 
     let mut fm = Map::new();
@@ -386,7 +386,7 @@ fn run_knowledge(input: &Value) {
     }
     let captured_at = now_iso8601();
     let pattern = format!("{name}: {description}");
-    let slug = slug_for(&captured_at, &pattern);
+    let slug = slug::slug_for(&captured_at, &pattern);
     let dest = dir.join(format!("{slug}.md"));
 
     let mut fm = Map::new();
@@ -455,7 +455,7 @@ pub fn persist_agent_memory_md(
         return false;
     }
     let captured_at = now_iso8601();
-    let slug = slug_for(&captured_at, summary);
+    let slug = slug::slug_for(&captured_at, summary);
     let dest = dir.join(format!("{slug}.md"));
     let mut fm = Map::new();
     if let Some(s) = session_id {
@@ -658,7 +658,7 @@ pub(crate) fn run_write(opts: WriteOpts) {
         return;
     }
     let captured_at = now_iso8601();
-    let slug = slug_for(&captured_at, &opts.summary);
+    let slug = slug::slug_for(&captured_at, &opts.summary);
     let dest = dir.join(format!("{slug}.md"));
 
     let session = session_id();
@@ -1049,10 +1049,10 @@ mod tests {
 
     #[test]
     fn slug_is_deterministic() {
-        let a = slug_for("2026-05-27T00:00:00.000Z", "hello");
-        let b = slug_for("2026-05-27T00:00:00.000Z", "hello");
+        let a = slug::slug_for("2026-05-27T00:00:00.000Z", "hello");
+        let b = slug::slug_for("2026-05-27T00:00:00.000Z", "hello");
         assert_eq!(a, b);
-        let c = slug_for("2026-05-27T00:00:00.000Z", "world");
+        let c = slug::slug_for("2026-05-27T00:00:00.000Z", "world");
         assert_ne!(a, c);
     }
 
