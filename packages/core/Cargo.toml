@@ -36,6 +36,15 @@ aho-corasick = "1.1"
 # the current stable major on crates.io (May 2026); the dep is crate-local
 # because `vocabulary` is the only consumer today.
 toml = "0.8"
+# Tree-sitter bindings and the agnostic grammar loader — backs the `ast`
+# module (Spec A Wave 1.5). `tree-sitter` provides `Parser`, `Tree`, `Query`,
+# `Language`. `tree-sitter-loader` discovers grammars installed by the user
+# in `~/.config/tree-sitter/config.json` at runtime via `Loader::find_all_languages`,
+# so `mustard-core` carries zero hardcoded language enumeration. No individual
+# grammar crate (tree-sitter-rust / -typescript / etc.) is pulled in — that
+# would re-introduce the agnostic violation the W1.5 redesign exists to fix.
+tree-sitter = "0.26"
+tree-sitter-loader = "0.26"
 
 [dev-dependencies]
 insta = { workspace = true }

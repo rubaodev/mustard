@@ -33,6 +33,7 @@
 //!   [`knowledge`] (knowledge extraction + the inter-agent context-selection
 //!   API).
 
+pub mod ast;
 pub mod atomic_md;
 pub mod claude_paths;
 pub mod config;
