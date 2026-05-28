@@ -28,14 +28,15 @@
 //! file copy and curate their own digest tree). The manifest is also written
 //! on `--dry-run` so verification scripts can preview it.
 
-use crate::shared::context::session_id;
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs::{read_to_string, write_atomic};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::{read_meta, domain::spec as spec_io};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -377,36 +378,9 @@ pub fn run(opts: BackupSpecsOpts) {
     let report = backup(&cwd, &opts);
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(started.elapsed().as_millis());
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "backup-specs", started.elapsed().as_millis() as u64, None, json!({}));
 }
 
-fn emit_economy(duration_ms: u128) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("backup-specs".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "backup-specs",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-        }),
-        spec: None,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

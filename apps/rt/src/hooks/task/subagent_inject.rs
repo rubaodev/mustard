@@ -26,6 +26,8 @@
 //! decisive verdict is always either `Inject` (when something was resolved)
 //! or `Allow` (when nothing was).
 
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
 use mustard_core::io::atomic_md::MarkdownStore;
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
@@ -422,7 +424,7 @@ fn span_level_eval_and_append_in(
         first_message,
     };
     let _ = review_spans::append_verdict(wave_dir, &entry);
-    emit_economy_operation(cwd, "subagent_inject.span_eval");
+    economy::emit(cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.span_eval", "duration_ms": 0, "tokens_used": 0}));
     Some(verdict_label)
 }
 
@@ -528,7 +530,7 @@ impl Check for SubagentInject {
             return Ok(Verdict::Allow);
         }
         // Emit telemetry — fail-open.
-        emit_economy_operation(&cwd, "subagent_inject.dispatch");
+        economy::emit(&cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.dispatch", "duration_ms": 0, "tokens_used": 0}));
         let combined = sections.join("\n\n");
         let capped = if combined.chars().count() > INJECT_MAX_CHARS {
             let mut s: String = combined.chars().take(INJECT_MAX_CHARS).collect();
@@ -543,26 +545,6 @@ impl Check for SubagentInject {
 
 /// Emit `pipeline.economy.operation.invoked` for a W8 in-binary operation.
 /// Fail-open. Routes through `route::emit` (NDJSON sink) for uniformity.
-fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use serde_json::json;
-
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("subagent_inject".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::shared::context::current_spec(cwd),
-    };
-    let _ = crate::shared::events::route::emit(cwd, &event);
-}
 
 #[cfg(test)]
 mod tests {
@@ -581,7 +563,7 @@ mod tests {
     fn task_input(prompt: &str, role: &str) -> HookInput {
         HookInput {
             tool_name: Some("Task".to_string()),
-            tool_input: json!({ "prompt": prompt, "subagent_type": role }),
+            tool_input: serde_json::json!({ "prompt": prompt, "subagent_type": role }),
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         }
@@ -600,7 +582,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let input = HookInput {
             tool_name: Some("Bash".to_string()),
-            tool_input: json!({ "command": "ls" }),
+            tool_input: serde_json::json!({ "command": "ls" }),
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };

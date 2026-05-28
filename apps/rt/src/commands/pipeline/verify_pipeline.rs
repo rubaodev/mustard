@@ -32,12 +32,13 @@
 //! `--format html` additionally writes a standalone HTML report and prints its
 //! path on stderr.
 
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use crate::report::{table, Report};
-use crate::shared::context::{current_spec, session_id};
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
@@ -567,36 +568,6 @@ fn write_html_report(cwd: &Path, result: &VerifyResult) -> Option<PathBuf> {
 }
 
 /// Emit `pipeline.economy.operation.invoked` for one verify run.
-fn emit_economy(duration_ms: u128, subproject_count: usize, any_failure: bool) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec = current_spec(&cwd);
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("verify-pipeline".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "verify-pipeline",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-            "subprojects": subproject_count,
-            "ok": !any_failure,
-        }),
-        spec,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 /// Dispatch `mustard-rt run verify-pipeline`.
 pub fn run(format: &str) {
@@ -614,11 +585,7 @@ pub fn run(format: &str) {
         "{}",
         serde_json::to_string_pretty(&result.to_json()).unwrap_or_else(|_| "{}".to_string())
     );
-    emit_economy(
-        result.total_duration_ms,
-        result.per_subproject.len(),
-        result.any_failure(),
-    );
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "verify-pipeline", result.total_duration_ms as u64, None, json!({"subprojects": result.per_subproject.len(), "ok": !result.any_failure()}));
     if result.any_failure() {
         std::process::exit(1);
     }

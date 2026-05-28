@@ -21,6 +21,9 @@
 //!
 //! Every IO step degrades to a no-op. Telemetry is not load-bearing.
 
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 
 /// The W8 auto-capture hook.
@@ -150,26 +153,6 @@ fn persist(
 
 /// Emit `pipeline.economy.operation.invoked` via the NDJSON event route.
 /// Fail-open: any error degrades to a no-op.
-fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use serde_json::json;
-
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("auto_capture_summary".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::shared::context::current_spec(cwd),
-    };
-    let _ = crate::shared::events::route::emit(cwd, &event);
-}
 
 impl Observer for AutoCaptureSummary {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
@@ -224,7 +207,7 @@ impl Observer for AutoCaptureSummary {
             &summary,
             details.as_deref(),
         );
-        emit_economy_operation(&cwd, "auto_capture_summary.persist");
+        economy::emit(&cwd, ActorKind::Hook, "auto_capture_summary", "pipeline.economy.operation.invoked", None, json!({"operation": "auto_capture_summary.persist", "duration_ms": 0, "tokens_used": 0}));
     }
 }
 

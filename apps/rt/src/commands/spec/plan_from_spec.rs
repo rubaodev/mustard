@@ -19,11 +19,11 @@
 //! Fail-open: invalid args print a usage line on stderr and exit non-zero so
 //! the parent pipeline does not silently scaffold an empty plan.
 
-use crate::shared::context::{current_spec, session_id};
-use mustard_core::time::now_iso8601;
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde::Serialize;
 use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
+use serde::Serialize;
 
 /// One wave entry rendered into the plan JSON.
 #[derive(Debug, Serialize)]
@@ -114,39 +114,10 @@ pub fn run(opts: PlanFromSpecOpts) {
     };
     let body = serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(started.elapsed().as_millis(), opts.waves);
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "plan-from-spec", started.elapsed().as_millis() as u64, None, json!({"waves": opts.waves}));
 }
 
 /// Telemetry — `pipeline.economy.operation.invoked` for the run.
-fn emit_economy(duration_ms: u128, waves: u32) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec = current_spec(&cwd);
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("plan-from-spec".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "plan-from-spec",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-            "waves": waves,
-        }),
-        spec,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

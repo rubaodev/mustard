@@ -7,3 +7,4 @@
 pub mod blob_spill;
 pub mod route;
 pub mod writer_ndjson;
+pub mod economy;

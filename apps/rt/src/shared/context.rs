@@ -52,6 +52,19 @@ pub fn workspace_root_strict() -> Result<PathBuf, WorkspaceError> {
 /// 2. `CLAUDE_PROJECT_DIR` env var.
 /// 3. `std::env::current_dir()`.
 /// 4. `"."` as a last resort.
+/// The raw process working directory as a `String`, defaulting to `"."`.
+///
+/// This is the plain `std::env::current_dir()` idiom (NOT the workspace-root
+/// walk of [`project_dir`]) — the single home for the `current_dir → String`
+/// snippet that the per-command economy emitters used verbatim.
+#[must_use]
+pub fn cwd() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| ".".to_string())
+}
+
 #[must_use]
 pub fn project_dir() -> String {
     if let Ok(root) = workspace_root_strict() {

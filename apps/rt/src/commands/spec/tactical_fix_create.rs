@@ -11,17 +11,18 @@
 //! repeat call against an existing directory aborts with a `dir_exists` error
 //! in the JSON rather than overwriting work in flight.
 
-use crate::shared::context::{current_spec, session_id};
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use crate::commands::spec::spec_scaffold;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs::write_atomic;
 use mustard_core::platform::i18n::{slugify, Locale};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::platform::process::rtk_command;
 use mustard_core::{read_meta, Meta};
 use serde::Serialize;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// Options for `mustard-rt run tactical-fix-create`.
@@ -197,41 +198,9 @@ pub fn run(opts: TacticalFixOpts) {
     let report = create(&cwd, &opts);
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(started.elapsed().as_millis(), &report.slug);
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "tactical-fix-create", started.elapsed().as_millis() as u64, Some(report.slug.as_str()), json!({}));
 }
 
-fn emit_economy(duration_ms: u128, child_slug: &str) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec_attr = if child_slug.is_empty() {
-        current_spec(&cwd)
-    } else {
-        Some(child_slug.to_string())
-    };
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("tactical-fix-create".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "tactical-fix-create",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-        }),
-        spec: spec_attr,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

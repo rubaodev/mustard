@@ -33,6 +33,8 @@
 //! `crate::shared::events::route::emit` (NDJSON path) instead of the old SQLite
 //! event sink.
 
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
 use crate::hooks::observe::amend_capture::close_amend_windows_for_session;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -150,7 +152,7 @@ impl Check for PromptGate {
         if !is_mustard_command(prompt) {
             if let Some(spec) = crate::shared::context::current_spec(&cwd) {
                 if !spec.is_empty() {
-                    let _ = emit_economy_operation(&cwd, "prompt_gate.pipeline_in_flight_banner");
+                    let _ = economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
                     return Ok(Verdict::Inject {
                         context: format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}"),
                     });
@@ -166,26 +168,6 @@ impl Check for PromptGate {
 ///
 /// W3C: routes via `crate::shared::events::route::emit` (NDJSON for
 /// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
-fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use serde_json::json;
-
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("prompt_gate".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::shared::context::current_spec(cwd),
-    };
-    if crate::shared::events::route::emit(cwd, &event) { Ok(()) } else { Err(()) }
-}
 
 #[cfg(test)]
 mod tests {
@@ -213,7 +195,7 @@ mod tests {
     fn prompt_input(prompt: &str) -> HookInput {
         HookInput {
             hook_event_name: Some("UserPromptSubmit".to_string()),
-            raw: json!({ "prompt": prompt }),
+            raw: serde_json::json!({ "prompt": prompt }),
             ..HookInput::default()
         }
     }

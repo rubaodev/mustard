@@ -7,6 +7,8 @@
 //!
 //! Pure [`Observer`] — never blocks.
 
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
@@ -79,24 +81,6 @@ fn bump_last_used(cwd: &str, text: &str) {
     }
 }
 
-fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("stop_observer".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::shared::context::current_spec(cwd),
-    };
-    let _ = crate::shared::events::route::emit(cwd, &event);
-}
 
 impl Observer for StopObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
@@ -106,7 +90,7 @@ impl Observer for StopObserver {
         }
         let cwd = project_dir(input, ctx);
         bump_last_used(&cwd, &output);
-        emit_economy_operation(&cwd, "stop_observer.bump_last_used");
+        economy::emit(&cwd, ActorKind::Hook, "stop_observer", "pipeline.economy.operation.invoked", None, json!({"operation": "stop_observer.bump_last_used", "duration_ms": 0, "tokens_used": 0}));
     }
 }
 
@@ -245,7 +229,7 @@ impl Observer for SessionEndConsolidate {
         };
         let n = promote_high_confidence(&cwd);
         if n > 0 {
-            emit_economy_operation(&cwd, "session_end_consolidate.promote");
+            economy::emit(&cwd, ActorKind::Hook, "stop_observer", "pipeline.economy.operation.invoked", None, json!({"operation": "session_end_consolidate.promote", "duration_ms": 0, "tokens_used": 0}));
         }
     }
 }
@@ -300,7 +284,7 @@ impl mustard_core::domain::model::contract::Check for PreCompactMemorySnippet {
         if entries.is_empty() {
             return Ok(Verdict::Allow);
         }
-        emit_economy_operation(&cwd, "pre_compact_memory_snippet.inject");
+        economy::emit(&cwd, ActorKind::Hook, "stop_observer", "pipeline.economy.operation.invoked", None, json!({"operation": "pre_compact_memory_snippet.inject", "duration_ms": 0, "tokens_used": 0}));
         let body: String = entries
             .iter()
             .map(|s| format!("- {s}"))

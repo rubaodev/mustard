@@ -11,14 +11,15 @@
 //! reads (registry file + manifest glob), so the output is byte-stable for a
 //! given input.
 
-use crate::shared::context::{current_spec, session_id};
-use mustard_core::time::now_iso8601;
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use mustard_core::io::fs::read_to_string;
 use mustard_core::platform::i18n::{slugify, SupportedLocale as Locale};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 /// Options for `mustard-rt run prd-build`.
@@ -302,37 +303,9 @@ pub fn run(opts: PrdBuildOpts) {
     )
     .unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(started.elapsed().as_millis());
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "prd-build", started.elapsed().as_millis() as u64, None, json!({}));
 }
 
-fn emit_economy(duration_ms: u128) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec = current_spec(&cwd);
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("prd-build".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "prd-build",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-        }),
-        spec,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

@@ -52,8 +52,10 @@
 //! Exit code 0 always (fail-open).  Conflicts are not errors; they surface in
 //! `conflicts[]` so the caller can decide.
 
-use serde::Serialize;
 use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -133,7 +135,7 @@ pub fn run(opts: RefreshClaudeOpts) {
     println!("{body}");
 
     // Fail-open telemetry best-effort.
-    let _ = emit_economy(&cwd, report.copied.len());
+    economy::emit(&cwd.to_string_lossy(), ActorKind::Orchestrator, "refresh-claude", "pipeline.economy.operation.invoked", None, json!({"operation": "refresh-claude", "copied_count": report.copied.len(), "was_rust_only": true}));
 }
 
 // ---------------------------------------------------------------------------
@@ -372,34 +374,6 @@ fn resolve_templates_dir(override_: Option<&Path>, cwd: &Path) -> PathBuf {
 // Telemetry
 // ---------------------------------------------------------------------------
 
-fn emit_economy(cwd: &Path, copied_count: usize) -> Option<()> {
-    use crate::shared::events::route;
-    use mustard_core::time::now_iso8601;
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use crate::shared::context::session_id;
-
-    let cwd_str = cwd.to_str()?.to_string();
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("refresh-claude".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "refresh-claude",
-            "copied_count": copied_count,
-            "was_rust_only": true,
-        }),
-        spec: None,
-    };
-    let _ = route::emit(&cwd_str, &ev);
-    Some(())
-}
 
 // ---------------------------------------------------------------------------
 // Tests

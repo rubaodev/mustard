@@ -26,12 +26,13 @@
 //! prompt. `review.complete` is emitted by a follow-up call (this subcommand
 //! covers the *dispatch* half — the verdict half is `review-result`).
 
-use crate::shared::context::{current_spec, session_id};
-use mustard_core::time::now_iso8601;
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use mustard_core::platform::process::rtk_command;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Options for `mustard-rt run review-dispatch`.
 #[derive(Debug, Clone)]
@@ -147,37 +148,9 @@ pub fn run(opts: ReviewDispatchOpts) {
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(total, opts.spec.as_deref());
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "review-dispatch", total as u64, opts.spec.as_deref(), json!({}));
 }
 
-fn emit_economy(duration_ms: u64, spec: Option<&str>) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec_attr = spec.map(str::to_string).or_else(|| current_spec(&cwd));
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("review-dispatch".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "review-dispatch",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-        }),
-        spec: spec_attr,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

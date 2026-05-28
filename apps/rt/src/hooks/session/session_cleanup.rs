@@ -32,6 +32,7 @@
 //! `unsafe`) and fail-open: a dead PID or a missing kill binary degrades to a
 //! warning and the PID file is still removed.
 
+use mustard_core::domain::model::event::ActorKind;
 use mustard_core::domain::economy::{
     self, sources::rtk as rtk_source, sources::transcript, sources::IngestContext,
 };
@@ -39,35 +40,13 @@ use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
-use crate::shared::context::current_spec;
-use crate::shared::events::route;
-use mustard_core::time::now_iso8601;
 
 /// Build + route a `HarnessEvent` from `(event_name, payload)` produced by an
 /// `economy::writer::*_event` builder. Fail-open per the router's contract.
-fn emit_economy_event(cwd: &str, hook_id: &str, event_name: &str, payload: Value) {
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: "unknown".to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some(hook_id.to_string()),
-            actor_type: None,
-        },
-        event: event_name.to_string(),
-        payload,
-        spec: current_spec(cwd),
-    };
-    let _ = route::emit(cwd, &event);
-}
 
 /// `.compact-state` files older than this are pruned — 24 hours.
 const ONE_DAY_MS: u128 = 24 * 60 * 60 * 1000;
@@ -398,7 +377,7 @@ fn ingest_session_transcript(cwd: &str, session_id: Option<&str>) {
     // the harness env, fail-open per call.
     for frame in frames {
         let (event_name, payload) = economy::writer::run_event(&frame);
-        emit_economy_event(cwd, "session-cleanup", &event_name, payload);
+        crate::shared::events::economy::emit(cwd, ActorKind::Hook, "session-cleanup", &event_name, None, payload);
     }
 }
 
@@ -436,7 +415,7 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
     // block the rest.
     for rec in records {
         let (event_name, payload) = economy::writer::savings_event(&rec);
-        emit_economy_event(cwd, "session-cleanup", &event_name, payload);
+        crate::shared::events::economy::emit(cwd, ActorKind::Hook, "session-cleanup", &event_name, None, payload);
     }
 }
 

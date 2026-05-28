@@ -12,14 +12,14 @@
 //! header form. Fail-open per step — a malformed file degrades to the next
 //! source instead of erroring.
 
-use crate::shared::context::{current_spec, session_id};
-use mustard_core::time::now_iso8601;
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use mustard_core::platform::i18n::{project_locale_from_file, SupportedLocale as Locale};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use mustard_core::{read_meta, domain::spec as spec_io};
 use serde::Serialize;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -123,41 +123,9 @@ pub fn run(opts: SpecLangResolveOpts) {
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(started.elapsed().as_millis(), &opts.spec);
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "spec-lang-resolve", started.elapsed().as_millis() as u64, Some(opts.spec.as_str()), json!({}));
 }
 
-fn emit_economy(duration_ms: u128, spec: &str) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec_attr = if spec.is_empty() {
-        current_spec(&cwd)
-    } else {
-        Some(spec.to_string())
-    };
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("spec-lang-resolve".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "spec-lang-resolve",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-        }),
-        spec: spec_attr,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

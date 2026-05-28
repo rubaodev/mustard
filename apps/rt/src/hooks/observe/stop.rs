@@ -20,6 +20,9 @@
 //! Pure [`Observer`] — never blocks. Every IO step (marker read/write, DB
 //! open, insert) degrades to a no-op on error.
 
+use serde_json::json;
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
 use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::ClaudePaths;
@@ -150,26 +153,6 @@ fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
 }
 
 /// Emit `pipeline.economy.operation.invoked` for the capture. Fail-open.
-fn emit_economy_operation(cwd: &str, operation: &str) {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    use serde_json::json;
-
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("stop".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::shared::context::current_spec(cwd),
-    };
-    let _ = crate::shared::events::route::emit(cwd, &event);
-}
 
 impl Observer for Stop {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
@@ -200,7 +183,7 @@ impl Observer for Stop {
             .map(str::to_string);
         persist_interrupted(&cwd, &summary, session_id.as_deref());
         touch_marker(&marker);
-        emit_economy_operation(&cwd, "stop.persist_interrupted");
+        economy::emit(&cwd, ActorKind::Hook, "stop", "pipeline.economy.operation.invoked", None, json!({"operation": "stop.persist_interrupted", "duration_ms": 0, "tokens_used": 0}));
     }
 }
 

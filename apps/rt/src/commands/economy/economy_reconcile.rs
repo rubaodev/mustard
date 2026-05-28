@@ -7,6 +7,8 @@
 //! transient spikes). Idempotent — running twice with the same event store
 //! yields the same baselines.
 
+use crate::shared::context;
+use crate::shared::events::economy;
 use crate::commands::economy::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
 use crate::shared::context::{current_spec, session_id};
 use crate::shared::events::route;
@@ -212,37 +214,9 @@ pub fn run(opts: ReconcileOpts) {
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    emit_economy(started.elapsed().as_millis());
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "economy-reconcile", started.elapsed().as_millis() as u64, None, json!({}));
 }
 
-fn emit_economy(duration_ms: u128) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec = current_spec(&cwd);
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("economy-reconcile".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "economy-reconcile",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-        }),
-        spec,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 #[cfg(test)]
 mod tests {

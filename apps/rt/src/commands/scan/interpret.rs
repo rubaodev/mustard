@@ -39,6 +39,8 @@
 //! directly to the Anthropic REST API. The user's existing Claude subscription
 //! covers the cost; `mustard-rt` requires no API key in the environment.
 
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::events::economy;
 use super::file_utils::VisitedFile;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs as mfs;
@@ -102,7 +104,6 @@ const MODEL_ENV: &str = "MUSTARD_SCAN_MODEL";
 /// Cache toggle env var — `off` bypasses both read and write paths.
 const CACHE_TOGGLE_ENV: &str = "MUSTARD_INTERPRET_CACHE";
 /// Economy event kind emitted after each cold-path model call.
-const EVENT_ECONOMY_OPERATION: &str = "pipeline.economy.operation.invoked";
 
 /// Recursion guard: set on the `claude` CLI subprocess we spawn so the parent
 /// `mustard-rt` `SessionStart` hook (inherited by the sub-session) detects the
@@ -372,7 +373,7 @@ pub fn interpret_with(
     }
 
     // 7. Emit economy telemetry (fail-open — never load-bearing).
-    emit_economy_event(root, duration_ms);
+    economy::emit(&root.to_string_lossy(), ActorKind::Hook, "scan-cold-path", "pipeline.economy.operation.invoked", None, json!({"operation": "scan-cold-path", "duration_ms": duration_ms as i64, "tokens_used": 0}));
 
     parsed
 }
@@ -600,33 +601,6 @@ fn wait_with_timeout(
 /// Tokens are reported as `0` — the cost is charged to the user's Claude
 /// subscription via the `claude` CLI, not to any Mustard API key.
 /// Fail-open: any store error is silently swallowed.
-fn emit_economy_event(root: &Path, duration_ms: u128) {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-
-    let session_id = std::env::var("MUSTARD_SESSION_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("CLAUDE_SESSION_ID").ok().filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| "unknown".to_string());
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id,
-        wave: 0,
-        actor: Actor { kind: ActorKind::Hook, id: Some("scan-cold-path".to_string()), actor_type: None },
-        event: EVENT_ECONOMY_OPERATION.to_string(),
-        payload: json!({
-            "operation": "scan-cold-path",
-            "duration_ms": duration_ms,
-            "tokens_used": 0,
-        }),
-        spec: None,
-    };
-    // `pipeline.economy.operation.invoked` is a pipeline.* event — the W5
-    // router classifies it to SQLite. Fail-open: every error is swallowed
-    // inside `route::emit`.
-    let _ = crate::shared::events::route::emit(root.to_string_lossy().as_ref(), &event);
-}
 
 /// Parse the model's reply into an [`InterpretedResult`].
 ///

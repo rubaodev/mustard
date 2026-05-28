@@ -24,12 +24,12 @@
 //!   absent. Powerline statusline themes require this; without it the
 //!   transition glyphs render as tofu.
 
-use crate::shared::context::{current_spec, session_id};
+use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context;
+use crate::shared::events::economy;
 use crate::commands::skill::skill_discovery_lint;
-use mustard_core::time::now_iso8601;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -1236,7 +1236,7 @@ pub fn run(opts: DoctorOpts) {
         // is the only output.
         if matches!(check_name.as_str(), "claude-paths" | "workspace-leaks" | "i1") {
             run_typed_check(check_name, &cwd, opts.format == "json");
-            emit_economy(started.elapsed().as_millis(), 1, false);
+            economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
             return;
         }
 
@@ -1257,7 +1257,7 @@ pub fn run(opts: DoctorOpts) {
         } else {
             render_report(&[result]);
         }
-        emit_economy(started.elapsed().as_millis(), 1, false);
+        economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
         return;
     }
 
@@ -1301,7 +1301,7 @@ pub fn run(opts: DoctorOpts) {
     // i1 violations are hard errors — exit-non-zero even when every legacy
     // check returns OK.
     let any_fail = results.iter().any(|r| r.status == Status::Fail) || !i1_report.ok;
-    emit_economy(started.elapsed().as_millis(), results.len() + 3, any_fail);
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": results.len() + 3, "ok": !any_fail}));
     if any_fail {
         std::process::exit(1);
     }
@@ -1340,7 +1340,7 @@ fn print_typed_value(
     value: Result<serde_json::Value, serde_json::Error>,
     _json_format: bool,
 ) {
-    let v = value.unwrap_or_else(|_| serde_json::json!({}));
+    let v = value.unwrap_or_else(|_| json!({}));
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()));
 }
 
@@ -1449,36 +1449,6 @@ fn i1_to_check_result(report: &crate::commands::doctor::doctor_i1::I1Report) -> 
 }
 
 /// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
-fn emit_economy(duration_ms: u128, check_count: usize, any_failure: bool) {
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| ".".to_string());
-    let spec = current_spec(&cwd);
-    let duration_capped = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("doctor".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({
-            "operation": "doctor",
-            "duration_ms": duration_capped,
-            "tokens_used": 0,
-            "was_rust_only": true,
-            "checks": check_count,
-            "ok": !any_failure,
-        }),
-        spec,
-    };
-    let _ = crate::shared::events::route::emit(&cwd, &ev);
-}
 
 // ---------------------------------------------------------------------------
 // Unit tests

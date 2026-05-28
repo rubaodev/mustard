@@ -17,6 +17,7 @@
 //!
 //! Pure [`Observer`] — never blocks. Every IO step degrades to a no-op.
 
+use crate::shared::events::economy;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Value, json};
@@ -77,29 +78,12 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
 
 /// Emit `pipeline.economy.operation.invoked`. Fail-open.
 /// Routes through `route::emit` (NDJSON sink) — no SQLite dependency.
-fn emit_economy_operation(cwd: &str, operation: &str) {
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("notification".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.operation.invoked".to_string(),
-        payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::shared::context::current_spec(cwd),
-    };
-    let _ = crate::shared::events::route::emit(cwd, &event);
-}
 
 impl Observer for Notification {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         let cwd = project_dir(input, ctx);
         append_notification_event(&cwd, input);
-        emit_economy_operation(&cwd, "notification.received");
+        economy::emit(&cwd, ActorKind::Hook, "notification", "pipeline.economy.operation.invoked", None, json!({"operation": "notification.received", "duration_ms": 0, "tokens_used": 0}));
     }
 }
 
