@@ -33,6 +33,8 @@ pub mod notification;
 pub mod path_guard;
 pub mod post_edit;
 pub mod pre_compact;
+// Spec A v4 / W4 — run-based alternative to Moment 1 of the regression gate.
+pub mod pre_edit_intent_check;
 pub mod prompt_gate;
 pub mod session_cleanup;
 pub mod session_start;

@@ -18,6 +18,7 @@ use crate::hooks::notification::Notification;
 use crate::hooks::path_guard::PathGuard;
 use crate::hooks::post_edit::PostEdit;
 use crate::hooks::pre_compact::PreCompact;
+use crate::hooks::pre_edit_intent_check::PreEditIntentCheck;
 use crate::hooks::prompt_gate::PromptGate;
 use crate::hooks::session_cleanup::SessionCleanup;
 use crate::hooks::session_start::SessionStart;
@@ -280,6 +281,18 @@ impl Registry {
                 // `enforce-registry` — PreToolUse(Skill) pre-pipeline gate.
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
                 check: Some(Box::new(EnforceRegistry)),
+                observer: None,
+            },
+            // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the
+            // regression gate). Gated by `MUSTARD_V4_GATE_ENABLED=1` inside
+            // the module so the v3 harness keeps its semantics by default.
+            Module {
+                id: "pre_edit_intent_check",
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(PreEditIntentCheck)),
                 observer: None,
             },
             Module {

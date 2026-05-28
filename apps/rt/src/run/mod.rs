@@ -66,6 +66,9 @@ pub mod env;
 mod epic_fold;
 pub mod event_projections;
 pub use event_projections::{pipeline_state_from_events, PipelineStateView};
+// Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
+// W1.5 (AST agnostic) and W2 (snapshot) primitives.
+pub mod gate_regression_check;
 pub use env::current_spec;
 mod exec_rewave_check;
 mod mark_checklist_item;
@@ -120,11 +123,13 @@ mod sync_registry;
 pub mod unhook;
 mod transcript_watcher;
 mod verify_pipeline;
+pub mod wave_context;
 mod wave_dependency;
 mod wave_files;
 mod wave_lib;
 mod wave_scaffold;
 mod wave_size_check;
+pub mod wave_summary;
 mod wave_tree;
 pub mod worktree_gc;
 
