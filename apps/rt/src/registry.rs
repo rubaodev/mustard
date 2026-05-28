@@ -11,7 +11,7 @@ use crate::hooks::observe::auto_capture_summary::AutoCaptureSummary;
 use crate::hooks::bash::bash_guard::BashGuard;
 use crate::hooks::task::budget::BudgetGuard;
 use crate::hooks::write::close_gate::CloseGate;
-use crate::hooks::write::enforce_entity_registry::EnforceEntityRegistry;
+use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
 use crate::hooks::session::knowledge::Knowledge;
 use crate::hooks::task::model_routing::ModelRoutingGate;
 use crate::hooks::observe::notification::Notification;
@@ -277,10 +277,10 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "enforce_registry",
-                // `enforce-registry` — PreToolUse(Skill) pre-pipeline gate.
+                id: "entity_registry_gate",
+                // `entity-registry-gate` — PreToolUse(Skill) pre-pipeline gate.
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
-                check: Some(Box::new(EnforceEntityRegistry)),
+                check: Some(Box::new(EntityRegistryGate)),
                 observer: None,
             },
             // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the
@@ -508,7 +508,7 @@ impl Default for Registry {
 /// The list is canonical — do not reorder or add ids without a matching spec
 /// update.
 const BOOTSTRAP_DISABLED_IDS: &[&str] = &[
-    "enforce_registry",
+    "entity_registry_gate",
     "close_gate",
     "path_guard",
     "size_gate",
@@ -645,7 +645,7 @@ mod tests {
             "size_gate",
             "path_guard",
             "close_gate",
-            "enforce_registry",
+            "entity_registry_gate",
             "post_edit",
             "spec_hygiene",
             "session_start",
@@ -766,10 +766,10 @@ mod tests {
                 applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"post_edit")
             );
         }
-        // `enforce_registry` runs on PreToolUse(Skill).
+        // `entity_registry_gate` runs on PreToolUse(Skill).
         assert!(
             applicable_ids(&registry, Trigger::PreToolUse, Some("Skill"))
-                .contains(&"enforce_registry")
+                .contains(&"entity_registry_gate")
         );
     }
 }

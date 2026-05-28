@@ -1,4 +1,4 @@
-//! `enforce_entity_registry` — the entity-registry pre-pipeline gate.
+//! `entity_registry_gate` — the entity-registry pre-pipeline gate.
 //!
 //! ## Scope (b3 Wave 4, Skill family)
 //!
@@ -38,7 +38,7 @@ use crate::util::format_gate_message;
 const PIPELINE_SKILLS: &[&str] = &["mustard:feature", "mustard:bugfix", "feature", "bugfix"];
 
 /// The entity-registry gate module.
-pub struct EnforceEntityRegistry;
+pub struct EntityRegistryGate;
 
 /// Validate a parsed `entity-registry.json`. Returns the deny reason on
 /// failure, or `None` when the registry is valid. Port of `validateRegistry`.
@@ -132,7 +132,7 @@ fn registry_verdict(input: &HookInput, cwd: &str) -> Verdict {
     }
 }
 
-impl Check for EnforceEntityRegistry {
+impl Check for EntityRegistryGate {
     /// Gate a `PreToolUse(Skill)` invocation of a pipeline skill on the
     /// entity-registry's presence and validity. Always strict — no mode.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
@@ -188,7 +188,7 @@ mod tests {
     fn blocks_pipeline_skill_when_registry_missing() {
         let dir = tempdir().unwrap();
         let (input, ctx) = skill_input("feature", dir.path().to_str().unwrap());
-        let verdict = EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error");
+        let verdict = EntityRegistryGate.evaluate(&input, &ctx).expect("no error");
         assert!(verdict.is_blocking(), "missing registry must block");
     }
 
@@ -197,7 +197,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (input, ctx) = skill_input("some-random-skill", dir.path().to_str().unwrap());
         assert_eq!(
-            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
+            EntityRegistryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -216,7 +216,7 @@ mod tests {
         let (input, ctx) =
             skill_input("mustard:feature", dir.path().to_str().unwrap());
         assert_eq!(
-            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
+            EntityRegistryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -281,7 +281,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
+            EntityRegistryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -296,7 +296,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            EnforceEntityRegistry.evaluate(&input, &ctx).expect("no error"),
+            EntityRegistryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
