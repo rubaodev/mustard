@@ -42,7 +42,7 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use mustard_core::ClaudePaths;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use crate::util::now_iso8601;
 
@@ -81,44 +81,11 @@ fn session_id(input: &HookInput) -> String {
 }
 
 /// Current time as milliseconds since the Unix epoch.
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis()
-}
 
 /// Parse the `YYYY-MM-DDThh:mm:ss` prefix of an ISO-8601 string into epoch
 /// millis; `0` on failure.
 fn parse_iso_millis(iso: &str) -> u128 {
-    let bytes = iso.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return 0;
-    }
-    let num = |s: &str| -> Option<i64> { s.parse().ok() };
-    let (Some(year), Some(month), Some(day), Some(hh), Some(mm), Some(ss)) = (
-        num(&iso[0..4]),
-        num(&iso[5..7]),
-        num(&iso[8..10]),
-        num(&iso[11..13]),
-        num(&iso[14..16]),
-        num(&iso[17..19]),
-    ) else {
-        return 0;
-    };
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + hh * 3600 + mm * 60 + ss;
-    if secs < 0 {
-        0
-    } else {
-        u128::try_from(secs).unwrap_or(0) * 1000
-    }
+    mustard_core::time::parse_iso_millis(iso).unwrap_or(0) as u128
 }
 
 // ===========================================================================
@@ -447,7 +414,7 @@ fn run_session_knowledge_inc(cwd: &str) {
         .unwrap_or_else(|| json!({ "_meta": { "recentExtractions": [] } }));
 
     // Throttle: prune the rolling window, bail when full.
-    let now = now_millis();
+    let now = crate::util::now_millis();
     let mut recent: Vec<String> = seen
         .get("_meta")
         .and_then(|m| m.get("recentExtractions"))

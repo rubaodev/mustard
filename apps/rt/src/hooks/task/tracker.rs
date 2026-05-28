@@ -48,7 +48,6 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use mustard_core::ClaudePaths;
 use serde_json::{Map, Value, json};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Finalise an agent's Task dispatch as one `pipeline.economy.run` NDJSON
 /// event. The companion channel to the OTEL collector's
@@ -127,12 +126,6 @@ fn record_task_run(
 // ===========================================================================
 
 /// Now, as milliseconds since the Unix epoch — for counter `createdAt` staleness.
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis()
-}
 
 /// Resolve the project dir for an invocation: the harness `cwd`, else `.`.
 /// Mirrors the JS `data.cwd || process.cwd()`.
@@ -278,36 +271,7 @@ impl Counter {
 /// prefix is parsed; sub-second precision is ignored (does not affect the
 /// 10-minute staleness window).
 fn parse_iso_millis(iso: &str) -> u128 {
-    // Expect at least `YYYY-MM-DDThh:mm:ss`.
-    let bytes = iso.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return 0;
-    }
-    let num = |s: &str| -> Option<i64> { s.parse().ok() };
-    let (Some(year), Some(month), Some(day), Some(hh), Some(mm), Some(ss)) = (
-        num(&iso[0..4]),
-        num(&iso[5..7]),
-        num(&iso[8..10]),
-        num(&iso[11..13]),
-        num(&iso[14..16]),
-        num(&iso[17..19]),
-    ) else {
-        return 0;
-    };
-    // Days since 1970-01-01 via Howard Hinnant's `days_from_civil`.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + hh * 3600 + mm * 60 + ss;
-    if secs < 0 {
-        0
-    } else {
-        u128::try_from(secs).unwrap_or(0) * 1000
-    }
+    mustard_core::time::parse_iso_millis(iso).unwrap_or(0) as u128
 }
 
 impl ToolUseCounter {
@@ -339,7 +303,7 @@ impl ToolUseCounter {
         }
         let agent_id = if agent_id.is_empty() {
             // The JS uses `unknown-${Date.now()}`; a deterministic-enough id.
-            &format!("unknown-{}", now_millis())
+            &format!("unknown-{}", crate::util::now_millis())
         } else {
             agent_id
         };
@@ -417,7 +381,7 @@ impl ToolUseCounter {
             return Verdict::Allow;
         }
 
-        let now = now_millis();
+        let now = crate::util::now_millis();
         let mut deny: Option<Verdict> = None;
         let mut warn: Option<Verdict> = None;
 

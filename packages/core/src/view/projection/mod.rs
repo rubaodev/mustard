@@ -135,38 +135,11 @@ pub fn iso_diff_ms(start_iso: &str, end_iso: &str) -> Option<i64> {
     Some(end.saturating_sub(start))
 }
 
-/// Parse the `YYYY-MM-DDThh:mm:ss[.fff]Z` prefix into epoch milliseconds.
-///
-/// Conservative: only the seconds part is required; everything after a
-/// trailing `.fff` is ignored. This is the same algorithm used by
-/// `apps/rt/src/hooks/tracker.rs::parse_iso_millis` — kept inline to avoid
-/// pulling jiff into a domain crate.
-#[must_use]
-pub fn parse_iso_millis(iso: &str) -> Option<i64> {
-    let bytes = iso.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return None;
-    }
-    let num = |s: &str| -> Option<i64> { s.parse().ok() };
-    let year = num(&iso[0..4])?;
-    let month = num(&iso[5..7])?;
-    let day = num(&iso[8..10])?;
-    let hh = num(&iso[11..13])?;
-    let mm = num(&iso[14..16])?;
-    let ss = num(&iso[17..19])?;
-
-    // Howard Hinnant's days_from_civil — same routine the tracker hook uses,
-    // copied here to keep the projection crate dependency-free.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + hh * 3600 + mm * 60 + ss;
-    Some(secs.max(0).saturating_mul(1000))
-}
+// Parsing ISO-8601 → epoch millis now lives in the single canonical home
+// `crate::platform::time`. Re-exported here so existing
+// `projection::parse_iso_millis` callers keep resolving while the impl is
+// shared with every other consumer.
+pub use crate::platform::time::parse_iso_millis;
 
 #[cfg(test)]
 mod tests {

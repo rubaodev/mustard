@@ -196,30 +196,7 @@ fn mark_followup(cwd: &Path, spec: &str) -> Value {
 
 /// Parse an ISO-8601 timestamp into epoch millis (UTC). `None` on any failure.
 pub(crate) fn parse_iso_millis(ts: &str) -> Option<i64> {
-    let bytes = ts.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let num = |a: usize, b: usize| ts.get(a..b)?.parse::<i64>().ok();
-    let year = num(0, 4)?;
-    let month = num(5, 7)?;
-    let day = num(8, 10)?;
-    let hh = num(11, 13)?;
-    let mm = num(14, 16)?;
-    let ss = num(17, 19)?;
-    let millis = if ts.len() >= 23 && bytes.get(19) == Some(&b'.') {
-        num(20, 23).unwrap_or(0)
-    } else {
-        0
-    };
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(((days * 86_400 + hh * 3600 + mm * 60 + ss) * 1000) + millis)
+    mustard_core::time::parse_iso_millis(ts)
 }
 
 /// Stage 2 — finalize archival. Idempotent terminal emit; no filesystem move.

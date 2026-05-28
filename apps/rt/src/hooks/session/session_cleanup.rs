@@ -43,7 +43,7 @@ use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use crate::shared::context::current_spec;
 use crate::shared::events::route;
@@ -94,12 +94,6 @@ fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
 }
 
 /// Current time as milliseconds since the Unix epoch.
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis()
-}
 
 /// Archive stale `closed-followup` specs via the B4 script `complete-spec.js`.
 /// Best-effort: a missing script or a spawn error is silently ignored — parity
@@ -238,7 +232,7 @@ fn clean_compact_state(claude_dir: &Path) {
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
-    let now = now_millis();
+    let now = crate::util::now_millis();
     let mut remaining = 0;
     for entry in entries {
         let Ok(modified) = fs::modified(&entry.path) else {
@@ -461,7 +455,7 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
 /// Best-effort: any IO error degrades to a no-op — telemetry retention must
 /// never abort session cleanup.
 pub(crate) fn prune_telemetry(cwd: &str) {
-    let now_ms = now_millis().min(i64::MAX as u128) as i64;
+    let now_ms = crate::util::now_millis().min(i64::MAX as u128) as i64;
     let cutoff_ms = now_ms.saturating_sub(TELEMETRY_RETENTION_DAYS.saturating_mul(86_400_000));
     prune_telemetry_with_cutoff(cwd, cutoff_ms);
 }
@@ -574,6 +568,7 @@ impl Observer for SessionCleanup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, SystemTime};
     use serde_json::json;
     use tempfile::tempdir;
 

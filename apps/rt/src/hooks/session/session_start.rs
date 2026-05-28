@@ -58,7 +58,7 @@ use mustard_core::ClaudePaths;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use crate::util::now_iso8601;
 
@@ -95,12 +95,6 @@ fn project_dir(input: &HookInput, ctx: &Ctx) -> String {
 }
 
 /// Current time as milliseconds since the Unix epoch.
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis()
-}
 
 // ===========================================================================
 // harness-init — SessionStart event-bus bootstrap
@@ -180,7 +174,7 @@ fn prune_old_sessions(sessions_dir: &Path) {
     let Ok(entries) = fs::read_dir(sessions_dir) else {
         return;
     };
-    let now = now_millis();
+    let now = crate::util::now_millis();
     for entry in entries {
         if !std::path::Path::new(&entry.file_name)
             .extension()

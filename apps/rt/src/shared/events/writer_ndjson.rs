@@ -409,47 +409,10 @@ fn blob_ref_to_value(r: &BlobRef) -> Value {
 /// algorithm at the cost of a 30-cycle linear year sum — fine for the ~25
 /// year range Mustard ever sees.
 fn epoch_ms_from_iso(ts: &str) -> i64 {
-    if ts.len() < 24 || !ts.ends_with('Z') {
-        return 0;
-    }
-    let year: i64 = ts.get(0..4).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let month: i64 = ts.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let day: i64 = ts.get(8..10).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let hh: i64 = ts.get(11..13).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let mm: i64 = ts.get(14..16).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let ss: i64 = ts.get(17..19).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let ms: i64 = ts.get(20..23).and_then(|s| s.parse().ok()).unwrap_or(0);
-
-    // Days since 1970-01-01.
-    let mut days: i64 = 0;
-    if year >= 1970 {
-        for y in 1970..year {
-            days += if is_leap(y) { 366 } else { 365 };
-        }
-    } else {
-        for y in year..1970 {
-            days -= if is_leap(y) { 366 } else { 365 };
-        }
-    }
-    let mdays: [i64; 12] = if is_leap(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let m_idx = (month.clamp(1, 12) - 1) as usize;
-    for d in &mdays[..m_idx] {
-        days += d;
-    }
-    days += day - 1;
-
-    days * 86_400_000 + hh * 3_600_000 + mm * 60_000 + ss * 1_000 + ms
+    mustard_core::time::parse_iso_millis(ts).unwrap_or(0)
 }
 
-/// Gregorian leap-year rule: divisible by 4, except centuries, except multiples
 /// of 400 (1900 not leap, 2000 leap).
-const fn is_leap(y: i64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
-}
 
 #[cfg(test)]
 mod tests {

@@ -328,37 +328,7 @@ mod ac_section_tests {
 /// milliseconds. Returns `None` for any malformed input — the inverse of
 /// [`now_iso8601`]; no calendar crate dependency.
 fn iso_to_millis(ts: &str) -> Option<u128> {
-    let ts = ts.trim();
-    let bytes = ts.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let num = |a: usize, b: usize| ts.get(a..b)?.parse::<i64>().ok();
-    let year = num(0, 4)?;
-    let month = num(5, 7)?;
-    let day = num(8, 10)?;
-    let hour = num(11, 13)?;
-    let min = num(14, 16)?;
-    let sec = num(17, 19)?;
-    // Optional `.sss` milliseconds.
-    let millis: i64 = if ts.len() >= 23 && bytes.get(19) == Some(&b'.') {
-        ts.get(20..23).and_then(|s| s.parse().ok()).unwrap_or(0)
-    } else {
-        0
-    };
-    // days_from_civil (Howard Hinnant) — inverse of now_iso8601's civil_from_days.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let total_secs = days * 86_400 + hour * 3_600 + min * 60 + sec;
-    if total_secs < 0 {
-        return None;
-    }
-    u128::try_from(total_secs * 1_000 + millis).ok()
+    mustard_core::time::parse_iso_millis(ts.trim()).map(|v| v as u128)
 }
 
 /// The ISO timestamp of the last git commit that touched `spec_dir`, via

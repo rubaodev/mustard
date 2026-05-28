@@ -25,7 +25,7 @@ use crate::util::now_iso8601;
 use mustard_core::io::atomic_md::find_outgoing_links;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
-use mustard_core::platform::i18n::{project_locale, SupportedLocale as Locale};
+use mustard_core::platform::i18n::{project_locale};
 use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, PipelineDispatchFailurePayload, SCHEMA_VERSION,
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_WAVE_COMPLETE,

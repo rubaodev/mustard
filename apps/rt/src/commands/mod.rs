@@ -1562,7 +1562,7 @@ pub fn dispatch(cmd: RunCmd) {
             moment,
             wave_dir,
         } => {
-            use crate::commands::review::gate_regression_check::{self, GateInput, Moment};
+            use crate::commands::review::gate_regression_check::{GateInput, Moment};
             // W5#3: Moment-3 + --wave-dir path consults the on-disk
             // `_review-spans.md` ledger via `review::review_spans::check_consolidation`.
             // Exits 0 when consolidation is allowed (no red rows) and 2 when

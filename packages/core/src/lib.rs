@@ -43,6 +43,7 @@
 pub mod io;
 pub mod domain;
 pub mod view;
+pub use platform::time;
 pub mod platform;
 
 #[allow(deprecated)] // SpecStatus is re-exported during the W1→W7 migration window.
