@@ -11,6 +11,9 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod migrate;
+pub mod i18n;
+pub mod agent;
 pub mod checklist;
 pub mod doctor;
 pub mod review;
@@ -23,9 +26,6 @@ pub mod wave;
 pub mod spec;
 pub mod maint;
 pub mod scan;
-pub mod agent_prompt_render;
-pub mod amend_finalize;
-pub mod i18n_translate;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -34,8 +34,6 @@ mod diff_context;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
-mod migrate_spec_headers;
-mod migrate_to_meta;
 mod recipe_match;
 // Spec A v4 / W5 — span-level verdict ledger (`_review-spans.md`).
 mod scan_finalize;
@@ -1442,7 +1440,7 @@ pub fn dispatch(cmd: RunCmd) {
             // `--apply` overrides the default `dry_run: true`; the clap
             // `conflicts_with` prevents both being passed explicitly.
             let _ = dry_run;
-            migrate_spec_headers::run(migrate_spec_headers::MigrateOpts {
+            migrate::migrate_spec_headers::run(migrate::migrate_spec_headers::MigrateOpts {
                 apply,
                 root,
                 log,
@@ -1450,7 +1448,7 @@ pub fn dispatch(cmd: RunCmd) {
             });
         }
         RunCmd::MigrateToMeta { root, force, strip_headers } => {
-            migrate_to_meta::run(migrate_to_meta::MigrateToMetaOpts {
+            migrate::migrate_to_meta::run(migrate::migrate_to_meta::MigrateToMetaOpts {
                 root,
                 force,
                 strip_headers,
@@ -1689,7 +1687,7 @@ pub fn dispatch(cmd: RunCmd) {
             apply,
             manifest,
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
-        RunCmd::AmendFinalize { session_id } => amend_finalize::run_cli(&session_id),
+        RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
         RunCmd::GraphIndex => knowledge::graph_index::run(),
         RunCmd::GraphDead => knowledge::graph_dead::run(),
         RunCmd::WaveScaffold { spec_dir, plan } => {
@@ -1752,12 +1750,12 @@ pub fn dispatch(cmd: RunCmd) {
             retry_context_file,
             task_filter,
             budget_tokens,
-        } => agent_prompt_render::run(
+        } => agent::agent_prompt_render::run(
             &spec,
             wave,
             &role,
             &subproject,
-            agent_prompt_render::RenderMode::parse(&mode),
+            agent::agent_prompt_render::RenderMode::parse(&mode),
             retry_context_file.as_deref(),
             task_filter.as_deref(),
             budget_tokens,
@@ -1940,7 +1938,7 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::I18n { subcommand, from, to_lang } => {
             match subcommand.as_str() {
-                "translate-heading" => i18n_translate::run(i18n_translate::TranslateHeadingOpts {
+                "translate-heading" => i18n::i18n_translate::run(i18n::i18n_translate::TranslateHeadingOpts {
                     from: from.unwrap_or_default(),
                     to_lang: to_lang.unwrap_or_default(),
                 }),

@@ -565,7 +565,7 @@ impl Observer for SessionCleanup {
         // rest of cleanup.
         if let Some(sid) = input.session_id.as_deref() {
             if !sid.is_empty() {
-                let _ = crate::run::amend_finalize::run(sid);
+                let _ = crate::run::agent::amend_finalize::run(sid);
             }
         }
     }
