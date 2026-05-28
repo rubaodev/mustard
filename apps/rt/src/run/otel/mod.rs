@@ -13,7 +13,7 @@
 //! `.claude/spec/<spec>/.events/` (cross-session when no spec is active) as
 //! `pipeline.telemetry.metric` records. The legacy `telemetry.db` SQLite sink
 //! is gone — the collector now calls
-//! [`crate::run::event_writer_ndjson::write_event_with_ts`] directly, and the
+//! [`crate::shared::events::writer_ndjson::write_event_with_ts`] directly, and the
 //! diagnose face reads the same channel back via [`mustard_core::EventReader`].
 //!
 //! Filtering remains: the collector still drops every metric outside its
@@ -74,7 +74,7 @@ pub struct SampleRow {
 /// then degrade gracefully — every harness path is a fail-open read).
 #[must_use]
 pub fn claude_dir() -> PathBuf {
-    ClaudePaths::for_project(PathBuf::from(crate::run::env::project_dir()))
+    ClaudePaths::for_project(PathBuf::from(crate::shared::context::project_dir()))
         .map(|p| p.claude_dir())
         .unwrap_or_default()
 }

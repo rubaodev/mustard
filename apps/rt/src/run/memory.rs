@@ -18,7 +18,7 @@
 //! Input JSON arrives via `--json '<JSON>'` (Windows-friendly) or stdin
 //! (POSIX fallback). Exit is always `0` (fail-open).
 
-use crate::run::env::{current_spec, project_dir, session_id};
+use crate::shared::context::{current_spec, project_dir, session_id};
 use crate::util::{now_iso8601, now_millis};
 use mustard_core::atomic_md::frontmatter::Frontmatter;
 use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
@@ -283,7 +283,7 @@ fn emit_decision_event(entry_type: &str, content: &str, context: &str, source: &
         payload,
         spec: current_spec(dir),
     };
-    let _ = crate::run::event_route::emit(dir, &ev);
+    let _ = crate::shared::events::route::emit(dir, &ev);
 }
 
 // ---------------------------------------------------------------------------
@@ -966,7 +966,7 @@ fn emit_memory_economy(operation: &str, duration_ms: u128) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 // ---------------------------------------------------------------------------

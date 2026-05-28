@@ -15,7 +15,7 @@
 //!
 //! Pure JSON on disk; no DB. Fail-open on every read/write.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -179,7 +179,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

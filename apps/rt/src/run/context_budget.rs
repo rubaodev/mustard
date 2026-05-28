@@ -25,7 +25,7 @@
 //! Emits a single `pipeline.economy.operation.invoked` event with
 //! `{ operation: "context-budget", duration_ms, tokens_used: 0, was_rust_only: true }`.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
@@ -120,7 +120,7 @@ fn emit_economy(duration_ms: u128, opts: &ContextBudgetOpts) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

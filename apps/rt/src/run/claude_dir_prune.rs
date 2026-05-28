@@ -47,7 +47,7 @@
 //! Exit code 0 always (fail-open). The recommendation surfaces in `entries[]`
 //! so the user — or the SessionStart probe — can act on it.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;

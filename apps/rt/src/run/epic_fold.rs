@@ -72,9 +72,9 @@ fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<HarnessEvent> {
 /// Append a harness event for the given epic via the NDJSON route. Best-effort.
 fn emit_event(project_dir: &str, event: &str, payload: Value, spec: &str) {
     let ts = now_iso8601();
-    let sid = crate::run::env::session_id();
-    let kind = crate::run::event_route::classify_kind(event);
-    let _ = crate::run::event_writer_ndjson::write_event_with_ts(
+    let sid = crate::shared::context::session_id();
+    let kind = crate::shared::events::route::classify_kind(event);
+    let _ = crate::shared::events::writer_ndjson::write_event_with_ts(
         Path::new(project_dir),
         Some(spec),
         None,

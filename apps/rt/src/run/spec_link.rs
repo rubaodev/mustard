@@ -11,7 +11,7 @@
 //! Port note: the JS version shelled to `_lib/harness-event.js` to emit the
 //! event. This port appends the event directly through `mustard_core`.
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -60,7 +60,7 @@ fn emit_link_event(cwd: &Path, parent: &str, child: &str, reason: &str) {
         spec: Some(child.to_string()),
     };
     // `spec.link` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(cwd.to_string_lossy().as_ref(), &ev);
+    let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
 }
 
 /// Core link logic. Returns `true` when the link was applied (fail-open).

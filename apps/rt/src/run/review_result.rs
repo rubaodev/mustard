@@ -10,7 +10,7 @@
 //!
 //! No `--format html`: `review-result` only records and echoes the verdict.
 
-use crate::run::env::{project_dir, session_id};
+use crate::shared::context::{project_dir, session_id};
 use crate::util::now_iso8601;
 use mustard_core::metrics::{emit_metric, MetricLine};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -48,7 +48,7 @@ fn record_review(
         spec: Some(spec.to_string()),
     };
     // `review.result` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(cwd.to_string_lossy().as_ref(), &ev);
+    let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
 
     // Metric (fail-silent).
     let line = MetricLine::new(now_iso8601(), "review").note(verdict).extras(json!({

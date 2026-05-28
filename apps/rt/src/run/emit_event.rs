@@ -11,7 +11,7 @@
 //! fail-open — a write failure degrades to a no-op so telemetry never breaks a
 //! command.
 
-use crate::run::env::{current_spec, project_dir, session_id};
+use crate::shared::context::{current_spec, project_dir, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{Map, Value};
@@ -82,7 +82,7 @@ pub fn run(event: Option<&str>, payload: &[String], spec: Option<&str>, wave: u3
     // W5: route through the central classifier — `pipeline.*` events still
     // land in SQLite, anything else (the bulk of `emit-event` users) goes to
     // the per-spec NDJSON sink.
-    let _ = crate::run::event_route::emit(&dir, &harness_event);
+    let _ = crate::shared::events::route::emit(&dir, &harness_event);
 }
 
 #[cfg(test)]

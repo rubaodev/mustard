@@ -41,8 +41,8 @@ use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
-use crate::run::env::current_spec;
-use crate::run::event_route;
+use crate::shared::context::current_spec;
+use crate::shared::events::route;
 use crate::util::now_iso8601;
 
 /// Dispatch `mustard-rt run recipe-match`.
@@ -208,7 +208,7 @@ fn persist_injection_savings(matched: &Value, cwd: &Path) {
         payload,
         spec: current_spec(&cwd_str),
     };
-    let _ = event_route::emit(&cwd_str, &event);
+    let _ = route::emit(&cwd_str, &event);
 }
 
 /// Wave-4 delegation: route the recipe match through the unified

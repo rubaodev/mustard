@@ -4,7 +4,7 @@
 //! events defined in [`mustard_core::model::event`] constants. Callers supply
 //! the event kind, the spec name, and an optional JSON payload string; this
 //! module validates both and routes the event through
-//! [`crate::run::event_route::emit`] to the NDJSON sink.
+//! [`crate::shared::events::route::emit`] to the NDJSON sink.
 //!
 //! ## Fail-open contract
 //!
@@ -16,7 +16,7 @@
 //! emitter: telemetry is never load-bearing, so a write failure must never
 //! break the pipeline.
 
-use crate::run::env::{project_dir, session_id};
+use crate::shared::context::{project_dir, session_id};
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::model::event::{
@@ -167,7 +167,7 @@ pub fn run(opts: EmitPipelineOpts) {
         },
     };
 
-    // W5: the event router (`event_route::emit`) opens the SQLite store on
+    // W5: the event router (`route::emit`) opens the SQLite store on
     // demand for `pipeline.*` events; there is no need to open it eagerly here.
 
     // Capture the values we need after `event` consumes them.
@@ -210,15 +210,15 @@ pub fn run(opts: EmitPipelineOpts) {
     };
 
     // Fail-open: a write failure is logged but never propagates to an exit 1.
-    // W5: route through `event_route::emit` so `pipeline.*` → SQLite while
+    // W5: route through `route::emit` so `pipeline.*` → SQLite while
     // `hygiene.*` / other non-pipeline kinds land in the per-spec NDJSON sink.
-    let _ = crate::run::event_route::emit(&project_dir(), &event);
+    let _ = crate::shared::events::route::emit(&project_dir(), &event);
 
     // Emit the canonical new-kind alias for a legacy transition. Same ts +
     // session as the legacy event. Emitting a *new* kind directly produces no
     // alias here (`alias_event` returns `None` for new kinds) — idempotency.
     if let Some(alias) = aliased {
-        let _ = crate::run::event_route::emit(&project_dir(), &alias);
+        let _ = crate::shared::events::route::emit(&project_dir(), &alias);
     }
 
     // Sync spec.md header + meta.json whenever a pipeline.status or
@@ -678,7 +678,7 @@ mod tests {
             payload,
             spec: Some(spec.to_string()),
         };
-        crate::run::event_route::emit(project.to_str().unwrap(), &event);
+        crate::shared::events::route::emit(project.to_str().unwrap(), &event);
     }
 
     #[test]
@@ -877,8 +877,8 @@ mod tests {
             payload: json!({ "spec": spec, "overall": "fail", "criteria": [] }),
             spec: Some(spec.to_string()),
         };
-        let _ = crate::run::event_route::emit(dir.path().to_str().unwrap(), &ev_pass);
-        let _ = crate::run::event_route::emit(dir.path().to_str().unwrap(), &ev_fail);
+        let _ = crate::shared::events::route::emit(dir.path().to_str().unwrap(), &ev_pass);
+        let _ = crate::shared::events::route::emit(dir.path().to_str().unwrap(), &ev_fail);
         assert!(!super::qa_result_passed(dir.path(), spec));
     }
 

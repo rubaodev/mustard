@@ -8,7 +8,7 @@
 //! Origin / Applies-to / Status / Related sections — whose spelling comes
 //! from `mustard_core::i18n` (W1.T1.0 — no hardcoded pt-BR strings).
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
 use mustard_core::i18n::{project_locale, translate, SupportedLocale as Locale};

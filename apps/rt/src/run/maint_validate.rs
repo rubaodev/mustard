@@ -6,7 +6,7 @@
 //! and runs them sequentially. Pass/fail per subproject is captured in the JSON
 //! report; the overall verdict is the conjunction.
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;
@@ -158,7 +158,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec: None,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

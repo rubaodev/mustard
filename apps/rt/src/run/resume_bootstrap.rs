@@ -16,9 +16,9 @@
 //! always exits 0; the orchestrator gets a partial JSON document instead of
 //! an error.
 
-use crate::run::env::{project_dir, session_id};
+use crate::shared::context::{project_dir, session_id};
 use crate::run::event_projections::{pipeline_state_from_events, PipelineStateView};
-use crate::run::event_route;
+use crate::shared::events::route;
 use crate::run::token_budget::{prune_to_budget, PrioritizedItem};
 use crate::run::wave_context::{self, WaveContextInput, WaveMapEntry};
 use crate::util::now_iso8601;
@@ -847,7 +847,7 @@ fn emit_resume_mode(project: &Path, spec: &str, mode: &str) {
         payload: json!({ "mode": mode }),
         spec: Some(spec.to_string()),
     };
-    let _ = event_route::emit(project.to_string_lossy().as_ref(), &event);
+    let _ = route::emit(project.to_string_lossy().as_ref(), &event);
 }
 
 /// Compact text-table fallback when `--json` is not requested.
@@ -929,7 +929,7 @@ pub fn read_wave_model(spec_dir: &Path, wave: u32) -> Option<String> {
 /// `last_pipeline_scope_for_session` returns this spec in subsequent calls
 /// within the same Claude session (prevents stale closed-spec attribution).
 ///
-/// `pipeline.*` events are routed to SQLite by [`event_route::emit`] — this
+/// `pipeline.*` events are routed to SQLite by [`route::emit`] — this
 /// preserves the existing session-lookup contract without a direct store call.
 ///
 /// Fail-open: any emit error is silently discarded.
@@ -948,7 +948,7 @@ fn emit_scope_for_session(project: &Path, spec: &str) {
         payload: json!({ "scope": "resumed" }),
         spec: Some(spec.to_string()),
     };
-    let _ = event_route::emit(project.to_string_lossy().as_ref(), &event);
+    let _ = route::emit(project.to_string_lossy().as_ref(), &event);
 }
 
 /// Read the `model` field from a spec directory's `meta.json`. Returns `None`

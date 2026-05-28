@@ -5,7 +5,7 @@
 //! is a small JSON shape consumed by `/skill install` to short-circuit a
 //! re-install when the user already has the same skill.
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use crate::run::skill_fetch::SkillCacheFile;
 use mustard_core::fs::read_to_string;
@@ -100,7 +100,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec: None,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@
 //! Recognises both directions (PT→EN and EN→PT). Unknown labels round-trip
 //! unchanged (fail-open).
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use mustard_core::i18n::{translate, SupportedLocale as Locale};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -131,7 +131,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec: None,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

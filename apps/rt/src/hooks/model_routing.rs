@@ -29,7 +29,7 @@ use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}
 use serde_json::{Value, json};
 use std::path::Path;
 
-use crate::run::current_spec;
+use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
 
 /// Emit a `pipeline.economy.savings.model-routing-downgrade` NDJSON event for
@@ -77,7 +77,7 @@ fn record_routing_downgrade(
         }),
         spec: current_spec(project_dir),
     };
-    let _ = crate::run::event_route::emit(project_dir, &event);
+    let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
 /// The model-routing enforcement module.

@@ -411,7 +411,7 @@ fn emit(project_dir: &str, kind: &str, spec: &str, payload: Value) {
         spec: Some(spec.to_string()),
     };
     // `hygiene.*` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(project_dir, &event);
+    let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
 // ---------------------------------------------------------------------------

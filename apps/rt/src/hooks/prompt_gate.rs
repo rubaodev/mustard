@@ -30,7 +30,7 @@
 //! ## W3C migration
 //!
 //! `emit_economy_operation` routes economy events via
-//! `crate::run::event_route::emit` (NDJSON path) instead of the old SQLite
+//! `crate::shared::events::route::emit` (NDJSON path) instead of the old SQLite
 //! event sink.
 
 use crate::hooks::amend_capture::close_amend_windows_for_session;
@@ -148,7 +148,7 @@ impl Check for PromptGate {
         // W8.T8.2 — for non-`/mustard:*` prompts, inject a single-line reminder
         // when a spec is active. Fail-open: a None active spec yields `Allow`.
         if !is_mustard_command(prompt) {
-            if let Some(spec) = crate::run::env::current_spec(&cwd) {
+            if let Some(spec) = crate::shared::context::current_spec(&cwd) {
                 if !spec.is_empty() {
                     let _ = emit_economy_operation(&cwd, "prompt_gate.pipeline_in_flight_banner");
                     return Ok(Verdict::Inject {
@@ -164,7 +164,7 @@ impl Check for PromptGate {
 /// Emit a `pipeline.economy.operation.invoked` event via the NDJSON route.
 /// Fail-open: any error degrades to a no-op.
 ///
-/// W3C: routes via `crate::run::event_route::emit` (NDJSON for
+/// W3C: routes via `crate::shared::events::route::emit` (NDJSON for
 /// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
 fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -173,7 +173,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
-        session_id: crate::run::env::session_id(),
+        session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -182,9 +182,9 @@ fn emit_economy_operation(cwd: &str, operation: &str) -> Result<(), ()> {
         },
         event: "pipeline.economy.operation.invoked".to_string(),
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::run::env::current_spec(cwd),
+        spec: crate::shared::context::current_spec(cwd),
     };
-    if crate::run::event_route::emit(cwd, &event) { Ok(()) } else { Err(()) }
+    if crate::shared::events::route::emit(cwd, &event) { Ok(()) } else { Err(()) }
 }
 
 #[cfg(test)]

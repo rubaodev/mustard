@@ -58,6 +58,7 @@ mod registry;
 mod hooks;
 mod report;
 mod run;
+mod shared;
 mod util;
 
 use clap::{Parser, Subcommand};

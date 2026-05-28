@@ -25,8 +25,8 @@ use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}
 use serde_json::{json, Value};
 use std::process::{Command, Stdio};
 
-use crate::run::env::{current_spec, project_dir, session_id};
-use crate::run::event_route;
+use crate::shared::context::{current_spec, project_dir, session_id};
+use crate::shared::events::route;
 use crate::util::now_iso8601;
 
 /// Normalised `rtk gain` summary — the fields `metrics.js` consumed.
@@ -191,7 +191,7 @@ fn persist_savings() {
             payload,
             spec: current_spec(&cwd),
         };
-        let _ = event_route::emit(&cwd, &event);
+        let _ = route::emit(&cwd, &event);
     }
 }
 

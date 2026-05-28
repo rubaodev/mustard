@@ -33,7 +33,7 @@
 //! path on stderr.
 
 use crate::report::{table, Report};
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
@@ -595,7 +595,7 @@ fn emit_economy(duration_ms: u128, subproject_count: usize, any_failure: bool) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 /// Dispatch `mustard-rt run verify-pipeline`.

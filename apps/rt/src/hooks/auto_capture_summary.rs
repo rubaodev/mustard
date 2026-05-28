@@ -12,7 +12,7 @@
 //! ## W3C → W4B migration
 //!
 //! `emit_economy_operation` routes economy events via
-//! `crate::run::event_route::emit` (NDJSON path). W4B then moved the
+//! `crate::shared::events::route::emit` (NDJSON path). W4B then moved the
 //! `agent_memory` write-path off SQLite onto markdown rows under
 //! `.claude/memory/agent/` via `crate::run::memory::persist_agent_memory_md`,
 //! so no `rusqlite` connection is opened from this module.
@@ -157,7 +157,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
-        session_id: crate::run::env::session_id(),
+        session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -166,9 +166,9 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         },
         event: "pipeline.economy.operation.invoked".to_string(),
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::run::env::current_spec(cwd),
+        spec: crate::shared::context::current_spec(cwd),
     };
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 impl Observer for AutoCaptureSummary {
@@ -209,7 +209,7 @@ impl Observer for AutoCaptureSummary {
         }
 
         let role = role_from_input(input);
-        let spec = crate::run::env::current_spec(&cwd);
+        let spec = crate::shared::context::current_spec(&cwd);
         let session_id = input
             .session_id
             .as_deref()

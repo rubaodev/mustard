@@ -32,7 +32,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-use crate::run::env::project_dir as env_project_dir;
+use crate::shared::context::project_dir as env_project_dir;
 use crate::util::now_iso8601;
 
 /// Options for `mustard-rt run migrate-to-meta`.

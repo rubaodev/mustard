@@ -23,7 +23,7 @@
 //! Payloads strictly larger than [`blob_spill::SPILL_THRESHOLD_BYTES`] (4 KB)
 //! are spilled to a content-addressed blob under `blobs/{ab}/{sha256}.bin`
 //! and the NDJSON line keeps only the `{ "$blob": "<sha256>", "len": N }`
-//! reference. See [`crate::run::blob_spill`].
+//! reference. See [`crate::shared::events::blob_spill`].
 //!
 //! ## Hot-path target
 //!
@@ -51,12 +51,12 @@
 //! Every IO error degrades to a silent no-op — the caller's tool execution
 //! is never blocked by a telemetry failure.
 
-// W5 follow-up: `write_event` is now wired through `crate::run::event_route`
+// W5 follow-up: `write_event` is now wired through `crate::shared::events::route`
 // (the single classification layer that splits `pipeline.*` → SQLite from
 // everything else → this NDJSON sink). `event_dir` is still the canonical
 // path-resolver used by tests and the dashboard reader contract.
 
-use crate::run::blob_spill::{maybe_spill, BlobRef, SpillOutcome};
+use crate::shared::events::blob_spill::{maybe_spill, BlobRef, SpillOutcome};
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs;
@@ -197,7 +197,7 @@ struct NdjsonRecord<'a> {
 ///
 /// `ts_override` lets the router preserve a pre-constructed event's `ts`
 /// (W6 follow-up: the SQLite-vs-NDJSON cascade revealed that
-/// `event_route::emit` was discarding the caller's `HarnessEvent.ts`,
+/// `route::emit` was discarding the caller's `HarnessEvent.ts`,
 /// breaking consumer-side ts filters like the MCP `since` lower bound and
 /// the `metrics wave-status` min/max duration). `None` falls back to
 /// [`now_iso8601`] — the historical behaviour.
@@ -315,7 +315,7 @@ pub struct WriteOutcome {
 /// is always stamped with the wall-clock time of the write (it measures the
 /// write itself), regardless of `ts_override`.
 // Kept `pub` + `#[allow(dead_code)]` because the production callsite
-// (`event_route::emit`) routes through [`write_event_with_ts`] for the W6
+// (`route::emit`) routes through [`write_event_with_ts`] for the W6
 // ts-preservation fix, while the in-crate unit tests still call this
 // historical entry point directly. Clippy in `--bin` mode (the gate that
 // blocks PRs) doesn't see test code and would otherwise flag this as
@@ -342,7 +342,7 @@ pub fn write_event(
 
 /// Same as [`write_event`] but lets the caller override the record's `ts`.
 ///
-/// Used by [`crate::run::event_route::emit`] to preserve the caller's
+/// Used by [`crate::shared::events::route::emit`] to preserve the caller's
 /// pre-constructed `HarnessEvent.ts` so consumer-side ts filters (MCP
 /// `since`, `metrics wave-status` duration) still work in tests + at
 /// hot-path callsites that pre-stamp events.

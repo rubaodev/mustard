@@ -12,7 +12,7 @@
 //! header form. Fail-open per step — a malformed file degrades to the next
 //! source instead of erroring.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::i18n::{project_locale_from_file, SupportedLocale as Locale};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -156,7 +156,7 @@ fn emit_economy(duration_ms: u128, spec: &str) {
         }),
         spec: spec_attr,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

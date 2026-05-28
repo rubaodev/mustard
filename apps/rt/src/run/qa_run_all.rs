@@ -9,7 +9,7 @@
 //!
 //! Output: two-space pretty JSON on stdout (`QaBatchReport`).
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::ClaudePaths;
 use mustard_core::fs as mfs;
 use serde_json::json;

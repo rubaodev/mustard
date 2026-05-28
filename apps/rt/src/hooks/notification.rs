@@ -9,7 +9,7 @@
 //!
 //! ## Routing
 //!
-//! `notification.received` is *not* a `pipeline.*` event, so [`event_route::emit`]
+//! `notification.received` is *not* a `pipeline.*` event, so [`route::emit`]
 //! lands it under `<spec>/[wave-N-{role}/]events/*.ndjson` via the W5 NDJSON
 //! writer — the same path `tool.use` / `agent.start` already take.
 //!
@@ -49,7 +49,7 @@ fn extract_message(input: &HookInput) -> Value {
     Value::Null
 }
 
-/// Append `notification.received` to the per-spec event log via [`event_route::emit`].
+/// Append `notification.received` to the per-spec event log via [`route::emit`].
 /// Fail-open — a route failure (no spec yet, no writable NDJSON dir) is silently
 /// dropped.
 fn append_notification_event(cwd: &str, input: &HookInput) {
@@ -61,7 +61,7 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
             .session_id
             .clone()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(crate::run::env::session_id),
+            .unwrap_or_else(crate::shared::context::session_id),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -70,18 +70,18 @@ fn append_notification_event(cwd: &str, input: &HookInput) {
         },
         event: "notification.received".to_string(),
         payload: json!({ "message": message, "cwd": cwd }),
-        spec: crate::run::env::current_spec(cwd),
+        spec: crate::shared::context::current_spec(cwd),
     };
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 /// Emit `pipeline.economy.operation.invoked`. Fail-open.
-/// Routes through `event_route::emit` (NDJSON sink) — no SQLite dependency.
+/// Routes through `route::emit` (NDJSON sink) — no SQLite dependency.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
-        session_id: crate::run::env::session_id(),
+        session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -90,9 +90,9 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         },
         event: "pipeline.economy.operation.invoked".to_string(),
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::run::env::current_spec(cwd),
+        spec: crate::shared::context::current_spec(cwd),
     };
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 impl Observer for Notification {

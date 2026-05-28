@@ -18,7 +18,7 @@
 //!   (`<!-- TEMPLATE: retry -->`); `{retry_context}` is read from
 //!   `--retry-context-file` when provided, else `""`.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::run::gate_regression_check;
 use crate::run::memory_cross_wave;
 use crate::run::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};

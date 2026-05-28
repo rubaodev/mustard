@@ -24,7 +24,7 @@
 //!   absent. Powerline statusline themes require this; without it the
 //!   transition glyphs render as tofu.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::run::skill_discovery_lint;
 use crate::util::now_iso8601;
 use crate::util::sha256::Sha256;
@@ -1260,7 +1260,7 @@ pub struct DoctorOpts {
 /// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
 pub fn run(opts: DoctorOpts) {
     let started = std::time::Instant::now();
-    let cwd = crate::run::env::workspace_root_strict()
+    let cwd = crate::shared::context::workspace_root_strict()
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let claude_dir = ClaudePaths::for_project(&cwd)
         .map(|p| p.claude_dir())
@@ -1515,7 +1515,7 @@ fn emit_economy(duration_ms: u128, check_count: usize, any_failure: bool) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 // ---------------------------------------------------------------------------

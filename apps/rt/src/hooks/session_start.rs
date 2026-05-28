@@ -29,7 +29,7 @@
 //! `harness-init.js` historically spawned an OTEL collector subprocess. With
 //! the b4 port complete (`mustard-rt run otel-collector`) the spawn is now
 //! handled in-binary here: [`spawn_otel_collector`] detaches a child via
-//! `Command::new(env::current_exe()?).args(["run","otel-collector"]).spawn()?`
+//! `Command::new(context::current_exe()?).args(["run","otel-collector"]).spawn()?`
 //! and writes the PID to `<project>/.claude/.harness/.otel-collector.pid`.
 //! Idempotence is enforced by [`is_process_alive`] — a second `SessionStart` in
 //! the same project finds the PID file, sees the process still up, and skips
@@ -172,7 +172,7 @@ fn run_harness_init(input: &HookInput, cwd: &str) {
     };
     // `session.start` is non-pipeline → per-spec NDJSON (or session fallback
     // when there is no active spec yet) via the W5 router.
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 /// Delete archived `sessions/*.jsonl` files older than the retention window.

@@ -8,8 +8,8 @@
 //! yields the same baselines.
 
 use crate::run::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
-use crate::run::env::{current_spec, session_id};
-use crate::run::event_route;
+use crate::shared::context::{current_spec, session_id};
+use crate::shared::events::route;
 use crate::util::now_iso8601;
 use mustard_core::events::reader::EventReader;
 use mustard_core::fs::{read_to_string, write_atomic};
@@ -128,7 +128,7 @@ fn median_duration_ms(cwd: &Path, operation: &str, take: usize) -> (i64, usize) 
 /// savings figure is the positive delta between the historical baseline and
 /// the new median (in ms, reinterpreted as token-equivalent friction).
 ///
-/// Fail-open: each event is routed through `event_route::emit`; routing
+/// Fail-open: each event is routed through `route::emit`; routing
 /// failures degrade silently per the router contract.
 fn record_savings(cwd: &Path, wave: u32, records: &[ReconcileRecord]) {
     let cwd_str = cwd.to_string_lossy().into_owned();
@@ -158,7 +158,7 @@ fn record_savings(cwd: &Path, wave: u32, records: &[ReconcileRecord]) {
             payload,
             spec: current_spec(&cwd_str),
         };
-        let _ = event_route::emit(&cwd_str, &event);
+        let _ = route::emit(&cwd_str, &event);
     }
 }
 
@@ -241,7 +241,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

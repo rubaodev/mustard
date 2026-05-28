@@ -701,7 +701,7 @@ fn emit_close_gate_event(cwd: &str, spec: Option<&str>, payload: Value) {
         spec: spec.map(str::to_string),
     };
     // `close-gate.check` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 /// Truncate a string to `max` bytes (char-boundary safe).
@@ -1111,8 +1111,8 @@ mod tests {
     use super::*;
     // W5 follow-up landed: `qa.result` events seed straight into the per-spec
     // NDJSON dir, mirroring `qa-run`'s production write path through
-    // `event_route::emit`.
-    use crate::run::event_route;
+    // `route::emit`.
+    use crate::shared::events::route;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1172,7 +1172,7 @@ mod tests {
             spec: Some(spec.to_string()),
         };
         assert!(
-            event_route::emit(cwd.to_str().unwrap(), &event),
+            route::emit(cwd.to_str().unwrap(), &event),
             "router must land qa.result for {spec}"
         );
     }

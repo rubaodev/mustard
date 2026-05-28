@@ -129,7 +129,7 @@ fn build_summary() -> String {
 fn persist_interrupted(cwd: &str, summary: &str, session_id: Option<&str>) {
     // W4B migration: persist as `.claude/memory/agent/{slug}.md` via the
     // shared helper (no SQLite).
-    let spec = crate::run::env::current_spec(cwd);
+    let spec = crate::shared::context::current_spec(cwd);
     let wave_num: Option<i64> = std::env::var("MUSTARD_ACTIVE_WAVE")
         .ok()
         .and_then(|s| s.parse::<i64>().ok());
@@ -157,7 +157,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
-        session_id: crate::run::env::session_id(),
+        session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -166,9 +166,9 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         },
         event: "pipeline.economy.operation.invoked".to_string(),
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::run::env::current_spec(cwd),
+        spec: crate::shared::context::current_spec(cwd),
     };
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 impl Observer for Stop {

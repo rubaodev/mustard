@@ -339,9 +339,9 @@ fn emit_amend_close(
         drift_emitted: Some(window.drift_emitted),
     };
     let payload_value = serde_json::to_value(&payload).unwrap_or(Value::Null);
-    let kind = crate::run::event_route::classify_kind(EVENT_PIPELINE_AMEND_CLOSE);
+    let kind = crate::shared::events::route::classify_kind(EVENT_PIPELINE_AMEND_CLOSE);
     let ts = now_iso8601();
-    let _ = crate::run::event_writer_ndjson::write_event_with_ts(
+    let _ = crate::shared::events::writer_ndjson::write_event_with_ts(
         cwd,
         Some(spec_id),
         None,

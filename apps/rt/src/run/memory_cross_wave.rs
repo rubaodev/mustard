@@ -37,7 +37,7 @@
 //! Output: markdown only (stdout). Empty string when there are no prior waves
 //! or no captured memory rows for them. Exit 0 always (fail-open).
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
@@ -341,7 +341,7 @@ fn wave_cluster_of(wave_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::event_route;
+    use crate::shared::events::route;
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
     use tempfile::tempdir;
@@ -425,11 +425,11 @@ mod tests {
         let project = dir.path();
         let cwd = project.to_str().unwrap();
         // Two memories for wave 1, one for wave 2 — all under spec "foo".
-        event_route::emit(cwd, &mem_event("foo", 1, "rt infra delivered four subcommands"));
-        event_route::emit(cwd, &mem_event("foo", 1, "wikilinks table created"));
-        event_route::emit(cwd, &mem_event("foo", 2, "SKILLs updated"));
+        route::emit(cwd, &mem_event("foo", 1, "rt infra delivered four subcommands"));
+        route::emit(cwd, &mem_event("foo", 1, "wikilinks table created"));
+        route::emit(cwd, &mem_event("foo", 2, "SKILLs updated"));
         // Noise: a different spec must not bleed into the rendered block.
-        event_route::emit(cwd, &mem_event("other", 1, "should not appear"));
+        route::emit(cwd, &mem_event("other", 1, "should not appear"));
 
         let prior = vec![
             "wave-1-rt-infra".to_string(),
@@ -449,7 +449,7 @@ mod tests {
     fn reads_prior_waves_via_spec_and_wave() {
         let dir = tempdir().unwrap();
         let project = dir.path();
-        event_route::emit(
+        route::emit(
             project.to_str().unwrap(),
             &mem_event_payload_only("foo", 1, "bar"),
         );

@@ -12,7 +12,7 @@
 //! CLI face. `validateSkill`'s `--factual` Python sub-validator shell-out is
 //! kept (`python quick_validate.py`); the cluster heuristic is ported intact.
 
-use crate::run::env;
+use crate::shared::context;
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::EventReader;
@@ -125,7 +125,7 @@ fn discover_skills(project_dir: &Path) -> Vec<Skill> {
 
 /// Root for the `validate` discovery — `CLAUDE_PROJECT_DIR` / cwd.
 fn validate_root() -> PathBuf {
-    PathBuf::from(env::project_dir())
+    PathBuf::from(context::project_dir())
 }
 
 /// `validate`'s discovery: `<root>/.claude/skills` plus each subproject's
@@ -822,12 +822,12 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
         }
         Some("graph") => {
             let project_dir = arg_after("--cwd")
-                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
+                .map_or_else(|| PathBuf::from(context::project_dir()), PathBuf::from);
             run_graph(&project_dir, has("--json"));
         }
         Some("orphans") => {
             let project_dir = arg_after("--cwd")
-                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
+                .map_or_else(|| PathBuf::from(context::project_dir()), PathBuf::from);
             let days = arg_after("--days")
                 .and_then(|d| d.parse::<i64>().ok())
                 .filter(|d| *d > 0)
@@ -842,7 +842,7 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
         }
         Some("list") => {
             let root = arg_after("--root")
-                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
+                .map_or_else(|| PathBuf::from(context::project_dir()), PathBuf::from);
             run_list(&root, has("--format") && arg_after("--format").as_deref() == Some("json")
                 || has("--json"));
         }
@@ -857,7 +857,7 @@ pub fn run(subcommand: Option<&str>, args: &[String]) {
             let operation = arg_after("--operation");
             let role = arg_after("--role");
             let project = arg_after("--cwd")
-                .map_or_else(|| PathBuf::from(env::project_dir()), PathBuf::from);
+                .map_or_else(|| PathBuf::from(context::project_dir()), PathBuf::from);
             let scope = crate::run::scan::resolve::ResolveScope {
                 entities: entity.map(|e| vec![e]).unwrap_or_default(),
                 operation,

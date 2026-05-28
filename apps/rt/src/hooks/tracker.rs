@@ -36,7 +36,7 @@
 //! [`MetricsTracker`] / [`SkillUsageTracker`], all `Observer`s. The registry
 //! wires each to its own `(event, tool)` pairs.
 
-use crate::run::current_spec;
+use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
 use mustard_core::economy::estimator;
 use mustard_core::economy::writer as economy_writer;
@@ -178,13 +178,13 @@ fn build_harness_event(
 
 /// Emit one harness event, best-effort. Telemetry is never load-bearing.
 ///
-/// Routes through the W5 [`crate::run::event_route::emit`] classifier:
+/// Routes through the W5 [`crate::shared::events::route::emit`] classifier:
 /// `pipeline.*` lands in SQLite, everything else (the vast majority of
 /// `tracker` events — `tool.use`, `agent.start`, `agent.stop`,
 /// `subagent.*`, etc.) lands in the per-spec NDJSON sink.
 fn emit_event(project_dir: &str, hook_id: &str, event: &str, payload: Value) {
     let harness_event = build_harness_event(project_dir, hook_id, event, payload);
-    let _ = crate::run::event_route::emit(project_dir, &harness_event);
+    let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
 /// Resolve the active wave id from `MUSTARD_ACTIVE_WAVE` (the convention the

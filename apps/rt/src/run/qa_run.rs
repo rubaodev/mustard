@@ -6,7 +6,7 @@
 //!
 //! Port note: the JS version shelled to `_lib/harness-event.js` and
 //! `_lib/metrics-emit.js`. This port emits the event through the NDJSON router
-//! ([`crate::run::event_route::emit`]) and the metric through `mustard_core::metrics`.
+//! ([`crate::shared::events::route::emit`]) and the metric through `mustard_core::metrics`.
 //!
 //! Fail-open: a missing spec or no AC section degrades to an `overall: skip`
 //! result and exit `0`; an AC failure exits `1` (the JS contract).
@@ -17,7 +17,7 @@
 //! still emitted on stdout — HTML is an artifact, never a replacement.
 
 use crate::report::{table, Report};
-use crate::run::env::{project_dir, session_id};
+use crate::shared::context::{project_dir, session_id};
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use crate::util::now_iso8601;
@@ -393,7 +393,7 @@ fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[Value]) {
         spec: Some(spec.to_string()),
     };
     // `qa.result` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(cwd.to_string_lossy().as_ref(), &ev);
+    let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
 }
 
 /// Emit the `qa` metric (fail-silent).
@@ -556,7 +556,7 @@ thread_local! {
 fn run_for_spec_inner(spec: &str) -> QaSpecOutcome {
     let cwd = std::env::current_dir()
         .ok()
-        .or_else(|| Some(std::path::PathBuf::from(crate::run::env::project_dir())))
+        .or_else(|| Some(std::path::PathBuf::from(crate::shared::context::project_dir())))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let result = run_qa(&cwd, spec);
     let (mut passed, mut failed, mut skipped) = (0u32, 0u32, 0u32);

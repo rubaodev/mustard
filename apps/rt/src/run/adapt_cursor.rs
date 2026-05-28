@@ -21,7 +21,7 @@
 //! Fail-open: a missing root `CLAUDE.md` writes a minimal placeholder file so
 //! Cursor still has *some* rules to load instead of hitting an empty path.
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use mustard_core::fs::{read_to_string, write_atomic};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -164,7 +164,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec: None,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@
 //! splits a pattern on `.*` and checks each piece is present, in order, on
 //! the same line — covering every shape the seed audits use today.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};

@@ -24,7 +24,7 @@
 //! the module-level enforcement mode the dispatcher applies — the dispatcher
 //! repasses the verdict without downgrade.
 
-use crate::run::current_spec;
+use crate::shared::context::current_spec;
 use mustard_core::config::Mode;
 use mustard_core::economy::estimator;
 use mustard_core::ClaudePaths;
@@ -1385,7 +1385,7 @@ fn emit_commit_gate_event(
         spec: current_spec(project_dir),
     };
     // `commit-gate.check` is non-pipeline → per-spec NDJSON via W5 router.
-    let _ = crate::run::event_route::emit(project_dir, &event);
+    let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
 /// The `review-gate` gate: validate a `git commit` command.
@@ -1652,7 +1652,7 @@ fn emit_pr_event(
         spec: spec.clone(),
     };
     // `pr.detect` family events are non-pipeline → NDJSON via W5 router.
-    let _ = crate::run::event_route::emit(project_dir, &harness_event);
+    let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
 /// Truncate a string to `max` bytes (char-boundary safe).
@@ -1755,7 +1755,7 @@ impl Check for BashGuard {
                         }),
                         spec: spec_slug.clone(),
                     };
-                    let _ = crate::run::event_route::emit(&ctx.project_dir, &savings_event);
+                    let _ = crate::shared::events::route::emit(&ctx.project_dir, &savings_event);
                 }
                 // Harness event for downstream readers.
                 let event = HarnessEvent {
@@ -1780,7 +1780,7 @@ impl Check for BashGuard {
                     spec: spec_slug,
                 };
                 // `rtk-rewrite` is non-pipeline → NDJSON via W5 router.
-                let _ = crate::run::event_route::emit(&ctx.project_dir, &event);
+                let _ = crate::shared::events::route::emit(&ctx.project_dir, &event);
             }
             return Ok(verdict);
         }

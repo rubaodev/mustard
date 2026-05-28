@@ -6,7 +6,7 @@
 //! everything else in NDJSON. The W6–W8 migration of
 //! `2026-05-26-no-sqlite-git-source-of-truth` collapsed both stores into the
 //! single NDJSON sink under `<spec>/[wave-N-{role}/]events/*.ndjson`, written
-//! by [`crate::run::event_writer_ndjson`].
+//! by [`crate::shared::events::writer_ndjson`].
 //!
 //! Before this module landed, every hook + run-face callsite emitting a
 //! non-`pipeline.*` event funnelled through the old SQLite `EventSink`
@@ -18,7 +18,7 @@
 //! [`emit_event`] / [`emit_event_with_wave_role`] for the typed-context
 //! variants) and the router classifies + dispatches:
 //!
-//! 1. **Every event** → [`crate::run::event_writer_ndjson::write_event_with_ts`]
+//! 1. **Every event** → [`crate::shared::events::writer_ndjson::write_event_with_ts`]
 //!    with the resolved spec / wave / session triple.
 //! 2. **`pipeline.*`** is still recognised by [`classify_kind`] so the
 //!    `kind` column carries `"pipeline"` — but the destination is the same
@@ -33,12 +33,12 @@
 //! emitter: env vars first (`MUSTARD_ACTIVE_SPEC`, `MUSTARD_ACTIVE_WAVE`,
 //! `MUSTARD_ACTIVE_WAVE_ROLE`, `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`),
 //! then the per-spec NDJSON walker's last-known `pipeline.scope` for the
-//! session, then a filesystem fallback — see [`crate::run::env::current_spec`].
+//! session, then a filesystem fallback — see [`crate::shared::context::current_spec`].
 //! The `HarnessEvent`'s own `spec` / `session_id` / `wave` fields, when
 //! populated, are honoured first.
 
-use crate::run::env::{current_spec, project_dir, session_id};
-use crate::run::event_writer_ndjson;
+use crate::shared::context::{current_spec, project_dir, session_id};
+use crate::shared::events::writer_ndjson;
 use mustard_core::model::event::HarnessEvent;
 use std::path::Path;
 
@@ -111,7 +111,7 @@ fn current_wave_number() -> Option<u32> {
 /// Route one [`HarnessEvent`] to the NDJSON sink.
 ///
 /// `project_dir_path` is the absolute project root — the canonical place to
-/// resolve it is [`crate::run::env::project_dir`].
+/// resolve it is [`crate::shared::context::project_dir`].
 ///
 /// Returns `true` when the NDJSON write succeeded.
 /// Callers may ignore the return value: every error is swallowed — telemetry
@@ -158,7 +158,7 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
         Some(event.ts.as_str())
     };
 
-    event_writer_ndjson::write_event_with_ts(
+    writer_ndjson::write_event_with_ts(
         project,
         spec,
         wave_role,
@@ -178,7 +178,7 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
 /// Convenience wrapper that resolves the project dir for the caller.
 ///
 /// The vast majority of run-face emitters already call
-/// [`crate::run::env::project_dir`] before routing through [`emit`]; this
+/// [`crate::shared::context::project_dir`] before routing through [`emit`]; this
 /// helper packages the common pattern. Marked `allow(dead_code)` until the
 /// first short-form callsite picks it up — the explicit form
 /// [`emit`]`(&project_dir, ev)` covers every site today.
@@ -268,7 +268,7 @@ mod tests {
     /// test instead of an env-mutating fallback test (the `unsafe_code` lint is
     /// forbidden crate-wide, so we cannot temporarily remove env vars to force
     /// the session-fallback branch). The session-fallback path is exercised
-    /// by `event_writer_ndjson::tests::event_dir_falls_back_to_session`, which
+    /// by `writer_ndjson::tests::event_dir_falls_back_to_session`, which
     /// targets the same code path one level lower without any env reads.
     #[test]
     fn classify_covers_remaining_families() {

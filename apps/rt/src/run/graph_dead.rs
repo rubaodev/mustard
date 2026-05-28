@@ -18,7 +18,7 @@
 //! Exit code is always `0` (fail-open). A missing `.claude/graph/` tree or an
 //! unreadable `.claude/spec/` directory degrades to `{ "dead": [], "count": 0 }`.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::run::scan::graph;
 use serde_json::json;
 use std::path::PathBuf;

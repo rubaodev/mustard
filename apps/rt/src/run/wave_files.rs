@@ -157,7 +157,7 @@ pub fn run(spec: Option<&str>, wave: Option<u32>) {
         return;
     };
 
-    let project_dir = crate::run::env::project_dir();
+    let project_dir = crate::shared::context::project_dir();
     let Some(path) = resolve_wave_spec_path(&project_dir, spec, wave) else {
         emit_empty();
         return;

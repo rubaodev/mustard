@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;
 use mustard_core::summary::{writer, AcResult, SpecSummaryDoc, SummaryTimeline, WaveSummary};

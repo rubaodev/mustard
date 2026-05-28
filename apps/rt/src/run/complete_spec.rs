@@ -17,10 +17,10 @@
 //! JS version (the `/close` command parses it).
 //!
 //! W4C migration: every SQLite reader/writer was removed. Events are written
-//! via [`crate::run::event_writer_ndjson::write_event_with_ts`] and read via
+//! via [`crate::shared::events::writer_ndjson::write_event_with_ts`] and read via
 //! [`mustard_core::projection::read_harness_events_from_ndjson_dir`].
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use mustard_core::fs;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
@@ -140,8 +140,8 @@ fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
 /// Emit a typed pipeline event via the canonical NDJSON sink.
 fn emit_ndjson(cwd: &Path, spec: &str, event_name: &str, payload: &Value, ts: &str) {
     let sid = session_id();
-    let kind = crate::run::event_route::classify_kind(event_name);
-    let _ = crate::run::event_writer_ndjson::write_event_with_ts(
+    let kind = crate::shared::events::route::classify_kind(event_name);
+    let _ = crate::shared::events::writer_ndjson::write_event_with_ts(
         cwd,
         Some(spec),
         None,
@@ -264,8 +264,8 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
     let ts = crate::util::now_iso8601();
     let sid = session_id();
     let payload = json!({ "from": last, "to": "CLOSE" });
-    let kind = crate::run::event_route::classify_kind("pipeline.phase");
-    let _ = crate::run::event_writer_ndjson::write_event_with_ts(
+    let kind = crate::shared::events::route::classify_kind("pipeline.phase");
+    let _ = crate::shared::events::writer_ndjson::write_event_with_ts(
         cwd,
         Some(spec),
         None,

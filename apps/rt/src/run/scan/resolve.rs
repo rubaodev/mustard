@@ -52,7 +52,7 @@
 //! same scope returns the cached blob without walking the graph again.
 //! `MUSTARD_RESOLVE_CACHE=off` bypasses both read + write (used by tests).
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::run::scan::graph::{self, GraphIndex};
 use crate::util::now_iso8601;
 use crate::util::sha256::Sha256;

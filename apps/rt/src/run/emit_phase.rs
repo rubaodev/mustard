@@ -14,8 +14,8 @@
 //! equals the requested phase the emit is skipped. Events are written directly
 //! to the NDJSON sink — no SQLite involved.
 
-use crate::run::env::{project_dir, session_id};
-use crate::run::event_writer_ndjson;
+use crate::shared::context::{project_dir, session_id};
+use crate::shared::events::writer_ndjson;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -118,11 +118,11 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     };
 
     // Write directly to the NDJSON sink. `pipeline.phase` was previously routed
-    // to SQLite via `event_route::emit` (the `pipeline.*` prefix match), but
+    // to SQLite via `route::emit` (the `pipeline.*` prefix match), but
     // this sub-spec migrates all phase emission to the pure-NDJSON path.
     let project = Path::new(&cwd);
-    let kind = crate::run::event_route::classify_kind(&event.event);
-    let _ = event_writer_ndjson::write_event_with_ts(
+    let kind = crate::shared::events::route::classify_kind(&event.event);
+    let _ = writer_ndjson::write_event_with_ts(
         project,
         Some(spec),
         None,
@@ -164,7 +164,7 @@ fn write_back_after_execute(spec: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::event_writer_ndjson::write_event;
+    use crate::shared::events::writer_ndjson::write_event;
     use serde_json::json;
     use tempfile::tempdir;
 

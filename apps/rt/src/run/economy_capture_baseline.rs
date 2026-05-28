@@ -12,7 +12,7 @@
 //! value — useful before the operation has ever run, to mark expected
 //! coverage.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::events::reader::EventReader;
 use mustard_core::fs::{read_to_string, write_atomic};
@@ -212,7 +212,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

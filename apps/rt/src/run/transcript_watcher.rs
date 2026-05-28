@@ -43,12 +43,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::run::current_spec;
-use crate::run::event_route;
+use crate::shared::context::current_spec;
+use crate::shared::events::route;
 use crate::util::now_iso8601;
 
 /// Emit one `pipeline.economy.run` NDJSON event for `payload`, routed by
-/// `event_route::emit` under `project_dir`. Fail-open per the router.
+/// `route::emit` under `project_dir`. Fail-open per the router.
 fn emit_run_event(project_dir: &str, event_name: &str, payload: Value) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
@@ -64,7 +64,7 @@ fn emit_run_event(project_dir: &str, event_name: &str, payload: Value) {
         payload,
         spec: current_spec(project_dir),
     };
-    let _ = event_route::emit(project_dir, &event);
+    let _ = route::emit(project_dir, &event);
 }
 
 /// How long [`recv_timeout`] blocks before re-checking the shutdown flag.

@@ -56,7 +56,7 @@ use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json};
 
-use crate::run::current_spec;
+use crate::shared::context::current_spec;
 use crate::util::{format_gate_message, now_iso8601};
 
 /// Emit a `pipeline.economy.savings.budget-output-cut` NDJSON event for an
@@ -95,7 +95,7 @@ fn record_output_cut(
         }),
         spec: current_spec(project_dir),
     };
-    let _ = crate::run::event_route::emit(project_dir, &event);
+    let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
 // ---------------------------------------------------------------------------

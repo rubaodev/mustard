@@ -36,7 +36,7 @@
 //! unless `--force` is passed. Fail-open per file write (a single failure is
 //! reported but does not abort the rest of the layout).
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::run::spec_scaffold;
 use mustard_core::claude_paths::ClaudePaths;
 use mustard_core::fs as mfs;

@@ -17,7 +17,7 @@
 //! Output: one JSON line:
 //! `{ "ingested": { "knowledge": N, "decisions": M, "lessons": K, "agent_memory": Z }, "deleted": bool, "errors": [...] }`.
 
-use crate::run::env::project_dir as env_project_dir;
+use crate::shared::context::project_dir as env_project_dir;
 use mustard_core::atomic_md::frontmatter::Frontmatter;
 use mustard_core::atomic_md::{MarkdownDoc, MarkdownStore};
 use mustard_core::claude_paths::ClaudePaths;

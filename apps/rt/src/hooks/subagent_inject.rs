@@ -508,7 +508,7 @@ impl Check for SubagentInject {
         if !knowledge.is_empty() {
             sections.push(knowledge);
         }
-        if let Some(spec) = crate::run::env::current_spec(&cwd) {
+        if let Some(spec) = crate::shared::context::current_spec(&cwd) {
             if !spec.is_empty() {
                 let mem = spec_memory_block(&project, &spec, &prompt, &role);
                 if !mem.is_empty() {
@@ -542,7 +542,7 @@ impl Check for SubagentInject {
 }
 
 /// Emit `pipeline.economy.operation.invoked` for a W8 in-binary operation.
-/// Fail-open. Routes through `event_route::emit` (NDJSON sink) for uniformity.
+/// Fail-open. Routes through `route::emit` (NDJSON sink) for uniformity.
 fn emit_economy_operation(cwd: &str, operation: &str) {
     use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
@@ -550,7 +550,7 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: crate::util::now_iso8601(),
-        session_id: crate::run::env::session_id(),
+        session_id: crate::shared::context::session_id(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Hook,
@@ -559,9 +559,9 @@ fn emit_economy_operation(cwd: &str, operation: &str) {
         },
         event: "pipeline.economy.operation.invoked".to_string(),
         payload: json!({ "operation": operation, "duration_ms": 0, "tokens_used": 0 }),
-        spec: crate::run::env::current_spec(cwd),
+        spec: crate::shared::context::current_spec(cwd),
     };
-    let _ = crate::run::event_route::emit(cwd, &event);
+    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 #[cfg(test)]
@@ -663,7 +663,7 @@ mod tests {
     ///
     /// The test drives [`span_level_eval_and_append_in`] directly (passing
     /// the wave directory as a parameter) so it does NOT need to mutate
-    /// `MUSTARD_ACTIVE_SPEC` / `MUSTARD_ACTIVE_WAVE` — `env::set_var` is
+    /// `MUSTARD_ACTIVE_SPEC` / `MUSTARD_ACTIVE_WAVE` — `context::set_var` is
     /// `unsafe` under Rust 2024 and this crate forbids `unsafe_code`. The
     /// production caller [`span_level_eval_and_append`] is a thin wrapper
     /// around the same helper that resolves the wave from the env vars.

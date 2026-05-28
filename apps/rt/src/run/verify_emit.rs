@@ -9,7 +9,7 @@
 //! exit. Exit `0` on a match, `1` on no match within the window, `2` on bad
 //! arguments (the JS contract).
 
-use crate::run::env;
+use crate::shared::context;
 use mustard_core::model::event::HarnessEvent;
 use mustard_core::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
@@ -130,7 +130,7 @@ pub fn run(
     };
 
     // Read events exclusively from per-spec NDJSON `.events/` directories.
-    let project = env::project_dir();
+    let project = context::project_dir();
     let specs_root = match ClaudePaths::for_project(std::path::Path::new(&project)) {
         Ok(paths) => paths.spec_dir(),
         Err(_) => {

@@ -6,7 +6,7 @@
 //! and runs them in sequence (parallelism is left to the user — this is a
 //! maintenance helper, not a CI driver).
 
-use crate::run::env::session_id;
+use crate::shared::context::session_id;
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;
@@ -149,7 +149,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec: None,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 // Resolve the relative subproject path against the project's repo root.

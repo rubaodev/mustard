@@ -22,6 +22,7 @@
 )]
 
 pub mod run;
+pub mod shared;
 pub mod util;
 mod dispatch;
 mod hooks;

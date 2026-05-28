@@ -550,7 +550,7 @@ fn emit_boundary_event(
         spec: Some(spec.to_string()),
     };
     // `boundary.expansion` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(project_dir, &event);
+    let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
 /// Collect harness events for `spec_name` from the per-spec NDJSON event log.

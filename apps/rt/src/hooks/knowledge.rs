@@ -408,9 +408,9 @@ fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
             spec: Some(spec.clone()),
         };
         // `retry.attempt` is non-pipeline → routed to the per-spec NDJSON
-        // sink by the W5 split. `event_route::emit` is the single
+        // sink by the W5 split. `route::emit` is the single
         // classifier; see `apps/rt/src/run/event_route.rs`.
-        let _ = crate::run::event_route::emit(cwd, &event);
+        let _ = crate::shared::events::route::emit(cwd, &event);
     }
 }
 

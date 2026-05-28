@@ -21,7 +21,7 @@
 //! degrades to an empty index — the Wave 4 resolver then sees zero edges
 //! and treats the closure as the singleton `{scope}`.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::run::scan::graph;
 use std::path::PathBuf;
 

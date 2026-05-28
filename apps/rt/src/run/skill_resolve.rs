@@ -29,7 +29,7 @@
 //! and walks the skills directories. Missing registry / unparseable
 //! frontmatter degrade gracefully — they are skipped, not fatal.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use mustard_core::fs as mfs;
 use mustard_core::skill::frontmatter::{parse as parse_fm, SkillFrontmatter, SkillScope, SkillTag};
 use mustard_core::ClaudePaths;

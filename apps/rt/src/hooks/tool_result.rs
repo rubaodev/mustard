@@ -23,7 +23,7 @@
 //! before/after pieces are bounded to 4 KB each so a multi-megabyte file
 //! replacement does not bloat the event row.
 
-use crate::run::current_spec;
+use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
 use mustard_core::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
@@ -264,7 +264,7 @@ fn build_payload(tool: &str, input: &HookInput) -> Option<ToolResultPayload> {
 }
 
 /// Emit one `tool.result` event, best-effort. Routes through
-/// [`crate::run::event_route::emit`] (NDJSON sink) — fail-open, no SQLite.
+/// [`crate::shared::events::route::emit`] (NDJSON sink) — fail-open, no SQLite.
 fn emit_event(project_dir: &str, payload: ToolResultPayload) {
     let value = match serde_json::to_value(&payload) {
         Ok(v) => v,
@@ -285,7 +285,7 @@ fn emit_event(project_dir: &str, payload: ToolResultPayload) {
         spec: current_spec(project_dir),
     };
     // `tool.result` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::run::event_route::emit(project_dir, &harness_event);
+    let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
 /// The PostToolUse `Observer` family member that emits `tool.result` events.

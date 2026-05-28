@@ -612,7 +612,7 @@ pub fn run(force: bool, target: Option<&str>) {
     // (the directory containing `mustard.json + .claude/`) instead of the raw
     // process cwd. Fail strict — a run subcommand cannot do useful work
     // without an anchor.
-    let cwd = match crate::run::env::workspace_root_strict() {
+    let cwd = match crate::shared::context::workspace_root_strict() {
         Ok(root) => root,
         Err(err) => {
             eprintln!("scan-orchestrate: workspace_root resolution failed: {err}");

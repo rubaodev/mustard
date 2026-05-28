@@ -43,7 +43,7 @@
 //! - `pipeline.economy.operation.invoked { operation: "worktree-gc", duration_ms }`
 //!   — the universal `/economia` operation marker (W12 contract).
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
@@ -345,8 +345,8 @@ fn emit_telemetry(
     // W5: `worktree.gc.run` is non-pipeline (NDJSON); `pipeline.economy.*`
     // is pipeline (SQLite). The router classifies each correctly so we no
     // longer need the open-store-then-append shape.
-    let _ = crate::run::event_route::emit(&dir, &gc_event);
-    let _ = crate::run::event_route::emit(&dir, &econ_event);
+    let _ = crate::shared::events::route::emit(&dir, &gc_event);
+    let _ = crate::shared::events::route::emit(&dir, &econ_event);
 }
 
 // ---------------------------------------------------------------------------

@@ -54,7 +54,7 @@
 //! Fail-open: a single bad spec degrades to an `errors[]` entry; the sweep
 //! continues.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::util::now_iso8601;
 use mustard_core::fs;
 use mustard_core::meta::read_meta_beside;
@@ -352,7 +352,7 @@ fn emit_summary(repo: &Path, report: &Report) {
     };
     // `spec.clear.run` is non-pipeline → NDJSON via the W5 router (lands in
     // the session-fallback dir since the event carries no spec attribution).
-    let _ = crate::run::event_route::emit(repo.to_string_lossy().as_ref(), &event);
+    let _ = crate::shared::events::route::emit(repo.to_string_lossy().as_ref(), &event);
 }
 
 #[cfg(test)]

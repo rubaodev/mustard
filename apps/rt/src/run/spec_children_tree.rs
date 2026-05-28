@@ -32,7 +32,7 @@
 //! Fail-open: a missing events dir, missing parent dir, or unreadable spec all
 //! degrade to empty arrays — never a non-zero exit.
 
-use crate::run::env::project_dir;
+use crate::shared::context::project_dir;
 use crate::run::spec_children::{list_children, ChildEntry};
 use mustard_core::projection::{project_quality, project_waves, read_workspace_events};
 use mustard_core::{AcStatus, Outcome, SpecState, Stage, WaveStatus, WaveView};

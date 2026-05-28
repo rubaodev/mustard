@@ -11,7 +11,7 @@
 //! repeat call against an existing directory aborts with a `dir_exists` error
 //! in the JSON rather than overwriting work in flight.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::run::spec_scaffold;
 use crate::util::now_iso8601;
 use mustard_core::claude_paths::ClaudePaths;
@@ -230,7 +230,7 @@ fn emit_economy(duration_ms: u128, child_slug: &str) {
         }),
         spec: spec_attr,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

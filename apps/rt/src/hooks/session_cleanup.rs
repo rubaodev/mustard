@@ -45,8 +45,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::run::current_spec;
-use crate::run::event_route;
+use crate::shared::context::current_spec;
+use crate::shared::events::route;
 use crate::util::now_iso8601;
 
 /// Build + route a `HarnessEvent` from `(event_name, payload)` produced by an
@@ -66,7 +66,7 @@ fn emit_economy_event(cwd: &str, hook_id: &str, event_name: &str, payload: Value
         payload,
         spec: current_spec(cwd),
     };
-    let _ = event_route::emit(cwd, &event);
+    let _ = route::emit(cwd, &event);
 }
 
 /// `.compact-state` files older than this are pruned — 24 hours.

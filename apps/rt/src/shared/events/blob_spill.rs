@@ -39,7 +39,7 @@
 //! reader sees a normal payload and renders it. Telemetry is never load-bearing.
 
 // W5 follow-up: `maybe_spill` is the active write path (called from
-// `event_writer_ndjson::write_event_inner`). `blob_path` is part of the
+// `writer_ndjson::write_event_inner`). `blob_path` is part of the
 // reader contract the dashboard's NDJSON tailer consumes — kept public for
 // the upcoming `apps/dashboard` reader and exercised by this module's tests,
 // so it is annotated locally rather than under a module-wide allow.

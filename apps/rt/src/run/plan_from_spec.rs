@@ -19,7 +19,7 @@
 //! Fail-open: invalid args print a usage line on stderr and exit non-zero so
 //! the parent pipeline does not silently scaffold an empty plan.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
@@ -145,7 +145,7 @@ fn emit_economy(duration_ms: u128, waves: u32) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@
 //! All errors inside `observe` are swallowed (`let _ = …`). `evaluate` returns
 //! `Ok(Verdict::Allow)` on any failure to load the window.
 
-use crate::run::current_spec;
+use crate::shared::context::current_spec;
 use crate::util::now_iso8601;
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
@@ -289,7 +289,7 @@ fn emit(project_dir: &str, session_id: &str, event_name: &str, payload: serde_js
         payload,
         spec: current_spec(project_dir),
     };
-    let _ = crate::run::event_route::emit(project_dir, &ev);
+    let _ = crate::shared::events::route::emit(project_dir, &ev);
 }
 
 // ---------------------------------------------------------------------------

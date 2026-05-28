@@ -624,8 +624,8 @@ fn emit_economy_event(root: &Path, duration_ms: u128) {
     };
     // `pipeline.economy.operation.invoked` is a pipeline.* event — the W5
     // router classifies it to SQLite. Fail-open: every error is swallowed
-    // inside `event_route::emit`.
-    let _ = crate::run::event_route::emit(root.to_string_lossy().as_ref(), &event);
+    // inside `route::emit`.
+    let _ = crate::shared::events::route::emit(root.to_string_lossy().as_ref(), &event);
 }
 
 /// Parse the model's reply into an [`InterpretedResult`].

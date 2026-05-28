@@ -28,7 +28,7 @@
 //!
 //! There is no SQLite store. Each accepted datapoint is serialised into the
 //! per-spec NDJSON event log via
-//! [`crate::run::event_writer_ndjson::write_event_with_ts`]. The ingestion
+//! [`crate::shared::events::writer_ndjson::write_event_with_ts`]. The ingestion
 //! filter ([`CONSUMED_METRICS`], a module-local constant) still drops every
 //! metric the dashboard does not read, so the NDJSON sink only carries the
 //! handful that matter.
@@ -43,8 +43,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tiny_http::{Method, Response, Server};
 
-use crate::run::env::{project_dir, session_id};
-use crate::run::event_writer_ndjson;
+use crate::shared::context::{project_dir, session_id};
+use crate::shared::events::writer_ndjson;
 
 /// Default OTLP/HTTP port — the OpenTelemetry convention, and the value the
 /// generated `settings.json` points `OTEL_EXPORTER_OTLP_ENDPOINT` at.
@@ -83,7 +83,7 @@ pub(crate) fn resolve_port() -> u16 {
 }
 
 /// Resolve the session slug for the event-writer's `session_slug` argument.
-/// `env::session_id` returns `"unknown"` for the unattached case; the
+/// `context::session_id` returns `"unknown"` for the unattached case; the
 /// event-writer needs a non-empty slug to compose its output path.
 fn session_slug() -> String {
     let sid = session_id();
@@ -137,7 +137,7 @@ fn write_metrics(harness_dir: &Path, body: &Value, now_ms: i64) -> usize {
         // ts_override is the row's bucket so cross-session aggregation can
         // re-bucket without re-clocking.
         let ts = ms_to_iso(row.ts_bucket);
-        let outcome = event_writer_ndjson::write_event_with_ts(
+        let outcome = writer_ndjson::write_event_with_ts(
             &project,
             None,           // spec — collector is cross-spec
             None,           // wave_role
@@ -226,7 +226,7 @@ fn write_traces(harness_dir: &Path, body: &Value) -> usize {
             Err(_) => continue,
         };
         let ts = rec.ts.clone();
-        let outcome = event_writer_ndjson::write_event_with_ts(
+        let outcome = writer_ndjson::write_event_with_ts(
             &project,
             rec.spec.as_deref(),
             None,

@@ -26,7 +26,7 @@
 //! prompt. `review.complete` is emitted by a follow-up call (this subcommand
 //! covers the *dispatch* half — the verdict half is `review-result`).
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::process::rtk_command;
@@ -176,7 +176,7 @@ fn emit_economy(duration_ms: u64, spec: Option<&str>) {
         }),
         spec: spec_attr,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

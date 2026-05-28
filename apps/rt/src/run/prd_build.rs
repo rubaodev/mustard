@@ -11,7 +11,7 @@
 //! reads (registry file + manifest glob), so the output is byte-stable for a
 //! given input.
 
-use crate::run::env::{current_spec, session_id};
+use crate::shared::context::{current_spec, session_id};
 use crate::util::now_iso8601;
 use mustard_core::fs::read_to_string;
 use mustard_core::i18n::{slugify, SupportedLocale as Locale};
@@ -331,7 +331,7 @@ fn emit_economy(duration_ms: u128) {
         }),
         spec,
     };
-    let _ = crate::run::event_route::emit(&cwd, &ev);
+    let _ = crate::shared::events::route::emit(&cwd, &ev);
 }
 
 #[cfg(test)]

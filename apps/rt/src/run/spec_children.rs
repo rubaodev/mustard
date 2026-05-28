@@ -171,7 +171,7 @@ pub fn run(parent: Option<&str>) {
         println!("[]");
         return;
     };
-    let project = PathBuf::from(crate::run::env::project_dir());
+    let project = PathBuf::from(crate::shared::context::project_dir());
     let entries = list_children(&project, parent);
     match serde_json::to_string(&entries) {
         Ok(text) => println!("{text}"),
