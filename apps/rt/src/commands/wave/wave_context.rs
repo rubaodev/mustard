@@ -5,7 +5,7 @@
 //! every heading flows through [`mustard_core::platform::i18n::translate`] so the
 //! output follows the project locale. AC-A-9 caps the rendered body at
 //! **8 000 words** — over the cap, [`build`] returns an explicit
-//! [`WaveSummaryError::ContextTooLong`] rather than silently truncating.
+//! [`WaveContextError::ContextTooLong`] rather than silently truncating.
 //!
 //! ## Schema (AC-A-9)
 //!
@@ -24,7 +24,7 @@
 //!   typed error. Callers decide how to react (trim inheritance, drop memory,
 //!   surface to the user).
 //! - **i18n-pure.** Same contract as
-//!   [`crate::commands::wave::wave_summary`] — no hardcoded user-facing strings.
+//!   the wave-markdown renderer — no hardcoded user-facing strings.
 //! - **Idempotent.** Pure on `(input, locale)`. No clock, no env.
 
 use mustard_core::io::fs as mfs;
@@ -32,7 +32,76 @@ use mustard_core::platform::i18n::{translate, SupportedLocale as Locale};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::commands::wave::wave_summary::{WaveSummaryError, WikiLink};
+/// One outgoing wikilink target — rendered as `[[name]]` (or `[[name|alias]]`
+/// when an alias is provided). Shared building block of the wave-markdown
+/// renderer; the alias slot keeps display text out of the renderer (PT-BR vs
+/// EN-US presentation is the caller's concern).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WikiLink {
+    /// Target identifier (e.g. spec slug, wave id, memory note name).
+    pub target: String,
+    /// Optional display alias. When `Some`, rendered as `[[target|alias]]`.
+    pub alias: Option<String>,
+}
+
+impl WikiLink {
+    /// Build a link without an alias.
+    #[must_use]
+    pub fn new(target: impl Into<String>) -> Self {
+        Self { target: target.into(), alias: None }
+    }
+
+    /// Render the link as a literal `[[ ]]` token.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.alias {
+            Some(a) => format!("[[{}|{a}]]", self.target),
+            None => format!("[[{}]]", self.target),
+        }
+    }
+}
+
+/// Errors surfaced by [`write`].
+#[derive(Debug)]
+pub enum WaveContextError {
+    /// IO failure during the atomic write (target path, root cause).
+    Io {
+        /// The path the writer attempted to materialise.
+        path: PathBuf,
+        /// Wrapped IO error from `mustard_core::io::fs::write_atomic`.
+        source: std::io::Error,
+    },
+    /// `_context.md` exceeded the 8 000-word cap (W3.T3.2 / AC-A-9).
+    ContextTooLong {
+        /// Actual word count of the rendered context body.
+        actual_words: usize,
+        /// The hard cap (8 000 — AC-A-9).
+        cap: usize,
+    },
+}
+
+impl std::fmt::Display for WaveContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, source } => {
+                write!(f, "wave-context write failed at {}: {source}", path.display())
+            }
+            Self::ContextTooLong { actual_words, cap } => write!(
+                f,
+                "wave-context exceeds cap: {actual_words} words > {cap} cap"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WaveContextError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::ContextTooLong { .. } => None,
+        }
+    }
+}
 
 /// Hard cap on the rendered `_context.md` word count — AC-A-9.
 pub const CONTEXT_WORD_CAP: usize = 8_000;
@@ -86,18 +155,18 @@ pub struct WaveContextInput {
 ///
 /// Pure on `(input, locale)` — same input twice produces byte-identical
 /// output. Enforces the 8 000-word cap (AC-A-9): when the rendered body
-/// exceeds the cap, returns [`WaveSummaryError::ContextTooLong`] carrying
+/// exceeds the cap, returns [`WaveContextError::ContextTooLong`] carrying
 /// the actual word count so the caller can decide how to recover.
 ///
 /// # Errors
 ///
-/// Returns [`WaveSummaryError::ContextTooLong`] when the rendered body
+/// Returns [`WaveContextError::ContextTooLong`] when the rendered body
 /// exceeds [`CONTEXT_WORD_CAP`] words.
-pub fn build(input: &WaveContextInput, locale: Locale) -> Result<String, WaveSummaryError> {
+pub fn build(input: &WaveContextInput, locale: Locale) -> Result<String, WaveContextError> {
     let body = render_body(input, locale);
     let words = count_words(&body);
     if words > CONTEXT_WORD_CAP {
-        return Err(WaveSummaryError::ContextTooLong {
+        return Err(WaveContextError::ContextTooLong {
             actual_words: words,
             cap: CONTEXT_WORD_CAP,
         });
@@ -110,14 +179,14 @@ pub fn build(input: &WaveContextInput, locale: Locale) -> Result<String, WaveSum
 ///
 /// # Errors
 ///
-/// Returns [`WaveSummaryError::Io`] when the underlying atomic write fails.
+/// Returns [`WaveContextError::Io`] when the underlying atomic write fails.
 pub fn write(
     spec_root: &Path,
     wave_id: &str,
     content: &str,
-) -> Result<PathBuf, WaveSummaryError> {
+) -> Result<PathBuf, WaveContextError> {
     let target = spec_root.join(wave_id).join("_context.md");
-    mfs::write_atomic(&target, content.as_bytes()).map_err(|e| WaveSummaryError::Io {
+    mfs::write_atomic(&target, content.as_bytes()).map_err(|e| WaveContextError::Io {
         path: target.clone(),
         source: std::io::Error::other(e.to_string()),
     })?;
@@ -363,7 +432,7 @@ mod tests {
         };
         let err = build(&input, Locale::PtBr).expect_err("expected cap violation");
         match err {
-            WaveSummaryError::ContextTooLong { actual_words, cap } => {
+            WaveContextError::ContextTooLong { actual_words, cap } => {
                 assert_eq!(cap, CONTEXT_WORD_CAP);
                 assert!(
                     actual_words > CONTEXT_WORD_CAP,

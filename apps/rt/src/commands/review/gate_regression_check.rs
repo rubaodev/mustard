@@ -485,34 +485,6 @@ fn snapshot_signal_with_threshold(
     }
 }
 
-fn snapshot_signal(template: &str, delta: &FunctionDelta, line_changes: usize) -> Signal {
-    let before_lines = line_count(delta.before.as_ref());
-    let after_lines = line_count(delta.after.as_ref());
-    let before_str = before_lines.to_string();
-    let after_str = after_lines.to_string();
-    let message = interpolate(
-        template,
-        &[
-            ("function", &delta.qualifier),
-            ("before_lines", &before_str),
-            ("after_lines", &after_str),
-        ],
-    );
-    // line_changes feeds severity scaling: > 2× threshold ⇒ High.
-    let severity = if line_changes > LINE_CHANGE_THRESHOLD * 2 {
-        Severity::High
-    } else {
-        Severity::Medium
-    };
-    Signal {
-        source: Layer::Snapshot,
-        severity,
-        span: None,
-        message,
-        evidence: delta.qualifier.clone(),
-    }
-}
-
 fn snapshot_signal_explicit(
     template: &str,
     qualifier: &str,

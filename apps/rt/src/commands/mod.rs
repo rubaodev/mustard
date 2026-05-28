@@ -818,6 +818,16 @@ pub enum RunCmd {
         #[arg(long)]
         include_nested: bool,
     },
+    /// Audit source files for pt-BR prose in EN-only files (diacritic-seed
+    /// heuristic). Warn-only by default; `--strict` exits `1` on any hit.
+    LanguageAudit {
+        /// Output format: `text` (default) or `json`.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Check (or apply) freshness of managed artifacts against their upstreams.
     ///
     /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
@@ -1671,6 +1681,9 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::DocsStaleCheck { from, strict, include_nested } => {
             doctor::docs_stale_check::run(from.as_deref(), strict, include_nested);
+        }
+        RunCmd::LanguageAudit { format, strict } => {
+            doctor::language_audit::run(doctor::language_audit::LanguageAuditOpts { format, strict });
         }
         RunCmd::ArtifactUpdate {
             check,

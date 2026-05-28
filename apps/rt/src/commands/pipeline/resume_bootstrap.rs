@@ -32,7 +32,7 @@ use mustard_core::domain::model::event::{
 };
 use mustard_core::view::projection::read_workspace_events;
 use mustard_core::EventReader;
-use crate::commands::wave::wave_summary::WikiLink;
+use crate::commands::wave::wave_context::WikiLink;
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
