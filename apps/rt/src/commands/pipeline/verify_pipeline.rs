@@ -36,6 +36,7 @@ use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
 use crate::shared::events::economy;
 use crate::report::{table, Report};
+use crate::util::platform;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
@@ -254,35 +255,11 @@ fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
     Vec::new()
 }
 
-/// Build the platform shell invocation for a verification `command` string.
-///
-/// Verification commands come from `sync-detect`, the `pipeline-config.md`
-/// table, or the defaults probe — arbitrary strings that may carry quotes or
-/// shell operators. On Windows, `cmd.exe` does not parse its command line via
-/// the `CommandLineToArgvW` rules that `std`'s `Command::arg` quoting assumes,
-/// so the command is appended verbatim with `CommandExt::raw_arg` (a SAFE API)
-/// and run as `cmd /S /C "<command>"`, mirroring `qa_run::build_shell_command`.
-#[cfg(windows)]
-fn build_shell_command(command: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut c = Command::new("cmd");
-    c.raw_arg(format!("/S /C \"{command}\""));
-    c
-}
-
-/// See the `#[cfg(windows)]` variant for the rationale.
-#[cfg(not(windows))]
-fn build_shell_command(command: &str) -> Command {
-    let mut c = Command::new("sh");
-    c.arg("-c").arg(command);
-    c
-}
-
 /// Run one shell command in `cwd` with a stack-aware timeout. Returns `Ok` on
 /// exit 0, `Err(excerpt)` otherwise. Timeout picked by [`effective_timeout`]
 /// (Rust 600 s, TS/Python 120-180 s; env-overridable).
 fn run_command(command: &str, cwd: &Path) -> std::result::Result<(), String> {
-    let mut cmd = build_shell_command(command);
+    let mut cmd = platform::build_shell_command(command);
     cmd.current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

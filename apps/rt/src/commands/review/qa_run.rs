@@ -18,6 +18,7 @@
 
 use crate::report::{table, Report};
 use crate::shared::context::{project_dir, session_id};
+use crate::util::platform;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::time::now_iso8601;
@@ -25,7 +26,6 @@ use mustard_core::platform::metrics::{emit_metric, MetricLine};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Instant;
 
 /// Per-AC timeout (2 min), matching `AC_TIMEOUT_MS` in `qa-run.js`.
@@ -205,37 +205,6 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     Some(AcItem { id: id.to_uppercase(), command })
 }
 
-/// Build the platform shell invocation for an AC `command` string.
-///
-/// On non-Windows: `sh -c <command>` — `std`'s normal arg passing is correct
-/// for `sh`, which parses argv entries directly.
-///
-/// On Windows: `cmd.exe` does **not** parse its command line via the
-/// `CommandLineToArgvW` rules that `std`'s `Command::arg` quoting assumes, so
-/// passing a complex `command` (quotes, `()`, `|`, `&&`) through `arg` corrupts
-/// it. Instead, append the command verbatim with `CommandExt::raw_arg` (a SAFE
-/// API — no `unsafe` needed) and invoke `cmd /S /C "<command>"`: with `/S` and a
-/// command line whose first and last chars are quotes, `cmd` strips exactly
-/// that outer quote pair and runs the remainder literally.
-#[cfg(windows)]
-fn build_shell_command(command: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut c = Command::new("cmd");
-    // Single verbatim argument: `/S /C "<command>"`. One `raw_arg` call so the
-    // whole `cmd` command line is exactly this — no `std` quoting, no extra
-    // separators between the `/S /C` flags and the quoted payload.
-    c.raw_arg(format!("/S /C \"{command}\""));
-    c
-}
-
-/// See the `#[cfg(windows)]` variant for the rationale.
-#[cfg(not(windows))]
-fn build_shell_command(command: &str) -> Command {
-    let mut c = Command::new("sh");
-    c.arg("-c").arg(command);
-    c
-}
-
 /// Rewrite a `cargo build/test --workspace` command to skip the crate(s) in
 /// execution when qa-run is invoked from inside `complete-spec`.
 ///
@@ -291,7 +260,7 @@ fn run_ac_command(command: &str, cwd: &Path) -> AcResult {
     // AC are documented to be cross-shell-safe (`node -e`, `bash -c`).
     // Self-invoked rewrite first — see `rewrite_self_invoked_cargo` for why.
     let rewritten = rewrite_self_invoked_cargo(command);
-    let mut cmd = build_shell_command(&rewritten);
+    let mut cmd = platform::build_shell_command(&rewritten);
     cmd.current_dir(cwd);
 
     // No native wait-with-timeout in std; spawn + poll.
