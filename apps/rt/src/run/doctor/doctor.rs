@@ -1323,9 +1323,9 @@ pub fn run(opts: DoctorOpts) {
     // its native JSON object under its own top-level key in the JSON path;
     // in text mode it folds into a `CheckResult` envelope so the OK/WARN/FAIL
     // summary line still works.
-    let cp_report = crate::run::doctor_claude_paths::run(&cwd);
-    let wl_report = crate::run::doctor_workspace_leaks::run(&cwd);
-    let i1_report = crate::run::doctor_i1::run(&cwd);
+    let cp_report = crate::run::doctor::doctor_claude_paths::run(&cwd);
+    let wl_report = crate::run::doctor::doctor_workspace_leaks::run(&cwd);
+    let i1_report = crate::run::doctor::doctor_i1::run(&cwd);
 
     if opts.format == "json" {
         render_combined_json(&results, &cp_report, &wl_report, &i1_report);
@@ -1356,10 +1356,10 @@ pub fn run(opts: DoctorOpts) {
 /// contract).
 fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
     let value = match name {
-        "claude-paths" => serde_json::to_value(crate::run::doctor_claude_paths::run(cwd)),
-        "workspace-leaks" => serde_json::to_value(crate::run::doctor_workspace_leaks::run(cwd)),
+        "claude-paths" => serde_json::to_value(crate::run::doctor::doctor_claude_paths::run(cwd)),
+        "workspace-leaks" => serde_json::to_value(crate::run::doctor::doctor_workspace_leaks::run(cwd)),
         "i1" => {
-            let report = crate::run::doctor_i1::run(cwd);
+            let report = crate::run::doctor::doctor_i1::run(cwd);
             let exit_non_zero = !report.ok;
             let v = serde_json::to_value(report);
             // Print first so consumers see the body before we exit.
@@ -1388,9 +1388,9 @@ fn print_typed_value(
 /// and CI consumers can read each independently.
 fn render_combined_json(
     legacy: &[CheckResult],
-    cp: &crate::run::doctor_claude_paths::ClaudePathsReport,
-    wl: &crate::run::doctor_workspace_leaks::WorkspaceLeaksReport,
-    i1: &crate::run::doctor_i1::I1Report,
+    cp: &crate::run::doctor::doctor_claude_paths::ClaudePathsReport,
+    wl: &crate::run::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
+    i1: &crate::run::doctor::doctor_i1::I1Report,
 ) {
     let checks: Vec<serde_json::Value> = legacy
         .iter()
@@ -1443,7 +1443,7 @@ fn render_combined_json(
 /// Project a `ClaudePathsReport` onto the legacy `CheckResult` envelope for
 /// text-mode rendering.
 fn claude_paths_to_check_result(
-    report: &crate::run::doctor_claude_paths::ClaudePathsReport,
+    report: &crate::run::doctor::doctor_claude_paths::ClaudePathsReport,
 ) -> CheckResult {
     if report.divergences.is_empty() {
         let mut r = CheckResult::ok("claude-paths");
@@ -1460,7 +1460,7 @@ fn claude_paths_to_check_result(
 
 /// Project a `WorkspaceLeaksReport` onto the legacy `CheckResult` envelope.
 fn workspace_leaks_to_check_result(
-    report: &crate::run::doctor_workspace_leaks::WorkspaceLeaksReport,
+    report: &crate::run::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
 ) -> CheckResult {
     if report.leaks.is_empty() {
         let mut r = CheckResult::ok("workspace-leaks");
@@ -1477,7 +1477,7 @@ fn workspace_leaks_to_check_result(
 
 /// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard
 /// error: any violation becomes FAIL, never WARN.
-fn i1_to_check_result(report: &crate::run::doctor_i1::I1Report) -> CheckResult {
+fn i1_to_check_result(report: &crate::run::doctor::doctor_i1::I1Report) -> CheckResult {
     if report.violations.is_empty() {
         let mut r = CheckResult::ok("i1");
         r.details.push("no .claude/.claude/ sequence found".to_string());

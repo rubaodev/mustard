@@ -11,6 +11,7 @@
 //! (subproject discovery + SHA-256 change detection) and the scanner subsystem
 //! it shares with the still-JS `sync-registry.js`.
 
+pub mod doctor;
 pub mod review;
 pub mod skill;
 pub mod knowledge;
@@ -25,16 +26,11 @@ pub mod agent_prompt_render;
 pub mod amend_finalize;
 pub mod i18n_translate;
 pub mod task_checklist;
-mod doctor;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
 // `CheckResult` envelope stays out of their way.
-pub mod doctor_claude_paths;
-pub mod doctor_workspace_leaks;
-pub mod doctor_i1;
 mod diff_context;
-mod docs_stale_check;
 pub use event::event_projections::{pipeline_state_from_events, PipelineStateView};
 // Spec A v4 / W4 — behavior-regression gate connecting W1 (vocabulary),
 // W1.5 (AST agnostic) and W2 (snapshot) primitives.
@@ -1680,14 +1676,14 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Doctor { residue, check, format, json } => {
             // `--json` is a shorthand for `--format json` (W10.T10.6).
             let effective_format = if json { "json".to_string() } else { format };
-            doctor::run(doctor::DoctorOpts {
+            doctor::doctor::run(doctor::doctor::DoctorOpts {
                 residue,
                 check,
                 format: effective_format,
             });
         }
         RunCmd::DocsStaleCheck { from, strict, include_nested } => {
-            docs_stale_check::run(from.as_deref(), strict, include_nested);
+            doctor::docs_stale_check::run(from.as_deref(), strict, include_nested);
         }
         RunCmd::ArtifactUpdate {
             check,
