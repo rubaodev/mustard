@@ -25,7 +25,7 @@
 //! and `tracker`. The counting/cap logic lives **here**, in `tracker` — the
 //! two hooks that own it (`tool-use-counter.js`, `main-context-counter.js`)
 //! were grouped into this Subagent/Task family, and the counter *state files*
-//! are agent-lifecycle state, not prompt size. [`crate::hooks::budget`] owns
+//! are agent-lifecycle state, not prompt size. [`crate::hooks::task::budget`] owns
 //! only prompt-size and return-size; it has no counting logic. There is no
 //! duplication.
 //!

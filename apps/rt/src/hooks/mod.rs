@@ -21,29 +21,9 @@
 //!   [`pre_compact`] (the `PreCompact` snapshot), and [`prompt_gate`] (the
 //!   `UserPromptSubmit` follow-up archival gate).
 
-pub mod amend_capture;
-pub mod auto_capture_summary;
-pub mod bash_guard;
-pub mod budget;
-pub mod close_gate;
-pub mod enforce_registry;
-pub mod knowledge;
-pub mod model_routing;
-pub mod notification;
-pub mod path_guard;
-pub mod post_edit;
-pub mod pre_compact;
+pub mod observe;
+pub mod session;
+pub mod write;
+pub mod task;
+pub mod bash;
 // Spec A v4 / W4 — run-based alternative to Moment 1 of the regression gate.
-pub mod pre_edit_intent_check;
-pub mod prompt_gate;
-pub mod session_cleanup;
-pub mod session_start;
-pub mod size_gate;
-pub mod skills_audit;
-pub mod spec_hygiene;
-pub mod stop;
-pub mod stop_observer;
-pub mod subagent_inject;
-pub mod tool_result;
-pub mod tracker;
-pub mod wikilink_footer;

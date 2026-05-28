@@ -6,33 +6,33 @@
 //! to, so an unrelated invocation skips it entirely instead of running it just
 //! to have it self-`Allow`.
 
-use crate::hooks::amend_capture::AmendCapture;
-use crate::hooks::auto_capture_summary::AutoCaptureSummary;
-use crate::hooks::bash_guard::BashGuard;
-use crate::hooks::budget::BudgetGuard;
-use crate::hooks::close_gate::CloseGate;
-use crate::hooks::enforce_registry::EnforceRegistry;
-use crate::hooks::knowledge::Knowledge;
-use crate::hooks::model_routing::ModelRoutingGate;
-use crate::hooks::notification::Notification;
-use crate::hooks::path_guard::PathGuard;
-use crate::hooks::post_edit::PostEdit;
-use crate::hooks::pre_compact::PreCompact;
-use crate::hooks::pre_edit_intent_check::PreEditIntentCheck;
-use crate::hooks::prompt_gate::PromptGate;
-use crate::hooks::session_cleanup::SessionCleanup;
-use crate::hooks::session_start::SessionStart;
-use crate::hooks::size_gate::SizeGate;
-use crate::hooks::skills_audit::SkillsAudit;
-use crate::hooks::spec_hygiene::SpecHygiene;
-use crate::hooks::stop::Stop;
-use crate::hooks::stop_observer::{PreCompactMemorySnippet, SessionEndConsolidate, StopObserver};
-use crate::hooks::subagent_inject::SubagentInject;
-use crate::hooks::tool_result::ToolResult;
-use crate::hooks::tracker::{
+use crate::hooks::observe::amend_capture::AmendCapture;
+use crate::hooks::observe::auto_capture_summary::AutoCaptureSummary;
+use crate::hooks::bash::bash_guard::BashGuard;
+use crate::hooks::task::budget::BudgetGuard;
+use crate::hooks::write::close_gate::CloseGate;
+use crate::hooks::write::enforce_registry::EnforceRegistry;
+use crate::hooks::session::knowledge::Knowledge;
+use crate::hooks::task::model_routing::ModelRoutingGate;
+use crate::hooks::observe::notification::Notification;
+use crate::hooks::write::path_guard::PathGuard;
+use crate::hooks::write::post_edit::PostEdit;
+use crate::hooks::session::pre_compact::PreCompact;
+use crate::hooks::write::pre_edit_intent_check::PreEditIntentCheck;
+use crate::hooks::session::prompt_gate::PromptGate;
+use crate::hooks::session::session_cleanup::SessionCleanup;
+use crate::hooks::session::session_start::SessionStart;
+use crate::hooks::write::size_gate::SizeGate;
+use crate::hooks::task::skills_audit::SkillsAudit;
+use crate::hooks::session::spec_hygiene::SpecHygiene;
+use crate::hooks::observe::stop::Stop;
+use crate::hooks::observe::stop_observer::{PreCompactMemorySnippet, SessionEndConsolidate, StopObserver};
+use crate::hooks::task::subagent_inject::SubagentInject;
+use crate::hooks::observe::tool_result::ToolResult;
+use crate::hooks::task::tracker::{
     MainContextCounter, MetricsTracker, SkillUsageTracker, SubagentTracker, ToolUseCounter,
 };
-use crate::hooks::wikilink_footer::WikilinkFooter;
+use crate::hooks::observe::wikilink_footer::WikilinkFooter;
 use mustard_core::config::Mode;
 use mustard_core::model::contract::{Check, Observer, Trigger};
 

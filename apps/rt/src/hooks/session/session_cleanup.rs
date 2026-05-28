@@ -23,7 +23,7 @@
 //! ## OTEL collector note
 //!
 //! `session_start` spawns the OTEL collector (in
-//! [`crate::hooks::session_start`]); this module tears it down on `SessionEnd`.
+//! [`crate::hooks::session::session_start`]); this module tears it down on `SessionEnd`.
 //! Because there is one collector per machine on the OTLP port, [`clean_otel_pid`]
 //! now **kills** the process whose PID is in `.otel-collector.pid` before
 //! removing the file — leaving it alive would let the next project's telemetry

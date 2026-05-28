@@ -3,7 +3,7 @@
 //!
 //! ## Scope (spec-lifecycle-unification Wave 5, W3C migration)
 //!
-//! Runs on `SessionStart`, **before** the [`session_start`](crate::hooks::session_start)
+//! Runs on `SessionStart`, **before** the [`session_start`](crate::hooks::session::session_start)
 //! memory injection (registration order in `registry.rs`). For each *active*
 //! spec (header `Outcome: Active`, or a legacy `### Status:` that is not a
 //! terminal one) it classifies the spec and either:

@@ -33,7 +33,7 @@
 //! `crate::shared::events::route::emit` (NDJSON path) instead of the old SQLite
 //! event sink.
 
-use crate::hooks::amend_capture::close_amend_windows_for_session;
+use crate::hooks::observe::amend_capture::close_amend_windows_for_session;
 use mustard_core::error::Error;
 use mustard_core::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;

@@ -19,7 +19,7 @@
 //! ## Budget↔tracker boundary
 //!
 //! `budget` owns only **size of a prompt** and **size of a return**. The
-//! tool-use / main-context *count* caps live in [`crate::hooks::tracker`] —
+//! tool-use / main-context *count* caps live in [`crate::hooks::task::tracker`] —
 //! see that module's header for the rationale. There is deliberately no
 //! counting logic here.
 //!

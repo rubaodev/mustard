@@ -78,7 +78,7 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     // CLOSE transition: run the close-gate sub-gates inline. A strict failure
     // blocks the transition (exit 1); fail-open on any infrastructure error.
     if to.eq_ignore_ascii_case("CLOSE") {
-        if let Err(reason) = crate::hooks::close_gate::gate_close_for_spec(&cwd, spec) {
+        if let Err(reason) = crate::hooks::write::close_gate::gate_close_for_spec(&cwd, spec) {
             eprintln!("{reason}");
             std::process::exit(1);
         }

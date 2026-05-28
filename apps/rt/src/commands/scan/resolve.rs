@@ -19,7 +19,7 @@
 //!    `[[id]]` brackets from the body so the consuming agent never sees the
 //!    wikilink wire format.
 //! 5. Truncates the closure by the role's prompt budget (read from
-//!    [`crate::hooks::budget::role_prompt_budget`]). The farthest-distance
+//!    [`crate::hooks::task::budget::role_prompt_budget`]). The farthest-distance
 //!    nodes are dropped first; ties break on lexicographic id.
 //!
 //! ## Output schema (byte-stable)
@@ -86,7 +86,7 @@ pub struct ResolveScope {
     #[serde(default)]
     pub layer: Option<String>,
     /// Role label (e.g. `"explore"`, `"general-purpose"`, `"plan"`). Drives
-    /// the budget cut via [`crate::hooks::budget::role_prompt_budget`].
+    /// the budget cut via [`crate::hooks::task::budget::role_prompt_budget`].
     #[serde(default)]
     pub role: Option<String>,
     /// Explicit seed ids — bypass the entity/operation translation and
@@ -154,7 +154,7 @@ pub fn resolve_closure(project_root: &Path, scope: &ResolveScope) -> ResolveOutp
     let budget = scope
         .role
         .as_deref()
-        .and_then(crate::hooks::budget::role_prompt_budget);
+        .and_then(crate::hooks::task::budget::role_prompt_budget);
 
     let (kept, dropped, total_chars, truncated) = apply_budget(nodes, budget);
 

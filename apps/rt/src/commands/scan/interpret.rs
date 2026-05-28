@@ -108,7 +108,7 @@ const EVENT_ECONOMY_OPERATION: &str = "pipeline.economy.operation.invoked";
 /// `mustard-rt` `SessionStart` hook (inherited by the sub-session) detects the
 /// re-entrancy and self-allows instead of re-spawning collectors / hygiene /
 /// memory injection — any of which could re-enter the cold path. Read by
-/// `crate::hooks::session_start::SessionStart::evaluate`; tests rely on the
+/// `crate::hooks::session::session_start::SessionStart::evaluate`; tests rely on the
 /// constant so the marker stays in lockstep across modules.
 pub const COLD_PATH_INVOKED_ENV: &str = "MUSTARD_COLD_PATH_INVOKED";
 
