@@ -18,11 +18,10 @@ use crate::shared::context;
 use crate::shared::events::economy;
 use crate::shared::context::current_spec;
 use mustard_core::time::now_iso8601;
-use mustard_core::io::events::reader::EventReader;
+use mustard_core::domain::economy::reader as economy_reader;
 use mustard_core::io::fs::{read_to_string, write_atomic};
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -84,14 +83,14 @@ pub(crate) fn file_path_for(cwd: &Path, spec: Option<&str>) -> PathBuf {
         .unwrap_or_else(|_| cwd.to_path_buf().join("economy-baselines.json"))
 }
 
-fn load(cwd: &Path, spec: Option<&str>) -> BaselineFile {
+pub(crate) fn load(cwd: &Path, spec: Option<&str>) -> BaselineFile {
     read_to_string(file_path_for(cwd, spec))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
 }
 
-fn save(cwd: &Path, spec: Option<&str>, file: &BaselineFile) -> std::io::Result<()> {
+pub(crate) fn save(cwd: &Path, spec: Option<&str>, file: &BaselineFile) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(file).unwrap_or_else(|_| "{}".to_string());
     write_atomic(file_path_for(cwd, spec), format!("{text}\n").as_bytes())
         .map_err(|e| std::io::Error::other(e.to_string()))
@@ -99,56 +98,16 @@ fn save(cwd: &Path, spec: Option<&str>, file: &BaselineFile) -> std::io::Result<
 
 /// Look up the latest historical duration_ms for `operation`.
 ///
-/// W7C: replaced `SqliteEventStore::replay` with a per-spec NDJSON walk via
-/// [`EventReader`]. Iterates every `<cwd>/.claude/spec/*/.events/*.ndjson`
-/// file, filters for `pipeline.economy.operation.invoked` with the matching
-/// `payload.operation`, and returns the duration whose `ts` is most recent.
+/// Delegates the NDJSON walk to the canonical
+/// [`economy_reader::operation_invoked_samples`] (the single owner of the
+/// operation-invocation walk across every event sink) and picks the sample
+/// whose `ts` is most recent. Returns `None` when no sample carries a
+/// duration.
 fn historical_duration_ms(cwd: &Path, operation: &str) -> Option<i64> {
-    let spec_root = cwd.join(".claude").join("spec");
-    let entries = std::fs::read_dir(&spec_root).ok()?;
-    let mut latest_ts = String::new();
-    let mut latest_dur: Option<i64> = None;
-    for spec_entry in entries.flatten() {
-        let events_dir = spec_entry.path().join(".events");
-        let Ok(files) = std::fs::read_dir(&events_dir) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let path = file.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
-                continue;
-            }
-            for ev in EventReader::stream(&path) {
-                let ev_name = ev
-                    .raw
-                    .get("event")
-                    .and_then(Value::as_str)
-                    .unwrap_or(ev.kind.as_str());
-                if ev_name != "pipeline.economy.operation.invoked" {
-                    continue;
-                }
-                let payload = &ev.payload;
-                if payload
-                    .get("operation")
-                    .and_then(Value::as_str)
-                    .map_or(true, |s| s != operation)
-                {
-                    continue;
-                }
-                let ts = ev
-                    .raw
-                    .get("ts")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if ts > latest_ts {
-                    latest_ts = ts;
-                    latest_dur = payload.get("duration_ms").and_then(Value::as_i64);
-                }
-            }
-        }
-    }
-    latest_dur
+    economy_reader::operation_invoked_samples(cwd, operation)
+        .into_iter()
+        .max_by(|a, b| a.ts.cmp(&b.ts))
+        .map(|s| s.duration_ms)
 }
 
 /// CLI entry.

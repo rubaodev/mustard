@@ -62,6 +62,11 @@ const CONTEXT_FRAME_KIND: &str = "pipeline.economy.context.frame";
 /// Event name for the OTEL metric channel (cost.usage / token.usage / etc.).
 const TELEMETRY_METRIC_KIND: &str = "pipeline.telemetry.metric";
 
+/// Event name carrying a single Rust-native operation invocation. The payload
+/// holds `operation` + `duration_ms`; consumed by the rt economy baseline
+/// capture/reconcile commands via [`operation_invoked_samples`].
+const OPERATION_INVOKED_KIND: &str = "pipeline.economy.operation.invoked";
+
 /// Read the canonical event name from an [`Event`]. NDJSON writers emit a
 /// top-level `"event"` field; if absent (older payloads), fall back to the
 /// `kind` discriminator which the OTEL collector sets to the same value.
@@ -891,6 +896,58 @@ pub fn context_routing_quality(
 }
 
 // ===========================================================================
+// Operation-invocation samples (economy baselines)
+// ===========================================================================
+
+/// One `pipeline.economy.operation.invoked` sample: the event timestamp
+/// (ISO-8601, used only for recency ordering) and its measured `duration_ms`.
+///
+/// Samples whose payload lacks a numeric `duration_ms` are dropped at
+/// collection — a baseline needs a number to record.
+#[derive(Debug, Clone)]
+pub struct OperationSample {
+    /// Event timestamp (top-level `ts`), or `""` when absent. Ordering only.
+    pub ts: String,
+    /// Measured operation duration in milliseconds.
+    pub duration_ms: i64,
+}
+
+/// Collect every `pipeline.economy.operation.invoked` sample for `operation`
+/// across the project's canonical NDJSON sinks (per-spec, per-wave, and the
+/// cross-spec session sink — the full set walked by [`ndjson_paths`]).
+///
+/// Returned unordered; callers sort by `ts` as needed — latest-wins for
+/// baseline capture, median-of-last-N for reconcile.
+///
+/// This is the single owner of the operation-invocation walk: the rt baseline
+/// commands previously each reimplemented a narrower walk that only scanned
+/// `<root>/.claude/spec/*/.events/` and silently missed operation events
+/// landing inside wave subdirs or the session sink.
+#[must_use]
+pub fn operation_invoked_samples(project_root: &Path, operation: &str) -> Vec<OperationSample> {
+    let mut out: Vec<OperationSample> = Vec::new();
+    for ev in walk_events(project_root) {
+        if event_name(&ev) != OPERATION_INVOKED_KIND {
+            continue;
+        }
+        if ev.payload.get("operation").and_then(Value::as_str) != Some(operation) {
+            continue;
+        }
+        let Some(duration_ms) = ev.payload.get("duration_ms").and_then(Value::as_i64) else {
+            continue;
+        };
+        let ts = ev
+            .raw
+            .get("ts")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        out.push(OperationSample { ts, duration_ms });
+    }
+    out
+}
+
+// ===========================================================================
 // Payload helpers
 // ===========================================================================
 
@@ -1112,6 +1169,57 @@ mod tests {
         assert_eq!(s.total_tokens_saved, 500);
         assert_eq!(s.top_agents_by_cost.len(), 2);
         assert_eq!(s.top_agents_by_cost[0].agent_id.0, "plan");
+    }
+
+    #[test]
+    fn operation_invoked_samples_spans_spec_wave_and_session_sinks() {
+        let dir = tempdir().unwrap();
+        // Per-spec `.events/` sink.
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"kind":"pipeline","event":"pipeline.economy.operation.invoked","ts":"2026-05-01T00:00:00.000Z","payload":{"operation":"verify","duration_ms":100}}"#,
+                r#"{"kind":"pipeline","event":"pipeline.economy.operation.invoked","ts":"2026-05-02T00:00:00.000Z","payload":{"operation":"other-op","duration_ms":9999}}"#,
+                r#"{"kind":"pipeline","event":"pipeline.economy.operation.invoked","ts":"2026-05-03T00:00:00.000Z","payload":{"operation":"verify"}}"#,
+            ],
+        );
+        // Wave subdir sink — the narrower rt walk used to miss these entirely.
+        let wave_dir = dir
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("spec-A")
+            .join("wave-1-impl")
+            .join("events");
+        fs::create_dir_all(&wave_dir).unwrap();
+        fs::write(
+            wave_dir.join("seed.ndjson"),
+            r#"{"kind":"pipeline","event":"pipeline.economy.operation.invoked","ts":"2026-05-04T00:00:00.000Z","payload":{"operation":"verify","duration_ms":250}}"#,
+        )
+        .unwrap();
+        // Cross-spec session sink.
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[r#"{"kind":"pipeline","event":"pipeline.economy.operation.invoked","ts":"2026-05-05T00:00:00.000Z","payload":{"operation":"verify","duration_ms":300}}"#],
+        );
+
+        let mut samples = operation_invoked_samples(dir.path(), "verify");
+        // The no-duration sample and the other-op sample are excluded; three
+        // numeric `verify` samples remain, drawn from all three sinks.
+        assert_eq!(samples.len(), 3);
+        samples.sort_by(|a, b| a.ts.cmp(&b.ts));
+        assert_eq!(
+            samples.iter().map(|s| s.duration_ms).collect::<Vec<_>>(),
+            vec![100, 250, 300]
+        );
+    }
+
+    #[test]
+    fn operation_invoked_samples_empty_when_no_events() {
+        let dir = tempdir().unwrap();
+        assert!(operation_invoked_samples(dir.path(), "verify").is_empty());
     }
 
     #[test]

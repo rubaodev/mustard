@@ -8,9 +8,8 @@ use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
 use crate::shared::events::economy;
-use crate::commands::economy::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
+use crate::commands::economy::economy_capture_baseline::{load, BaselineEntry};
 use crate::shared::context::current_spec;
-use mustard_core::io::fs::read_to_string;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -39,10 +38,7 @@ pub fn collect(cwd: &Path) -> EconomyReport {
 /// Pure loader scoped to a specific spec name (W2 path catalog).
 #[must_use]
 pub fn collect_for_spec(cwd: &Path, spec: Option<&str>) -> EconomyReport {
-    let file: BaselineFile = read_to_string(file_path_for(cwd, spec))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let file = load(cwd, spec);
     let mut entries: Vec<BaselineEntry> = file.entries.into_values().collect();
     entries.sort_by(|a, b| {
         a.operation

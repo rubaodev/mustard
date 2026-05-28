@@ -34,8 +34,8 @@ pub use model::{
 };
 pub use multi_project::MultiProjectReader;
 pub use reader::{
-    context_routing_quality, economy_summary, per_agent_costs, per_spec_costs, per_wave_costs,
-    savings_breakdown,
+    context_routing_quality, economy_summary, operation_invoked_samples, per_agent_costs,
+    per_spec_costs, per_wave_costs, savings_breakdown, OperationSample,
 };
 pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
 pub use writer::{

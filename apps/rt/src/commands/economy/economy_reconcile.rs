@@ -9,15 +9,14 @@
 
 use crate::shared::context;
 use crate::shared::events::economy;
-use crate::commands::economy::economy_capture_baseline::{file_path_for, BaselineEntry, BaselineFile};
+use crate::commands::economy::economy_capture_baseline::{load, save, BaselineEntry};
 use crate::shared::context::{current_spec, session_id};
 use crate::shared::events::route;
 use mustard_core::time::now_iso8601;
-use mustard_core::io::events::reader::EventReader;
-use mustard_core::io::fs::{read_to_string, write_atomic};
+use mustard_core::domain::economy::reader as economy_reader;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// Options for `mustard-rt run economy reconcile`.
@@ -47,77 +46,21 @@ pub struct ReconcileReport {
     pub records: Vec<ReconcileRecord>,
 }
 
-fn load(cwd: &Path, spec: Option<&str>) -> BaselineFile {
-    read_to_string(file_path_for(cwd, spec))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
-}
-
-fn save(cwd: &Path, spec: Option<&str>, file: &BaselineFile) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(file).unwrap_or_else(|_| "{}".to_string());
-    write_atomic(file_path_for(cwd, spec), format!("{text}\n").as_bytes())
-        .map_err(|e| std::io::Error::other(e.to_string()))
-}
-
 /// Median of up to N samples for `operation` from the NDJSON event log.
 ///
-/// W7B: replaced the SQLite `SqliteEventStore::replay` with an
-/// [`EventReader`] walk over every per-spec NDJSON file under
-/// `<cwd>/.claude/spec/*/.events/`. The filter is the same — events whose
-/// name is `pipeline.economy.operation.invoked` with the matching
-/// `payload.operation`. Returns `(median, sample_count)`.
+/// Delegates the walk to the canonical
+/// [`economy_reader::operation_invoked_samples`] (the single owner of the
+/// operation-invocation walk across every event sink), orders the samples by
+/// `ts` descending (most recent first), takes the last `take`, and returns
+/// `(median, sample_count)`.
 fn median_duration_ms(cwd: &Path, operation: &str, take: usize) -> (i64, usize) {
-    let mut samples: Vec<(String, i64)> = Vec::new(); // (ts, duration_ms) for ordering
-    let spec_root = cwd.join(".claude").join("spec");
-    let Ok(specs) = std::fs::read_dir(&spec_root) else {
-        return (0, 0);
-    };
-    for spec_entry in specs.flatten() {
-        let events_dir = spec_entry.path().join(".events");
-        let Ok(files) = std::fs::read_dir(&events_dir) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let path = file.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
-                continue;
-            }
-            for ev in EventReader::stream(&path) {
-                let ev_name = ev
-                    .raw
-                    .get("event")
-                    .and_then(Value::as_str)
-                    .unwrap_or(ev.kind.as_str());
-                if ev_name != "pipeline.economy.operation.invoked" {
-                    continue;
-                }
-                let payload = &ev.payload;
-                if payload
-                    .get("operation")
-                    .and_then(Value::as_str)
-                    .map_or(true, |s| s != operation)
-                {
-                    continue;
-                }
-                let ts = ev
-                    .raw
-                    .get("ts")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if let Some(d) = payload.get("duration_ms").and_then(Value::as_i64) {
-                    samples.push((ts, d));
-                }
-            }
-        }
-    }
+    let mut samples = economy_reader::operation_invoked_samples(cwd, operation);
     if samples.is_empty() {
         return (0, 0);
     }
     // Sort by ts desc — most recent first — then take N samples.
-    samples.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut durations: Vec<i64> = samples.into_iter().take(take).map(|(_, d)| d).collect();
+    samples.sort_by(|a, b| b.ts.cmp(&a.ts));
+    let mut durations: Vec<i64> = samples.into_iter().take(take).map(|s| s.duration_ms).collect();
     durations.sort_unstable();
     let mid = durations.len() / 2;
     (durations[mid], durations.len())
