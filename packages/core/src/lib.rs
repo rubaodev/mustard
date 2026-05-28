@@ -49,6 +49,11 @@ pub mod metrics;
 pub mod model;
 pub mod process;
 pub mod projection;
+// Snapshot-and-compare primitive consumed by the Wave 4 regression gate.
+// Reuses `ast::GrammarLoader` / `ast::TreeSitterParser` for the precise path
+// and falls back to a textual diff (via `similar = "2"`) when no grammar is
+// installed for the file's language.
+pub mod regression_check;
 pub mod skill;
 pub mod spec;
 pub mod summary;

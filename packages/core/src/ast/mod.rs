@@ -104,7 +104,13 @@ impl Tree {
 /// `## Funções tocadas` (see [`crate::spec::touched_functions`]): `name` is
 /// the final identifier, never the qualified path, so equality against the
 /// declared list is a simple string compare.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` / `Deserialize` are derived so callers can persist a
+/// signature alongside a captured function body (see
+/// [`crate::regression_check::FunctionCapture`]). The on-disk shape matches
+/// the field names verbatim; the W2 snapshot artefact picks camelCase
+/// rename at its own boundary via `#[serde(rename_all = "camelCase")]`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSig {
     /// Final identifier — the function name with no namespace / path prefix.
     pub name: String,

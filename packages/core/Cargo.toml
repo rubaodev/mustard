@@ -45,6 +45,11 @@ toml = "0.8"
 # would re-introduce the agnostic violation the W1.5 redesign exists to fix.
 tree-sitter = "0.26"
 tree-sitter-loader = "0.26"
+# Line-based textual diff for `regression_check` — used as fallback when no
+# tree-sitter grammar is installed for the file's language. The 2.x line is
+# stable since 2023; resolves to 2.7.0 on crates.io (May 2026). Spec A Wave 2
+# pins this version explicitly.
+similar = "2"
 
 [dev-dependencies]
 insta = { workspace = true }
