@@ -31,6 +31,7 @@ pub mod cluster_discovery;
 pub mod file_utils;
 pub mod graph;
 pub mod interpret;
+pub mod node_gen;
 pub mod pluralize;
 pub mod project_conventions;
 pub mod refs_installer;

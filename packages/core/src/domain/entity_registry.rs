@@ -89,6 +89,16 @@ impl EntityRegistry {
         self.doc.get("e").and_then(Value::as_object)
     }
 
+    /// The `_enums` map (v4). `None` when the key is absent or not an object.
+    ///
+    /// Each value is either a bare member array (`["A","B"]`) or a rich object
+    /// (`{ "values": [...], "file": "...", ... }`) — the writer emits either
+    /// shape depending on whether file/decorator metadata was recovered.
+    #[must_use]
+    pub fn enums(&self) -> Option<&Map<String, Value>> {
+        self.doc.get("_enums").and_then(Value::as_object)
+    }
+
     /// Entity names — keys of `e`, excluding any `_`-prefixed sentinel (e.g. the
     /// `_placeholder` an empty registry carries).
     #[must_use]

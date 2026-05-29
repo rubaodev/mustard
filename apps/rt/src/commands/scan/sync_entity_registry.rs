@@ -256,6 +256,14 @@ pub fn run(root: &Path, force: bool) {
         return;
     }
 
+    // 6b. F2-b — materialise the concept-graph nodes (`.claude/graph/*.md`)
+    //     deterministically from the just-written registry. This is the source
+    //     of the `[[id]]` graph the Wave-4 resolver walks; the cold-path LLM is
+    //     no longer involved. Idempotent + byte-stable; manual nodes preserved.
+    //     The MOC (`index.md`) is NOT written here — that side effect stays in
+    //     the explicit `graph-index` command. Fail-open: never blocks the scan.
+    let graph_report = super::node_gen::generate_graph_nodes(root);
+
     let e_count = registry.e.as_object().map_or(0, serde_json::Map::len);
     let enum_count = registry.enums.as_object().map_or(0, serde_json::Map::len);
     let stacks: Vec<String> = registry
@@ -271,6 +279,12 @@ pub fn run(root: &Path, force: bool) {
     if scanned > 0 {
         println!(
             "  Glossary: {enriched}/{scanned} entities enriched with doc-comment descriptions"
+        );
+    }
+    if graph_report.written > 0 || graph_report.removed > 0 {
+        println!(
+            "  Graph: {} concept-node(s) generated, {} stale reaped, {} manual preserved",
+            graph_report.written, graph_report.removed, graph_report.preserved
         );
     }
     println!("  Written to: {}", registry_path.display());
