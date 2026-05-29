@@ -20,7 +20,14 @@ hardcoded · agnóstico** (lógica do core genérica; específico vem de dado ov
   `_patterns.{stack}` (espelhando a fiação da arquitetura) e surfacá-los em guards.
 - **Increment 2 (próximo, design próprio):** dirigir `cluster_discovery` por vocab/convenções
   (remover os gates `matches!(stack_id,…)`) + telemetria de savings por migração.
-- **Futuro (só sob demanda de distribuir pacotes curados):** aquisição remota (§3.1–3.6).
+- **Increment 3 — DONE (2026-05-29):** vocab de exemplo GraphQL em `docs/vocab-examples/graphql/`
+  (`frameworks.toml` + `README.md`) + teste de integração `apps/rt/tests/scan_vocab_override.rs`
+  provando end-to-end, **sem rede**: um projeto com `.claude/vocab/frameworks.toml` faz o scan
+  detectar GraphQL (`_patterns.{stack}.frameworks` ⊇ `framework`) onde o baseline (builtin) não
+  detecta nada. Limitação conhecida: labels são CATEGORIAS (orm/framework/di), não o nome
+  específico — refino futuro (vocab carregar `name`).
+- **Aquisição remota online (§3.1–3.6): DECIDIDO NÃO agora** ("baixar online ainda não vamos
+  fazer") — add-on futuro documentado, só quando houver demanda de distribuir pacotes curados.
 
 ## Contexto e confirmação empírica da fundação
 

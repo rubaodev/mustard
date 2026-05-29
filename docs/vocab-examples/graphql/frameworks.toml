@@ -1,0 +1,53 @@
+# EXAMPLE framework vocabulary — GraphQL.
+#
+# Copy this file to `<your-project>/.claude/vocab/frameworks.toml` to teach
+# mustard's local-first scan how to recognise GraphQL code. It is *data you opt
+# into*: the mustard core stays generic and ships no GraphQL knowledge of its
+# own. Detection is fully LOCAL — one Aho-Corasick pass over your source files,
+# NO network and NO LLM.
+#
+# IMPORTANT: `FrameworkVocabulary::load` REPLACES the built-in base wholesale.
+# Dropping ONLY this file makes the scanner forget the built-in ORM / web / DI
+# signals (Drizzle, axum, FastAPI, @Injectable, …). To keep them, append the
+# built-in `[[signal]]` entries from
+# `packages/core/src/domain/vocabulary/frameworks_builtin.toml` below these.
+# See the sibling README.md for the exact recipe.
+#
+# Schema (same as the built-in base): one `[[signal]]` table-array entry per
+# category. `category` MUST be one of `orm` / `framework` / `di` — the closed
+# `FrameworkCategory` enum; any other value FAILS to parse. `patterns` are
+# literal, case-sensitive substrings (signals, not grammars).
+#
+# GraphQL is neither an ORM nor a DI container, so every entry here is
+# `category = "framework"`. KNOWN LIMITATION: the scan reports the CATEGORY
+# (`framework`), not the framework NAME (`graphql`) — see README.md.
+
+# NestJS code-first GraphQL decorators (@nestjs/graphql) + graphql-js / Apollo
+# server-and-client + the `gql` tagged template. All literal substrings.
+[[signal]]
+category = "framework"
+patterns = [
+    # NestJS code-first resolvers & schema decorators (@nestjs/graphql)
+    "@Resolver",
+    "@Query(",
+    "@Mutation(",
+    "@Subscription(",
+    "@ObjectType(",
+    "@InputType(",
+    "@Field(",
+    "@Args(",
+    "@ResolveField(",
+    # The `gql` tagged template literal (Apollo / graphql-tag): the opening
+    # backtick is the signal — `gql` followed by a backtick template.
+    "gql`",
+    # Apollo Client React hooks
+    "useQuery(",
+    "useMutation(",
+    "useSubscription(",
+    # Apollo Server / Client constructors
+    "ApolloServer(",
+    "ApolloClient(",
+    # graphql-js / graphql-tools schema builders
+    "makeExecutableSchema(",
+    "buildSchema(",
+]

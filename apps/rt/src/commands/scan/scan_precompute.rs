@@ -43,27 +43,6 @@ pub fn backup_generated_mds(commands_dir: &Path) -> Vec<String> {
     moved
 }
 
-/// Remove every generated skill subdir of `skills_dir`. Returns removed names.
-pub fn purge_generated_skills(skills_dir: &Path) -> Vec<String> {
-    let mut removed = Vec::new();
-    let Ok(entries) = fs::read_dir(skills_dir) else {
-        return removed;
-    };
-    for entry in entries {
-        if !entry.is_dir {
-            continue;
-        }
-        let skill_md = entry.path.join("SKILL.md");
-        if fs::exists(&skill_md) && has_generated_marker(&skill_md) {
-            // std::fs::remove_dir_all has no facade equivalent — keep it.
-            if std::fs::remove_dir_all(&entry.path).is_ok() {
-                removed.push(entry.file_name);
-            }
-        }
-    }
-    removed
-}
-
 /// Create `notes.md` in `commands_dir` if missing. Returns `true` if created.
 /// Never overwrites a user-authored file.
 pub fn ensure_notes_md(commands_dir: &Path, name: &str, role: &str) -> bool {
@@ -174,21 +153,6 @@ mod tests {
         assert!(ensure_notes_md(dir.path(), "api", "general"));
         assert!(!ensure_notes_md(dir.path(), "api", "general"));
         assert!(dir.path().join("notes.md").exists());
-    }
-
-    #[test]
-    fn purge_removes_only_generated_skills() {
-        let dir = tempdir().unwrap();
-        let generated = dir.path().join("gen-skill");
-        let manual = dir.path().join("manual");
-        std::fs::create_dir_all(&generated).unwrap();
-        std::fs::create_dir_all(&manual).unwrap();
-        std::fs::write(generated.join("SKILL.md"), "<!-- mustard:generated -->\nx").unwrap();
-        std::fs::write(manual.join("SKILL.md"), "hand-written").unwrap();
-        let removed = purge_generated_skills(dir.path());
-        assert_eq!(removed, vec!["gen-skill".to_string()]);
-        assert!(manual.exists());
-        assert!(!generated.exists());
     }
 
     #[test]
