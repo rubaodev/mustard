@@ -456,13 +456,12 @@ fn read_prior_wave_diff(project: &Path, spec: &str, wave_num: u32) -> String {
     };
     // Probe both `wave-{n}` and `wave-{n}-*` variants. `for_wave` validates
     // the slug so the malformed inputs early-out.
-    let Ok(read) = std::fs::read_dir(sp.dir()) else {
+    let Ok(read) = mfs::read_dir(sp.dir()) else {
         return String::new();
     };
     let prefix = format!("wave-{wave_num}");
-    for entry in read.flatten() {
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str() else { continue };
+    for entry in read {
+        let name_str = entry.file_name.as_str();
         let matches = name_str == prefix
             || name_str.starts_with(&format!("{prefix}-"));
         if !matches {

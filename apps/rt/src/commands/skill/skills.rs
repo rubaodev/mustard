@@ -612,11 +612,11 @@ fn scan_invocations(project_dir: &Path, since_ms: i64) -> BTreeMap<String, Strin
             continue;
         }
         let events_dir = entry.path.join(".events");
-        let Ok(ndjson_files) = std::fs::read_dir(&events_dir) else {
+        let Ok(ndjson_files) = fs::read_dir(&events_dir) else {
             continue;
         };
-        for ndjson in ndjson_files.flatten() {
-            let p = ndjson.path();
+        for ndjson in ndjson_files {
+            let p = ndjson.path;
             if p.extension().and_then(|e| e.to_str()) != Some("ndjson") {
                 continue;
             }

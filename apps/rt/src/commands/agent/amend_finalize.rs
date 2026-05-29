@@ -128,12 +128,12 @@ fn read_windows_for_session(project_root: &Path, session_id: &str) -> Vec<(Strin
         return Vec::new();
     };
     let spec_root = cp.spec_dir();
-    let Ok(entries) = std::fs::read_dir(&spec_root) else {
+    let Ok(entries) = fs::read_dir(&spec_root) else {
         return Vec::new();
     };
     let mut out: Vec<(String, WindowState)> = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
+    for entry in entries {
+        let dir = entry.path;
         if !dir.is_dir() {
             continue;
         }

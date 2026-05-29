@@ -204,15 +204,15 @@ fn ingest_agent_memory_dir(agent_dir: &Path, dest_dir: &Path, errors: &mut Vec<V
     if !agent_dir.exists() {
         return (count, consumed);
     }
-    let entries = match std::fs::read_dir(agent_dir) {
+    let entries = match fs::read_dir(agent_dir) {
         Ok(it) => it,
         Err(e) => {
             errors.push(json!({ "file": ".agent-memory", "error": e.to_string() }));
             return (count, consumed);
         }
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let path = entry.path;
         let Some(name_os) = path.file_name() else { continue };
         let name = name_os.to_string_lossy().to_string();
         if !name.ends_with(".json") {
@@ -307,7 +307,7 @@ pub fn run_with(opts: MemoryIngestOpts) {
         let mut errors: Vec<Value> = Vec::new();
         let (count, _consumed) = ingest_agent_memory_dir(&agent_src, &dest, &mut errors);
         let deleted = if dir_existed && errors.is_empty() {
-            std::fs::remove_dir_all(&agent_src).is_ok()
+            fs::remove_dir_all(&agent_src).is_ok()
         } else {
             !dir_existed
         };

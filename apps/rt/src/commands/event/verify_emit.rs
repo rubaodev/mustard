@@ -12,6 +12,7 @@
 use crate::shared::context;
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::Value;
 
@@ -144,10 +145,10 @@ pub fn run(
     if let Some(spec) = args.spec.as_deref() {
         let dir = specs_root.join(spec).join(".events");
         events.extend(read_harness_events_from_ndjson_dir(&dir));
-    } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                let dir = entry.path().join(".events");
+    } else if let Ok(entries) = fs::read_dir(&specs_root) {
+        for entry in entries {
+            if entry.path.is_dir() {
+                let dir = entry.path.join(".events");
                 events.extend(read_harness_events_from_ndjson_dir(&dir));
             }
         }

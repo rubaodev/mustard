@@ -274,12 +274,12 @@ fn aggregate_wave(
 ///
 /// Returns an empty `Vec` when the dir is absent or unreadable (fail-open).
 fn collect_ndjson_events(events_dir: &Path) -> Vec<mustard_core::Event> {
-    let Ok(rd) = std::fs::read_dir(events_dir) else {
+    let Ok(rd) = fs::read_dir(events_dir) else {
         return Vec::new();
     };
     let mut out: Vec<mustard_core::Event> = Vec::new();
-    for entry in rd.flatten() {
-        let p = entry.path();
+    for entry in rd {
+        let p = entry.path;
         if p.extension().and_then(|e| e.to_str()) != Some("ndjson") {
             continue;
         }

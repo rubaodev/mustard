@@ -19,6 +19,7 @@
 use crate::shared::context::{project_dir, session_id};
 use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs;
 use mustard_core::domain::model::event::{
     Actor, ActorKind, HarnessEvent, SCHEMA_VERSION,
     EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_DISPATCH_FAILURE, EVENT_PIPELINE_PAUSE,
@@ -285,7 +286,7 @@ pub fn run(opts: EmitPipelineOpts) {
             let state_file = paths
                 .pipeline_states_dir()
                 .join(format!("{spec_name}.json"));
-            let _ = std::fs::remove_file(&state_file);
+            let _ = fs::remove_file(&state_file);
         }
     }
 }
@@ -365,14 +366,11 @@ fn wave_spec_path(cwd: &Path, spec: &str, wave: u64) -> Option<std::path::PathBu
         return None;
     }
     let prefix = format!("wave-{wave}-");
-    std::fs::read_dir(&spec_dir)
+    fs::read_dir(&spec_dir)
         .ok()?
-        .flatten()
-        .find(|e| {
-            let name = e.file_name();
-            name.to_string_lossy().starts_with(&prefix) && e.path().is_dir()
-        })
-        .map(|e| e.path())
+        .into_iter()
+        .find(|e| e.file_name.starts_with(&prefix) && e.path.is_dir())
+        .map(|e| e.path)
 }
 
 /// Set `legacy_alias = true` on an event payload. A non-object payload (e.g.

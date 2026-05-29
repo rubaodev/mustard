@@ -189,11 +189,11 @@ fn read_all_events(claude_root: &Path) -> Vec<Event> {
 /// events to `out`. Bounded depth: we only descend into directories that
 /// can plausibly contain `.events/` subdirs (skip large irrelevant trees).
 fn collect_ndjson_under(dir: &Path, out: &mut Vec<Event>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
-    for entry in rd.flatten() {
-        let path = entry.path();
+    for entry in rd {
+        let path = entry.path;
         if path.is_dir() {
             collect_ndjson_under(&path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {

@@ -724,9 +724,9 @@ fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Value {
     let spec_root = ClaudePaths::for_project(cwd)
         .map(|p| p.spec_dir())
         .unwrap_or_else(|_| cwd.to_path_buf());
-    if let Ok(rd) = std::fs::read_dir(&spec_root) {
-        for entry in rd.flatten() {
-            let spec_dir = entry.path();
+    if let Ok(rd) = fs::read_dir(&spec_root) {
+        for entry in rd {
+            let spec_dir = entry.path;
             if !spec_dir.is_dir() { continue; }
 
             let spec_name = match spec_dir.file_name().and_then(|n| n.to_str()) {

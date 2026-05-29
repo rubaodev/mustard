@@ -56,6 +56,7 @@ use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
 use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::{Event, EventReader};
 
@@ -375,12 +376,12 @@ impl MustardMemory {
         let mut events: Vec<Event> = Vec::new();
         if let Some(spec) = args.spec.as_deref() {
             collect_ndjson_under(&specs_root.join(spec).join(".events"), &mut events);
-        } else if let Ok(entries) = std::fs::read_dir(&specs_root) {
-            for entry in entries.flatten() {
-                if !entry.path().is_dir() {
+        } else if let Ok(entries) = fs::read_dir(&specs_root) {
+            for entry in entries {
+                if !entry.path.is_dir() {
                     continue;
                 }
-                collect_ndjson_under(&entry.path().join(".events"), &mut events);
+                collect_ndjson_under(&entry.path.join(".events"), &mut events);
             }
         }
 
@@ -443,18 +444,18 @@ impl MustardMemory {
         };
         let specs_root = paths.spec_dir();
         let mut matches: Vec<SpecMatch> = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&specs_root) else {
+        let Ok(entries) = fs::read_dir(&specs_root) else {
             return json_result(&matches);
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
+        for entry in entries {
+            let path = entry.path;
             if !path.is_dir() {
                 continue;
             }
             let Some(name_os) = path.file_name() else { continue };
             let name = name_os.to_string_lossy().to_string();
             let spec_md = path.join("spec.md");
-            let body = std::fs::read_to_string(&spec_md).unwrap_or_default();
+            let body = fs::read_to_string(&spec_md).unwrap_or_default();
             let haystack = format!("{name} {body}").to_lowercase();
             let score = tokens
                 .iter()
@@ -596,11 +597,11 @@ fn doc_to_knowledge_out(doc: &MarkdownDoc) -> KnowledgeOut {
 /// Recursively collect `.ndjson` files under `dir` into `out`. Fail-open: a
 /// missing directory or unreadable file is silently skipped.
 fn collect_ndjson_under(dir: &Path, out: &mut Vec<Event>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
-    for entry in rd.flatten() {
-        let path = entry.path();
+    for entry in rd {
+        let path = entry.path;
         if path.is_dir() {
             collect_ndjson_under(&path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {

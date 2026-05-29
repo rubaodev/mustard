@@ -747,12 +747,11 @@ fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
     let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
 
     // Collect all NDJSON events from the dir.
-    let ndjson_files: Vec<PathBuf> = std::fs::read_dir(&events_dir)
+    let ndjson_files: Vec<PathBuf> = mfs::read_dir(&events_dir)
         .ok()
         .into_iter()
         .flatten()
-        .flatten()
-        .map(|e| e.path())
+        .map(|e| e.path)
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ndjson"))
         .collect();
 
