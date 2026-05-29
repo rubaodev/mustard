@@ -1,75 +1,102 @@
-//! `aho` — the `aho-corasick` wrapper that backs [`VocabularyMatcher`].
+//! `aho` — the `aho-corasick` engine wrapper that backs [`VocabularyMatcher`]
+//! and the framework-signal detector.
 //!
-//! This module isolates the dependency on the `aho-corasick` crate behind
-//! [`AhoMatcher`], a small type that owns the automaton plus the parallel
-//! tables used to map a pattern id back to its owning layer and original
+//! This module isolates the dependency on the `aho-corasick` crate behind one
+//! generic primitive, [`KeyedAutomaton`], that owns the automaton plus the
+//! parallel tables mapping a pattern id back to its owning *key* and original
 //! term string. The split exists so:
 //!
 //! - The public [`crate::domain::vocabulary::VocabularyMatcher`] surface stays
 //!   stable even if a future wave swaps the underlying engine (e.g. to
 //!   `regex-automata`).
+//! - The engine is built **once**: the regression matcher keys hits on
+//!   [`Layer`], the framework detector keys hits on a category — both reuse
+//!   the same [`KeyedAutomaton`] construction + scan path instead of each
+//!   wiring its own `AhoCorasick`.
 //! - Tests can exercise the bare automaton without going through the
 //!   document/file-IO layer.
 //!
 //! The matcher uses leftmost-first semantics with case-sensitive matching
 //! and no overlap. Case sensitivity is intentional: half of the seed
 //! vocabulary is code patterns (`None`, `Vec::new()`, `Default::default()`)
-//! where case carries meaning. Layer ranking — semantic > pattern > keyword
-//! > noise — is enforced at construction time by deduplicating cross-layer
-//! collisions in declaration order (most severe wins).
+//! where case carries meaning. Key ranking — for the regression layers,
+//! semantic > pattern > keyword > noise — is enforced at construction time by
+//! deduplicating cross-key collisions in declaration order (first key wins).
 //!
 //! [`VocabularyMatcher`]: crate::domain::vocabulary::VocabularyMatcher
 //! [`AhoMatcher`]: self::AhoMatcher
+//! [`KeyedAutomaton`]: self::KeyedAutomaton
 
 use super::{Layer, ScanHit, VocabError, VocabLayer};
 use aho_corasick::{AhoCorasick, AhoCorasickKind, MatchKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 
-/// Internal matcher type. Not exposed at the crate root — consumers go
-/// through [`crate::domain::vocabulary::VocabularyMatcher`].
-pub(super) struct AhoMatcher {
-    ac: AhoCorasick,
-    // Parallel to the patterns handed to `AhoCorasick::new`. Index by
-    // `Match::pattern().as_usize()` to recover the original term + layer.
-    table: Vec<(Layer, String)>,
-    // Per-layer counts, captured once at construction so `term_count_for`
-    // is O(1).
-    counts_by_layer: HashMap<Layer, usize>,
+/// One generic match emitted by [`KeyedAutomaton::scan`]: the key the term
+/// belongs to, the original term, and the byte span in the haystack.
+pub(super) struct KeyedHit<K> {
+    pub(super) key: K,
+    pub(super) term: String,
+    pub(super) start: usize,
+    pub(super) end: usize,
 }
 
-impl AhoMatcher {
-    /// Build the automaton. See [`crate::domain::vocabulary::VocabularyMatcher::from_layers`]
-    /// for the public contract — this function implements the deduplication
-    /// and construction policy.
-    pub(super) fn from_layers(layers: Vec<VocabLayer>) -> Result<Self, VocabError> {
-        let mut seen_terms: HashMap<String, Layer> = HashMap::new();
-        let mut table: Vec<(Layer, String)> = Vec::new();
-        let mut counts_by_layer: HashMap<Layer, usize> = HashMap::new();
+/// The shared `aho-corasick` engine, generic over the *key* each term is
+/// tagged with. The regression matcher instantiates `K = Layer`; the
+/// framework detector instantiates `K = FrameworkCategory`. Construction
+/// deduplicates terms within a key and across keys (first key wins), then
+/// builds a single leftmost-first DFA over the surviving terms.
+///
+/// This is the only place in the crate that touches the `aho-corasick` API —
+/// every multi-pattern scan goes through here so the engine is never
+/// duplicated.
+pub(super) struct KeyedAutomaton<K> {
+    ac: AhoCorasick,
+    // Parallel to the patterns handed to `AhoCorasick::new`. Index by
+    // `Match::pattern().as_usize()` to recover the original term + key.
+    table: Vec<(K, String)>,
+    // Per-key counts, captured once at construction so `term_count_for`
+    // is O(1).
+    counts_by_key: HashMap<K, usize>,
+}
 
-        for layer in layers {
-            let mut dedup_within_layer: HashMap<String, ()> = HashMap::new();
-            for term in layer.terms {
+impl<K: Copy + Eq + Hash> KeyedAutomaton<K> {
+    /// Build the automaton from an ordered list of `(key, terms)` groups.
+    ///
+    /// Dedup policy: within one group, repeated terms collapse; across groups,
+    /// the *first* occurrence of a term wins (so callers that want a ranking —
+    /// e.g. severity, or "most specific category first" — simply pass the
+    /// groups in priority order). Empty / whitespace-only terms are skipped:
+    /// they would compile into an automaton that matches at every byte
+    /// boundary, which is silently lethal for performance and correctness.
+    ///
+    /// Returns [`VocabError::NoTerms`] when no non-empty term survives.
+    pub(super) fn from_groups(
+        groups: impl IntoIterator<Item = (K, Vec<String>)>,
+    ) -> Result<Self, VocabError> {
+        let mut seen_terms: HashSet<String> = HashSet::new();
+        let mut table: Vec<(K, String)> = Vec::new();
+        let mut counts_by_key: HashMap<K, usize> = HashMap::new();
+
+        for (key, terms) in groups {
+            let mut dedup_within_group: HashSet<String> = HashSet::new();
+            for term in terms {
                 let trimmed = term.trim().to_string();
                 if trimmed.is_empty() {
-                    // Empty terms would compile into an automaton that
-                    // matches at every byte boundary — silently lethal
-                    // for performance and correctness. Skip.
                     continue;
                 }
-                // Within one layer: deduplicate.
-                if dedup_within_layer.insert(trimmed.clone(), ()).is_some() {
+                // Within one group: deduplicate.
+                if !dedup_within_group.insert(trimmed.clone()) {
                     continue;
                 }
-                // Across layers: keep the first occurrence (severity wins
-                // because layers were inserted in severity order at the
-                // call site — `VocabularyDoc::layers` preserves TOML
-                // declaration order and seed files list semantic first).
-                if seen_terms.contains_key(&trimmed) {
+                // Across groups: keep the first occurrence (group order is the
+                // caller's priority order).
+                if seen_terms.contains(&trimmed) {
                     continue;
                 }
-                seen_terms.insert(trimmed.clone(), layer.kind);
-                table.push((layer.kind, trimmed));
-                *counts_by_layer.entry(layer.kind).or_insert(0) += 1;
+                seen_terms.insert(trimmed.clone());
+                table.push((key, trimmed));
+                *counts_by_key.entry(key).or_insert(0) += 1;
             }
         }
 
@@ -79,8 +106,8 @@ impl AhoMatcher {
 
         let patterns: Vec<&str> = table.iter().map(|(_, t)| t.as_str()).collect();
         // `LeftmostFirst` matches the priority order of the patterns passed
-        // in (we already sorted by layer severity above, so the first hit
-        // wins). `DFA` is the fastest variant for static term lists.
+        // in (already sorted by the caller's group order above, so the first
+        // hit wins). `DFA` is the fastest variant for static term lists.
         let ac = AhoCorasick::builder()
             .match_kind(MatchKind::LeftmostFirst)
             .kind(Some(AhoCorasickKind::DFA))
@@ -90,19 +117,19 @@ impl AhoMatcher {
         Ok(Self {
             ac,
             table,
-            counts_by_layer,
+            counts_by_key,
         })
     }
 
-    /// Scan a haystack and emit one [`ScanHit`] per match.
-    pub(super) fn scan(&self, haystack: &str) -> Vec<ScanHit> {
+    /// Scan a haystack and emit one [`KeyedHit`] per match, left to right.
+    pub(super) fn scan(&self, haystack: &str) -> Vec<KeyedHit<K>> {
         self.ac
             .find_iter(haystack)
             .filter_map(|m| {
                 let idx = m.pattern().as_usize();
-                let (layer, term) = self.table.get(idx)?;
-                Some(ScanHit {
-                    layer: *layer,
+                let (key, term) = self.table.get(idx)?;
+                Some(KeyedHit {
+                    key: *key,
                     term: term.clone(),
                     start: m.start(),
                     end: m.end(),
@@ -111,14 +138,58 @@ impl AhoMatcher {
             .collect()
     }
 
-    /// Total number of distinct terms across every layer.
+    /// Total number of distinct terms across every key.
     pub(super) fn term_count(&self) -> usize {
         self.table.len()
     }
 
+    /// Number of distinct terms tagged with one key.
+    pub(super) fn term_count_for(&self, key: K) -> usize {
+        self.counts_by_key.get(&key).copied().unwrap_or(0)
+    }
+}
+
+/// The regression-gate matcher: a [`KeyedAutomaton`] keyed on [`Layer`]. Not
+/// exposed at the crate root — consumers go through
+/// [`crate::domain::vocabulary::VocabularyMatcher`].
+pub(super) struct AhoMatcher {
+    inner: KeyedAutomaton<Layer>,
+}
+
+impl AhoMatcher {
+    /// Build the automaton. See [`crate::domain::vocabulary::VocabularyMatcher::from_layers`]
+    /// for the public contract — this delegates the dedup + construction
+    /// policy to [`KeyedAutomaton::from_groups`], passing layers in declaration
+    /// order so the most-severe layer wins a cross-layer term collision.
+    pub(super) fn from_layers(layers: Vec<VocabLayer>) -> Result<Self, VocabError> {
+        let groups = layers.into_iter().map(|l| (l.kind, l.terms));
+        Ok(Self {
+            inner: KeyedAutomaton::from_groups(groups)?,
+        })
+    }
+
+    /// Scan a haystack and emit one [`ScanHit`] per match.
+    pub(super) fn scan(&self, haystack: &str) -> Vec<ScanHit> {
+        self.inner
+            .scan(haystack)
+            .into_iter()
+            .map(|h| ScanHit {
+                layer: h.key,
+                term: h.term,
+                start: h.start,
+                end: h.end,
+            })
+            .collect()
+    }
+
+    /// Total number of distinct terms across every layer.
+    pub(super) fn term_count(&self) -> usize {
+        self.inner.term_count()
+    }
+
     /// Number of distinct terms inside one layer.
     pub(super) fn term_count_for(&self, layer: Layer) -> usize {
-        self.counts_by_layer.get(&layer).copied().unwrap_or(0)
+        self.inner.term_count_for(layer)
     }
 }
 
