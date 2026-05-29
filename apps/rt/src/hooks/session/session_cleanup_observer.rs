@@ -115,6 +115,9 @@ fn state_spec_name(path: &Path) -> Option<String> {
 /// buckets. Done means either the directory is gone or the `### Status:`
 /// header in `spec.md` / `wave-plan.md` reads `completed` / `done`.
 fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
+    // ClaudePaths-exempt: `claude_dir` is seam-produced upstream; re-deriving
+    // via `for_project`/`for_spec` here would be circular and would add name
+    // validation that changes the fail-open trigger.
     let spec_root = claude_dir.join("spec").join(spec_name);
     if !spec_root.exists() {
         // Spec deleted → treat as done.

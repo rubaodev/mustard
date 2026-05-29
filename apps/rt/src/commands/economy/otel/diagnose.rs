@@ -170,6 +170,8 @@ fn check_health(port: u16) -> Value {
 /// streams. Fail-open: an unreadable file is silently skipped.
 fn read_all_events(claude_root: &Path) -> Vec<Event> {
     let mut out = Vec::new();
+    // ClaudePaths-exempt: `claude_root` is a seam-produced `.claude` path param
+    // (no project-root handle); the sibling `.session` has no typed accessor.
     let candidate_roots = [
         claude_root.join("spec"),
         claude_root.join(".session"),

@@ -171,6 +171,8 @@ pub fn run(opts: CloseOrchestrateOpts) {
 /// for waves that never produced a ledger (no span-level eval ever ran).
 fn run_review_spans_gate(spec: &str) -> (bool, u64, Option<String>) {
     let started = std::time::Instant::now();
+    // ClaudePaths-exempt: deliberate cwd-relative path (no project-root handle
+    // here); `for_project` would force an absolute `current_dir()` resolution.
     let spec_dir = Path::new(".claude").join("spec").join(spec);
     let mut blocked_waves: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&spec_dir) {

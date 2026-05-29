@@ -697,6 +697,8 @@ fn check_state_health(claude_dir: &Path) -> CheckResult {
 
 /// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
 fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
+    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
+    // `run()`; re-deriving with `for_project` here would be circular.
     let active_dir = claude_dir.join("spec");
     let Ok(entries) = fs::read_dir(&active_dir) else {
         return Vec::new();
@@ -730,6 +732,8 @@ fn is_timestamp_expired(ts: &str, now_ms: u128, expiry_ms: u128) -> bool {
 /// Fail-open: a missing spec tree, unreadable file, or malformed wikilink is
 /// silently ignored — better to skip a check than crash the doctor.
 fn check_wave_integrity(claude_dir: &Path) -> CheckResult {
+    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
+    // `run()`; re-deriving with `for_project` here would be circular.
     let spec_root = claude_dir.join("spec");
     let Ok(entries) = fs::read_dir(&spec_root) else {
         return CheckResult::skip("wave-integrity", "no .claude/spec/ directory");
@@ -1094,6 +1098,8 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
         vec![]
     }
 
+    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
+    // `run()`; re-deriving with `for_project` here would be circular.
     let spec_root = claude_dir.join("spec");
     let Ok(entries) = fs::read_dir(&spec_root) else {
         return CheckResult::skip("status-consistency", "no .claude/spec/ directory");
