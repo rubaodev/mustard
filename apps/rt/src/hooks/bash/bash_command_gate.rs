@@ -1,4 +1,4 @@
-//! `bash_guard` — the consolidated Bash-tool enforcement module.
+//! `bash_command_gate` — the consolidated Bash-tool enforcement module.
 //!
 //! ## Scope (b3 Bash family, 5/5)
 //!
@@ -10,7 +10,7 @@
 //! the parity tests (and `hooks/__tests__/hooks.test.js` /
 //! `harness-wave9.test.js`) are the oracle.
 //!
-//! `BashGuard` therefore implements [`Check`] for PreToolUse(Bash) **and**
+//! `BashCommandGate` therefore implements [`Check`] for PreToolUse(Bash) **and**
 //! [`Observer`] for PostToolUse(Bash).
 //!
 //! `rtk-rewrite` shells out to `rtk rewrite <cmd>` with a 2-second timeout.
@@ -41,7 +41,7 @@ use crate::util::format_gate_message;
 use mustard_core::time::now_iso8601;
 
 /// The consolidated Bash-tool enforcement module.
-pub struct BashGuard;
+pub struct BashCommandGate;
 
 // ---------------------------------------------------------------------------
 // bash-safety — deny dangerous commands
@@ -1672,7 +1672,7 @@ fn truncate(s: &str, max: usize) -> &str {
 // Contract impls
 // ---------------------------------------------------------------------------
 
-impl BashGuard {
+impl BashCommandGate {
     /// Pull the `command` string out of a Bash tool input.
     fn command_of(input: &HookInput) -> Option<String> {
         input
@@ -1683,7 +1683,7 @@ impl BashGuard {
     }
 }
 
-impl Check for BashGuard {
+impl Check for BashCommandGate {
     /// Run the four ported PreToolUse(Bash) gates in `bash-safety` →
     /// `bash-native-redirect` → `rtk-rewrite` → `review-gate` order.
     ///
@@ -1729,7 +1729,7 @@ impl Check for BashGuard {
                 // Emit a `pipeline.economy.savings.rtk-rewrite` NDJSON event
                 // (W3A: SQLite savings writes → NDJSON). Tokens we did NOT have
                 // to ship as a verbose Bash response because `rtk` summarised
-                // the command. `RtkRewrite` bucket — `BashGuardBlock` is
+                // the command. `RtkRewrite` bucket — `BashCommandGateBlock` is
                 // reserved for deny verdicts so the dashboard can surface
                 // "rewrites vs blocks" without conflating the two.
                 {
@@ -1792,7 +1792,7 @@ impl Check for BashGuard {
     }
 }
 
-impl Observer for BashGuard {
+impl Observer for BashCommandGate {
     /// `pr-detect`: emit a DORA `pr.opened` / `pr.merged` event when a
     /// `gh pr create` / `gh pr merge` command succeeds on PostToolUse(Bash).
     ///
@@ -1844,7 +1844,7 @@ mod tests {
     fn verdict_for(command: &str) -> Verdict {
         RTK_REWRITE_TEST_OVERRIDE.with(|c| c.set(true));
         let (input, ctx) = pre_bash(command);
-        BashGuard.evaluate(&input, &ctx).expect("check never errors")
+        BashCommandGate.evaluate(&input, &ctx).expect("check never errors")
     }
 
     // --- bash-safety parity (hooks.test.js "bash-safety.js") ----------------
@@ -2175,7 +2175,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            BashGuard.evaluate(&input, &ctx).expect("no error"),
+            BashCommandGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -2195,7 +2195,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            BashGuard.evaluate(&input, &ctx).expect("no error"),
+            BashCommandGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -2345,7 +2345,7 @@ mod tests {
             ..HookInput::default()
         };
         // Must not panic; emits an event to the temp project's harness log.
-        BashGuard.observe(&ok, &ctx);
+        BashCommandGate.observe(&ok, &ctx);
 
         let failed = HookInput {
             tool_name: Some("Bash".to_string()),
@@ -2356,7 +2356,7 @@ mod tests {
         };
         assert!(bash_failed(&failed));
         // Failed command → observer is a no-op (no panic, nothing emitted).
-        BashGuard.observe(&failed, &ctx);
+        BashCommandGate.observe(&failed, &ctx);
     }
 
     /// The civil-date timestamp is well-formed (`YYYY-MM-DDThh:mm:ss.sssZ`).

@@ -5,7 +5,7 @@
 //! Arquitetura): porting 1:1 would preserve the fragmentation the migration
 //! exists to remove.
 //!
-//! - Waves 1-2: [`bash_guard`] — the Bash-tool family.
+//! - Waves 1-2: `bash_command_gate` — the Bash-tool family.
 //! - Wave 3: the Task / Subagent family — `context_budget_gate` (prompt/return
 //!   size), `model_routing_gate` (model-selection gate), the tool-use /
 //!   main-context counters (`tool_use_counter`, `main_context_counter`) plus

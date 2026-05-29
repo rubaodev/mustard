@@ -37,7 +37,7 @@ pub struct StatusOpts {
 /// Hard-coded human-readable description per hook filename.
 fn hook_description(name: &str) -> &'static str {
     match name {
-        "bash_guard" => "Blocks dangerous Bash; redirects grep/ls/cat to native tools; rewrites via rtk; commit gate",
+        "bash_command_gate" => "Blocks dangerous Bash; redirects grep/ls/cat to native tools; rewrites via rtk; commit gate",
         "model_routing_gate" => "Blocks model upgrades vs routing table; downgrades allowed opt-in",
         "tool_use_counter" => "Blocks Explore agents at 15 tool uses (warn at 12)",
         "main_context_counter" => "Enforces L0 delegation; warns/denies un-delegated main-context tool calls",
@@ -59,7 +59,7 @@ fn hook_description(name: &str) -> &'static str {
 /// Env var name that controls a given hook's mode.
 fn hook_mode_env(name: &str) -> Option<&'static str> {
     match name {
-        "bash_guard" => Some("MUSTARD_COMMIT_GATE_MODE"),
+        "bash_command_gate" => Some("MUSTARD_COMMIT_GATE_MODE"),
         "model_routing_gate" => Some("MUSTARD_MODEL_GATE_MODE"),
         "main_context_counter" => Some("MUSTARD_MAIN_BUDGET_MODE"),
         "context_budget_gate" => Some("CONTEXT_BUDGET_MODE"),
@@ -124,7 +124,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
                 // convention: `mustard-rt on PreToolUse` → multiple modules
                 // are dispatched. For a single command entry we just use the
                 // event + position as identifier, but we also check for
-                // explicit hook filenames like `mustard-rt check bash_guard`.
+                // explicit hook filenames like `mustard-rt check bash_command_gate`.
                 let hook_name = extract_hook_name(command, event);
 
                 let description = hook_description(&hook_name);
@@ -155,7 +155,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 /// Map an event name to the primary enforcement module name it dispatches.
 fn event_to_module(event: &str) -> &'static str {
     match event {
-        "PreToolUse" => "bash_guard + model_routing_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_guard",
+        "PreToolUse" => "bash_command_gate + model_routing_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_guard",
         "PostToolUse" => "post_edit + session_knowledge_observer",
         "SessionStart" => "spec_hygiene_observer + session_start_inject",
         "SessionEnd" => "session_cleanup_observer + session_knowledge_observer",
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn render_harness_json_contains_hooks_key() {
-        let hooks = vec![json!({"event":"PreToolUse","hook":"bash_guard","matcher":".*","enforces":"x","mode":"strict"})];
+        let hooks = vec![json!({"event":"PreToolUse","hook":"bash_command_gate","matcher":".*","enforces":"x","mode":"strict"})];
         let out = render_harness_json(&hooks);
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert!(parsed.get("hooks").is_some());

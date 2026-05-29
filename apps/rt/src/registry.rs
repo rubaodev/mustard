@@ -8,7 +8,7 @@
 
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
-use crate::hooks::bash::bash_guard::BashGuard;
+use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
@@ -74,7 +74,7 @@ impl ToolMatch {
 }
 
 /// One enforcement concern. A module is a `Check`, an `Observer`, or both.
-/// `bash_guard`, for example, is both — the four ported PreToolUse(Bash) gates
+/// `bash_command_gate`, for example, is both — the four ported PreToolUse(Bash) gates
 /// (`Check`) and the `pr-detect` PostToolUse(Bash) telemetry (`Observer`).
 pub struct Module {
     /// Stable id used by `mustard-rt check <id>` and by the enforcement
@@ -108,7 +108,7 @@ pub struct Registry {
 impl Registry {
     /// Build the registry with every module Mustard ships.
     ///
-    /// Early b3 waves register only `bash_guard`; later waves push their
+    /// Early b3 waves register only `bash_command_gate`; later waves push their
     /// families (`budget`, `size_gate`, …) here, leaving the dispatcher
     /// untouched.
     #[must_use]
@@ -118,8 +118,8 @@ impl Registry {
     pub fn new() -> Self {
         let modules = vec![
             Module {
-                id: "bash_guard",
-                // `bash_guard` is both a `Check` and an `Observer` — it ports
+                id: "bash_command_gate",
+                // `bash_command_gate` is both a `Check` and an `Observer` — it ports
                 // the full Bash family (5/5): `bash-safety`,
                 // `bash-native-redirect`, `rtk-rewrite` and `review-gate` as
                 // PreToolUse(Bash) gates, plus `pr-detect` as PostToolUse(Bash)
@@ -128,8 +128,8 @@ impl Registry {
                     (Trigger::PreToolUse, ToolMatch::Named("Bash")),
                     (Trigger::PostToolUse, ToolMatch::Named("Bash")),
                 ],
-                check: Some(Box::new(BashGuard)),
-                observer: Some(Box::new(BashGuard)),
+                check: Some(Box::new(BashCommandGate)),
+                observer: Some(Box::new(BashCommandGate)),
             },
             // ── Wave 3: Task / Subagent family ───────────────────────────────
             Module {
@@ -522,16 +522,16 @@ mod tests {
     }
 
     #[test]
-    fn bash_guard_applies_to_bash_events() {
+    fn bash_command_gate_applies_to_bash_events() {
         let registry = Registry::new();
-        // `bash_guard` is the Bash-tool gate for both Pre- and PostToolUse.
+        // `bash_command_gate` is the Bash-tool gate for both Pre- and PostToolUse.
         assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash"))
-            .contains(&"bash_guard"));
+            .contains(&"bash_command_gate"));
         assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash"))
-            .contains(&"bash_guard"));
+            .contains(&"bash_command_gate"));
         // It does not apply to a Write tool or a bare lifecycle event.
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
-            .contains(&"bash_guard"));
+            .contains(&"bash_command_gate"));
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
         let ids = applicable_ids(&registry, Trigger::SubagentStart, None);
         assert!(ids.contains(&"tool_use_counter"));
         assert!(ids.contains(&"main_context_counter"));
-        assert!(!ids.contains(&"bash_guard"));
+        assert!(!ids.contains(&"bash_command_gate"));
     }
 
     #[test]
@@ -576,7 +576,7 @@ mod tests {
     fn by_id_finds_registered_modules() {
         let registry = Registry::new();
         for id in [
-            "bash_guard",
+            "bash_command_gate",
             "context_budget_gate",
             "model_routing_gate",
             "tool_use_counter",

@@ -1,1 +1,1 @@
-pub mod bash_guard;
+pub mod bash_command_gate;
