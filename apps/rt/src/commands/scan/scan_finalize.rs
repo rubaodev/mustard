@@ -156,8 +156,23 @@ fn finalize(root: &Path, skip_security: bool) -> Value {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    // Step 4.7 — refresh entity registry.
-    let registry = run_subcommand(root, &["run", "sync-registry", "--force"]);
+    // Did `--enrich` agents run? They wrote files, so the registry must be
+    // force-refreshed to reflect them. In the zero-AI default the registry was
+    // already populated pre-dispatch, so a plain (non-force) `sync-registry`
+    // cheaply skips an already-populated registry instead of re-walking it.
+    let enrich = scan_dispatch_path_for(root)
+        .as_ref()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|s| s.get("enrich").and_then(Value::as_bool))
+        .unwrap_or(false);
+
+    // Step 4.7 — refresh entity registry (force only when agents wrote files).
+    let registry = if enrich {
+        run_subcommand(root, &["run", "sync-registry", "--force"])
+    } else {
+        run_subcommand(root, &["run", "sync-registry"])
+    };
     if !registry.ok {
         errors.push(format!("registry: exit {:?}", registry.status));
         if !registry.stderr.is_empty() {

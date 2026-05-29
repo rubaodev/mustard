@@ -168,24 +168,12 @@ fn for_spec_slice(registry: &EntityRegistry, spec_text: &str) -> Value {
 /// `subprojectName` equals / is a path-suffix of `subproject`. Returns the raw
 /// cluster objects sorted by `label` (byte-stable); `[]` when none.
 fn subproject_slice(registry: &EntityRegistry, subproject: &str) -> Value {
-    let Some(patterns) = registry.patterns() else {
-        return json!([]);
-    };
-    let mut clusters: Vec<Value> = Vec::new();
-    for body in patterns.values() {
-        let Some(arr) = body.get("discovered").and_then(Value::as_array) else {
-            continue;
-        };
-        for cluster in arr {
-            let scoped_out = matches!(
-                cluster.get("subprojectName").and_then(Value::as_str),
-                Some(name) if !subproject.ends_with(name) && name != subproject
-            );
-            if !scoped_out {
-                clusters.push(cluster.clone());
-            }
-        }
-    }
+    // Single source of truth for cluster scoping lives on `EntityRegistry`.
+    let mut clusters: Vec<Value> = registry
+        .clusters_for_subproject(subproject)
+        .into_iter()
+        .cloned()
+        .collect();
     clusters.sort_by(|a, b| {
         let la = a.get("label").and_then(Value::as_str).unwrap_or("");
         let lb = b.get("label").and_then(Value::as_str).unwrap_or("");

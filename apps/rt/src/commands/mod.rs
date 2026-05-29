@@ -662,6 +662,11 @@ pub enum RunCmd {
         /// Full re-scan: ignore the change-detection cache.
         #[arg(long)]
         force: bool,
+        /// After the deterministic pass (registry + SKILL.md + stack.md),
+        /// dispatch one lean prose-enrichment agent per changed subproject (in
+        /// parallel). Default `/scan` is zero-AI: `dispatch[]` stays empty.
+        #[arg(long)]
+        enrich: bool,
     },
     /// Post-dispatch finalization for `/scan` — registry + skills + security.
     ScanFinalize {
@@ -1750,8 +1755,8 @@ pub fn dispatch(cmd: RunCmd) {
             quiet,
         ),
         RunCmd::RtkGain => economy::rtk_gain::run(),
-        RunCmd::ScanOrchestrate { target, force } => {
-            scan::scan_orchestrate::run(force, target.as_deref());
+        RunCmd::ScanOrchestrate { target, force, enrich } => {
+            scan::scan_orchestrate::run(force, enrich, target.as_deref());
         }
         RunCmd::ScanFinalize { skip_security } => scan::scan_finalize::run(skip_security),
         RunCmd::ScanStructural { subproject } => scan::scan_structural::run(subproject.as_deref()),

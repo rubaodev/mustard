@@ -98,6 +98,8 @@ pub struct RenderReport {
     pub preserved: usize,
     /// Clusters skipped because they did not qualify (filtered or over the cap).
     pub skipped: usize,
+    /// `_no-patterns.md` markers written this pass (subprojects with no skill).
+    pub no_patterns_markers: usize,
 }
 
 /// One skill ready to render — the pure product of a single qualified cluster.
@@ -134,9 +136,86 @@ pub fn run(subproject: Option<&str>) {
             "removed": report.removed,
             "preserved": report.preserved,
             "skipped": report.skipped,
+            "noPatternsMarkers": report.no_patterns_markers,
         }))
         .unwrap_or_else(|_| "{}".into())
     );
+}
+
+/// Render skills for an EXPLICIT set of subprojects, guaranteeing each one ends
+/// the pass with at least one `SKILL.md` **OR** a `_no-patterns.md` marker — the
+/// HARD CONTRACT, now owned by Rust instead of the dispatched agent.
+///
+/// For every `want` (a subproject path or bare name): render its qualified
+/// clusters' skills (matching the registry's bare-name keys via the same
+/// path-tail rule [`render`] uses), then either write `_no-patterns.md` (when no
+/// skill — generated or hand-authored — exists) or reap a stale marker (when the
+/// subproject has/gained skills). Fail-open at every step.
+#[must_use]
+pub fn render_for_subprojects(project_root: &Path, subprojects: &[&str]) -> RenderReport {
+    let registry = EntityRegistry::load(project_root);
+    let plans_by_sub = build_plans(&registry);
+    let mut report = RenderReport::default();
+    for want in subprojects {
+        let plans: &[SkillPlan] = plans_by_sub
+            .iter()
+            .find(|(sub, _)| sub.as_str() == *want || want.ends_with(sub.as_str()))
+            .map_or(&[][..], |(_, p)| p.as_slice());
+        let sub_report = write_subproject_skills(project_root, want, plans);
+        let has_skills = sub_report.written > 0 || sub_report.preserved > 0;
+        if matches!(ensure_no_patterns_marker(project_root, want, has_skills), MarkerOutcome::Wrote) {
+            report.no_patterns_markers += 1;
+        }
+        report.written += sub_report.written;
+        report.removed += sub_report.removed;
+        report.preserved += sub_report.preserved;
+        report.skipped += sub_report.skipped;
+    }
+    report
+}
+
+/// What [`ensure_no_patterns_marker`] did to the `_no-patterns.md` marker.
+enum MarkerOutcome {
+    /// Marker written (subproject has no skill).
+    Wrote,
+    /// Stale marker reaped (subproject has/gained skills), or a no-op.
+    Other,
+}
+
+/// Guarantee the `_no-patterns.md` contract for one subproject: write the marker
+/// (byte-stable, English, generated fence) when `has_skills` is false; reap a
+/// stale marker when true. Fail-open — any IO error degrades to a no-op.
+fn ensure_no_patterns_marker(project_root: &Path, sub: &str, has_skills: bool) -> MarkerOutcome {
+    let sub_root = if sub == "." {
+        project_root.to_path_buf()
+    } else {
+        resolve_sub_root(project_root, sub)
+    };
+    let Ok(paths) = ClaudePaths::for_project(&sub_root) else {
+        return MarkerOutcome::Other;
+    };
+    let skills_dir = paths.skills_dir();
+    let marker = skills_dir.join("_no-patterns.md");
+    if has_skills {
+        if marker.is_file() {
+            let _ = mfs::remove_file(&marker);
+        }
+        return MarkerOutcome::Other;
+    }
+    if mfs::create_dir_all(&skills_dir).is_err() {
+        return MarkerOutcome::Other;
+    }
+    let body = format!(
+        "{GEN_BODY_MARKER}\n# No granular skills for {name}\n\n\
+         No cluster met the evidence threshold (fileCount >= {MIN_CLUSTER_FILES}, non-noise \
+         suffix). The deterministic scan found no reusable convention worth a skill here.\n",
+        name = short_sub_name(sub),
+    );
+    if mfs::write_atomic(&marker, body.as_bytes()).is_ok() {
+        MarkerOutcome::Wrote
+    } else {
+        MarkerOutcome::Other
+    }
 }
 
 /// Render every qualified cluster's skill. Reads the registry once, groups the

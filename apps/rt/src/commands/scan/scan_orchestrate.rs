@@ -16,14 +16,13 @@
 
 use crate::commands::scan::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
-    purge_generated_skills,
 };
 use crate::commands::skill::skill_resolve;
 use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
@@ -38,6 +37,7 @@ const EMBEDDED_PROMPT_TEMPLATE: &str =
 #[derive(Default)]
 struct ScanResult {
     force: bool,
+    enrich: bool,
     target: Option<String>,
     fast_path: bool,
     dispatch: Vec<Value>,
@@ -52,6 +52,7 @@ impl ScanResult {
     fn to_json(&self) -> Value {
         json!({
             "force": self.force,
+            "enrich": self.enrich,
             "target": self.target,
             "fastPath": self.fast_path,
             "dispatch": self.dispatch,
@@ -347,14 +348,10 @@ fn precompute(
             .as_ref()
             .map(ClaudePaths::commands_dir)
             .unwrap_or_else(|| abs_sub.clone());
-        let skills_dir = sub_paths
-            .as_ref()
-            .map(ClaudePaths::skills_dir)
-            .unwrap_or_else(|| abs_sub.clone());
         if force {
-            for n in purge_generated_skills(&skills_dir) {
-                result.cleanup.push(format!("{path}/.claude/skills/{n}"));
-            }
+            // Skill lifecycle (regenerate + reap stale) is owned by
+            // `scan_skill_render`; only the prose `.md` commands the enrich agent
+            // rewrites need a pre-write backup here.
             for n in backup_generated_mds(&commands_dir) {
                 result.cleanup.push(format!("{path}/.claude/commands/{n} → _backup/{n}"));
             }
@@ -389,7 +386,7 @@ fn precompute(
 fn generate_agent_files(
     root: &Path,
     detect: &Value,
-    patterns: Option<&Map<String, Value>>,
+    registry: &EntityRegistry,
     force: bool,
     target: Option<&str>,
     result: &mut ScanResult,
@@ -408,9 +405,7 @@ fn generate_agent_files(
         let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
         let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("auto-detected");
         let title = title_case(name);
-        let clusters = patterns
-            .map(|p| clusters_for_subproject(p, path))
-            .unwrap_or_default();
+        let clusters = registry.clusters_for_subproject(path);
         let guards = read_guards_section(&root.join(path));
         let impl_path = agents_dir.join(format!("{name}-impl.md"));
         let explorer_path = agents_dir.join(format!("{name}-explorer.md"));
@@ -617,15 +612,16 @@ fn build_explorer_agent(
     )
 }
 
-/// Force-mode: clear cluster caches + refresh the registry via the binary.
-fn force_refresh(root: &Path, detect: &Value, result: &mut ScanResult) {
+/// Clear each subproject's `.cluster-cache.json` so a `--force` scan genuinely
+/// re-discovers clusters (the cache would otherwise short-circuit discovery).
+///
+/// `.cluster-cache.json` is owned by the agnostic scan cluster-discovery pass
+/// and lives inside each subproject's `.claude/` — a per-subproject scan
+/// artefact, not a per-root catalog entry — so a stable child of the
+/// per-subproject `claude_dir()` is the right call.
+fn clear_cluster_caches(root: &Path, detect: &Value, result: &mut ScanResult) {
     for sub in detect.get("subprojects").and_then(Value::as_array).cloned().unwrap_or_default() {
         let path = sub.get("path").and_then(Value::as_str).unwrap_or("");
-        // `.cluster-cache.json` is owned by the agnostic scan cluster-discovery
-        // pass and lives inside each subproject's `.claude/`. Not part of the
-        // canonical `ClaudePaths` accessors — it is a per-subproject scan
-        // artefact, not a per-root catalog entry — so a stable child of the
-        // per-subproject `claude_dir()` is the right call.
         let cache = ClaudePaths::for_project(root.join(path))
             .map(|p| p.claude_dir().join(".cluster-cache.json"))
             .unwrap_or_else(|_| root.join(path).join(".cluster-cache.json"));
@@ -633,23 +629,37 @@ fn force_refresh(root: &Path, detect: &Value, result: &mut ScanResult) {
             result.cleanup.push(rel_posix(root, &cache));
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let status = Command::new(&exe)
-            .args(["run", "sync-registry", "--force"])
-            .current_dir(root)
-            .output();
-        match status {
-            Ok(out) if out.status.success() => {
-                result.generated.push(".claude/entity-registry.json".to_string());
-            }
-            Ok(out) => {
-                let code = out.status.code().unwrap_or(-1);
-                result
-                    .warnings
-                    .push(format!("forceRefreshRegistry: sync-registry exit {code} — brief may be stale"));
-            }
-            Err(e) => result.warnings.push(format!("forceRefreshRegistry: {e}")),
+}
+
+/// Populate / refresh the entity-registry by spawning `mustard-rt run
+/// sync-registry [--force]` (the same binary). Stdout is captured via
+/// `.output()` so the worker's human-readable progress never pollutes the
+/// orchestrator's pure-JSON stdout. A non-force run populates an empty skeleton
+/// and cheaply skips an already-populated registry (`entity_count > 0`); a
+/// `--force` run regenerates. Fail-open: a non-zero exit becomes a warning,
+/// never an abort.
+fn run_sync_registry(root: &Path, force: bool, result: &mut ScanResult) {
+    let Ok(exe) = std::env::current_exe() else {
+        result
+            .warnings
+            .push("syncRegistry: current_exe unresolved — registry not refreshed".to_string());
+        return;
+    };
+    let mut args = vec!["run", "sync-registry"];
+    if force {
+        args.push("--force");
+    }
+    match Command::new(&exe).args(&args).current_dir(root).output() {
+        Ok(out) if out.status.success() => {
+            result.generated.push(".claude/entity-registry.json".to_string());
         }
+        Ok(out) => {
+            let code = out.status.code().unwrap_or(-1);
+            result
+                .warnings
+                .push(format!("syncRegistry: sync-registry exit {code} — clusters may be stale"));
+        }
+        Err(e) => result.warnings.push(format!("syncRegistry: {e}")),
     }
 }
 
@@ -657,34 +667,6 @@ fn force_refresh(root: &Path, detect: &Value, result: &mut ScanResult) {
 /// list compact (≈the dispatch's structure-block budget) so the agent renders
 /// facts rather than re-walking the tree.
 const SAMPLES_BLOCK_MAX_BYTES: usize = 1200;
-
-/// Pull the `_patterns.{stack}.discovered[]` clusters tagged for `subproject`
-/// out of an already-parsed entity-registry document.
-///
-/// A cluster matches when it has no `subprojectName` (un-scoped) or its
-/// `subprojectName` equals / is a path-suffix of the subproject path — mirrors
-/// [`EntityRegistry::cluster_labels`]'s scoping. Returns the raw cluster
-/// objects (so the caller can read label/suffix/folder/fileCount/samples).
-fn clusters_for_subproject<'a>(patterns: &'a Map<String, Value>, subproject: &str) -> Vec<&'a Value> {
-    let mut out: Vec<&Value> = Vec::new();
-    for body in patterns.values() {
-        let Some(arr) = body.get("discovered").and_then(Value::as_array) else {
-            continue;
-        };
-        for cluster in arr {
-            // Keep un-scoped clusters and those whose `subprojectName` equals /
-            // is a path-suffix of the subproject path.
-            let scoped_out = matches!(
-                cluster.get("subprojectName").and_then(Value::as_str),
-                Some(name) if !subproject.ends_with(name) && name != subproject
-            );
-            if !scoped_out {
-                out.push(cluster);
-            }
-        }
-    }
-    out
-}
 
 /// Build `{{clustersBlock}}` — a compact `## Pre-mined clusters` table of the
 /// pre-discovered structural clusters (label, suffix, folder pattern, file
@@ -740,15 +722,16 @@ fn build_samples_block(clusters: &[&Value]) -> String {
 
 /// Render the agent prompt for one subproject from the loaded template.
 ///
-/// `patterns` is the registry's `_patterns` map (when loaded) so the
-/// `{{clustersBlock}}` / `{{samplesBlock}}` placeholders are filled with
-/// pre-mined facts instead of the empty strings the regression left behind.
+/// Clusters come from [`EntityRegistry::clusters_for_subproject`] (the canonical
+/// scoping accessor) so the `{{clustersBlock}}` / `{{samplesBlock}}` placeholders
+/// are filled with pre-mined facts instead of the empty strings the regression
+/// left behind.
 fn render_prompt(
     template: &str,
     root: &Path,
     sub: &Value,
     blocks: &std::collections::BTreeMap<String, (String, String)>,
-    patterns: Option<&Map<String, Value>>,
+    registry: &EntityRegistry,
     force: bool,
 ) -> String {
     let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
@@ -762,9 +745,7 @@ fn render_prompt(
         ""
     };
     let (tooling, structure) = blocks.get(path).cloned().unwrap_or_default();
-    let clusters = patterns
-        .map(|p| clusters_for_subproject(p, path))
-        .unwrap_or_default();
+    let clusters = registry.clusters_for_subproject(path);
     let clusters_block = build_clusters_block(&clusters);
     let samples_block = build_samples_block(&clusters);
     template
@@ -783,9 +764,10 @@ fn render_prompt(
 }
 
 /// Run the orchestration. Separate from [`run`] so tests can drive it.
-fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
+fn orchestrate(root: &Path, force: bool, enrich: bool, target: Option<&str>) -> ScanResult {
     let mut result = ScanResult {
         force,
+        enrich,
         target: target.map(str::to_string),
         ..ScanResult::default()
     };
@@ -813,23 +795,10 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
     }
 
     bootstrap(root, &detect, force, &mut result);
-    if force {
-        force_refresh(root, &detect, &mut result);
-    }
 
-    // Load the entity-registry once — after a force refresh so the rich agents
-    // and the dispatch prompt both see the freshest `_patterns.{stack}` clusters.
-    // Fail-open: a missing / empty registry yields no patterns and every
-    // cluster-driven block stays empty.
-    let registry = EntityRegistry::load(root);
-    let patterns = registry.patterns();
-
-    // Generate the rich `.claude/agents/{name}-impl|-explorer.md` files. They
-    // reuse the same cluster facts as the dispatch prompt so the native
-    // `subagent_type` router gets a routing-grade description + a body carrying
-    // guards/skills/clusters. Idempotent; preserves manual agents.
-    generate_agent_files(root, &detect, patterns, force, target, &mut result);
-
+    // Classify the changed subprojects first (pure — no registry needed). This
+    // set scopes the deterministic doc generation below AND, in `--enrich` mode,
+    // the agent dispatch. On a first scan (no cache) everything is "changed".
     let (dispatch, skipped) = classify(&detect, old_cache.as_ref(), force, target);
     result.skipped = skipped;
     let dispatched_paths: Vec<String> = dispatch
@@ -841,26 +810,92 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
                 .map(str::to_string)
         })
         .collect();
-    let blocks = precompute(root, &detect, &dispatched_paths, force, &mut result);
+    let changed_refs: Vec<&str> = dispatched_paths.iter().map(String::as_str).collect();
 
-    // Render the agent prompt for each dispatch target. The template is baked
-    // into the binary; an on-disk copy overrides it when present. The registry
-    // (loaded above) feeds `{{clustersBlock}}` / `{{samplesBlock}}` with the
-    // pre-mined `_patterns.{stack}.discovered[]` facts.
-    let template_path = claude_dir.join("scripts").join("scan").join("agent-prompt.template.md");
-    let template = read_safe(&template_path).unwrap_or_else(|| EMBEDDED_PROMPT_TEMPLATE.to_string());
-    for sub in &dispatch {
-        let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
-        let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
-        let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
-        let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("");
-        result.dispatch.push(json!({
-            "name": name, "path": path, "role": role, "stackSummary": stack,
-            "agentPrompt": render_prompt(&template, root, sub, &blocks, patterns, force),
-        }));
+    // --- Deterministic generation (min-IA / max-Rust) -----------------------
+    // Populate the registry BEFORE loading it, then render per-cluster SKILL.md
+    // + stack.md in Rust — the work the dispatched agent used to redo by hand.
+    // Default `/scan` is now zero-AI; `--enrich` only layers prose on top. All
+    // fail-open.
+    if force {
+        clear_cluster_caches(root, &detect, &mut result);
+    }
+    run_sync_registry(root, force, &mut result);
+
+    // SKILL.md per qualified cluster (+ `_no-patterns.md` where none qualifies,
+    // satisfying the HARD CONTRACT without an agent).
+    let skill_report =
+        crate::commands::scan::scan_skill_render::render_for_subprojects(root, &changed_refs);
+    if skill_report.written > 0 {
+        result.generated.push(format!("skills: {} SKILL.md", skill_report.written));
+    }
+    if skill_report.no_patterns_markers > 0 {
+        result
+            .generated
+            .push(format!("skills: {} _no-patterns.md", skill_report.no_patterns_markers));
+    }
+    // stack.md per changed subproject.
+    for path in &changed_refs {
+        for entry in crate::commands::scan::scan_structural::render_stack(root, Some(path)) {
+            if let Some(p) = entry.get("stackMd").and_then(Value::as_str) {
+                result.generated.push(rel_posix(root, Path::new(p)));
+            }
+        }
     }
 
-    // Persist dispatch state so finalize can verify each subproject.
+    // Load the entity-registry once (now populated). Fail-open: a missing /
+    // empty registry yields no clusters and every cluster-driven block stays
+    // empty. The cluster-scoping accessor (`clusters_for_subproject`) lives on
+    // the registry — the single source of truth shared with `registry-query`.
+    let registry = EntityRegistry::load(root);
+
+    // Generate the rich `.claude/agents/{name}-impl|-explorer.md` files. They
+    // reuse the same cluster facts as the dispatch prompt so the native
+    // `subagent_type` router gets a routing-grade description + a body carrying
+    // guards/skills/clusters. Idempotent; preserves manual agents.
+    generate_agent_files(root, &detect, &registry, force, target, &mut result);
+
+    // Deterministic `guards.md` seed per changed subproject (architecture
+    // boundary rules + convention pointers). Owned by `guards_seed`; written
+    // only when absent or under `--force` so it never clobbers an
+    // `--enrich`-extended file.
+    for sub in &dispatch {
+        if let Some(rel) =
+            crate::commands::scan::guards_seed::render_guards_seed(root, sub, &registry, force)
+        {
+            result.generated.push(rel);
+        }
+    }
+
+    // --- Dispatch plan — ONLY in `--enrich` mode ----------------------------
+    // Default mode leaves `dispatch[]` empty: the deterministic pass above
+    // already produced registry + SKILL.md + stack.md, so the slash command
+    // skips straight to finalize with zero AI. `--enrich` dispatches one lean
+    // prose-enrichment agent per changed subproject (in parallel).
+    if enrich {
+        let blocks = precompute(root, &detect, &dispatched_paths, force, &mut result);
+        // The template is baked into the binary; an on-disk copy overrides it
+        // when present. The registry (loaded above) feeds `{{clustersBlock}}` /
+        // `{{samplesBlock}}` with the pre-mined `_patterns.{stack}.discovered[]`
+        // facts.
+        let template_path = claude_dir.join("scripts").join("scan").join("agent-prompt.template.md");
+        let template = read_safe(&template_path).unwrap_or_else(|| EMBEDDED_PROMPT_TEMPLATE.to_string());
+        for sub in &dispatch {
+            let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
+            let path = sub.get("path").and_then(Value::as_str).unwrap_or(name);
+            let role = sub.get("role").and_then(Value::as_str).unwrap_or("general");
+            let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("");
+            result.dispatch.push(json!({
+                "name": name, "path": path, "role": role, "stackSummary": stack,
+                "agentPrompt": render_prompt(&template, root, sub, &blocks, &registry, force),
+            }));
+        }
+    }
+
+    // Persist dispatch state so finalize can verify each subproject + install
+    // refs. Records the CHANGED subprojects (so those steps run for what was
+    // scanned) plus the `enrich` flag (finalize force-refreshes the registry
+    // only when agents actually wrote files).
     // Migrated to `<root>/.claude/.cache/scan-dispatch.json` per the W2 cache reorg.
     let dispatch_state = paths.scan_dispatch_path();
     let lite: Vec<Value> = dispatch
@@ -874,7 +909,7 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
             })
         })
         .collect();
-    let state = json!({ "ts": now_iso8601(), "dispatch": lite });
+    let state = json!({ "ts": now_iso8601(), "enrich": enrich, "dispatch": lite });
     let _ = write_safe(
         &mut result,
         root,
@@ -907,7 +942,7 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
 }
 
 /// Dispatch `mustard-rt run scan-orchestrate`.
-pub fn run(force: bool, target: Option<&str>) {
+pub fn run(force: bool, enrich: bool, target: Option<&str>) {
     // W2: anchor every per-root cache write at the resolved workspace root
     // (the directory containing `mustard.json + .claude/`) instead of the raw
     // process cwd. Fail strict — a run subcommand cannot do useful work
@@ -919,7 +954,7 @@ pub fn run(force: bool, target: Option<&str>) {
             std::process::exit(1);
         }
     };
-    let result = orchestrate(&cwd, force, target);
+    let result = orchestrate(&cwd, force, enrich, target);
     println!(
         "{}",
         serde_json::to_string_pretty(&result.to_json()).unwrap_or_else(|_| "{}".into())
@@ -978,7 +1013,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub = json!({ "name": "api", "path": "api", "role": "backend", "stackSummary": "TS" });
         let blocks = std::collections::BTreeMap::new();
-        let rendered = render_prompt(EMBEDDED_PROMPT_TEMPLATE, dir.path(), &sub, &blocks, None, false);
+        let registry = EntityRegistry::from_value(json!({}));
+        let rendered = render_prompt(EMBEDDED_PROMPT_TEMPLATE, dir.path(), &sub, &blocks, &registry, false);
         assert!(!rendered.contains("{{"), "unresolved placeholder remains");
         assert!(rendered.contains("api"));
     }
@@ -988,35 +1024,38 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub = json!({ "name": "api", "path": "api", "role": "backend", "stackSummary": "TS" });
         let blocks = std::collections::BTreeMap::new();
-        // A `_patterns.{stack}` map shaped like the registry writes it.
-        let patterns: Map<String, Value> = serde_json::from_value(json!({
-            "typescript": {
-                "discovered": [
-                    {
-                        "label": "Service",
-                        "suffix": "Service",
-                        "folderPattern": "**/services/",
-                        "fileCount": 7,
-                        "samples": ["UserService.ts", "OrderService.ts"],
-                        "subprojectName": "api"
-                    },
-                    {
-                        "label": "OtherSub",
-                        "suffix": "Repo",
-                        "fileCount": 4,
-                        "samples": ["X.ts"],
-                        "subprojectName": "web"
-                    }
-                ]
+        // A registry shaped like the writer emits it (`_patterns.{stack}`). The
+        // stack key is OPAQUE to the scan — a deliberately non-real id proves the
+        // orchestrator never branches on language (agnosticism invariant).
+        let registry = EntityRegistry::from_value(json!({
+            "_patterns": {
+                "any-stack": {
+                    "discovered": [
+                        {
+                            "label": "Service",
+                            "suffix": "Service",
+                            "folderPattern": "**/services/",
+                            "fileCount": 7,
+                            "samples": ["UserService.ts", "OrderService.ts"],
+                            "subprojectName": "api"
+                        },
+                        {
+                            "label": "OtherSub",
+                            "suffix": "Repo",
+                            "fileCount": 4,
+                            "samples": ["X.ts"],
+                            "subprojectName": "web"
+                        }
+                    ]
+                }
             }
-        }))
-        .unwrap();
+        }));
         let rendered = render_prompt(
             EMBEDDED_PROMPT_TEMPLATE,
             dir.path(),
             &sub,
             &blocks,
-            Some(&patterns),
+            &registry,
             false,
         );
         // The api-scoped cluster surfaces; the web-scoped one does not.
@@ -1062,30 +1101,32 @@ mod tests {
         .unwrap();
     }
 
-    /// A `_patterns.{stack}.discovered[]` map with one api-scoped cluster.
-    fn api_patterns() -> Map<String, Value> {
-        serde_json::from_value(json!({
-            "rust": {
-                "discovered": [
-                    {
-                        "label": "Service",
-                        "suffix": "Service",
-                        "folderPattern": "**/services/",
-                        "fileCount": 5,
-                        "subprojectName": "api"
-                    }
-                ]
+    /// A registry with one api-scoped cluster. The `_patterns.{stack}` key is a
+    /// deliberately non-real id — the scan treats it as opaque (agnosticism).
+    fn api_registry() -> EntityRegistry {
+        EntityRegistry::from_value(json!({
+            "_patterns": {
+                "any-stack": {
+                    "discovered": [
+                        {
+                            "label": "Service",
+                            "suffix": "Service",
+                            "folderPattern": "**/services/",
+                            "fileCount": 5,
+                            "subprojectName": "api"
+                        }
+                    ]
+                }
             }
         }))
-        .unwrap()
     }
 
     #[test]
     fn build_impl_agent_is_rich_not_generic() {
         let dir = tempdir().unwrap();
         anchor_with_guards(dir.path(), "api");
-        let patterns = api_patterns();
-        let clusters = clusters_for_subproject(&patterns, "api");
+        let registry = api_registry();
+        let clusters = registry.clusters_for_subproject("api");
         let guards = read_guards_section(&dir.path().join("api"));
         let agent = build_impl_agent(
             dir.path(),
@@ -1120,8 +1161,8 @@ mod tests {
     fn build_explorer_agent_is_read_only_and_rich() {
         let dir = tempdir().unwrap();
         anchor_with_guards(dir.path(), "api");
-        let patterns = api_patterns();
-        let clusters = clusters_for_subproject(&patterns, "api");
+        let registry = api_registry();
+        let clusters = registry.clusters_for_subproject("api");
         let agent = build_explorer_agent(dir.path(), "Api", "api", "api", "general", "Rust", &clusters);
         assert!(agent.contains("name: api-explorer"));
         assert!(agent.contains("tools: [Read, Grep, Glob]"), "explorer must stay read-only");
@@ -1141,11 +1182,11 @@ mod tests {
         let detect = json!({
             "subprojects": [{ "name": "api", "path": "api", "role": "backend", "stackSummary": "Rust" }]
         });
-        let patterns = api_patterns();
+        let registry = api_registry();
 
         // First run (non-force): writes both agents.
         let mut r1 = ScanResult::default();
-        generate_agent_files(dir.path(), &detect, Some(&patterns), false, None, &mut r1);
+        generate_agent_files(dir.path(), &detect, &registry,false, None, &mut r1);
         let agents_dir = ClaudePaths::for_project(dir.path()).unwrap().agents_dir();
         let impl_path = agents_dir.join("api-impl.md");
         assert!(impl_path.exists());
@@ -1153,7 +1194,7 @@ mod tests {
 
         // Second run (non-force): the file exists → no rewrite, nothing generated.
         let mut r2 = ScanResult::default();
-        generate_agent_files(dir.path(), &detect, Some(&patterns), false, None, &mut r2);
+        generate_agent_files(dir.path(), &detect, &registry,false, None, &mut r2);
         assert!(
             r2.generated.is_empty(),
             "non-force run must not rewrite an existing agent (idempotent)"
@@ -1162,7 +1203,7 @@ mod tests {
         // A hand-authored agent (no generated marker) is preserved under --force.
         std::fs::write(&impl_path, "---\nname: api-impl\n---\nMANUAL — keep me\n").unwrap();
         let mut r3 = ScanResult::default();
-        generate_agent_files(dir.path(), &detect, Some(&patterns), true, None, &mut r3);
+        generate_agent_files(dir.path(), &detect, &registry,true, None, &mut r3);
         let after = std::fs::read_to_string(&impl_path).unwrap();
         assert!(after.contains("MANUAL — keep me"), "manual agent must survive --force");
         assert!(
@@ -1174,7 +1215,7 @@ mod tests {
         let mut r4 = ScanResult::default();
         // Restore a generated-marker file first.
         std::fs::write(&impl_path, "<!-- mustard:generated -->\nold body\n").unwrap();
-        generate_agent_files(dir.path(), &detect, Some(&patterns), true, None, &mut r4);
+        generate_agent_files(dir.path(), &detect, &registry,true, None, &mut r4);
         let regen = std::fs::read_to_string(&impl_path).unwrap();
         assert!(regen.contains("Implementation agent"), "generated agent must be refreshed under --force");
         assert!(r4.generated.iter().any(|g| g == ".claude/agents/api-impl.md"));

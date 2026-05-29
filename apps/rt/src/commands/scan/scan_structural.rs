@@ -505,31 +505,37 @@ fn write_stack_md(repo_root: &Path, report: &StructuralReport) -> Option<String>
     Some(path.to_string_lossy().replace('\\', "/"))
 }
 
-/// Dispatch `mustard-rt run scan-structural --subproject <path>`.
-pub fn run(subproject: Option<&str>) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let subs: Vec<String> = match subproject {
-        Some(s) => vec![s.to_string()],
-        None => {
-            // Walk every detected subproject.
-            let mut out: Vec<String> = vec![".".to_string()];
-            for top in ["apps", "packages"] {
-                if let Ok(entries) = mfs::read_dir(cwd.join(top)) {
-                    for entry in entries {
-                        if entry.is_dir {
-                            out.push(format!("{top}/{}", entry.file_name));
-                        }
-                    }
+/// Walk every detected subproject under `repo_root` (the `None` arm of
+/// [`render_stack`] / the manual subcommand). Always includes the root (`.`).
+fn enumerate_subprojects(repo_root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = vec![".".to_string()];
+    for top in ["apps", "packages"] {
+        if let Ok(entries) = mfs::read_dir(repo_root.join(top)) {
+            for entry in entries {
+                if entry.is_dir {
+                    out.push(format!("{top}/{}", entry.file_name));
                 }
             }
-            out
         }
-    };
+    }
+    out
+}
 
+/// Render `stack.md` for one subproject (`Some(path)`) or every detected one
+/// (`None`), rooted at an explicit `repo_root`. In-process entry — no
+/// `current_dir()`, no subprocess — so the orchestrator can call it directly.
+/// Returns the per-subproject JSON digests (each carries a `stackMd` field with
+/// the written path, or `null` when the write was skipped). Fail-open.
+#[must_use]
+pub fn render_stack(repo_root: &Path, subproject: Option<&str>) -> Vec<Value> {
+    let subs: Vec<String> = match subproject {
+        Some(s) => vec![s.to_string()],
+        None => enumerate_subprojects(repo_root),
+    };
     let mut all: Vec<Value> = Vec::new();
     for sub in &subs {
-        let report = build_report(&cwd, sub);
-        let written = write_stack_md(&cwd, &report);
+        let report = build_report(repo_root, sub);
+        let written = write_stack_md(repo_root, &report);
         let mut entry = report.to_json();
         if let Value::Object(map) = &mut entry {
             map.insert(
@@ -539,7 +545,13 @@ pub fn run(subproject: Option<&str>) {
         }
         all.push(entry);
     }
+    all
+}
 
+/// Dispatch `mustard-rt run scan-structural --subproject <path>`.
+pub fn run(subproject: Option<&str>) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let all = render_stack(&cwd, subproject);
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({ "subprojects": all })).unwrap_or_else(|_| "{}".into())

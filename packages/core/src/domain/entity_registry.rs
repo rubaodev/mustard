@@ -136,38 +136,65 @@ impl EntityRegistry {
             .is_some_and(|o| !o.is_empty())
     }
 
+    /// Every `_patterns.{stack}.discovered[]` cluster across all stacks
+    /// (un-filtered, in registry order).
+    #[must_use]
+    pub fn all_clusters(&self) -> Vec<&Value> {
+        let mut out: Vec<&Value> = Vec::new();
+        let Some(patterns) = self.doc.get("_patterns").and_then(Value::as_object) else {
+            return out;
+        };
+        for body in patterns.values() {
+            if let Some(arr) = body.get("discovered").and_then(Value::as_array) {
+                out.extend(arr.iter());
+            }
+        }
+        out
+    }
+
+    /// The `_patterns.{stack}.discovered[]` clusters scoped to `subproject`:
+    /// un-scoped clusters (no `subprojectName`) plus those whose `subprojectName`
+    /// equals / is a path-suffix of `subproject`.
+    ///
+    /// This is the single source of truth for cluster scoping — `cluster_labels`,
+    /// the scan orchestrator's doc seeds, and `registry-query --subproject` all
+    /// build on it rather than re-implementing the predicate.
+    #[must_use]
+    pub fn clusters_for_subproject(&self, subproject: &str) -> Vec<&Value> {
+        self.all_clusters()
+            .into_iter()
+            .filter(|c| cluster_matches_subproject(c, subproject))
+            .collect()
+    }
+
     /// Lowercased cluster labels declared in `_patterns.{stack}.discovered[]`.
     ///
-    /// When `subproject` is `Some`, a cluster is kept only when its
-    /// `subprojectName` matches (the subproject path ends with the name, or they
-    /// are equal). Clusters with no `subprojectName` always match. Deduplicated
-    /// and returned in sorted order.
+    /// When `subproject` is `Some`, scoping follows [`clusters_for_subproject`].
+    /// Deduplicated and returned in sorted order.
     #[must_use]
     pub fn cluster_labels(&self, subproject: Option<&str>) -> Vec<String> {
         use std::collections::BTreeSet;
-        let mut labels: BTreeSet<String> = BTreeSet::new();
-        let Some(patterns) = self.doc.get("_patterns").and_then(Value::as_object) else {
-            return Vec::new();
+        let clusters = match subproject {
+            Some(sub) => self.clusters_for_subproject(sub),
+            None => self.all_clusters(),
         };
-        for body in patterns.values() {
-            let Some(arr) = body.get("discovered").and_then(Value::as_array) else {
-                continue;
-            };
-            for cluster in arr {
-                if let (Some(sub), Some(name)) = (
-                    subproject,
-                    cluster.get("subprojectName").and_then(Value::as_str),
-                ) {
-                    if !sub.ends_with(name) && name != sub {
-                        continue;
-                    }
-                }
-                if let Some(label) = cluster.get("label").and_then(Value::as_str) {
-                    labels.insert(label.to_ascii_lowercase());
-                }
-            }
-        }
+        let labels: BTreeSet<String> = clusters
+            .iter()
+            .filter_map(|c| c.get("label").and_then(Value::as_str))
+            .map(|l| l.to_ascii_lowercase())
+            .collect();
         labels.into_iter().collect()
+    }
+}
+
+/// The canonical cluster-scoping predicate: a cluster belongs to `subproject`
+/// when it carries no `subprojectName` (un-scoped) or its `subprojectName`
+/// equals / is a path-suffix of `subproject` (so `apps/api` matches `api`).
+#[must_use]
+fn cluster_matches_subproject(cluster: &Value, subproject: &str) -> bool {
+    match cluster.get("subprojectName").and_then(Value::as_str) {
+        Some(name) => subproject.ends_with(name) || name == subproject,
+        None => true,
     }
 }
 
