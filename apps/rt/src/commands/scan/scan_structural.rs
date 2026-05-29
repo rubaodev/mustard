@@ -493,13 +493,16 @@ fn write_stack_md(repo_root: &Path, report: &StructuralReport) -> Option<String>
     }
     let path = dir.join("stack.md");
     let body = report.to_markdown();
-    // Enforce 60-line budget conservatively (already paginated above).
+    // Trim to 50 so the inserted AI-enrich block (≈10 lines once filled) keeps
+    // the file under the validator's 60-line `stack.md` budget.
     let trimmed: String = body
         .lines()
-        .take(60)
+        .take(50)
         .collect::<Vec<_>>()
         .join("\n");
-    if mfs::write_atomic(&path, trimmed.as_bytes()).is_err() {
+    // Write through the enrich helper so stack.md carries a (preserved) purpose
+    // block like every other generated doc.
+    if !crate::commands::scan::enrich_block::write_enrichable(&path, &trimmed) {
         return None;
     }
     Some(path.to_string_lossy().replace('\\', "/"))

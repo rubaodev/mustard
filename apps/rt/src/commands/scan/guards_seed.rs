@@ -116,7 +116,9 @@ pub fn render_guards_seed(
     if mfs::create_dir_all(guards_path.parent()?).is_err() {
         return None;
     }
-    if mfs::write_atomic(&guards_path, body.as_bytes()).is_err() {
+    // Write through the enrich helper so guards.md carries a (preserved) purpose
+    // block — the AI fills the deterministic seed's rationale in place.
+    if !crate::commands::scan::enrich_block::write_enrichable(&guards_path, &body) {
         return None;
     }
     Some(format!("{path}/.claude/commands/guards.md"))
