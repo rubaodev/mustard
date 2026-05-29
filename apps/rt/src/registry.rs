@@ -12,6 +12,7 @@ use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
+use crate::hooks::write::graph_wirelink_gate::GraphWirelinkGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification_observer::NotificationObserver;
@@ -284,6 +285,19 @@ impl Registry {
                 // `entity-registry-gate` — PreToolUse(Skill) pre-pipeline gate.
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
                 check: Some(Box::new(EntityRegistryGate)),
+                observer: None,
+            },
+            // FASE 2 (decision 8 — wirelinks) — pre-write `[[id]]` validation
+            // scoped to `.claude/graph/**`. Advisory only (Warn/Inject via
+            // `MUSTARD_GRAPH_WIRELINK_MODE`, default warn) — NEVER denies, so a
+            // typo wirelink is caught before it becomes a silent orphan edge.
+            Module {
+                id: "graph_wirelink_gate",
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: Some(Box::new(GraphWirelinkGate)),
                 observer: None,
             },
             // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the
@@ -590,6 +604,7 @@ mod tests {
             "path_gate",
             "close_gate",
             "entity_registry_gate",
+            "graph_wirelink_gate",
             "post_edit",
             "spec_hygiene_observer",
             "session_start_inject",
@@ -635,9 +650,10 @@ mod tests {
     fn write_edit_family_applies_on_pre_tool_use() {
         let registry = Registry::new();
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
+        // `graph_wirelink_gate` (FASE 2) joins the same family.
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "path_gate", "close_gate"] {
+            for want in ["size_gate", "path_gate", "close_gate", "graph_wirelink_gate"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }

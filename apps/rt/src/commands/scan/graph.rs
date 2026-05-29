@@ -595,33 +595,20 @@ pub fn parse_backlinks(body: &str) -> Vec<SpecBacklinkEdge> {
     out
 }
 
-/// Write the resolver's closure back into the spec as `injected` backlinks,
-/// merging with any pre-existing edges (so a Wave's `applied` inferences from
-/// a separate call are not clobbered when the next EXECUTE phase re-emits its
-/// `injected` set).
+/// Write a heterogeneous edge set (mix of `injected` + `applied`) into the
+/// spec's auto-managed `## Backlinks` block, replacing any prior block.
 ///
-/// `closure_ids` is the sorted list of concept-node ids the resolver handed to
-/// the agent. The function is **idempotent**: running it twice with the same
-/// closure leaves the file byte-identical (the splice replaces the auto-block
-/// wholesale and re-derives the same block).
+/// The post-EXECUTE write-back ([`crate::commands::event::emit_phase`]) composes
+/// the full edge set first via [`merge_edges`] (so a later `applied` inference
+/// never demotes a recorded `injected` edge), then calls this once.
 ///
-/// Returns the number of `injected` edges actually written. Fail-open:
-/// any IO error returns `Ok(0)` after a single stderr warning.
-pub fn write_back_injected_edges(spec_path: &Path, closure_ids: &[String]) -> std::io::Result<usize> {
-    let injected: Vec<SpecBacklinkEdge> = closure_ids
-        .iter()
-        .map(|id| SpecBacklinkEdge {
-            target: id.clone(),
-            kind: EdgeKind::Injected,
-            confidence: None,
-        })
-        .collect();
-    write_back_edges(spec_path, &injected)
-}
-
-/// Lower-level variant: write a heterogeneous edge set (mix of `injected` +
-/// `applied`) into the spec. Preserves no prior edges — callers that want
-/// to merge should compose the full edge set first via [`merge_edges`].
+/// Sorting + dedup is stable: edges sort by target id, then kind (`injected`
+/// before `applied`), and an id present as both keeps the `injected` entry
+/// (fact wins over inference). The splice replaces the auto-block wholesale, so
+/// running it twice with the same edge set leaves the file byte-identical
+/// (idempotent). Returns the number of edges written. Fail-open: a missing
+/// `spec.md` or any IO error returns `Ok(0)`/the deduped count without
+/// aborting a phase transition.
 pub fn write_back_edges(spec_path: &Path, edges: &[SpecBacklinkEdge]) -> std::io::Result<usize> {
     // Missing spec.md → nothing to write back; fail-open.
     let Ok(body) = mfs::read_to_string(spec_path) else {
@@ -669,13 +656,11 @@ pub fn write_back_edges(spec_path: &Path, edges: &[SpecBacklinkEdge]) -> std::io
 /// write-back of `injected` should not be silently demoted by a later
 /// `applied` inference).
 ///
-/// Exposed for future merge callers (e.g. an `applied` inference pass that
-/// reads the spec's existing backlinks before writing); the EXECUTE
-/// write-back today calls [`write_back_injected_edges`] directly, which
-/// dedups internally. Carried as a stable surface so adding the merge step
-/// later is a one-line change — hence the `dead_code` allow.
+/// The post-EXECUTE write-back ([`crate::commands::event::emit_phase`])
+/// composes the `injected` closure with the `applied` inference through this
+/// merge before [`write_back_edges`], so a later `applied` inference never
+/// silently demotes a recorded `injected` edge.
 #[must_use]
-#[allow(dead_code)]
 pub fn merge_edges(existing: &[SpecBacklinkEdge], new_edges: &[SpecBacklinkEdge]) -> Vec<SpecBacklinkEdge> {
     let mut by_target: BTreeMap<String, SpecBacklinkEdge> = BTreeMap::new();
     for edge in existing.iter().chain(new_edges.iter()) {
@@ -708,13 +693,12 @@ pub fn merge_edges(existing: &[SpecBacklinkEdge], new_edges: &[SpecBacklinkEdge]
 /// `closure_ids` set already covers as `injected` are skipped — applied is
 /// only meaningful for nodes outside the resolver's deterministic closure.
 ///
-/// Carried as a library surface for future callers (e.g. an "after the wave"
-/// pass that diffs `git status` and writes `applied` backlinks alongside the
-/// `injected` ones already written by [`write_back_injected_edges`]). The
-/// EXECUTE write-back today writes only `injected` edges — `applied` is
-/// opt-in — hence the `dead_code` allow.
+/// Called by the post-EXECUTE write-back ([`crate::commands::event::emit_phase`]):
+/// when a spec leaves EXECUTE, the files the wave touched (per-spec NDJSON
+/// `target.file` + git diff vs the parent branch) are matched against every
+/// concept-node, and the `applied` edges are merged with the resolver's
+/// `injected` closure before being written back to `spec.md`.
 #[must_use]
-#[allow(dead_code)]
 pub fn infer_applied_edges(
     project_root: &Path,
     files_changed: &[String],
@@ -775,9 +759,7 @@ pub fn infer_applied_edges(
 }
 
 /// Scan a node body for `apps/…/` or `packages/…/` path-like tokens.
-/// Called only by [`infer_applied_edges`]; marked dead until the latter is
-/// wired into a write-back caller.
-#[allow(dead_code)]
+/// Called only by [`infer_applied_edges`].
 fn extract_paths(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for token in body.split(|c: char| c.is_whitespace() || c == '`' || c == '\'' || c == '"' || c == '(' || c == ')') {
@@ -1012,9 +994,22 @@ mod tests {
         path
     }
 
-    /// AC-1: write_back_injected_edges writes a `## Backlinks` block carrying
-    /// every closure id with `kind: injected`, and re-running with the same
-    /// closure produces a byte-identical file (idempotency).
+    /// Build the `injected` edge set the resolver closure maps to — the same
+    /// composition the post-EXECUTE write-back performs before merging in the
+    /// `applied` inferences.
+    fn injected_edges(ids: &[&str]) -> Vec<SpecBacklinkEdge> {
+        ids.iter()
+            .map(|id| SpecBacklinkEdge {
+                target: (*id).to_string(),
+                kind: EdgeKind::Injected,
+                confidence: None,
+            })
+            .collect()
+    }
+
+    /// AC-1: write_back_edges writes a `## Backlinks` block carrying every
+    /// closure id with `kind: injected`, and re-running with the same closure
+    /// produces a byte-identical file (idempotency).
     #[test]
     fn writeback_injected_edges() {
         let dir = tempdir().unwrap();
@@ -1024,11 +1019,8 @@ mod tests {
             "demo-wave",
             "# Demo\n\n### Stage: Execute\n### Outcome: Active\n\n## Body\nhello\n",
         );
-        let closure = vec![
-            "rt.entity.user".to_string(),
-            "rt.conv.repo-pattern".to_string(),
-        ];
-        let written = write_back_injected_edges(&spec, &closure).expect("ok");
+        let closure = injected_edges(&["rt.entity.user", "rt.conv.repo-pattern"]);
+        let written = write_back_edges(&spec, &closure).expect("ok");
         assert_eq!(written, 2);
         let body = std::fs::read_to_string(&spec).unwrap();
         assert!(body.contains("## Backlinks"));
@@ -1037,7 +1029,7 @@ mod tests {
         assert!(body.contains("[[rt.conv.repo-pattern]] <!-- kind: injected -->"));
         // Idempotency: a second write with the same closure leaves the file
         // unchanged byte-for-byte.
-        let again = write_back_injected_edges(&spec, &closure).expect("ok");
+        let again = write_back_edges(&spec, &closure).expect("ok");
         assert_eq!(again, 2);
         let body2 = std::fs::read_to_string(&spec).unwrap();
         assert_eq!(body, body2, "second write must be a byte-stable no-op");
@@ -1110,7 +1102,7 @@ mod tests {
         );
         // One spec backlinks the first node only.
         let spec = seed_spec(root, "live-spec", "# Live\n\n## Body\n");
-        write_back_injected_edges(&spec, &["rt.conv.linked".to_string()]).expect("ok");
+        write_back_edges(&spec, &injected_edges(&["rt.conv.linked"])).expect("ok");
         let dead = dead_node_ids(root);
         assert!(dead.contains(&"rt.conv.orphan".to_string()));
         assert!(!dead.contains(&"rt.conv.linked".to_string()));
@@ -1137,6 +1129,88 @@ mod tests {
         assert_eq!(edges[0].target, "rt.conv.scan");
         assert_eq!(edges[0].kind, EdgeKind::Applied);
         assert!(edges[0].confidence.unwrap_or(0.0) >= 0.5);
+    }
+
+    /// Post-EXECUTE write-back path: given a wave's touched files, the spec's
+    /// backlinks carry the `applied` inference ALONGSIDE the resolver's
+    /// `injected` closure, and `injected` (fact) wins over `applied`
+    /// (inference) on a target collision. This mirrors what
+    /// `emit_phase::write_back_after_execute` composes (infer → merge → write),
+    /// exercised here without the env-driven `project_dir()`/cache plumbing.
+    #[test]
+    fn writeback_merges_applied_alongside_injected() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let graph_dir = root.join(".claude").join("graph");
+        // Node A: folder path matches the wave's diff → applied-only.
+        write(
+            &graph_dir.join("rt.conv.scan.md"),
+            "---\nid: rt.conv.scan\nkind: conv\n---\nThe scan subsystem lives at apps/rt/src/run/scan/.\n",
+        );
+        // Node B: also matched by the diff, but ALSO in the injected closure.
+        write(
+            &graph_dir.join("rt.entity.user.md"),
+            "---\nid: rt.entity.user\nkind: entity\n---\nDefined under apps/rt/src/run/scan/.\n",
+        );
+        let spec = seed_spec(root, "exec-wave", "# Exec\n\n## Body\n");
+
+        // The resolver injected `rt.entity.user` this session (fact).
+        let closure_ids = ["rt.entity.user".to_string()];
+        let files_changed = ["apps/rt/src/run/scan/graph.rs".to_string()];
+
+        // infer → merge → write, exactly as the post-EXECUTE write-back does.
+        let applied = infer_applied_edges(root, &files_changed, &closure_ids);
+        // `rt.entity.user` is in the injected closure, so the inference skips it
+        // — applied surfaces only the node OUTSIDE the deterministic closure.
+        assert!(applied.iter().all(|e| e.target != "rt.entity.user"));
+        assert!(applied.iter().any(|e| e.target == "rt.conv.scan"));
+
+        let injected = injected_edges(&["rt.entity.user"]);
+        let merged = merge_edges(&injected, &applied);
+        write_back_edges(&spec, &merged).expect("ok");
+
+        let body = std::fs::read_to_string(&spec).unwrap();
+        // Applied edge is present (inference) with a confidence score.
+        assert!(
+            body.contains("[[rt.conv.scan]] <!-- kind: applied confidence:"),
+            "applied edge missing: {body}"
+        );
+        // Injected edge is present (fact) with NO confidence.
+        assert!(
+            body.contains("[[rt.entity.user]] <!-- kind: injected -->"),
+            "injected edge missing: {body}"
+        );
+
+        // Round-trip: parse_backlinks recovers both, with `injected` winning.
+        let parsed = parse_backlinks(&body);
+        let user = parsed
+            .iter()
+            .find(|e| e.target == "rt.entity.user")
+            .expect("injected present");
+        assert_eq!(user.kind, EdgeKind::Injected, "injected wins over applied");
+        assert!(user.confidence.is_none());
+        let scan = parsed
+            .iter()
+            .find(|e| e.target == "rt.conv.scan")
+            .expect("applied present");
+        assert_eq!(scan.kind, EdgeKind::Applied);
+    }
+
+    /// Collision guard at the merge layer: when the SAME target appears as
+    /// both `injected` and `applied`, the merged set keeps the `injected`
+    /// entry (fact beats inference) — never two edges for one target.
+    #[test]
+    fn merge_injected_wins_over_applied_on_collision() {
+        let injected = injected_edges(&["rt.entity.user"]);
+        let applied = vec![SpecBacklinkEdge {
+            target: "rt.entity.user".to_string(),
+            kind: EdgeKind::Applied,
+            confidence: Some(0.5),
+        }];
+        let merged = merge_edges(&injected, &applied);
+        assert_eq!(merged.len(), 1, "one edge per target");
+        assert_eq!(merged[0].kind, EdgeKind::Injected);
+        assert!(merged[0].confidence.is_none());
     }
 
     #[test]

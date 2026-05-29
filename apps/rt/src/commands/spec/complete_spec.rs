@@ -97,7 +97,13 @@ fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<mustard_core::domain::mod
 
 /// Collect the files a spec touched: harness `target.file` payloads, the git
 /// diff against the parent branch.
-fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
+///
+/// Shared by the post-EXECUTE `applied`-edge inference in
+/// [`crate::commands::event::emit_phase`]: both "what did this spec touch"
+/// callers derive the file set from the same two sources (per-spec NDJSON
+/// `target.file` events + git diff vs the parent branch), so the derivation
+/// lives here once and is called module-qualified rather than duplicated.
+pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
     let mut files: BTreeSet<String> = BTreeSet::new();
 
     // 1. Harness events tagged with this spec (NDJSON).
