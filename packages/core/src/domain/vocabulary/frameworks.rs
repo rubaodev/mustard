@@ -272,6 +272,27 @@ pub fn detect_framework_signals(content: &str) -> Vec<FrameworkHit> {
     }
 }
 
+/// Detect framework / ORM / DI signals in `content`, honouring a project-local
+/// vocabulary override. Resolves the matcher via
+/// [`FrameworkVocabulary::load`]`(`[`DEFAULT_FRAMEWORKS_NAME`]`, root)` so a
+/// `.claude/vocab/frameworks.toml` under `root` **replaces** the built-in base,
+/// while a project with no override falls back to it.
+///
+/// This is the override-aware sibling of [`detect_framework_signals`] (which is
+/// pinned to the built-in base). Returns an empty `Vec` when no signal matches,
+/// or when the resolved vocabulary fails to build (fail-open: detection degrades
+/// to "no signals", never panics — a malformed override yields nothing here
+/// rather than surfacing the error, matching the scan pipeline's fail-open
+/// stance; callers that need to distinguish the two should call
+/// [`FrameworkVocabulary::load`] directly).
+#[must_use]
+pub fn detect_framework_signals_with(root: &Path, content: &str) -> Vec<FrameworkHit> {
+    match FrameworkVocabulary::load(DEFAULT_FRAMEWORKS_NAME, root) {
+        Ok(v) => v.detect(content),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// 1-based line number of byte offset `at` in `content` (count of newlines
 /// before `at`, plus one). Saturates rather than panicking on an out-of-range
 /// offset.
@@ -437,6 +458,46 @@ patterns = ["MyCustomEntity("]
         // ...and the built-in base is fully replaced: pgTable no longer matches.
         let builtin = v.detect("x = pgTable(");
         assert!(builtin.is_empty());
+    }
+
+    #[test]
+    fn detect_with_falls_back_to_builtin_when_no_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No `.claude/vocab/frameworks.toml` ⇒ the built-in base answers.
+        let hits = detect_framework_signals_with(tmp.path(), "x = pgTable(");
+        assert!(hits.iter().any(|h| h.pattern == "pgTable("));
+    }
+
+    #[test]
+    fn detect_with_honours_on_disk_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude").join("vocab");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("frameworks.toml"),
+            r#"
+[[signal]]
+category = "orm"
+patterns = ["MyCustomEntity("]
+"#,
+        )
+        .unwrap();
+        // The override IS honoured: its bespoke signal matches...
+        let custom = detect_framework_signals_with(tmp.path(), "x = MyCustomEntity()");
+        assert!(custom.iter().any(|h| h.pattern == "MyCustomEntity("));
+        // ...and the built-in base is fully replaced: pgTable no longer matches.
+        let builtin = detect_framework_signals_with(tmp.path(), "x = pgTable(");
+        assert!(builtin.is_empty());
+    }
+
+    #[test]
+    fn detect_with_is_fail_open_on_malformed_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude").join("vocab");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("frameworks.toml"), "this is = = not toml").unwrap();
+        // Unlike `load`, the scan-facing helper degrades to "no signals".
+        assert!(detect_framework_signals_with(tmp.path(), "x = pgTable(").is_empty());
     }
 
     #[test]

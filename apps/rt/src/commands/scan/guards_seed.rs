@@ -36,12 +36,12 @@ pub fn architecture_boundary_rules(style: &str) -> &'static [&'static str] {
 }
 
 /// Compose the deterministic `guards.md` body for one subproject, or `None` when
-/// there is no signal to seed (no detected architecture AND no clusters). Pure —
-/// no filesystem access, so it is directly unit-testable.
+/// there is no signal to seed (no detected architecture AND no frameworks AND no
+/// clusters). Pure — no filesystem access, so it is directly unit-testable.
 #[must_use]
-fn build_body(path: &str, style: &str, clusters: &[&Value]) -> Option<String> {
+fn build_body(path: &str, style: &str, frameworks: &[&str], clusters: &[&Value]) -> Option<String> {
     let arch_rules = architecture_boundary_rules(style);
-    if arch_rules.is_empty() && clusters.is_empty() {
+    if arch_rules.is_empty() && frameworks.is_empty() && clusters.is_empty() {
         return None;
     }
     let mut body = String::from("<!-- mustard:generated -->\n");
@@ -53,6 +53,13 @@ fn build_body(path: &str, style: &str, clusters: &[&Value]) -> Option<String> {
         let _ = writeln!(body, "## Architecture: {style}");
         for rule in arch_rules {
             let _ = writeln!(body, "- {rule}");
+        }
+        body.push('\n');
+    }
+    if !frameworks.is_empty() {
+        body.push_str("## Frameworks detected\n");
+        for framework in frameworks {
+            let _ = writeln!(body, "- DO follow the {framework} conventions.");
         }
         body.push('\n');
     }
@@ -95,16 +102,17 @@ pub fn render_guards_seed(
         return None;
     }
 
-    // Architecture style the registry recorded for this subproject's stack.
-    let style = crate::commands::scan::detect_stack(&abs_sub)
-        .and_then(|stack| registry.patterns().and_then(|p| p.get(stack)))
-        .and_then(|body| body.get("architecture").and_then(Value::as_str))
-        .unwrap_or("");
+    // Architecture style + framework labels the registry recorded for this
+    // subproject's stack. Both reuse the canonical core accessors so there is a
+    // single source of truth (no re-detection here).
+    let stack = crate::commands::scan::detect_stack(&abs_sub);
+    let style = stack.and_then(|s| registry.architecture(s)).unwrap_or("");
+    let frameworks: Vec<&str> = stack.map(|s| registry.frameworks(s)).unwrap_or_default();
     // Clusters scoped to this subproject — the canonical accessor on the core
     // registry (single source of truth for cluster scoping).
     let clusters = registry.clusters_for_subproject(path);
 
-    let body = build_body(path, style, &clusters)?;
+    let body = build_body(path, style, &frameworks, &clusters)?;
     if mfs::create_dir_all(guards_path.parent()?).is_err() {
         return None;
     }
@@ -131,14 +139,14 @@ mod tests {
 
     #[test]
     fn body_none_without_any_signal() {
-        assert!(build_body("apps/api", "", &[]).is_none());
+        assert!(build_body("apps/api", "", &[], &[]).is_none());
     }
 
     #[test]
     fn body_renders_architecture_and_conventions() {
         let cluster = json!({ "label": "Service", "fileCount": 5 });
         let clusters = vec![&cluster];
-        let body = build_body("apps/api", "layered", &clusters).expect("body");
+        let body = build_body("apps/api", "layered", &[], &clusters).expect("body");
         assert!(body.starts_with("<!-- mustard:generated -->"));
         assert!(body.contains("## Architecture: layered"));
         assert!(body.contains("one-directional"));
@@ -149,8 +157,25 @@ mod tests {
     #[test]
     fn body_renders_conventions_even_without_architecture() {
         let cluster = json!({ "label": "Handler", "fileCount": 3 });
-        let body = build_body("apps/api", "", &[&cluster]).expect("body");
+        let body = build_body("apps/api", "", &[], &[&cluster]).expect("body");
         assert!(!body.contains("## Architecture"));
         assert!(body.contains("`Handler` convention (3 files)"));
+    }
+
+    #[test]
+    fn body_renders_frameworks_section() {
+        // Labels come from the caller (registry → vocabulary), never literals
+        // here — the section just renders whatever distinct labels arrived.
+        let body = build_body("apps/api", "", &["di", "orm"], &[]).expect("body");
+        assert!(body.contains("## Frameworks detected"));
+        assert!(body.contains("- DO follow the di conventions."));
+        assert!(body.contains("- DO follow the orm conventions."));
+        assert!(!body.contains("## Architecture"));
+    }
+
+    #[test]
+    fn body_frameworks_alone_seed_a_file() {
+        // No architecture, no clusters — a framework signal alone is enough.
+        assert!(build_body("apps/api", "", &["framework"], &[]).is_some());
     }
 }

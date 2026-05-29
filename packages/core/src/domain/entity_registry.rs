@@ -127,6 +127,31 @@ impl EntityRegistry {
         self.doc.get("_patterns").and_then(Value::as_object)
     }
 
+    /// The architectural style recorded for `stack_id` in `_patterns.{stack_id}.architecture`
+    /// (clean/hexagonal/layered/ddd). None when absent.
+    #[must_use]
+    pub fn architecture(&self, stack_id: &str) -> Option<&str> {
+        self.doc.get("_patterns").and_then(Value::as_object)
+            .and_then(|p| p.get(stack_id))
+            .and_then(|body| body.get("architecture"))
+            .and_then(Value::as_str)
+    }
+
+    /// The distinct framework / ORM / DI labels recorded for `stack_id` in
+    /// `_patterns.{stack_id}.frameworks` (e.g. `["di", "orm"]`). Empty when the
+    /// key is absent or not an array of strings. Mirrors [`Self::architecture`].
+    #[must_use]
+    pub fn frameworks(&self, stack_id: &str) -> Vec<&str> {
+        self.doc
+            .get("_patterns")
+            .and_then(Value::as_object)
+            .and_then(|p| p.get(stack_id))
+            .and_then(|body| body.get("frameworks"))
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    }
+
     /// Whether `_patterns` is a present, non-empty object.
     #[must_use]
     pub fn has_patterns(&self) -> bool {
@@ -341,6 +366,45 @@ mod tests {
         assert_eq!(discovered.len(), 3);
         // Absent / non-object `_patterns` ⇒ None.
         assert!(EntityRegistry::from_value(Value::Null).patterns().is_none());
+    }
+
+    #[test]
+    fn architecture_reads_pattern_style_or_none() {
+        let r = EntityRegistry::from_value(json!({
+            "_patterns": { "any-stack": { "architecture": "hexagonal" } }
+        }));
+        assert_eq!(r.architecture("any-stack"), Some("hexagonal"));
+        // Absent stack ⇒ None.
+        assert_eq!(r.architecture("other-stack"), None);
+        // Stack present but no `architecture` key ⇒ None.
+        let no_key = EntityRegistry::from_value(json!({
+            "_patterns": { "any-stack": {} }
+        }));
+        assert_eq!(no_key.architecture("any-stack"), None);
+        // Absent `_patterns` entirely ⇒ None.
+        assert_eq!(EntityRegistry::from_value(Value::Null).architecture("any-stack"), None);
+    }
+
+    #[test]
+    fn frameworks_reads_pattern_array_or_empty() {
+        let r = EntityRegistry::from_value(json!({
+            "_patterns": { "any-stack": { "frameworks": ["di", "orm"] } }
+        }));
+        assert_eq!(r.frameworks("any-stack"), vec!["di", "orm"]);
+        // Absent stack ⇒ empty.
+        assert!(r.frameworks("other-stack").is_empty());
+        // Stack present but no `frameworks` key ⇒ empty.
+        let no_key = EntityRegistry::from_value(json!({
+            "_patterns": { "any-stack": {} }
+        }));
+        assert!(no_key.frameworks("any-stack").is_empty());
+        // Non-array value ⇒ empty (fail-open on a malformed shape).
+        let wrong = EntityRegistry::from_value(json!({
+            "_patterns": { "any-stack": { "frameworks": "orm" } }
+        }));
+        assert!(wrong.frameworks("any-stack").is_empty());
+        // Absent `_patterns` entirely ⇒ empty.
+        assert!(EntityRegistry::from_value(Value::Null).frameworks("any-stack").is_empty());
     }
 
     #[test]

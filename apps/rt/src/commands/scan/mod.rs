@@ -161,6 +161,12 @@ pub struct ScanResult {
     /// [`architecture::detect_subproject_architecture`] from folder-role signals
     /// + import-graph direction; `unknown` only when no role signal surfaced.
     pub architecture: String,
+    /// The distinct framework / ORM / DI labels detected (`orm` / `framework` /
+    /// `di` — sourced from the framework vocabulary TOML, never a literal in
+    /// `.rs`). Populated deterministically by
+    /// [`architecture::detect_subproject_frameworks`] over the same visited file
+    /// set; empty when no framework signal surfaced. Dedup + sorted.
+    pub frameworks: Vec<String>,
     /// Inferred `_patterns.{stack}` object — a `serde_json::Value::Object`.
     pub patterns: serde_json::Value,
 }
@@ -306,6 +312,13 @@ impl Scanner for InterpretedScanner {
         let architecture =
             architecture::detect_subproject_architecture(root, visited, &entities, &enums);
 
+        // Framework-awareness — the distinct ORM / framework / DI labels present
+        // in the subproject's source, detected over the SAME `visited` set the
+        // architecture pass uses (override-aware via the project's
+        // `.claude/vocab/frameworks.toml`). Mirrors `architecture`: deterministic,
+        // dedup + sorted, empty when no signal surfaces.
+        let frameworks = architecture::detect_subproject_frameworks(root, visited);
+
         ScanResult {
             entities,
             enums,
@@ -313,6 +326,7 @@ impl Scanner for InterpretedScanner {
             dtos: BTreeMap::new(),
             services: BTreeMap::new(),
             architecture,
+            frameworks,
             patterns,
         }
     }
@@ -568,8 +582,9 @@ mod tests {
 
         let sig = |r: &ScanResult| {
             format!(
-                "arch={}\nentities={:?}\nenums={:?}\npatterns={}",
+                "arch={}\nframeworks={:?}\nentities={:?}\nenums={:?}\npatterns={}",
                 r.architecture,
+                r.frameworks,
                 r.entities,
                 r.enums,
                 serde_json::to_string(&r.patterns).unwrap_or_default()

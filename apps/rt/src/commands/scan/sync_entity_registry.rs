@@ -30,7 +30,7 @@ use mustard_core::domain::entity_registry::{EntityRegistry, RegistryDoc};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 // The v4 document shape (`_meta`/`_patterns`/`_enums`/`e`, byte-stable key
@@ -306,6 +306,11 @@ struct MergedStack {
     /// First non-`unknown` subproject wins so a flat sibling does not overwrite
     /// a detected layout.
     architecture: String,
+    /// The distinct framework / ORM / DI labels detected for the stack — the
+    /// union across every subproject, deduplicated + sorted. Mirrors
+    /// `architecture`: deterministic, written into `_patterns.{stack}.frameworks`
+    /// only when non-empty.
+    frameworks: BTreeSet<String>,
 }
 
 impl MergedStack {
@@ -336,6 +341,10 @@ impl MergedStack {
         } else if self.architecture.is_empty() {
             self.architecture = result.architecture;
         }
+        // Framework-awareness — union the per-subproject framework labels for
+        // the stack (every signal that surfaced anywhere counts). The set keeps
+        // dedup + sort for byte-stability.
+        self.frameworks.extend(result.frameworks);
         self.discovered.extend(discovered);
         if folder_frequency
             .get("totalFolders")
@@ -386,6 +395,23 @@ fn build_registry(scan_results: &BTreeMap<String, MergedStack>) -> RegistryDoc {
             stack_patterns.insert(
                 "architecture".to_string(),
                 Value::String(stack.architecture.clone()),
+            );
+        }
+        // Framework-awareness — the distinct framework / ORM / DI labels (JSON
+        // array). Mirrors `architecture`: written ONLY when non-empty so a stack
+        // with no framework signal keeps the legacy shape (no `frameworks` key)
+        // and byte-stability holds for legacy fixtures. The `BTreeSet` already
+        // yields a sorted, deduplicated order.
+        if !stack.frameworks.is_empty() {
+            stack_patterns.insert(
+                "frameworks".to_string(),
+                Value::Array(
+                    stack
+                        .frameworks
+                        .iter()
+                        .map(|f| Value::String(f.clone()))
+                        .collect(),
+                ),
             );
         }
         if !stack_patterns.is_empty() {

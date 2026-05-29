@@ -233,6 +233,43 @@ pub fn detect_subproject_architecture(
     detect_architecture(&roles, &layer_edges).style.as_str().to_string()
 }
 
+/// Cap on the number of visited files scanned for framework signals per
+/// subproject. Framework detection is one Aho-Corasick pass per file; capping
+/// keeps the cost bounded on very large subprojects without changing the
+/// detected set for normal layouts (signals cluster in the first files a sorted
+/// walk yields). Mirrors the bounded-cost stance the architecture pass takes by
+/// only classifying path segments.
+const MAX_FRAMEWORK_SCAN_FILES: usize = 200;
+
+/// Detect the distinct framework / ORM / DI labels present in one subproject.
+///
+/// Reuses the SAME `visited` file set the architecture pass consumes: scans each
+/// visited file's content (capped at [`MAX_FRAMEWORK_SCAN_FILES`]) for framework
+/// signals via the override-aware
+/// [`mustard_core::domain::vocabulary::frameworks::detect_framework_signals_with`],
+/// so a project's `.claude/vocab/frameworks.toml` is honoured. The returned
+/// labels are the distinct signal *categories* that fired (`orm` / `framework` /
+/// `di` — sourced from the vocabulary TOML, never a framework-name literal),
+/// deduplicated and sorted for byte-stability.
+///
+/// Agnostic + fail-open: a file with no readable content is skipped; an empty
+/// result simply means no framework signal surfaced.
+#[must_use]
+pub fn detect_subproject_frameworks(sub_root: &Path, visited: &[VisitedFile]) -> Vec<String> {
+    use mustard_core::domain::vocabulary::frameworks::detect_framework_signals_with;
+
+    let mut labels: BTreeSet<String> = BTreeSet::new();
+    for vf in visited.iter().take(MAX_FRAMEWORK_SCAN_FILES) {
+        let Some(content) = &vf.content else {
+            continue;
+        };
+        for hit in detect_framework_signals_with(sub_root, content) {
+            labels.insert(hit.category.as_str().to_string());
+        }
+    }
+    labels.into_iter().collect()
+}
+
 /// Classify the role of a file from the first of its path segments that maps to
 /// an architectural role. Returns `None` when no segment classifies.
 fn role_of_path(vocab: &ArchitectureVocabulary, rel: &str) -> Option<LayerRole> {
@@ -254,6 +291,14 @@ mod tests {
             abs: PathBuf::from(rel),
             rel: rel.to_string(),
             content: Some(String::new()),
+        }
+    }
+
+    fn vf_with(rel: &str, content: &str) -> VisitedFile {
+        VisitedFile {
+            abs: PathBuf::from(rel),
+            rel: rel.to_string(),
+            content: Some(content.to_string()),
         }
     }
 
@@ -361,6 +406,53 @@ mod tests {
             &BTreeMap::new(),
         );
         assert_eq!(arch, "unknown");
+    }
+
+    #[test]
+    fn frameworks_distinct_labels_sorted() {
+        // ORM signal (pgTable), framework signal (FastAPI), DI signal
+        // (@Injectable) spread across files — the distinct categories come back
+        // sorted: di < framework < orm.
+        let visited = vec![
+            vf_with("src/schema.ts", "export const users = pgTable('users', {})"),
+            vf_with("src/main.py", "app = FastAPI()"),
+            vf_with("src/svc.ts", "@Injectable() class Svc {}"),
+            vf("src/empty.rs"),
+        ];
+        let labels =
+            detect_subproject_frameworks(std::path::Path::new("/nonexistent"), &visited);
+        assert_eq!(
+            labels,
+            vec!["di".to_string(), "framework".to_string(), "orm".to_string()]
+        );
+    }
+
+    #[test]
+    fn frameworks_empty_when_no_signal() {
+        let visited = vec![vf_with("src/lib.rs", "fn add(a: i32, b: i32) -> i32 { a + b }")];
+        let labels =
+            detect_subproject_frameworks(std::path::Path::new("/nonexistent"), &visited);
+        assert!(labels.is_empty());
+    }
+
+    #[test]
+    fn frameworks_honour_on_disk_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude").join("vocab");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("frameworks.toml"),
+            "[[signal]]\ncategory = \"orm\"\npatterns = [\"MyCustomEntity(\"]\n",
+        )
+        .unwrap();
+        // The override replaces the base: the bespoke signal fires (orm), the
+        // built-in pgTable does not.
+        let visited = vec![
+            vf_with("src/a.rs", "x = MyCustomEntity()"),
+            vf_with("src/b.rs", "y = pgTable("),
+        ];
+        let labels = detect_subproject_frameworks(tmp.path(), &visited);
+        assert_eq!(labels, vec!["orm".to_string()]);
     }
 
     #[test]
