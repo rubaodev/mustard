@@ -25,7 +25,6 @@
 //! before, so the registry JSON stays byte-stable across the rewrite.
 
 pub mod cluster_discovery;
-pub mod entity_extractor;
 pub mod file_utils;
 pub mod graph;
 pub mod interpret;
@@ -33,6 +32,7 @@ pub mod pluralize;
 pub mod project_conventions;
 pub mod refs_installer;
 pub mod resolve;
+pub mod structural_extract;
 
 use mustard_core::io::fs as mfs;
 use std::collections::BTreeMap;
@@ -212,17 +212,37 @@ impl Scanner for InterpretedScanner {
         // to the model and as the raw cluster surface in `_patterns.{stack}`.
         let clusters = cluster_discovery::discover_clusters(root, &self.stack_id, None);
 
-        // Step 2 — model interpretation (fail-open). Empty result ⇒ we fall
-        // through to a registry that carries only the agnostic floor.
+        // Step 2 — STRUCTURAL extraction is the *primary* source (F1-a). It
+        // pulls entities/enums with names, fields, refs, decorators, base class
+        // and table name **deterministically and offline** via the in-crate
+        // grammars + textual floor (tree-sitter / Aho-Corasick), no `claude`
+        // binary required. Everything downstream treats this as authoritative.
+        let structural = structural_extract::extract(root, visited);
+        let mut entities = structural.entities;
+        let mut enums = structural.enums;
+        // Derive the value convention for each structurally-found enum from its
+        // member casing (the cold path could not compute this).
+        for info in enums.values_mut() {
+            if info.value_convention.is_none() && !info.values.is_empty() {
+                info.value_convention = Some(detect_value_convention(&info.values));
+            }
+        }
+
+        // Step 3 — model interpretation (fail-open). It runs only as a
+        // COMPLEMENT: an empty result (no `claude`, offline, parse error) leaves
+        // the structural floor untouched; a non-empty result may only ADD names
+        // the structural pass never saw — it NEVER overwrites a structural
+        // entity/enum. This is the cut line F1-c later flips to opt-in/default-OFF.
         let interpreted = match &self.env_override {
             Some(env) => interpret::interpret_with(root, &self.stack_id, visited, &clusters, env),
             None => interpret::interpret(root, &self.stack_id, visited, &clusters),
         };
 
-        // Step 4 — merge into the legacy ScanResult shape so build_registry
-        // consumes the same fields as before.
-        let mut entities = BTreeMap::new();
+        // LLM entities only fill gaps the structural pass left (additive).
         for e in interpreted.entities {
+            if e.name.is_empty() || entities.contains_key(&e.name) {
+                continue;
+            }
             entities.insert(
                 e.name.clone(),
                 EntityInfo {
@@ -232,8 +252,10 @@ impl Scanner for InterpretedScanner {
                 },
             );
         }
-        let mut enums = BTreeMap::new();
         for e in interpreted.enums {
+            if e.name.is_empty() || enums.contains_key(&e.name) {
+                continue;
+            }
             enums.insert(
                 e.name.clone(),
                 EnumInfo {
@@ -328,11 +350,10 @@ pub fn load_scanner(root: &Path, stack_hint: Option<&str>) -> Box<dyn Scanner> {
     })
 }
 
-/// Detect a value convention from enum member names — kept as a shared helper
-/// for any consumer that wants to bucket a value list by case. The
-/// interpreter does not call this today; future enrichment may.
+/// Detect a value convention from enum member names — used to tag every
+/// structurally-extracted enum (`UPPER_CASE` / `PascalCase` / `camelCase` /
+/// `mixed`) so the registry's `valueConvention` field reflects real casing.
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn detect_value_convention(values: &[String]) -> String {
     if values.is_empty() {
         return "unknown".to_string();

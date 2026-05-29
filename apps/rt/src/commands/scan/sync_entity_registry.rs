@@ -151,12 +151,14 @@ pub fn run(root: &Path, force: bool) {
         let entry = scan_results.entry(stack_id.clone()).or_default();
         entry.merge(result, discovered, folder_frequency, conventions);
 
-        // Wave 2 (mustard-unification) — promote model-interpreted entities
-        // into the registry as a fallback layer. Entities already found by the
-        // structural scanner are NOT overwritten (scanner wins); only names
-        // absent from the scanner output are inserted. This lets the claude CLI
-        // cold-path surface entities that ORM-pattern matching misses (e.g.
-        // plain Rust structs, Go types without gorm tags, generic TS objects).
+        // F1-a — the structural extractor (run inside `scan_with_visited`) is
+        // the PRIMARY source: it already populated `entry.entities` with
+        // deterministic names/fields/refs/decorators/table names from the
+        // in-crate grammars + textual floor, no `claude` required. The
+        // model-interpreted entities are promoted here only as a COMPLEMENT —
+        // entities already found structurally are NEVER overwritten; only names
+        // absent from the structural output are inserted. This is the cut line
+        // F1-c flips to an opt-in, default-OFF fallback.
         for i_entity in &interpreted.entities {
             if !i_entity.name.is_empty() && !entry.entities.contains_key(&i_entity.name) {
                 use super::EntityInfo;
@@ -347,6 +349,12 @@ fn build_registry(scan_results: &BTreeMap<String, MergedStack>) -> RegistryDoc {
             }
             if !info.decorators.is_empty() {
                 entry.insert("decorators".to_string(), json!(info.decorators));
+            }
+            // F1-a — `properties` is populated by the structural extractor
+            // (struct/class fields, Drizzle columns). Declaration order is
+            // preserved (not sorted): field order is semantically meaningful.
+            if !info.properties.is_empty() {
+                entry.insert("properties".to_string(), json!(info.properties));
             }
             if !info.refs.is_empty() {
                 let mut refs = info.refs.clone();

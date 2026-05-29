@@ -219,8 +219,12 @@ pub fn discover_clusters(
     }
 
     // Enrichment — universal metadata extracted from samples, once per cluster.
+    // The grammar loader (in-crate grammars + discovered externals) is built
+    // once and shared across all clusters so the agnostic decl-count uses the
+    // same `mustard_core::domain::ast::extract_entities` the registry does.
+    let loader = mustard_core::domain::ast::GrammarLoader::with_builtins(subproject_path);
     for cluster in &mut kept {
-        enrich_cluster(cluster, subproject_path);
+        enrich_cluster(cluster, subproject_path, &loader);
         if let Some(name) = subproject_name {
             if let Value::Object(map) = cluster {
                 map.insert("subprojectName".to_string(), json!(name));
@@ -1048,7 +1052,11 @@ fn basename_no_ext(rel: &str, ext: &str) -> String {
 // --- Enrichment -------------------------------------------------------------
 
 /// Enrich a cluster with up to 5 universal metadata fields — `_enrichCluster`.
-fn enrich_cluster(cluster: &mut Value, subproject_path: &Path) {
+fn enrich_cluster(
+    cluster: &mut Value,
+    subproject_path: &Path,
+    loader: &mustard_core::domain::ast::GrammarLoader,
+) {
     let Value::Object(map) = cluster else {
         return;
     };
@@ -1092,17 +1100,23 @@ fn enrich_cluster(cluster: &mut Value, subproject_path: &Path) {
         map.insert("memberSuffixes".to_string(), json!(members));
     }
 
-    // T3.3 — attach agnostic decl counts derived from the sampled file set.
-    // The extractor is syntax-aware (not framework-aware), so the counts
-    // describe "how many public/exported declarations live in the sample"
-    // without claiming to recognise the user's stack. Empty samples ⇒ skip.
-    use super::entity_extractor::extract_decls;
+    // T3.3 — attach agnostic decl counts derived from the sampled file set,
+    // now via the shared `mustard_core::domain::ast::extract_entities` (AST when
+    // a grammar resolves, agnostic textual floor otherwise) so the cluster
+    // metadata and the entity-registry are computed by the same extractor — no
+    // local duplicate. The counts describe "how many named type declarations
+    // live in the sample" without claiming to recognise the user's stack.
+    // `declByKind` is keyed by the extractor's `kind` (an AST node kind such as
+    // `struct_item` / `class_declaration`, or the floor keyword that fired).
+    // Empty samples ⇒ skip.
+    use mustard_core::domain::ast::extract_entities;
     let mut decl_count: usize = 0;
     let mut by_kind: BTreeMap<String, u64> = BTreeMap::new();
     for (path, source) in &contents {
-        for decl in extract_decls(path, source) {
+        let lang_id = loader.language_id_for_path(path).unwrap_or_default();
+        for ent in extract_entities(loader, source, &lang_id) {
             decl_count += 1;
-            *by_kind.entry(decl.kind).or_insert(0) += 1;
+            *by_kind.entry(ent.kind).or_insert(0) += 1;
         }
     }
     if decl_count > 0 {
