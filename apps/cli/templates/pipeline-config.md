@@ -96,7 +96,7 @@ Default: **sonnet**.
 | Guards | `{subproject}/CLAUDE.md` | Always loaded |
 | Patterns | `{subproject}/.claude/skills/` | Auto-triggered by task description |
 | Stack/Modules | `{subproject}/.claude/commands/` | On-demand |
-| Entity registry | `.claude/entity-registry.json` | Grep by entity name |
+| Entity registry | `.claude/entity-registry.json` | Sliced via `registry-query --entity/--for-spec` (never read whole) |
 | Shared language | `CONTEXT.md` (built by `grill-with-docs`) | Relevance-sliced via `context-slice`, injected as `{context_md}` |
 
 `CONTEXT.md` is **never injected whole** — same anti-bloat rule as `entity-registry.json`. Sliced by entities/file names/key-tokens of the active spec; snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md`. Capped at `MUSTARD_GLOSSARY_MAX_LINES` (default 250). No `CONTEXT.md` → empty slice, `{context_md}` blank (dispatches never block).

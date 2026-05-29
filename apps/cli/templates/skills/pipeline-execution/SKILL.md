@@ -19,8 +19,8 @@ source: manual
 ### ANALYZE Phase (collapses old SYNC+UNDERSTAND+SCOPE+EXPLORE)
 
 1. **AUTO-SYNC:** `mustard-rt run sync-registry`
-2. Read `entity-registry.json` → entity found? → infer layers. Not found? → all layers.
-3. Extract `_patterns`, `e.{Entity}`, `_enums`.
+2. Resolve the entity slice — NEVER read the full `entity-registry.json` (it is ~half a MB). Run `mustard-rt run registry-query --entity {Entity}` (or `--for-spec {spec}` to slice every entity the spec touches at once). Slice non-empty → entity found, infer layers from it. Slice `{}` → not found, assume all layers.
+3. The slice already carries `e.{Entity}` (`file`, `properties`, `refs`, `base_class`, …); add `--with-refs` to also pull the first-degree referenced entities.
 
 | Signal                       | Layers                               |
 | ---------------------------- | ------------------------------------ |

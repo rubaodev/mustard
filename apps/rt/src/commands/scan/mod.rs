@@ -603,6 +603,7 @@ mod tests {
         );
     }
 }
+pub mod registry_query;
 pub mod scan_finalize;
 pub mod scan_md_validate;
 pub mod scan_orchestrate;

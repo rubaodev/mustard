@@ -74,7 +74,7 @@ Returning with `skills/` empty (no SKILL.md AND no `_no-patterns.md`) is a contr
 4. **Generate granular skills** in `{{absSubprojectPath}}/.claude/skills/{skill-name}/` following skill-creator methodology. ALWAYS use this absolute path — never write to relative `.claude/skills/` (the orchestrator runs from a different working directory). Remember the HARD CONTRACT above: if no cluster qualifies, write `_no-patterns.md` instead of leaving the directory empty:
    - One conceptual pattern per skill (NOT one file per skill).
    - Name from what the codebase calls the thing — folder `Resolvers/` → `{{name}}-resolver-pattern`. Never import vocabulary the codebase does not use.
-   - Use the clusters from the `## Clusters detected for this subproject` block above. Each cluster in that block represents a reusable convention. Skip clusters with fewer than 3 files OR noise suffixes (`Test`/`Mock`/`Spec`). If the block is empty (first run, no registry yet), fall back to reading `.claude/entity-registry.json` and iterating `_patterns[{stackId}].discovered[]`.
+   - Use the clusters from the `## Clusters detected for this subproject` block above. Each cluster in that block represents a reusable convention. Skip clusters with fewer than 3 files OR noise suffixes (`Test`/`Mock`/`Spec`). If the block is empty (first run, no registry yet), run `mustard-rt run registry-query --subproject {{name}}` for the discovered-cluster slice — NEVER read `.claude/entity-registry.json` directly (it is ~half a MB). An empty `[]` means no clusters yet.
    - SKILL.md frontmatter:
      ```yaml
      ---

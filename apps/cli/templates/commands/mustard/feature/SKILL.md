@@ -12,7 +12,7 @@ source: manual
 
 ### 1. Hygiene + ANALYZE
 
-→ `../../../refs/feature/spec-hygiene.md`. Emit `pipeline.stage: Analyze`. Run `sync-detect` (and `sync-registry` if `hashChanged: true`). Grep `entity-registry.json` per entity (never read the full JSON). Read `.claude/pipeline-config.md` once.
+→ `../../../refs/feature/spec-hygiene.md`. Emit `pipeline.stage: Analyze`. Run `sync-detect` (and `sync-registry` if `hashChanged: true`). Resolve entities via `mustard-rt run registry-query --entity {Entity}` (or `--for-spec {spec}` for all at once) — the slice, never the full JSON. Read `.claude/pipeline-config.md` once.
 
 Scope: light (1-2 layers, ≤5 files, known pattern) | extended-light (entity in registry + modifies existing + ≤8 files) | full (3+ layers, new entity/pattern). MAX 5 reads in ANALYZE. Skip Explore when entity is in registry.
 
@@ -39,5 +39,5 @@ Escalations: `CONCERN` → `## Concerns`, continue. `BLOCKED` → STOP + AskUser
 - NEVER read more files after Explore returns. MAX 5 reads in ANALYZE.
 - NEVER skip `analyze-validation` or `dependency-precheck`.
 - NEVER hand-craft agent prompts — always `agent-prompt-render`.
-- ALWAYS Grep `entity-registry.json` per entity, never read the full JSON.
+- ALWAYS resolve entities via `mustard-rt run registry-query` (the slice), never read the full `entity-registry.json`.
 - ALWAYS emit `pipeline.scope` + `pipeline.stage` at each transition.

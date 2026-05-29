@@ -22,7 +22,7 @@ Each detected pattern becomes its own skill. Group by **conceptual unit**, not b
 
 ### Cluster Skills from the Registry (mandatory)
 
-After generating the conceptual skills above, **also** read `.claude/entity-registry.json` and iterate `_patterns[{stackId}].discovered[]` for each detected stack. Each cluster entry looks like:
+Cluster skills are rendered deterministically by Rust — `mustard-rt run scan-skill-render` emits one SKILL.md per qualified `_patterns.{stack}.discovered[]` cluster, so the agent normally does **not** hand-generate these. When you do need the discovered-cluster facts yourself (e.g. the orchestrator's injected `## Clusters detected for this subproject` block is empty), run `mustard-rt run registry-query --subproject {name}` for the cluster slice — **never** read `.claude/entity-registry.json` directly (it is ~half a MB and would flood the context). Each cluster entry in that slice looks like:
 
 ```json
 {

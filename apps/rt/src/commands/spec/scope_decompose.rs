@@ -257,7 +257,10 @@ pub fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value 
 /// raw spec would count `Spec` / `Files` / path segments as "new entities". This
 /// keeps only prose lines so the registry diff reflects real entity mentions:
 /// drops heading lines, bullet/numbered list items, and fenced code blocks.
-fn spec_prose(spec_text: &str) -> String {
+///
+/// `pub(crate)` so `registry-query --for-spec` reuses the exact same prose
+/// filter (no facade, no second copy of the heuristic).
+pub(crate) fn spec_prose(spec_text: &str) -> String {
     let mut out = String::new();
     let mut in_fence = false;
     for line in spec_text.lines() {

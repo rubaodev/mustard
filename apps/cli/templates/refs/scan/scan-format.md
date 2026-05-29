@@ -138,6 +138,6 @@ Generate `{subproject.name}-impl.md` + `{subproject.name}-explorer.md` in root `
 
 ## 10. Granular Skill Generation (skill-creator methodology)
 
-One skill per reusable codebase convention (not per file type). Name from what codebase calls the thing. Cluster skills come from the orchestrator's injected `## Clusters detected for this subproject` block — fall back to `entity-registry.json` `_patterns[].discovered[]` only if that block is empty. Skip clusters with <3 files or noise suffixes. NO code in SKILL.md body — all code in `references/examples.md` (use the `## Sample code per cluster` block injected by the orchestrator instead of re-Reading source files).
+One skill per reusable codebase convention (not per file type). Name from what codebase calls the thing. Cluster skills come from the orchestrator's injected `## Clusters detected for this subproject` block — fall back to `mustard-rt run registry-query --subproject {name}` (the discovered-cluster slice) only if that block is empty; never read the full `entity-registry.json` (~half a MB). Skip clusters with <3 files or noise suffixes. NO code in SKILL.md body — all code in `references/examples.md` (use the `## Sample code per cluster` block injected by the orchestrator instead of re-Reading source files).
 
 > Reference (optional, only for skill-description writing tips and edge cases): `../../../refs/scan/skill-generation.md`

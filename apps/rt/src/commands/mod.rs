@@ -714,6 +714,40 @@ pub enum RunCmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Emit a *slice* of `entity-registry.json` — never the whole file.
+    ///
+    /// The registry is large (hundreds of entities, ~half a MB). This replaces
+    /// the SKILL/template instructions that told the LLM to read the raw file
+    /// and walk it by hand. Parses the registry once in Rust and prints only the
+    /// relevant slice as compact, byte-stable JSON. No LLM. Fail-open: a missing
+    /// / invalid registry degrades to `{}` (entity / spec modes) or `[]`
+    /// (subproject mode), exit 0.
+    ///
+    /// Exactly one mode flag is expected (precedence `--entity` → `--for-spec`
+    /// → `--subproject`):
+    /// - `--entity <name>`: exact, case-insensitive lookup → the single entity
+    ///   object `e[name]`. `--with-refs` also includes the first-degree entities
+    ///   named in its `refs`.
+    /// - `--for-spec <path>`: the entities whose names appear in the spec's
+    ///   *prose* (PascalCase tokens ∩ entity names; headings / file-path bullets
+    ///   / fenced code excluded).
+    /// - `--subproject <x>`: the `_patterns.{stack}.discovered[]` clusters tagged
+    ///   for that subproject (the `{{clustersBlock}}` fallback slice).
+    #[command(name = "registry-query")]
+    RegistryQuery {
+        /// Exact (case-insensitive) entity name to look up.
+        #[arg(long)]
+        entity: Option<String>,
+        /// With `--entity`, also include the first-degree `refs` entities.
+        #[arg(long = "with-refs")]
+        with_refs: bool,
+        /// Spec file whose prose entity-references to slice for.
+        #[arg(long = "for-spec")]
+        for_spec: Option<PathBuf>,
+        /// Subproject whose discovered clusters to slice for.
+        #[arg(long)]
+        subproject: Option<String>,
+    },
     /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
     ///
     /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318).
@@ -1728,6 +1762,19 @@ pub fn dispatch(cmd: RunCmd) {
             scan::scan_skill_render::run(subproject.as_deref());
         }
         RunCmd::ScanRecipesValidate { strict } => scan::scan_recipes_validate::run(strict),
+        RunCmd::RegistryQuery {
+            entity,
+            with_refs,
+            for_spec,
+            subproject,
+        } => {
+            scan::registry_query::run(scan::registry_query::RegistryQueryOpts {
+                entity,
+                with_refs,
+                for_spec,
+                subproject,
+            });
+        }
         RunCmd::OtelCollector => economy::otel::collector::run(),
         RunCmd::TranscriptWatcher { once } => economy::transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {
