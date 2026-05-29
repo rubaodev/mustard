@@ -806,6 +806,36 @@ fn spec_date_prefix(name: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
+// Active-pipeline count (consumed by `active_spec_limit_gate`)
+// ---------------------------------------------------------------------------
+
+/// Count the **running pipelines** rooted under `<root>/.claude/spec/`.
+///
+/// A running pipeline is a top-level spec classified [`SpecKind::Active`]
+/// (`Outcome=Active` + `Stage ∈ {Analyze, Plan, Execute}`) — the exact set the
+/// picker shows as in-flight. `ClosedFollowup` and `Malformed` specs are
+/// **not** counted: a closed-followup is a finished pipeline awaiting a
+/// follow-up action, and a malformed spec has no resolvable lifecycle, so
+/// neither represents a concurrent pipeline competing for attention.
+///
+/// Uses the same deterministic projection as [`run`] —
+/// [`discover_root_specs`] + [`classify_spec`] — so the gate's count and the
+/// `active-specs` picker can never disagree.
+///
+/// **Fail-open by construction.** Every discovery step degrades to "fewer
+/// specs" on an IO error (a missing / unreadable `.claude/spec` reads as an
+/// empty directory). A counting error can therefore only *under*-count, never
+/// over-count, so it can never spuriously trip the limit. The gate treats this
+/// value as authoritative for an *upper* bound check.
+#[must_use]
+pub fn count_active(root: &Path) -> usize {
+    discover_root_specs(root)
+        .iter()
+        .filter(|c| classify_spec(&c.header) == Some(SpecKind::Active))
+        .count()
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 

@@ -94,6 +94,19 @@ pub fn architecture(config: &Value) -> Option<String> {
     }
 }
 
+/// Hard cap on concurrently active pipelines from `mustard.json#maxActiveSpecs`.
+///
+/// The value must be a non-negative integer. A missing key, a non-numeric
+/// value, or a negative number yields `None` (the gate then falls back to its
+/// built-in default). `0` is honoured as a literal "allow none" cap — a user
+/// who pins `0` is explicitly freezing new pipeline starts, which is a valid
+/// (if aggressive) policy, so we do not treat it as "unset".
+#[must_use]
+pub fn max_active_specs(config: &Value) -> Option<usize> {
+    let n = config.get("maxActiveSpecs").and_then(Value::as_u64)?;
+    usize::try_from(n).ok()
+}
+
 /// One `{ pattern, role }` mapping from `mustard.json#rolePatterns`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolePattern {
@@ -211,6 +224,17 @@ mod tests {
         assert_eq!(architecture(&json!({ "architecture": "   " })), None);
         assert_eq!(architecture(&json!({})), None);
         assert_eq!(architecture(&json!({ "architecture": 7 })), None);
+    }
+
+    #[test]
+    fn max_active_specs_reads_non_negative_int_only() {
+        assert_eq!(max_active_specs(&json!({ "maxActiveSpecs": 5 })), Some(5));
+        assert_eq!(max_active_specs(&json!({ "maxActiveSpecs": 0 })), Some(0));
+        // Absent / wrong type / negative → None (fall back to default).
+        assert_eq!(max_active_specs(&json!({})), None);
+        assert_eq!(max_active_specs(&json!({ "maxActiveSpecs": "5" })), None);
+        assert_eq!(max_active_specs(&json!({ "maxActiveSpecs": -3 })), None);
+        assert_eq!(max_active_specs(&json!({ "maxActiveSpecs": 2.5 })), None);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
+use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
 use crate::hooks::write::graph_wirelink_gate::GraphWirelinkGate;
@@ -287,6 +288,19 @@ impl Registry {
                 // `entity-registry-gate` — PreToolUse(Skill) pre-pipeline gate.
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
                 check: Some(Box::new(EntityRegistryGate)),
+                observer: None,
+            },
+            // F4-d item 1 — hard cap on concurrently active pipelines. A
+            // PreToolUse(Skill) gate sibling to `entity_registry_gate`: it sits
+            // on the entry of `/feature` and `/bugfix` and refuses (strict) or
+            // warns (default) when opening another pipeline would exceed
+            // `mustard.json#maxActiveSpecs` (default 10). Mode via
+            // `MUSTARD_MAX_ACTIVE_SPECS_MODE` (off|warn|strict). Fail-open: a
+            // counting error can only under-count, never trip the cap.
+            Module {
+                id: "active_spec_limit_gate",
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
+                check: Some(Box::new(ActiveSpecLimitGate)),
                 observer: None,
             },
             // FASE 2 (decision 8 — wirelinks) — pre-write `[[id]]` validation
@@ -632,6 +646,7 @@ mod tests {
             "path_gate",
             "close_gate",
             "entity_registry_gate",
+            "active_spec_limit_gate",
             "graph_wirelink_gate",
             "post_edit",
             "spec_hygiene_observer",
@@ -719,10 +734,13 @@ mod tests {
                 applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"post_edit")
             );
         }
-        // `entity_registry_gate` runs on PreToolUse(Skill).
-        assert!(
-            applicable_ids(&registry, Trigger::PreToolUse, Some("Skill"))
-                .contains(&"entity_registry_gate")
-        );
+        // `entity_registry_gate` + `active_spec_limit_gate` run on
+        // PreToolUse(Skill) — the two pipeline-entry gates.
+        for want in ["entity_registry_gate", "active_spec_limit_gate"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).contains(&want),
+                "missing {want} on PreToolUse(Skill)"
+            );
+        }
     }
 }

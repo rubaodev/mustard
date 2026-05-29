@@ -12,16 +12,33 @@
 //! Port note: the JS version shelled to `scope-decompose.js` and
 //! `wave-dependency.js`. Both are now in this binary — this port calls the
 //! Rust logic directly.
+//!
+//! ## Single canonical renderer (F4-d item 2)
+//!
+//! There used to be two divergent renderers of `wave-plan.md`: the canonical
+//! one in [`crate::commands::wave::wave_scaffold`] (i18n + `[[wikilinks]]` +
+//! localised headings, used by `/feature` at PLAN) and a freeform EN one here
+//! (`build_wave_plan_md` / `build_wave_spec_md`). A spec auto-decomposed at
+//! EXECUTE entry therefore looked **different** from a spec scaffolded at PLAN.
+//!
+//! That freeform renderer is gone. [`decompose_if_signaled`] now maps its
+//! dependency DAG into the canonical [`Plan`] shape and renders through
+//! [`render_wave_plan`] / [`render_wave_spec`]
+//! — so a decomposed-at-EXECUTE spec is byte-identical in form to a
+//! scaffolded-at-PLAN one (same wikilinks, same localised headings, same
+//! lifecycle header). No facade: the freeform functions were deleted, not
+//! wrapped.
 
 use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
+use crate::commands::wave::wave_scaffold::{
+    Plan, WavePlanEntry, headings_for, render_wave_plan, render_wave_spec, wave_name,
+};
 use crate::util::json_io;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
-use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
-use mustard_core::{Flags, Outcome, SpecState, Stage};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -50,127 +67,102 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
     mustard_core::io::workspace::workspace_root(start_dir).ok()
 }
 
-/// Extract the `## Summary` section body.
-fn extract_summary(spec_text: &str) -> String {
-    let lines: Vec<&str> = spec_text.split('\n').collect();
-    let Some(start) = lines.iter().position(|l| {
-        l.strip_prefix("##")
-            .is_some_and(|r| {
-                let t = r.trim_start_matches([' ', '\t']);
-                t.len() != r.len() && t.to_lowercase().trim_end() == "summary"
-            })
-    }) else {
-        return "(see spec)".to_string();
-    };
-    let mut body = Vec::new();
-    for l in lines.iter().skip(start + 1) {
-        if l.strip_prefix("##").is_some_and(|r| r.starts_with([' ', '\t'])) {
-            break;
-        }
-        body.push(*l);
-    }
-    let joined = body.join("\n").trim().to_string();
-    if joined.is_empty() {
-        "(see spec)".to_string()
-    } else {
-        joined
+/// Map one DAG wave (`{ wave, files[], roles[], dependsOn:[N] }` from
+/// [`compute_waves`]) onto the canonical [`WavePlanEntry`].
+///
+/// - `n` = the 1-based wave number.
+/// - `role` = the **primary** role (first detected role, `lib` fallback) — the
+///   same value the wave directory `wave-{n}-{role}` is named after, so the
+///   `[[wikilink]]` in `wave-plan.md` and the on-disk folder agree.
+/// - `summary` = a one-line file census (`role · N file(s): a, b`), giving the
+///   per-wave `## Resumo` and the plan-table `Resumo` column real content
+///   without an LLM.
+/// - `depends_on` = the canonical `wave-{m}-{role(m)}` names resolved from the
+///   numeric `dependsOn`, so the dependency wikilinks point at real wave specs.
+fn dag_wave_to_entry(w: &Value, primary_role_for: &dyn Fn(i64) -> String) -> WavePlanEntry {
+    let n = w.get("wave").and_then(Value::as_i64).unwrap_or(0);
+    let roles: Vec<String> = w
+        .get("roles")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let files: Vec<String> = w
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let depends_on_nums: Vec<i64> = w
+        .get("dependsOn")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_i64).collect())
+        .unwrap_or_default();
+
+    let primary_role = roles.first().cloned().unwrap_or_else(|| "lib".to_string());
+    let role_label = roles.join("/");
+    let summary = format!("{role_label} · {} file(s): {}", files.len(), files.join(", "));
+    let depends_on: Vec<String> = depends_on_nums
+        .iter()
+        .map(|m| format!("wave-{m}-{}", primary_role_for(*m)))
+        .collect();
+
+    WavePlanEntry {
+        n: u32::try_from(n).unwrap_or(0),
+        role: primary_role,
+        summary,
+        depends_on,
     }
 }
 
-/// Build `wave-plan.md` content.
-fn build_wave_plan_md(spec_name: &str, waves: &[Value], spec_text: &str, reason: &str) -> String {
-    let now = now_iso8601();
-    let summary = extract_summary(spec_text);
-    let wave_lines: Vec<String> = waves
+/// Build the canonical [`Plan`] from the dependency DAG `waves` array.
+///
+/// This replaces the deleted freeform `build_wave_plan_md` — the rendering is
+/// now delegated wholesale to
+/// [`crate::commands::wave::wave_scaffold`], so a decomposed-at-EXECUTE
+/// plan is byte-identical in form to a scaffolded-at-PLAN one.
+fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
+    // Resolve each wave number to its primary role first, so a dependency
+    // wikilink can name the dependee's canonical `wave-{m}-{role}` folder.
+    let primary_by_num: std::collections::BTreeMap<i64, String> = waves
         .iter()
         .map(|w| {
             let num = w.get("wave").and_then(Value::as_i64).unwrap_or(0);
-            let roles: Vec<String> = w
+            let role = w
                 .get("roles")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let files: Vec<String> = w
-                .get("files")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let depends_on: Vec<i64> = w
-                .get("dependsOn")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_i64).collect())
-                .unwrap_or_default();
-            let depends = if depends_on.is_empty() {
-                "none".to_string()
-            } else {
-                depends_on
-                    .iter()
-                    .map(|d| format!("wave {d}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            format!(
-                "### Wave {num} — {}\nDepends on: {depends}\nFiles ({}): {}",
-                roles.join("/"),
-                files.len(),
-                files.join(", ")
-            )
+                .and_then(|a| a.first())
+                .and_then(Value::as_str)
+                .unwrap_or("lib")
+                .to_string();
+            (num, role)
         })
         .collect();
+    let primary_role_for = |m: i64| -> String {
+        primary_by_num.get(&m).cloned().unwrap_or_else(|| "lib".to_string())
+    };
 
-    // Canonical lifecycle header (NEW three-line form). The plan is freshly
-    // decomposed at EXECUTE entry → Stage::Execute + Active. The non-lifecycle
-    // `Scope`/`Decomposed` metadata follows as its own header lines.
-    let [stage_line, outcome_line, flags_line] = spec::serialize_header(
-        &SpecState::new(Stage::Execute, Outcome::Active, Flags::default()).unwrap_or(SpecState {
-            stage: Stage::Execute,
-            outcome: Outcome::Active,
-            flags: Flags::default(),
-        }),
-    );
-    format!(
-        "<!-- mustard:generated -->\n# Wave Plan: {spec_name}\n{stage_line}\n{outcome_line}\n{flags_line}\n### Scope: full\n### Decomposed: yes\n### Checkpoint: {now}\n### Reason: {reason}\n### Source: exec-rewave-check (re-evaluated at EXECUTE entry)\n\n## Summary\n{summary}\n\n## Waves\n{}\n\n## Rationale\nDecomposed at EXECUTE entry by exec-rewave-check.\nThreshold: layerCount >= 2 (reason: {reason}).\n",
-        wave_lines.join("\n\n")
-    )
+    let entries: Vec<WavePlanEntry> = waves
+        .iter()
+        .map(|w| dag_wave_to_entry(w, &primary_role_for))
+        .collect();
+    let total = u32::try_from(entries.len()).unwrap_or(0);
+    Plan {
+        waves: entries,
+        total_waves: Some(total),
+        lang: Some(lang.to_string()),
+    }
 }
 
-/// Build a per-wave `spec.md`.
-fn build_wave_spec_md(
-    parent_spec_text: &str,
-    wave_files: &[String],
-    wave_num: i64,
-    wave_role: &str,
-    wave_plan_rel: &str,
-) -> String {
-    let summary = extract_summary(parent_spec_text);
-    // Extract the `## Tasks` section body.
-    let lines: Vec<&str> = parent_spec_text.split('\n').collect();
-    let tasks = lines
-        .iter()
-        .position(|l| {
-            l.strip_prefix("##")
-                .is_some_and(|r| {
-                    let t = r.trim_start_matches([' ', '\t']);
-                    t.len() != r.len() && t.to_lowercase().trim_end() == "tasks"
-                })
-        })
-        .map(|start| {
-            let mut body = Vec::new();
-            for l in lines.iter().skip(start + 1) {
-                if l.strip_prefix("##").is_some_and(|r| r.starts_with([' ', '\t'])) {
-                    break;
-                }
-                body.push(*l);
-            }
-            body.join("\n").trim().to_string()
-        })
-        .unwrap_or_default();
-    let file_list: Vec<String> = wave_files.iter().map(|f| format!("- {f}")).collect();
-
-    format!(
-        "<!-- mustard:generated -->\n> Wave spec — see [../wave-plan.md]({wave_plan_rel}) for overall plan.\n\n# Wave {wave_num} — {wave_role}\n\n## Summary\n{summary}\n\n## Files\n{}\n\n## Tasks\n{tasks}\n",
-        file_list.join("\n")
-    )
+/// Resolve the parent spec's language for re-wave rendering.
+///
+/// Prefers the `lang` recorded in the spec's `meta.json` sidecar (the same
+/// field `wave-scaffold` writes); falls back to `pt-BR` — the identical default
+/// `wave-scaffold` uses when a plan omits `lang` — so the EXECUTE-entry output
+/// matches the PLAN-time output for the common (unset) case.
+fn parent_lang(spec_file: &Path) -> String {
+    mustard_core::domain::meta::read_meta_beside(spec_file)
+        .and_then(|m| m.lang)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "pt-BR".to_string())
 }
 
 /// Re-evaluate `spec_file` for wave decomposition and, when the signal mandates
@@ -265,37 +257,36 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         if waves.len() < 2 {
             return json!({ "action": "keep-single", "reason": "no-dag-depth-or-error", "signals": signals });
         }
-        let decompose_reason = decision.get("reason").and_then(Value::as_str).unwrap_or("");
 
-        // 8. Write wave structure.
-        let wave_plan_content = build_wave_plan_md(&spec_name, &waves, &spec_text, decompose_reason);
+        // 8. Write wave structure through the **canonical** renderer
+        //    (F4-d item 2): map the DAG to a `wave_scaffold::Plan` and render
+        //    `wave-plan.md` + each `wave-N/spec.md` with the same i18n /
+        //    wikilink / heading machinery `/feature` uses at PLAN. No freeform
+        //    renderer here — the output is byte-identical in form.
+        let lang = parent_lang(spec_file);
+        let plan = dag_to_plan(&waves, &lang);
+        let hd = headings_for(&lang);
+
+        let wave_plan_content = render_wave_plan(&plan, &hd);
         if fs::write_atomic(&wave_plan_path, wave_plan_content.as_bytes()).is_err() {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "cannot-write-wave-plan" });
         }
 
         let mut waves_meta: Vec<Value> = Vec::new();
-        for w in &waves {
-            let wave_num = w.get("wave").and_then(Value::as_i64).unwrap_or(0);
-            let roles: Vec<String> = w
-                .get("roles")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let files: Vec<String> = w
+        for (entry, dag_wave) in plan.waves.iter().zip(waves.iter()) {
+            let wave_dir = spec_dir.join(wave_name(entry));
+            let _ = fs::create_dir_all(&wave_dir);
+            let wave_spec_content = render_wave_spec(&spec_name, entry, &hd);
+            let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
+            // Preserve the action-JSON contract: `files` is the file *count*.
+            let file_count = dag_wave
                 .get("files")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let primary_role = roles.first().cloned().unwrap_or_else(|| "lib".to_string());
-            let wave_dir = spec_dir.join(format!("wave-{wave_num}-{primary_role}"));
-            let _ = fs::create_dir_all(&wave_dir);
-            let wave_spec_content =
-                build_wave_spec_md(&spec_text, &files, wave_num, &roles.join("/"), "../wave-plan.md");
-            let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
+                .map_or(0, Vec::len);
             waves_meta.push(json!({
-                "wave": wave_num,
-                "role": primary_role,
-                "files": files.len(),
+                "wave": entry.n,
+                "role": entry.role,
+                "files": file_count,
             }));
         }
 
@@ -358,9 +349,68 @@ mod tests {
     }
 
     #[test]
-    fn extract_summary_reads_section() {
-        let s = "# Spec\n## Summary\nthis is the summary\n## Files\n- a.ts\n";
-        assert_eq!(extract_summary(s), "this is the summary");
+    fn dag_to_plan_maps_numbers_roles_and_deps() {
+        // A 2-wave DAG: wave 2 depends on wave 1.
+        let waves = vec![
+            json!({ "wave": 1, "files": ["src/domain/user.rs"], "roles": ["domain"], "dependsOn": [] }),
+            json!({ "wave": 2, "files": ["src/api/handler.rs"], "roles": ["api"], "dependsOn": [1] }),
+        ];
+        let plan = dag_to_plan(&waves, "en-US");
+        assert_eq!(plan.total_waves, Some(2));
+        assert_eq!(plan.lang.as_deref(), Some("en-US"));
+        assert_eq!(plan.waves[0].n, 1);
+        assert_eq!(plan.waves[0].role, "domain");
+        assert!(plan.waves[0].depends_on.is_empty());
+        assert_eq!(plan.waves[1].n, 2);
+        assert_eq!(plan.waves[1].role, "api");
+        // Dependency resolves to the dependee's canonical wave folder name.
+        assert_eq!(plan.waves[1].depends_on, vec!["wave-1-domain".to_string()]);
+        // The per-wave summary carries a real file census (no LLM, no LLM-ish stub).
+        assert!(plan.waves[0].summary.contains("user.rs"), "{:?}", plan.waves[0].summary);
+    }
+
+    /// **Convergence (F4-d item 2).** The EXECUTE-entry decomposition writes the
+    /// exact same `wave-plan.md` the PLAN-time scaffold would, for the same
+    /// plan. We prove it by rendering the canonical plan two ways — the
+    /// converter path (`dag_to_plan` → `render_wave_plan`) and a hand-built
+    /// `Plan` with identical fields — and asserting byte-equality.
+    #[test]
+    fn rewave_renders_byte_identical_to_scaffold() {
+        let waves = vec![
+            json!({ "wave": 1, "files": ["src/a.ts"], "roles": ["general"], "dependsOn": [] }),
+            json!({ "wave": 2, "files": ["src/b.ts"], "roles": ["frontend"], "dependsOn": [1] }),
+        ];
+        let lang = "pt-BR";
+        // Path A: the re-wave converter + canonical renderer.
+        let plan_a = dag_to_plan(&waves, lang);
+        let hd = headings_for(lang);
+        let rendered_a = render_wave_plan(&plan_a, &hd);
+        // Path B: a Plan built directly with the same canonical fields (what a
+        // PLAN-time scaffold of the same shape would feed the renderer).
+        let plan_b = Plan {
+            waves: vec![
+                WavePlanEntry {
+                    n: 1,
+                    role: "general".to_string(),
+                    summary: "general · 1 file(s): src/a.ts".to_string(),
+                    depends_on: vec![],
+                },
+                WavePlanEntry {
+                    n: 2,
+                    role: "frontend".to_string(),
+                    summary: "frontend · 1 file(s): src/b.ts".to_string(),
+                    depends_on: vec!["wave-1-general".to_string()],
+                },
+            ],
+            total_waves: Some(2),
+            lang: Some(lang.to_string()),
+        };
+        let rendered_b = render_wave_plan(&plan_b, &hd);
+        assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
+        // And the canonical markers are present (i18n heading + wikilinks).
+        assert!(rendered_a.contains("# Plano de Waves"));
+        assert!(rendered_a.contains("[[wave-1-general]]"));
+        assert!(rendered_a.contains("[[wave-2-frontend]]"));
     }
 
     #[test]

@@ -50,36 +50,48 @@ fn header_block(stage: Stage) -> String {
 }
 
 /// One wave entry inside the plan JSON.
+///
+/// `pub(crate)` so the EXECUTE-entry re-wave path
+/// ([`crate::commands::wave::exec_rewave_check`]) can build the *same* entry
+/// shape from its DAG output and render through the canonical renderers here —
+/// rather than maintaining a second, divergent freeform renderer (F4-d item 2).
 #[derive(Debug, Clone, Deserialize)]
-struct WavePlanEntry {
+pub(crate) struct WavePlanEntry {
     /// Wave number (1-based).
-    n: u32,
+    pub(crate) n: u32,
     /// Role label (`general`, `frontend`, `backend`, …) — drives the folder
     /// name `wave-{n}-{role}`.
-    role: String,
+    pub(crate) role: String,
     /// Short one-line summary surfaced in `wave-plan.md` and the wave's
     /// `Resumo` heading.
     #[serde(default)]
-    summary: String,
+    pub(crate) summary: String,
     /// Other wave names this wave depends on (e.g. `["wave-1-general"]`).
     /// Rendered in the wave-plan table's `Depende de` column and the wave
     /// spec's `## Network` section.
     #[serde(default)]
-    depends_on: Vec<String>,
+    pub(crate) depends_on: Vec<String>,
 }
 
 /// Top-level plan shape.
+///
+/// `pub(crate)` for the same reason as [`WavePlanEntry`] — the re-wave path
+/// constructs one of these from the dependency DAG and feeds it to
+/// [`render_wave_plan`] / [`render_wave_spec`].
 #[derive(Debug, Clone, Deserialize)]
-struct Plan {
-    waves: Vec<WavePlanEntry>,
+pub(crate) struct Plan {
+    pub(crate) waves: Vec<WavePlanEntry>,
     #[serde(default)]
-    total_waves: Option<u32>,
+    pub(crate) total_waves: Option<u32>,
     #[serde(default)]
-    lang: Option<String>,
+    pub(crate) lang: Option<String>,
 }
 
 /// Localised heading strings.
-struct Headings<'a> {
+///
+/// `pub(crate)` so the re-wave path can render through the same canonical
+/// renderers (F4-d item 2).
+pub(crate) struct Headings<'a> {
     wave_plan_title: &'a str,
     table_header: &'a str,
     table_sep: &'a str,
@@ -92,7 +104,7 @@ struct Headings<'a> {
     wave_table_caption: &'a str,
 }
 
-fn headings_for(lang: &str) -> Headings<'static> {
+pub(crate) fn headings_for(lang: &str) -> Headings<'static> {
     // Tolerant read: accept BCP-47 + legacy short codes.
     let lc = lang.trim().to_ascii_lowercase();
     if lc == "en" || lc == "en-us" {
@@ -129,7 +141,7 @@ fn headings_for(lang: &str) -> Headings<'static> {
 }
 
 /// Render the wave-plan markdown index.
-fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
+pub(crate) fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
     let total = plan.total_waves.unwrap_or(plan.waves.len() as u32);
     let mut out = String::new();
     out.push_str(hd.wave_plan_title);
@@ -166,12 +178,12 @@ fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
 }
 
 /// `wave-{n}-{role}` folder/spec name.
-fn wave_name(w: &WavePlanEntry) -> String {
+pub(crate) fn wave_name(w: &WavePlanEntry) -> String {
     format!("wave-{n}-{role}", n = w.n, role = w.role)
 }
 
 /// Render an individual wave's `spec.md` skeleton.
-fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
+pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
     let name = wave_name(w);
     let mut out = String::new();
     let _ = writeln!(out, "# {name}\n");
