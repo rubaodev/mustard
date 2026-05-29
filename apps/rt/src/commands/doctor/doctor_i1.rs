@@ -17,6 +17,7 @@
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use mustard_core::io::fs;
 
 #[derive(Debug, Serialize)]
 pub struct I1Report {
@@ -57,15 +58,14 @@ fn walk(dir: &Path, out: &mut Vec<String>, depth: usize, max_depth: usize) {
         }
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let Ok(ty) = entry.file_type() else { continue };
-        if !ty.is_dir() {
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        let path = entry.path();
+        let path = entry.path;
         if is_dot_claude_in_dot_claude(&path) {
             out.push(path.to_string_lossy().into_owned());
             // Do not descend — the I1 violation is the directory itself; any

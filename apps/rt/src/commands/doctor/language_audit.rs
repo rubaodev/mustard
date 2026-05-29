@@ -40,6 +40,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::io::fs;
 use serde::Serialize;
 use serde_json::json;
 
@@ -161,7 +162,7 @@ fn audit(root: &Path) -> Report {
             if is_allow_listed(path) {
                 return;
             }
-            let Ok(text) = std::fs::read_to_string(path) else {
+            let Ok(text) = fs::read_to_string(path) else {
                 return;
             };
             scanned += 1;
@@ -191,11 +192,11 @@ fn audit(root: &Path) -> Report {
 /// `.next`, `apps/cli/templates-extras`, `apps/rt/tests/fixtures`,
 /// `.claude/spec`).
 fn walk(dir: &Path, visit: &mut dyn FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let path = entry.path;
         if path.is_dir() {
             if should_skip_dir(&path) {
                 continue;

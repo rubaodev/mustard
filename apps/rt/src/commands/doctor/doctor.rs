@@ -1056,7 +1056,7 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
         };
         let label = spec_md_path.display().to_string();
 
-        let content = match std::fs::read_to_string(spec_md_path) {
+        let content = match fs::read_to_string(spec_md_path) {
             Ok(c) => c,
             Err(e) => return vec![format!("{label}: cannot read spec.md: {e}")],
         };

@@ -20,6 +20,7 @@ use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use mustard_core::io::fs;
 
 /// Directory or file basenames that *may* legitimately live under a nested
 /// `.claude/` (scan output, per-subproject context). Kept for documentation:
@@ -122,17 +123,16 @@ fn walk_for_claude_dirs(
         }
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let Ok(ty) = entry.file_type() else { continue };
-        if !ty.is_dir() {
+    for entry in entries {
+        if !entry.is_dir {
             continue;
         }
-        let path = entry.path();
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str() else { continue };
+        let path = entry.path;
+        let name = entry.file_name;
+        let name_str = name.as_str();
 
         if name_str == ".claude" {
             // Compare canonical form to the root's own `.claude/`.
@@ -151,15 +151,13 @@ fn walk_for_claude_dirs(
 /// Read a non-root `.claude/`, classify each entry, and append a leak record
 /// if any [`LEAK_ENTRIES`] hit.
 fn inspect_nested_claude(claude_dir: &Path, leaks: &mut Vec<WorkspaceLeak>) {
-    let Ok(entries) = std::fs::read_dir(claude_dir) else {
+    let Ok(entries) = fs::read_dir(claude_dir) else {
         return;
     };
     let leak_set: HashSet<&str> = LEAK_ENTRIES.iter().copied().collect();
     let mut hit: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
+    for entry in entries {
+        let name = entry.file_name;
         if leak_set.contains(name.as_str()) {
             hit.push(name);
         }
@@ -190,7 +188,7 @@ fn build_cleanup_command(claude_path: &str, entries: &[String]) -> String {
 }
 
 fn canonicalize_or_self(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
