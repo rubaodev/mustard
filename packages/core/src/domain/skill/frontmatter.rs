@@ -399,12 +399,13 @@ fn contains_top_level_key(yaml: &str, key: &str) -> bool {
     false
 }
 
-/// kebab-case check (`[a-z][a-z0-9-]+`).
+/// kebab-case check (`[a-z][a-z0-9-]+`). Canonical home — `apps/rt`'s
+/// `skills::validate_skill` calls this directly instead of keeping a local copy.
 ///
 /// Uses `chars().count()` for the length guard so a single multi-byte unicode
 /// character (e.g. `"é"`, 2 bytes but 1 char) does not falsely pass as a
 /// two-character name.
-fn is_kebab(s: &str) -> bool {
+pub fn is_kebab(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && s.chars().count() >= 2

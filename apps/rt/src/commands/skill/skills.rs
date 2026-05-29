@@ -169,7 +169,7 @@ fn validate_skill(content: &str) -> (bool, Vec<String>, Option<String>) {
     match &name {
         None => errors.push("frontmatter: missing \"name\"".to_string()),
         Some(n) => {
-            if !is_kebab(n) {
+            if !frontmatter::is_kebab(n) {
                 errors.push(format!("name not kebab-case: {n}"));
             }
         }
@@ -223,14 +223,6 @@ fn description_value(body: &str) -> Option<String> {
     } else {
         Some(acc)
     }
-}
-
-/// kebab-case check: `^[a-z][a-z0-9-]+$`.
-fn is_kebab(s: &str) -> bool {
-    let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
-        && s.len() >= 2
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Whether a description contains a trigger phrase.
@@ -1037,13 +1029,6 @@ mod tests {
         let (ok, errors, source) = validate_skill(md);
         assert!(ok, "errors: {errors:?}");
         assert_eq!(source, Some("manual".to_string()));
-    }
-
-    #[test]
-    fn is_kebab_check() {
-        assert!(is_kebab("my-skill"));
-        assert!(!is_kebab("MySkill"));
-        assert!(!is_kebab("my_skill"));
     }
 
     #[test]
