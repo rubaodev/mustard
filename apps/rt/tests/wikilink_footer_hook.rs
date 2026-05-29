@@ -81,7 +81,7 @@ fn wikilink_footer_renders_resolved_and_orphan_links() {
         "resolved link must render as clickable: {rendered}"
     );
     assert!(
-        rendered.contains("⚠ não resolvido"),
+        rendered.contains("⚠ unresolved"),
         "orphan link must carry the unresolved marker: {rendered}"
     );
 }

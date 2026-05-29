@@ -198,7 +198,7 @@ mod tests {
             "resolved link must be clickable: {rewritten}"
         );
         assert!(
-            rewritten.contains("⚠ não resolvido"),
+            rewritten.contains("⚠ unresolved"),
             "orphan annotation must be present: {rewritten}"
         );
     }

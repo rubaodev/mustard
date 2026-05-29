@@ -7,15 +7,24 @@
 //!   `find_backlinks` are deterministic folds over `&str` / `&[MarkdownDoc]`.
 //!   `resolve` and `render_footer` do read the filesystem (directory walk) but
 //!   carry no mutable state.
-//! - **Single extraction kernel.** One hand-rolled scanner (`scan_links`)
-//!   recognises `[[name]]` tokens. No `regex` crate — the pattern is simple
-//!   enough that a two-pointer scan is faster and keeps the dep tree lean.
+//! - **Single extraction kernel.** One hand-rolled scanner ([`scan_links`])
+//!   is the *only* `[[…]]` byte-scanner in the workspace — the concept-graph
+//!   (`commands::scan::graph`) and the resolver (`commands::scan::resolve`)
+//!   consume it too, layering an id-charset filter on top rather than running
+//!   a second scanner. No `regex` crate — the pattern is simple enough that a
+//!   two-pointer scan is faster and keeps the dep tree lean.
+//! - **Unified resolution.** [`resolve`] maps a `[[token]]` to a file by *two*
+//!   keys in one pass over the same `search_dirs`: an exact frontmatter `id:`
+//!   match wins first, then a `{token}.md` filename match. This lets a
+//!   `[[rt.entity.user]]` reference in a memory/knowledge note resolve to the
+//!   concept-graph node whose `id:` is `rt.entity.user`, while a plain
+//!   `[[my-spec]]` still resolves by filename.
 //! - **Idempotent footer.** `render_footer` locates the sentinel comment pair
 //!   `<!-- wikilinks-footer-start -->` / `<!-- wikilinks-footer-end -->`,
 //!   replaces the block when present, or appends it when absent. Calling
 //!   `render_footer` twice on the same body produces identical output.
 //! - **Orphan marking.** Links that cannot be resolved to a real file get a
-//!   `⚠ não resolvido` annotation in the footer.
+//!   `⚠ unresolved` annotation in the footer (internal artefact ⇒ English).
 
 use super::store::MarkdownDoc;
 use std::path::{Path, PathBuf};
@@ -37,6 +46,45 @@ pub fn find_outgoing_links(body: &str) -> Vec<String> {
     scan_links(body)
 }
 
+/// The canonical `[[…]]` byte-scanner. Returns every non-empty inner token in
+/// source order, trimmed and with newline-spanning candidates rejected.
+///
+/// This is the **single** `[[…]]` scanner in the workspace. The concept-graph
+/// edge extractor and the resolver's dereference pass both consume this
+/// primitive and apply their own id-charset filter on the result — there is no
+/// second scanner. Duplicates are preserved; callers that want a set dedup.
+#[must_use]
+pub fn scan_links(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 3 < len {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            // Search for closing `]]`.
+            let start = i + 2;
+            let mut j = start;
+            while j + 1 < len {
+                if bytes[j] == b']' && bytes[j + 1] == b']' {
+                    let inner = &text[start..j];
+                    if !inner.is_empty() && !inner.contains('\n') {
+                        out.push(inner.trim().to_string());
+                    }
+                    i = j + 2;
+                    break;
+                }
+                j += 1;
+            }
+            if j + 1 >= len {
+                break; // unclosed — stop
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Find every document in `docs` that contains a `[[target]]` outgoing link.
 ///
 /// Returns the paths of matching documents. The search is a linear scan over
@@ -54,19 +102,29 @@ pub fn find_backlinks(target: &str, docs: &[MarkdownDoc]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolve a wikilink `name` to a filesystem path by searching `search_dirs`.
+/// Resolve a wikilink `token` to a filesystem path by searching `search_dirs`.
 ///
-/// For each directory the function tries:
-/// 1. `{dir}/{name}.md` — direct child.
-/// 2. A recursive walk into subdirectories (one level at a time via `std::fs`).
+/// A single recursive walk per directory resolves by **two** keys, with a
+/// documented precedence:
 ///
-/// Returns the first match found, or `None` when the file does not exist in
-/// any of the supplied directories.
+/// 1. **Frontmatter `id:` exact match** — a markdown file whose YAML header
+///    declares `id: {token}` wins first. This lets a concept-graph reference
+///    such as `[[rt.entity.user]]` (where the node file may be named anything)
+///    resolve to the node whose `id:` is `rt.entity.user`.
+/// 2. **Filename match** — `{token}.md` anywhere in the tree.
+///
+/// Within a directory the walk records the first filename hit but keeps
+/// scanning for an id hit, so an `id:` match always beats a filename match even
+/// when the filename-named file is encountered first. Directories are searched
+/// in the order supplied; the first directory that yields *any* match wins.
+///
+/// Returns the resolved path, or `None` when neither key matches in any
+/// supplied directory.
 #[must_use]
-pub fn resolve(name: &str, search_dirs: &[&Path]) -> Option<PathBuf> {
-    let target = format!("{name}.md");
+pub fn resolve(token: &str, search_dirs: &[&Path]) -> Option<PathBuf> {
+    let filename = format!("{token}.md");
     for &dir in search_dirs {
-        if let Some(p) = find_file_recursive(dir, &target) {
+        if let Some(p) = resolve_in_dir(dir, token, &filename) {
             return Some(p);
         }
     }
@@ -79,7 +137,7 @@ pub fn resolve(name: &str, search_dirs: &[&Path]) -> Option<PathBuf> {
 ///   stripped of any existing footer block (or unchanged if none existed).
 /// - When links are present, each is resolved against `search_dirs` and
 ///   rendered as a markdown list item. Unresolvable links are annotated with
-///   `⚠ não resolvido`.
+///   `⚠ unresolved`.
 /// - The function is **idempotent**: calling it twice on the same string
 ///   produces the same output.
 #[must_use]
@@ -119,7 +177,7 @@ pub fn render_footer(body: &str, search_dirs: &[&Path]) -> String {
                 footer.push_str(&format!("- [{name}]({display})\n"));
             }
             None => {
-                footer.push_str(&format!("- [{name}](?) ⚠ não resolvido\n"));
+                footer.push_str(&format!("- [{name}](?) ⚠ unresolved\n"));
             }
         }
     }
@@ -132,38 +190,6 @@ pub fn render_footer(body: &str, search_dirs: &[&Path]) -> String {
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
-
-/// Two-pointer `[[…]]` scanner. Returns every non-empty inner text in order.
-fn scan_links(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + 3 < len {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            // Search for closing `]]`.
-            let start = i + 2;
-            let mut j = start;
-            while j + 1 < len {
-                if bytes[j] == b']' && bytes[j + 1] == b']' {
-                    let inner = &text[start..j];
-                    if !inner.is_empty() && !inner.contains('\n') {
-                        out.push(inner.trim().to_string());
-                    }
-                    i = j + 2;
-                    break;
-                }
-                j += 1;
-            }
-            if j + 1 >= len {
-                break; // unclosed — stop
-            }
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
 
 /// Strip the `<!-- wikilinks-footer-start -->…<!-- wikilinks-footer-end -->`
 /// block (and the two blank lines before it) from `body`.
@@ -184,25 +210,68 @@ fn strip_footer(body: &str) -> String {
     body.to_string()
 }
 
-/// Recursively walk `dir` looking for a file named `target` (exact match,
-/// case-sensitive). Returns the first hit.
-fn find_file_recursive(dir: &Path, target: &str) -> Option<PathBuf> {
+/// Recursively walk `dir` resolving `token` by frontmatter `id:` (precedence 1)
+/// then by `{token}.md` filename (precedence 2).
+///
+/// A single walk handles both keys: an exact `id:` match returns immediately
+/// (it always wins), while the first filename match is *remembered* and only
+/// returned once the whole tree is exhausted without an id hit. This guarantees
+/// the documented precedence regardless of directory-entry order.
+fn resolve_in_dir(dir: &Path, token: &str, filename: &str) -> Option<PathBuf> {
+    let mut filename_hit: Option<PathBuf> = None;
+    resolve_walk(dir, token, filename, &mut filename_hit).or(filename_hit)
+}
+
+/// Inner walk: returns `Some(path)` immediately on a frontmatter `id:` match;
+/// records the first filename match into `filename_hit` as a fallback.
+fn resolve_walk(
+    dir: &Path,
+    token: &str,
+    filename: &str,
+    filename_hit: &mut Option<PathBuf>,
+) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut subdirs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             subdirs.push(path);
-        } else if path.file_name().and_then(|n| n.to_str()) == Some(target) {
-            return Some(path);
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str());
+        // Only `.md` files can carry a frontmatter id.
+        if name.is_some_and(|n| n.ends_with(".md")) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if frontmatter_id_matches(&content, token) {
+                    return Some(path);
+                }
+            }
+        }
+        if filename_hit.is_none() && name == Some(filename) {
+            *filename_hit = Some(path);
         }
     }
     for subdir in subdirs {
-        if let Some(p) = find_file_recursive(&subdir, target) {
+        if let Some(p) = resolve_walk(&subdir, token, filename, filename_hit) {
             return Some(p);
         }
     }
     None
+}
+
+/// `true` when `content` has a leading `---` frontmatter block declaring
+/// `id: {token}` (exact, after trimming surrounding whitespace).
+fn frontmatter_id_matches(content: &str, token: &str) -> bool {
+    let Some(stripped) = content.strip_prefix("---\n") else {
+        return false;
+    };
+    let Some(end) = stripped.find("\n---") else {
+        return false;
+    };
+    stripped[..end].lines().any(|line| {
+        line.strip_prefix("id:")
+            .is_some_and(|rest| rest.trim() == token)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +381,49 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[test]
+    fn resolves_by_frontmatter_id() {
+        // A concept-graph node whose *filename* differs from its `id:` still
+        // resolves when referenced by id (`[[rt.entity.user]]`).
+        let dir = tempdir().unwrap();
+        let node = dir.path().join("node-42.md");
+        let mut f = std::fs::File::create(&node).unwrap();
+        writeln!(f, "---\nid: rt.entity.user\nkind: entity\n---\n# User").unwrap();
+        let result = resolve("rt.entity.user", &[dir.path()]);
+        assert!(result.is_some(), "id-frontmatter match must resolve");
+        assert_eq!(result.unwrap().file_name().unwrap(), "node-42.md");
+    }
+
+    #[test]
+    fn resolve_prefers_id_over_filename() {
+        // Two candidates: `{token}.md` by name, and another file whose
+        // frontmatter id equals the token. Documented precedence: id wins.
+        let dir = tempdir().unwrap();
+        // Filename match (no id), would-be precedence-2 winner.
+        write_file(dir.path(), "rt.entity.user.md");
+        // Id match under a different filename — must beat the filename hit.
+        let by_id = dir.path().join("canonical.md");
+        let mut f = std::fs::File::create(&by_id).unwrap();
+        writeln!(f, "---\nid: rt.entity.user\n---\n# canonical").unwrap();
+
+        let result = resolve("rt.entity.user", &[dir.path()]).expect("resolves");
+        assert_eq!(
+            result.file_name().unwrap(),
+            "canonical.md",
+            "frontmatter id must take precedence over filename"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_filename_without_id() {
+        // No frontmatter id anywhere — plain filename resolution still works.
+        let dir = tempdir().unwrap();
+        write_file(dir.path(), "my-note.md");
+        let result = resolve("my-note", &[dir.path()]);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().file_name().unwrap(), "my-note.md");
+    }
+
     // --- render_footer ---
 
     #[test]
@@ -330,7 +442,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let body = "References [[ghost-spec]] which does not exist.";
         let result = render_footer(body, &[dir.path()]);
-        assert!(result.contains("⚠ não resolvido"));
+        assert!(result.contains("⚠ unresolved"));
         assert!(result.contains("[ghost-spec](?)"));
     }
 

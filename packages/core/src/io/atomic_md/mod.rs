@@ -13,4 +13,4 @@ pub mod wikilink;
 
 pub use frontmatter::Frontmatter;
 pub use store::{MarkdownDoc, MarkdownStore};
-pub use wikilink::{find_backlinks, find_outgoing_links, render_footer, resolve};
+pub use wikilink::{find_backlinks, find_outgoing_links, render_footer, resolve, scan_links};

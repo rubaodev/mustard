@@ -26,9 +26,14 @@ use crate::commands::scan::graph;
 use std::path::PathBuf;
 
 /// Run `mustard-rt run graph-index`. Fail-open by design.
+///
+/// This is the explicit, side-effecting entry point: it calls
+/// [`graph::materialise_index`], which writes the `index.md` MOC and injects
+/// skill aliases. The pure [`graph::build_index`] (used by the resolver) never
+/// touches disk.
 pub fn run() {
     let project = PathBuf::from(project_dir());
-    let index = graph::build_index(&project);
+    let index = graph::materialise_index(&project);
     let pretty = serde_json::to_string_pretty(&index).unwrap_or_else(|_| "{}".to_string());
     println!("{pretty}");
 }

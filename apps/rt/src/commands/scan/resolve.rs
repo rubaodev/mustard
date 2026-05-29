@@ -380,13 +380,18 @@ fn strip_wikilink(raw: &str) -> String {
     s.strip_suffix("]]").unwrap_or(s).to_string()
 }
 
-/// Replace every `[[id]]` occurrence in `body` with the bare id. The
-/// resolver never hands the agent raw wikilink wire format — the body it
+/// Replace every concept-id `[[id]]` occurrence in `body` with the bare id.
+/// The resolver never hands the agent raw wikilink wire format — the body it
 /// receives is already-resolved prose.
+///
+/// Uses the single canonical `[[…]]` pairing (the same one
+/// [`mustard_core::io::atomic_md::scan_links`] uses) and the shared concept-id
+/// charset filter ([`graph::is_concept_id`]) — there is no private scanner
+/// here. A pair whose inner text is *not* a concept-id (e.g. `[[free text]]`)
+/// is passed through verbatim, matching the pre-unification behaviour.
 #[must_use]
 pub fn dereference_wikilinks(body: &str) -> String {
-    let edges = graph::extract_edges(body);
-    if edges.is_empty() {
+    if !body.contains("[[") {
         return body.to_string();
     }
     let mut out = String::with_capacity(body.len());
@@ -396,29 +401,40 @@ pub fn dereference_wikilinks(body: &str) -> String {
     while i < len {
         if bytes[i] == b'[' && i + 1 < len && bytes[i + 1] == b'[' {
             let start = i + 2;
-            let mut j = start;
-            while j < len {
-                let c = bytes[j];
-                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
-                    j += 1;
-                    continue;
+            // Canonical pairing: first `]]` after `[[`; reject newline-spanning.
+            if let Some(close) = find_close(bytes, start) {
+                let inner = &body[start..close];
+                if !inner.contains('\n') {
+                    let token = inner.trim();
+                    if graph::is_concept_id(token) {
+                        out.push_str(token);
+                        i = close + 2;
+                        continue;
+                    }
                 }
-                break;
-            }
-            if j > start && j + 1 < len && bytes[j] == b']' && bytes[j + 1] == b']' {
-                // Substitute `[[id]]` → `id` (bare).
-                if let Ok(name) = std::str::from_utf8(&bytes[start..j]) {
-                    out.push_str(name);
-                }
-                i = j + 2;
+                // Not a concept-id — emit the whole `[[…]]` span verbatim.
+                out.push_str(&body[i..close + 2]);
+                i = close + 2;
                 continue;
             }
         }
-        // Pass-through every byte we did not consume above.
         out.push(bytes[i] as char);
         i += 1;
     }
     out
+}
+
+/// Index of the first `]]` at or after `from`, or `None` when unclosed.
+fn find_close(bytes: &[u8], from: usize) -> Option<usize> {
+    let len = bytes.len();
+    let mut j = from;
+    while j + 1 < len {
+        if bytes[j] == b']' && bytes[j + 1] == b']' {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
 }
 
 /// Canonical scope JSON → SHA-256 hex. The canonicalisation sorts arrays so
@@ -751,6 +767,39 @@ mod tests {
         assert_eq!(out, "alpha foo.entity.bar beta baz.conv.qux gamma");
     }
 
+    /// Free-text `[[…]]` that is not a concept-id is left verbatim — only
+    /// namespaced concept-ids are dereferenced to bare ids.
+    #[test]
+    fn dereference_wikilinks_leaves_free_text_verbatim() {
+        let raw = "see [[my free note]] but deref [[rt.conv.scan]]";
+        let out = dereference_wikilinks(raw);
+        assert_eq!(out, "see [[my free note]] but deref rt.conv.scan");
+    }
+
+    /// A resolver closure must NOT write `.claude/graph/index.md`: the MOC
+    /// write moved to the explicit `graph-index` command. This guards against
+    /// the prior side-effect-on-dispatch regression.
+    #[test]
+    fn resolve_closure_does_not_write_moc() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        build_fixture(root);
+        let moc = root.join(".claude").join("graph").join("index.md");
+        assert!(!moc.exists(), "fixture seeds no MOC");
+
+        let scope = ResolveScope {
+            entities: vec!["user".to_string()],
+            ..ResolveScope::default()
+        };
+        let out = resolve_closure(root, &scope);
+        assert!(!out.closure.is_empty(), "closure is non-empty");
+
+        assert!(
+            !moc.exists(),
+            "resolve_closure must NOT create or rewrite the MOC"
+        );
+    }
+
     #[test]
     fn scope_hash_is_order_independent() {
         let a = ResolveScope {
@@ -823,6 +872,7 @@ mod tests {
             edges,
             warnings: Vec::new(),
             aliased_skills: Vec::new(),
+            kinds: BTreeMap::new(),
         };
         let walked = bfs_walk(&index, &["a".to_string()]);
         assert_eq!(walked.get("a"), Some(&0));

@@ -103,6 +103,12 @@ const BACKLINKS_OPEN: &str = "<!-- mustard:backlinks:start -->";
 const BACKLINKS_CLOSE: &str = "<!-- mustard:backlinks:end -->";
 
 /// The output of one graph-index build pass.
+///
+/// [`build_index`] is **pure**: it only reads `.claude/graph/` and returns this
+/// in-memory structure. Writing the `index.md` MOC and injecting skill aliases
+/// are *side effects* that live solely in the explicit `graph-index` command
+/// ([`materialise_index`]); a resolver cache-miss therefore never rewrites the
+/// MOC on disk.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct GraphIndex {
     /// `id → relative path under .claude/graph/`. Byte-stable ordering.
@@ -112,7 +118,13 @@ pub struct GraphIndex {
     /// Validation warnings — orphans + cycles. Each entry is a single line.
     pub warnings: Vec<String>,
     /// Skill files whose frontmatter was extended with an `aliases:` entry.
+    /// Populated only by the explicit `graph-index` command (the alias
+    /// injection is a write side effect, not part of the pure build).
     pub aliased_skills: Vec<String>,
+    /// `id → kind` (e.g. `entity`, `conv`, `skill`). Carried so the explicit
+    /// `graph-index` command can render the MOC without re-reading every node.
+    #[serde(skip)]
+    pub kinds: BTreeMap<String, String>,
 }
 
 /// Recursively collect every `.md` file under `dir`, sorted by relative path.
@@ -183,38 +195,31 @@ fn parse_frontmatter_kind(content: &str) -> String {
     "node".to_string()
 }
 
-/// Single-pass scan of `content` for `[[id]]` occurrences. Mirrors the
-/// `wikilink::extract_links` token shape (`[a-zA-Z0-9_\-\.]+`) but expanded
-/// to accept the `.` separator that namespaced concept-ids use.
+/// Extract every `[[id]]` concept-graph edge from `content`.
+///
+/// There is no second byte-scanner here: this consumes the single canonical
+/// `[[…]]` scanner ([`mustard_core::io::atomic_md::scan_links`]) and applies
+/// the concept-id charset filter ([`is_concept_id`]) on top. A token is kept
+/// as an edge only when every byte is `[a-zA-Z0-9_.-]` — the namespaced
+/// concept-id shape (`<sub>.<kind>.<slug>`). Free-text wikilinks such as
+/// `[[my note]]` (which the scanner returns verbatim) are dropped, exactly as
+/// the old restricted-charset scanner did.
 #[must_use]
 pub fn extract_edges(content: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let bytes = content.as_bytes();
-    let len = bytes.len();
-    let mut i = 0usize;
-    while i < len {
-        if bytes[i] == b'[' && i + 1 < len && bytes[i + 1] == b'[' {
-            let start = i + 2;
-            let mut j = start;
-            while j < len {
-                let c = bytes[j];
-                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
-                    j += 1;
-                    continue;
-                }
-                break;
-            }
-            if j > start && j + 1 < len && bytes[j] == b']' && bytes[j + 1] == b']' {
-                if let Ok(name) = std::str::from_utf8(&bytes[start..j]) {
-                    out.push(name.to_string());
-                }
-                i = j + 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    out
+    mustard_core::io::atomic_md::scan_links(content)
+        .into_iter()
+        .filter(|token| is_concept_id(token))
+        .collect()
+}
+
+/// `true` when every byte of `token` is in the concept-id charset
+/// `[a-zA-Z0-9_.-]` (and the token is non-empty). Mirrors the charset the
+/// pre-unification graph scanner accepted between `[[` and `]]`.
+pub(crate) fn is_concept_id(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.')
 }
 
 /// Detect cycles in the adjacency map. Returns the ids that participate in a
@@ -254,8 +259,13 @@ fn detect_cycles(edges: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     cycles.into_iter().collect()
 }
 
-/// Build the graph index from `<project_root>/.claude/graph/`. A missing
-/// directory degrades to an empty [`GraphIndex`] (no warnings, no panic).
+/// Build the graph index from `<project_root>/.claude/graph/` — **pure**.
+///
+/// Reads the vault, parses ids/kinds/edges, and records orphan + cycle
+/// warnings. Performs **no writes**: the `index.md` MOC and the skill-alias
+/// injection are side effects owned by the explicit `graph-index` command
+/// ([`materialise_index`]). A missing directory degrades to an empty
+/// [`GraphIndex`] (no warnings, no panic) — it is *not* created here.
 #[must_use]
 pub fn build_index(project_root: &Path) -> GraphIndex {
     let mut index = GraphIndex::default();
@@ -263,16 +273,13 @@ pub fn build_index(project_root: &Path) -> GraphIndex {
         return index;
     };
     let graph_dir = paths.graph_dir();
-    // Ensure the vault directory exists so the MOC is always materialised.
-    // A missing directory is the cold-start case; subsequent runs over an
-    // existing tree behave identically.
-    if !graph_dir.exists() && mfs::create_dir_all(&graph_dir).is_err() {
+    // A missing vault is the cold-start case → empty index, no disk mutation.
+    if !graph_dir.exists() {
         return index;
     }
 
-    let mut id_to_kind: BTreeMap<String, String> = BTreeMap::new();
     for (abs, rel) in collect_markdown(&graph_dir) {
-        // Skip the MOC itself — it has no `id:` and is regenerated each run.
+        // Skip the MOC itself — it has no `id:` and is regenerated on demand.
         if rel == "index.md" {
             continue;
         }
@@ -294,7 +301,7 @@ pub fn build_index(project_root: &Path) -> GraphIndex {
         let kind = parse_frontmatter_kind(&content);
         let raw_edges = extract_edges(&content);
         index.edges.insert(id.clone(), raw_edges);
-        id_to_kind.insert(id.clone(), kind);
+        index.kinds.insert(id.clone(), kind);
         index.nodes.insert(id, rel);
     }
 
@@ -316,13 +323,37 @@ pub fn build_index(project_root: &Path) -> GraphIndex {
             .push(format!("warning: cycle includes {cyc}"));
     }
 
-    // Inject `aliases:[id]` into matching `SKILL.md` files (best-effort).
-    let aliased = inject_skill_aliases(project_root, &index.nodes);
-    index.aliased_skills = aliased;
+    index
+}
 
-    // Render the MOC. Failures here are silent — the in-memory index still
+/// Build the index **and** materialise its side effects: ensure the vault
+/// directory exists, inject `aliases:[id]` into matching `SKILL.md` files, and
+/// write the `index.md` MOC. Returns the index with `aliased_skills` populated
+/// and any write failures appended to `warnings`.
+///
+/// This is the *only* entry point that writes to disk. It lives here (rather
+/// than as a free side effect of [`build_index`]) so the resolver — which calls
+/// [`build_index`] on every cache-miss — never rewrites the MOC. The explicit
+/// `graph-index` command is the sole caller.
+#[must_use]
+pub fn materialise_index(project_root: &Path) -> GraphIndex {
+    let Ok(paths) = ClaudePaths::for_project(project_root) else {
+        return GraphIndex::default();
+    };
+    let graph_dir = paths.graph_dir();
+    // Cold-start: create the vault so the MOC is always materialised.
+    if !graph_dir.exists() && mfs::create_dir_all(&graph_dir).is_err() {
+        return GraphIndex::default();
+    }
+
+    let mut index = build_index(project_root);
+
+    // Inject `aliases:[id]` into matching `SKILL.md` files (best-effort).
+    index.aliased_skills = inject_skill_aliases(project_root, &index.nodes);
+
+    // Render + write the MOC. Failures are silent — the in-memory index still
     // wins; the caller can inspect `warnings` for the failure.
-    let moc = render_moc(&index.nodes, &id_to_kind);
+    let moc = render_moc(&index.nodes, &index.kinds);
     let moc_path = graph_dir.join("index.md");
     if mfs::write_atomic(&moc_path, moc.as_bytes()).is_err() {
         index
@@ -832,6 +863,27 @@ mod tests {
         );
     }
 
+    /// The single canonical scanner sees every `[[…]]` token (footer context);
+    /// the graph consumer's id-charset filter then drops free-text tokens that
+    /// are not namespaced concept-ids — so the two systems share one scanner.
+    #[test]
+    fn extract_edges_filters_free_text_via_concept_id() {
+        let body = "free [[my note]] then id [[rt.conv.scan]] and [[bad/slash]]";
+        // The shared scanner finds all three tokens (footer-style).
+        let scanned = mustard_core::io::atomic_md::scan_links(body);
+        assert_eq!(
+            scanned,
+            vec![
+                "my note".to_string(),
+                "rt.conv.scan".to_string(),
+                "bad/slash".to_string(),
+            ]
+        );
+        // The graph filter keeps only the concept-id.
+        let edges = extract_edges(body);
+        assert_eq!(edges, vec!["rt.conv.scan".to_string()]);
+    }
+
     #[test]
     fn parse_frontmatter_id_handles_minimal_block() {
         let body = "---\nid: foo.entity.bar\nkind: entity\n---\nbody";
@@ -876,9 +928,21 @@ mod tests {
             "---\nid: foo.entity.f\nkind: entity\n---\n# F\n[[foo.entity.e]]",
         );
 
+        // Pure build: indexes every node but writes nothing to disk.
         let index = build_index(root);
         assert_eq!(index.nodes.len(), 6, "every well-formed node indexed");
-        assert!(root.join(".claude/graph/index.md").exists(), "MOC written");
+        assert!(
+            !root.join(".claude/graph/index.md").exists(),
+            "pure build_index must NOT write the MOC"
+        );
+
+        // The MOC is materialised only by the explicit side-effecting entry.
+        let materialised = materialise_index(root);
+        assert_eq!(materialised.nodes.len(), 6, "materialise indexes the same set");
+        assert!(
+            root.join(".claude/graph/index.md").exists(),
+            "materialise_index writes the MOC"
+        );
 
         // Edge id-table coverage: every non-orphan edge target is in the table.
         for (from, neighbors) in &index.edges {
@@ -1099,13 +1163,21 @@ mod tests {
             "---\nid: _root.skill.my-skill\nkind: skill\n---\n# my-skill\n",
         );
 
-        let first = build_index(root);
+        // Alias injection is a write side effect → only `materialise_index`.
+        let first = materialise_index(root);
         assert_eq!(first.aliased_skills, vec!["_root.skill.my-skill".to_string()]);
         let after_first = std::fs::read_to_string(&skill).unwrap();
         assert!(after_first.contains("aliases: [_root.skill.my-skill]"));
 
-        // Second run is a no-op — the alias is already there.
-        let second = build_index(root);
+        // The pure build never injects aliases (no disk mutation).
+        let pure = build_index(root);
+        assert!(
+            pure.aliased_skills.is_empty(),
+            "pure build_index must not inject aliases"
+        );
+
+        // Second materialise is a no-op — the alias is already there.
+        let second = materialise_index(root);
         assert!(second.aliased_skills.is_empty());
         let after_second = std::fs::read_to_string(&skill).unwrap();
         assert_eq!(after_first, after_second, "second run must not rewrite");
