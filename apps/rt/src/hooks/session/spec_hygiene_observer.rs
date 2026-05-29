@@ -207,6 +207,22 @@ fn is_active_spec(spec_md: &str) -> bool {
     }
 }
 
+/// `is_active_spec` with `meta.json` as the single source of truth.
+///
+/// Resolution order:
+/// 1. `meta.json#outcome` beside `spec_md_path` — `Active` (or absent) is
+///    active; any terminal outcome is not.
+/// 2. Legacy fallback: the `.md` header via [`is_active_spec`] for un-migrated
+///    specs (or specs whose sidecar carries no outcome).
+fn is_active_spec_at(spec_md_path: &Path, spec_md: &str) -> bool {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_md_path) {
+        if let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+            return outcome == mustard_core::Outcome::Active;
+        }
+    }
+    is_active_spec(spec_md)
+}
+
 /// Compute AC evidence from a spec body: `(ac_pct, ac_complete, has_ac)`.
 ///
 /// Counts checkbox lines (`- [ ]` / `- [x]`) inside the `## Acceptance
@@ -515,7 +531,9 @@ fn run_hygiene(cwd: &str) {
             continue;
         };
         // Idempotence: a terminal spec is not active → skip silently.
-        if !is_active_spec(&spec_md) {
+        // `meta.json` is the single source of truth; the `.md` header is the
+        // legacy fallback for un-migrated specs.
+        if !is_active_spec_at(&spec_md_path, &spec_md) {
             continue;
         }
         process_spec(cwd, spec_name, &path, &spec_md_path, &spec_md, mode);

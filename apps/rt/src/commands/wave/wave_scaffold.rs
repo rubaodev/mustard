@@ -27,27 +27,11 @@
 //! reports which were created vs skipped.
 
 use mustard_core::io::fs;
-use mustard_core::domain::spec;
-use mustard_core::{Flags, Meta, Outcome, SpecState, Stage, write_meta};
+use mustard_core::{Meta, write_meta};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-
-/// The canonical three-line lifecycle header for a freshly scaffolded spec at
-/// `stage` (always `Outcome::Active`, no flags), terminated by `\n` per line.
-/// Wave plans / sub-plan / review / qa scaffolds all start active — a `queued`
-/// or `draft` sub-plan is a not-yet-started Plan item, so its canonical stage
-/// stays `Plan`. Delegates the spelling to [`mustard_core::domain::spec`].
-fn header_block(stage: Stage) -> String {
-    let state = SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(SpecState {
-        stage: Stage::Plan,
-        outcome: Outcome::Active,
-        flags: Flags::default(),
-    });
-    let [s, o, f] = spec::serialize_header(&state);
-    format!("{s}\n{o}\n{f}\n")
-}
 
 /// One wave entry inside the plan JSON.
 ///
@@ -139,15 +123,13 @@ pub(crate) fn headings() -> Headings<'static> {
     }
 }
 
-/// Render the wave-plan markdown index.
+/// Render the wave-plan markdown index. Lifecycle metadata (stage / scope /
+/// total waves) lives only in the `meta.json` sidecar — the markdown is pure
+/// narrative + the wave table.
 pub(crate) fn render_wave_plan(plan: &Plan, hd: &Headings<'_>) -> String {
-    let total = plan.total_waves.unwrap_or(plan.waves.len() as u32);
     let mut out = String::new();
     out.push_str(hd.wave_plan_title);
     out.push_str("\n\n");
-    out.push_str(&header_block(Stage::Plan));
-    out.push_str("### Scope: full (wave plan)\n");
-    let _ = writeln!(out, "### Total waves: {total}\n");
     out.push_str(hd.wave_table_caption);
     out.push_str("\n\n");
     out.push_str(hd.table_header);
@@ -186,12 +168,8 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
     let name = wave_name(w);
     let mut out = String::new();
     let _ = writeln!(out, "# {name}\n");
-    let _ = writeln!(out, "### {p}: [[{parent}]]", p = hd.parent);
-    // Both `draft` (wave 1) and `queued` (later waves) are not-yet-started Plan
-    // items in the canonical model — the wave-plan tracks progression via
-    // events, not a per-wave header status word.
-    out.push_str(&header_block(Stage::Plan));
-    out.push('\n');
+    // Lifecycle metadata (stage / parent) lives only in the `meta.json` sidecar;
+    // the parent is still surfaced as a body link in the `## Network` section.
     let _ = writeln!(out, "{}\n", hd.summary);
     if w.summary.is_empty() {
         let _ = writeln!(out, "{}\n", hd.summary_placeholder);
@@ -212,14 +190,12 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
     out
 }
 
-/// Render `review/spec.md`.
-fn render_review(parent: &str, hd: &Headings<'_>) -> String {
+/// Render `review/spec.md`. Lifecycle metadata (stage / parent) lives only in
+/// the `meta.json` sidecar.
+fn render_review(_parent: &str, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.review_title);
     out.push_str("\n\n");
-    let _ = writeln!(out, "### {p}: [[{parent}]]", p = hd.parent);
-    out.push_str(&header_block(Stage::Plan));
-    out.push('\n');
     out.push_str(hd.review_intro);
     out.push_str("\n\n");
     out.push_str("## Checklist\n\n");
@@ -234,14 +210,12 @@ fn render_review(parent: &str, hd: &Headings<'_>) -> String {
     out
 }
 
-/// Render `qa/spec.md`.
-fn render_qa(parent: &str, hd: &Headings<'_>) -> String {
+/// Render `qa/spec.md`. Lifecycle metadata (stage / parent) lives only in the
+/// `meta.json` sidecar.
+fn render_qa(_parent: &str, hd: &Headings<'_>) -> String {
     let mut out = String::new();
     out.push_str(hd.qa_title);
     out.push_str("\n\n");
-    let _ = writeln!(out, "### {p}: [[{parent}]]", p = hd.parent);
-    out.push_str(&header_block(Stage::Plan));
-    out.push('\n');
     out.push_str(hd.qa_intro);
     out.push_str("\n\n");
     out.push_str("## Acceptance Criteria (consolidated)\n\n");
@@ -524,19 +498,22 @@ mod tests {
     }
 
     #[test]
-    fn renders_wave_spec_with_parent_and_status() {
+    fn renders_wave_spec_with_parent_link_and_no_header() {
         let hd = headings();
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
-        assert!(s1.contains("### Parent: [[epic-x]]"));
-        // New canonical header: every freshly scaffolded wave is Plan + Active.
-        assert!(s1.contains("### Stage: Plan"));
-        assert!(s1.contains("### Outcome: Active"));
+        // Lifecycle metadata is NOT in the markdown — no `### Stage:`/`### Parent:`
+        // header lines. The parent is surfaced only as a body link in `## Network`.
+        assert!(!s1.contains("### Stage:"));
+        assert!(!s1.contains("### Outcome:"));
+        assert!(!s1.contains("### Parent:"));
+        assert!(s1.contains("## Network"));
+        assert!(s1.contains("[[epic-x]]"));
         // Internal artefact → EN summary heading, never PT.
         assert!(s1.contains("## Summary"));
         assert!(!s1.contains("## Resumo"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
-        assert!(s2.contains("### Stage: Plan"));
+        assert!(!s2.contains("### Stage:"));
         assert!(s2.contains("[[wave-1-general]]"));
         assert!(s2.contains("## Network"));
         assert!(s2.contains("Depends on"));
@@ -575,12 +552,16 @@ mod tests {
         assert!(spec_dir.join("review").join("spec.md").exists());
         assert!(spec_dir.join("qa").join("spec.md").exists());
 
-        // Validate wave-1 spec content has the expected headings & wikilinks.
+        // Validate wave-1 spec content has the expected headings & wikilinks,
+        // and that no lifecycle header leaked into the markdown.
         let s1 =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
-        assert!(s1.contains("### Parent: [[epic-x]]"));
-        assert!(s1.contains("### Stage: Plan"));
+        assert!(!s1.contains("### Stage:"));
+        assert!(!s1.contains("### Parent:"));
+        assert!(s1.contains("[[epic-x]]"));
         assert!(s1.contains("## Network"));
+        // meta.json carries the lifecycle metadata instead.
+        assert!(spec_dir.join("wave-1-general").join("meta.json").exists());
 
         // Second run is idempotent — no overwrites, no errors.
         run(

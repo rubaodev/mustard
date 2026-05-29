@@ -112,8 +112,10 @@ fn state_spec_name(path: &Path) -> Option<String> {
 /// `true` if a spec is done — flat layout (wave-2 of
 /// `2026-05-21-flatten-spec-layout-and-multi-collab`) reads the spec dir
 /// directly under `.claude/spec/{name}/`, with no `active/` / `completed/`
-/// buckets. Done means either the directory is gone or the `### Status:`
-/// header in `spec.md` / `wave-plan.md` reads `completed` / `done`.
+/// buckets. Done means either the directory is gone or the spec's lifecycle
+/// metadata reads `Completed`. **`meta.json` is the single source of truth**;
+/// the legacy `### Status:` / `### Outcome:` header in `spec.md` /
+/// `wave-plan.md` is the fallback for un-migrated specs.
 fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
     // ClaudePaths-exempt: `claude_dir` is seam-produced upstream; re-deriving
     // via `for_project`/`for_spec` here would be circular and would add name
@@ -123,6 +125,13 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
         // Spec deleted → treat as done.
         return true;
     }
+    // meta.json wins: a terminal `Completed` outcome marks the spec done.
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_root.join("spec.md")) {
+        if let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+            return outcome == mustard_core::Outcome::Completed;
+        }
+    }
+    // Legacy fallback: read the lifecycle header from wave-plan.md / spec.md.
     let wave_plan = spec_root.join("wave-plan.md");
     if fs::exists(&wave_plan) {
         return fs::read_to_string(&wave_plan)
@@ -140,11 +149,11 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
 }
 
 /// `true` when a spec's lifecycle header resolves to the terminal `Completed`
-/// outcome. Delegates to the canonical [`mustard_core::domain::spec`] parser, so
-/// the new `### Stage:`/`### Outcome:` header and every legacy `### Status:`
-/// shape (`completed`/`done`/`closed`) are recognised. Fail-open: an
-/// unparseable header is treated as not-done (the spec stays, its state file is
-/// not reaped).
+/// outcome. Legacy fallback only — see [`is_spec_done`]. Delegates to the
+/// canonical [`mustard_core::domain::spec`] parser, so the new `### Stage:`/
+/// `### Outcome:` header and every legacy `### Status:` shape
+/// (`completed`/`done`/`closed`) are recognised. Fail-open: an unparseable
+/// header is treated as not-done (the spec stays, its state file is not reaped).
 fn header_marks_done(content: &str) -> bool {
     spec::parse_state(content)
         .is_some_and(|s| s.outcome == mustard_core::Outcome::Completed)

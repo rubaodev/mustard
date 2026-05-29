@@ -102,8 +102,11 @@ pub(super) fn normalise_stage(raw: &str) -> String {
 
 /// A stub is `Stage: Plan` with no `## Files`/`## Arquivos`/`## Tasks`/`## Tarefas`
 /// section in the first ~30 lines.
-pub(super) fn detect_stub(head: &str) -> bool {
-    let is_plan = parse_header_value(head, "stage")
+///
+/// The stage is resolved **`meta.json`-first** (via [`detect_stage`]); the
+/// `### Stage:` header in `head` is the legacy fallback for un-migrated specs.
+pub(super) fn detect_stub(op_path: &Path, head: &str) -> bool {
+    let is_plan = detect_stage(op_path, head, None)
         .is_some_and(|s| s.eq_ignore_ascii_case("plan"));
     if !is_plan {
         return false;

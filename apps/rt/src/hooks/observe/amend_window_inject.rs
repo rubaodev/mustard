@@ -557,12 +557,24 @@ impl Check for AmendWindowInject {
     }
 }
 
-/// Retrieve the `lang` field from the spec header (`### Lang:`) via filesystem.
-/// Fail-open: returns `None` when the spec file is unreadable or lacks the field.
+/// Retrieve the spec's `lang` from the filesystem.
+///
+/// Resolution — **`meta.json` is the single source of truth**:
+/// 1. `meta.json#lang` beside the spec.
+/// 2. Legacy fallback: the `### Lang:` header in `spec.md` for un-migrated specs.
+///
+/// Fail-open: returns `None` when neither source declares a non-empty `lang`.
 fn derive_spec_lang_from_header(project_dir: &str, spec_id: &str) -> Option<String> {
     let paths = ClaudePaths::for_project(project_dir).ok()?;
     let sp = paths.for_spec(spec_id).ok()?;
-    let text = std::fs::read_to_string(sp.spec_md_path()).ok()?;
+    let spec_md = sp.spec_md_path();
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md) {
+        if let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
+            return Some(lang);
+        }
+    }
+    // Legacy fallback: the `### Lang:` header in the markdown.
+    let text = std::fs::read_to_string(&spec_md).ok()?;
     for line in text.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("### Lang:") {

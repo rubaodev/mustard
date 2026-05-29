@@ -250,7 +250,7 @@ pub fn run(spec: &str, json_flag: bool) {
         .flatten()
         .unwrap_or_default();
     out.stage = detect_stage(&op_path, &head, view.as_ref());
-    out.is_stub = detect_stub(&head);
+    out.is_stub = detect_stub(&op_path, &head);
 
     // --- specSummary: first non-empty line of `## Resumo` / `## Summary`. ---
     let body = op_path
@@ -446,12 +446,15 @@ mod tests {
 
     #[test]
     fn detect_stub_requires_plan_stage_and_no_files_tasks() {
+        // No meta.json beside this path → `detect_stage` falls back to the
+        // legacy `### Stage:` header in the supplied `head` text.
+        let no_meta = std::path::Path::new("/nonexistent/spec/path/spec.md");
         let stub = "### Stage: Plan\n### Outcome: Active\n\n## Resumo\n…\n";
-        assert!(detect_stub(stub));
+        assert!(detect_stub(no_meta, stub));
         let not_stub = "### Stage: Plan\n## Files\n- a.rs\n";
-        assert!(!detect_stub(not_stub));
+        assert!(!detect_stub(no_meta, not_stub));
         let not_plan = "### Stage: Execute\n";
-        assert!(!detect_stub(not_plan));
+        assert!(!detect_stub(no_meta, not_plan));
     }
 
     #[test]

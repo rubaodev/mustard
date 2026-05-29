@@ -361,7 +361,7 @@ fn write_wave_plan(
     let mut plan = String::new();
     let waveplan_title = translate("waveplan.title", lang).replace("{title}", &input.title);
     let _ = write!(plan, "# {waveplan_title}\n\n");
-    plan.push_str("### Stage: Plan\n### Outcome: Active\n### Flags: \n\n");
+    // No lifecycle header block — lifecycle metadata lives only in meta.json.
     let _ = write!(
         plan,
         "## {table_heading}\n\n| # | {spec_col} | {role_col} | {summary_col} |\n|---|---|---|---|\n",
@@ -377,6 +377,14 @@ fn write_wave_plan(
         .map_err(|e| format!("wave-plan.md: {e}"))?;
     written.push(output.join("wave-plan.md").display().to_string());
 
+    // The wave-plan's lifecycle metadata lives only in meta.json. The top-level
+    // spec dir already carries its own meta.json (written by `spec-draft::run`);
+    // mark it as the wave-plan owner so consumers can read `isWavePlan`.
+    let parent_name = output
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
     let wave_title_tpl = translate("wave.title_placeholder", lang);
     let context_heading = translate("heading.spec.context", lang);
     let tasks_heading = translate("heading.spec.tasks", lang);
@@ -388,7 +396,7 @@ fn write_wave_plan(
         let title = wave_title_tpl.replace("{n}", &i.to_string());
         let mut body = String::new();
         let _ = write!(body, "# {title}\n\n");
-        body.push_str("### Stage: Plan\n### Outcome: Active\n### Flags: \n\n");
+        // No lifecycle header block — lifecycle metadata lives only in meta.json.
         let _ = write!(
             body,
             "## {context_heading}\n\n{fill}\n\n## {tasks_heading}\n\n- [ ] T1 — ...\n\n## {ac_heading}\n\n"
@@ -401,6 +409,27 @@ fn write_wave_plan(
         mfs::write_atomic(&path, body.as_bytes())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         written.push(path.display().to_string());
+
+        // Lifecycle metadata for the wave lives only in meta.json (Plan/Active,
+        // parented to the wave-plan spec). Fail-soft: a meta write failure is
+        // reported but does not abort the rest of the layout.
+        let wave_meta = Meta {
+            stage: Some("Plan".into()),
+            outcome: Some("Active".into()),
+            phase: None,
+            scope: None,
+            lang: input.lang.clone(),
+            checkpoint: None,
+            parent: Some(parent_name.clone()),
+            is_wave_plan: None,
+            total_waves: None,
+            raw: serde_json::Value::Null,
+        };
+        if let Err(e) = spec_scaffold::write_meta_json(&wave_dir, &wave_meta) {
+            eprintln!("spec-draft: WARN: meta.json write failed for {} — {e}", wave_dir.display());
+        } else {
+            written.push(wave_dir.join("meta.json").display().to_string());
+        }
     }
     Ok(written)
 }

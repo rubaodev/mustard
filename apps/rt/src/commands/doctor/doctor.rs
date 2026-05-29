@@ -1029,14 +1029,23 @@ fn render_report_json(results: &[CheckResult]) {
 // Check: status-consistency (W2 — spec-status-consistency)
 // ---------------------------------------------------------------------------
 
-/// Check every spec directory under `.claude/spec/` for:
-/// - Missing `### Stage:` / `### Outcome:` headers in `spec.md`.
-/// - Divergence between `spec.md` headers and `meta.json` fields.
-/// - Invalid `(Stage, Outcome)` combinations.
+/// Check every spec directory under `.claude/spec/` for lifecycle consistency.
 ///
-/// Recurses into `wave-N-*/` subdirectories within each spec.
-/// Returns a single FAIL result listing every problematic path, or OK when
-/// all specs are consistent.
+/// **`meta.json` is the single source of truth.** A spec is consistent when its
+/// `meta.json` declares a valid `(stage, outcome)` combination. The `spec.md`
+/// markdown carries no lifecycle header any more, so its content is never a
+/// FAIL source — a *legacy* `### Stage:` / `### Outcome:` header that diverges
+/// from `meta.json` is surfaced as a non-fatal advisory (it means the spec
+/// predates the strip-headers migration; run `migrate-to-meta --strip-headers`).
+///
+/// FAIL conditions (all driven by `meta.json`):
+/// - `meta.json` missing.
+/// - `meta.json` missing `stage` / `outcome` fields.
+/// - Invalid `(stage, outcome)` combination in `meta.json`.
+///
+/// Recurses into `wave-N-*/` subdirectories within each spec. Returns a single
+/// FAIL result listing every problematic path, a WARN when only legacy-header
+/// drift was seen, or OK when all specs are consistent.
 fn check_status_consistency(claude_dir: &Path) -> CheckResult {
     use mustard_core::{header_field, read_meta};
 
@@ -1049,53 +1058,73 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
         )
     }
 
-    /// Check one (spec.md, meta.json) pair. Returns a list of FAIL strings.
-    fn check_pair(spec_md_path: &std::path::Path) -> Vec<String> {
+    /// Per-pair outcome: hard FAILs and soft advisory WARNs (legacy drift).
+    #[derive(Default)]
+    struct PairCheck {
+        fails: Vec<String>,
+        warns: Vec<String>,
+    }
+
+    /// Check one spec dir. `meta.json` is authoritative; the `spec.md` header
+    /// (when a legacy one is still present) is only a non-fatal drift advisory.
+    fn check_pair(spec_md_path: &std::path::Path) -> PairCheck {
+        let mut out = PairCheck::default();
         let Some(spec_dir) = spec_md_path.parent() else {
-            return vec![format!("{}: no parent dir", spec_md_path.display())];
+            out.fails.push(format!("{}: no parent dir", spec_md_path.display()));
+            return out;
         };
         let label = spec_md_path.display().to_string();
 
-        let content = match fs::read_to_string(spec_md_path) {
-            Ok(c) => c,
-            Err(e) => return vec![format!("{label}: cannot read spec.md: {e}")],
-        };
-
-        let stage_in_spec = header_field(&content, "Stage");
-        let outcome_in_spec = header_field(&content, "Outcome");
-
-        // Missing headers.
-        let (Some(stage_spec), Some(outcome_spec)) = (stage_in_spec, outcome_in_spec) else {
-            return vec![format!("{label}: missing headers in spec.md")];
-        };
-
-        // Invalid combo.
-        if !is_valid_combo(&stage_spec, &outcome_spec) {
-            return vec![format!("{label}: invalid combo stage={stage_spec:?} outcome={outcome_spec:?}")];
-        }
-
-        // meta.json divergence.
+        // meta.json is the single source of truth.
         let meta_path = spec_dir.join("meta.json");
         if !meta_path.exists() {
-            return vec![format!("{label}: meta.json missing")];
+            out.fails.push(format!("{label}: meta.json missing"));
+            return out;
         }
         let meta = read_meta(&meta_path).unwrap_or_default();
         let stage_meta = meta.stage.as_deref().unwrap_or("").to_string();
         let outcome_meta = meta.outcome.as_deref().unwrap_or("").to_string();
 
         if stage_meta.is_empty() || outcome_meta.is_empty() {
-            return vec![format!("{label}: meta.json missing stage/outcome fields \
-                (stage={stage_meta:?}, outcome={outcome_meta:?})")];
+            out.fails.push(format!(
+                "{label}: meta.json missing stage/outcome fields \
+                 (stage={stage_meta:?}, outcome={outcome_meta:?})"
+            ));
+            return out;
         }
 
-        if !stage_spec.eq_ignore_ascii_case(&stage_meta)
-            || !outcome_spec.eq_ignore_ascii_case(&outcome_meta)
-        {
-            return vec![format!("{label}: stage divergence: spec.md={stage_spec:?}/{outcome_spec:?}, \
-                meta.json={stage_meta:?}/{outcome_meta:?}")];
+        if !is_valid_combo(&stage_meta, &outcome_meta) {
+            out.fails.push(format!(
+                "{label}: meta.json invalid combo stage={stage_meta:?} outcome={outcome_meta:?}"
+            ));
+            return out;
         }
 
-        vec![]
+        // Legacy advisory: a stale `### Stage:` / `### Outcome:` header that
+        // diverges from meta.json is a WARN, not a FAIL — the markdown should
+        // no longer carry a lifecycle header at all.
+        if let Ok(content) = fs::read_to_string(spec_md_path) {
+            let stage_spec = header_field(&content, "Stage");
+            let outcome_spec = header_field(&content, "Outcome");
+            if let (Some(stage_spec), Some(outcome_spec)) = (stage_spec, outcome_spec) {
+                if !stage_spec.eq_ignore_ascii_case(&stage_meta)
+                    || !outcome_spec.eq_ignore_ascii_case(&outcome_meta)
+                {
+                    out.warns.push(format!(
+                        "{label}: legacy header drift: spec.md={stage_spec:?}/{outcome_spec:?}, \
+                         meta.json={stage_meta:?}/{outcome_meta:?} \
+                         (run `migrate-to-meta --strip-headers`)"
+                    ));
+                } else {
+                    out.warns.push(format!(
+                        "{label}: legacy lifecycle header still present in spec.md \
+                         (run `migrate-to-meta --strip-headers`)"
+                    ));
+                }
+            }
+        }
+
+        out
     }
 
     // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
@@ -1106,7 +1135,13 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
     };
 
     let mut fails: Vec<String> = Vec::new();
+    let mut warns: Vec<String> = Vec::new();
     let mut scanned = 0usize;
+
+    let mut absorb = |pc: PairCheck| {
+        fails.extend(pc.fails);
+        warns.extend(pc.warns);
+    };
 
     for entry in entries {
         if !entry.is_dir {
@@ -1116,7 +1151,7 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
         let parent_spec_md = entry.path.join("spec.md");
         if parent_spec_md.exists() {
             scanned += 1;
-            fails.extend(check_pair(&parent_spec_md));
+            absorb(check_pair(&parent_spec_md));
         }
         // Recurse into wave-N-* subdirectories.
         if let Ok(sub_entries) = fs::read_dir(&entry.path) {
@@ -1134,7 +1169,7 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
                 let wave_spec_md = sub.path.join("spec.md");
                 if wave_spec_md.exists() {
                     scanned += 1;
-                    fails.extend(check_pair(&wave_spec_md));
+                    absorb(check_pair(&wave_spec_md));
                 }
             }
         }
@@ -1143,13 +1178,17 @@ fn check_status_consistency(claude_dir: &Path) -> CheckResult {
     if scanned == 0 {
         return CheckResult::skip("status-consistency", "no spec.md files found");
     }
-    if fails.is_empty() {
-        let mut r = CheckResult::ok("status-consistency");
-        r.details.push(format!("scanned {scanned} spec(s) — all consistent"));
-        r
-    } else {
-        CheckResult::fail("status-consistency", fails)
+    if !fails.is_empty() {
+        // Surface advisory warns alongside the hard fails for context.
+        fails.extend(warns);
+        return CheckResult::fail("status-consistency", fails);
     }
+    if !warns.is_empty() {
+        return CheckResult::warn("status-consistency", warns);
+    }
+    let mut r = CheckResult::ok("status-consistency");
+    r.details.push(format!("scanned {scanned} spec(s) — all consistent"));
+    r
 }
 
 #[cfg(test)]
@@ -1157,7 +1196,27 @@ mod status_consistency_tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn make_spec_dir(
+    /// Write a spec dir with a header-less `spec.md` (pure narrative) and a
+    /// `meta.json` — the canonical post-migration shape.
+    fn make_spec_meta_only(
+        root: &std::path::Path,
+        name: &str,
+        meta_stage: &str,
+        meta_outcome: &str,
+    ) {
+        let spec_dir = root.join(".claude").join("spec").join(name);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), format!("# {name}\n\n## Body\n")).unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            format!(r#"{{"stage":"{meta_stage}","outcome":"{meta_outcome}"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// Write a spec dir that still carries a legacy `### Stage:`/`### Outcome:`
+    /// header in `spec.md` alongside its `meta.json` (un-migrated shape).
+    fn make_spec_with_legacy_header(
         root: &std::path::Path,
         name: &str,
         spec_stage: &str,
@@ -1179,34 +1238,51 @@ mod status_consistency_tests {
         .unwrap();
     }
 
+    /// Canonical post-migration spec (meta-only, valid combo) → OK.
     #[test]
-    fn doctor_status_consistency_closed_followup_ok() {
+    fn doctor_status_consistency_meta_only_closed_followup_ok() {
         let dir = tempdir().unwrap();
-        make_spec_dir(dir.path(), "fu-spec", "Close", "Active", "Close", "Active");
+        make_spec_meta_only(dir.path(), "fu-spec", "Close", "Active");
         let claude_dir = dir.path().join(".claude");
         let result = check_status_consistency(&claude_dir);
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }
 
+    /// Invalid `(stage, outcome)` in meta.json → FAIL.
     #[test]
-    fn doctor_status_consistency_invalid_combo_fail() {
+    fn doctor_status_consistency_invalid_meta_combo_fail() {
         let dir = tempdir().unwrap();
-        make_spec_dir(dir.path(), "bad-spec", "Analyze", "Cancelled", "Analyze", "Cancelled");
+        make_spec_meta_only(dir.path(), "bad-spec", "Analyze", "Cancelled");
         let claude_dir = dir.path().join(".claude");
         let result = check_status_consistency(&claude_dir);
         assert_eq!(result.status, Status::Fail, "{:?}", result.details);
         assert!(result.details.iter().any(|d| d.contains("invalid combo")), "{:?}", result.details);
     }
 
+    /// meta.json missing entirely → FAIL.
     #[test]
-    fn doctor_status_consistency_divergence_fail() {
+    fn doctor_status_consistency_missing_meta_fail() {
         let dir = tempdir().unwrap();
-        make_spec_dir(dir.path(), "div-spec", "Execute", "Active", "Plan", "Active");
+        let spec_dir = dir.path().join(".claude").join("spec").join("no-meta");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# no-meta\n\n## Body\n").unwrap();
         let claude_dir = dir.path().join(".claude");
         let result = check_status_consistency(&claude_dir);
         assert_eq!(result.status, Status::Fail, "{:?}", result.details);
+        assert!(result.details.iter().any(|d| d.contains("meta.json missing")), "{:?}", result.details);
+    }
+
+    /// A legacy `spec.md` header that diverges from meta.json is now an
+    /// advisory WARN (not a FAIL) — meta.json is authoritative.
+    #[test]
+    fn doctor_status_consistency_legacy_header_drift_warns() {
+        let dir = tempdir().unwrap();
+        make_spec_with_legacy_header(dir.path(), "div-spec", "Execute", "Active", "Plan", "Active");
+        let claude_dir = dir.path().join(".claude");
+        let result = check_status_consistency(&claude_dir);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
         let msg = result.details.join(" ");
-        assert!(msg.contains("Execute") && msg.contains("Plan"), "{msg}");
+        assert!(msg.contains("legacy header drift"), "{msg}");
     }
 }
 

@@ -558,13 +558,18 @@ fn read_spec_events(cwd: &str, spec_name: &str) -> Vec<HarnessEvent> {
     read_harness_events_from_ndjson_dir(&sp.events_dir())
 }
 
-/// Determine whether a spec is completed/closed by reading its `spec.md`
-/// header (`### Stage:` / `### Outcome:`). Used as a fallback when the NDJSON
-/// event log contains no `pipeline.status` event for the spec.
+/// Determine whether a spec is completed/closed by reading its lifecycle
+/// metadata. Used as a fallback when the NDJSON event log contains no
+/// `pipeline.status` event for the spec.
 ///
-/// Returns `true` when the header declares a terminal state (Completed,
-/// Cancelled, Superseded). Returns `false` on any read/parse error (fail-open:
-/// the gate continues running rather than silently blocking all edits).
+/// **`meta.json` is the single source of truth** (`#outcome`); the legacy
+/// `### Stage:` / `### Outcome:` `spec.md` header is the fallback for
+/// un-migrated specs.
+///
+/// Returns `true` when the metadata declares a terminal state (Completed,
+/// Cancelled, Superseded, …). Returns `false` on any read/parse error
+/// (fail-open: the gate continues running rather than silently blocking all
+/// edits).
 fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
     use mustard_core::domain::spec;
     let Ok(cp) = ClaudePaths::for_project(cwd) else {
@@ -573,7 +578,15 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
     let Ok(sp) = cp.for_spec(spec_name) else {
         return false;
     };
-    let Ok(text) = std::fs::read_to_string(sp.spec_md_path()) else {
+    let spec_md = sp.spec_md_path();
+    // meta.json wins: a non-`Active` outcome is terminal.
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md) {
+        if let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+            return outcome != mustard_core::Outcome::Active;
+        }
+    }
+    // Legacy fallback: read the lifecycle header from the markdown.
+    let Ok(text) = std::fs::read_to_string(&spec_md) else {
         return false;
     };
     match spec::parse_state(&text) {

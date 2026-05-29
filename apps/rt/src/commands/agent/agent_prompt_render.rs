@@ -333,11 +333,23 @@ fn scan_agent_path(project: &Path, subproject: &str) -> Option<PathBuf> {
         .map(|p| p.agents_dir().join(format!("{name}-impl.md")))
 }
 
-/// Extract the `### Lang:` header value from a spec file. Defaults to
-/// `"en-US"` (BCP-47). Legacy short codes (`pt` / `en`) are tolerated on read
-/// and returned verbatim — `mustard_core::SupportedLocale::from_str` is the canonical
-/// parser for downstream consumers.
+/// Resolve the spec's narrative locale. Defaults to `"en-US"` (BCP-47).
+///
+/// Resolution — **`meta.json` is the single source of truth**:
+/// 1. `meta.json#lang` beside the spec.
+/// 2. Legacy fallback: the `### Lang:` header in `spec.md` (first 30 lines)
+///    for un-migrated specs.
+///
+/// Legacy short codes (`pt` / `en`) are tolerated on read and returned
+/// verbatim — `mustard_core::SupportedLocale::from_str` is the canonical parser
+/// for downstream consumers.
 fn read_spec_lang(spec_path: &Path) -> String {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_path) {
+        if let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
+            return lang;
+        }
+    }
+    // Legacy fallback: the `### Lang:` header in the markdown.
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
     for line in text.lines().take(30) {
         let trimmed = line.trim_start();

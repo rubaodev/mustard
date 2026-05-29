@@ -55,6 +55,34 @@ fn parse_header(text: &str) -> Header {
     Header { status, name, lang }
 }
 
+/// Override the `status` + `lang` of a `Header` from the `meta.json` sidecar
+/// beside `spec_file` — the single source of truth. Fields the sidecar does not
+/// declare keep the legacy `.md`-header value `parse_header` produced. The
+/// `name` (`# Title`) is always read from the markdown (it is narrative, not
+/// metadata).
+fn apply_meta_override(mut header: Header, spec_file: &Path) -> Header {
+    let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_file) else {
+        return header;
+    };
+    // status: project the meta stage+outcome through the canonical mapping.
+    if m.stage.is_some() || m.outcome.is_some() {
+        let word = mustard_core::domain::meta::status_word(&m);
+        if !word.is_empty() {
+            header.status = word.to_string();
+        }
+    }
+    // lang: normalise the same way the legacy path does (short forms tolerated).
+    if let Some(raw) = m.lang.as_deref().filter(|s| !s.trim().is_empty()) {
+        let tok = raw.trim().to_lowercase();
+        header.lang = if tok == "pt" || tok == "pt-br" {
+            "pt-BR".to_string()
+        } else {
+            "en-US".to_string()
+        };
+    }
+    header
+}
+
 /// Cut a `## ` section body (heading line excluded) for a canonical key.
 fn section_for(text: &str, key: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -433,7 +461,9 @@ pub fn run(spec_dir: Option<&str>, format: &str, self_test: bool) {
             std::process::exit(1);
         }
     };
-    let header = parse_header(&text);
+    // `meta.json` is the single source of truth for `status` + `lang`; the
+    // `.md` header parsed by `parse_header` is the legacy fallback.
+    let header = apply_meta_override(parse_header(&text), &spec_file);
 
     // pipeline-state (fail-open).
     let mut state = json!({});

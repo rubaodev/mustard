@@ -1,25 +1,26 @@
-//! Repo-wide spec-header invariant test (spec-lifecycle-unification Wave 7,
-//! AC-W7-3 / AC-P-1..3).
+//! Repo-wide spec-metadata invariant test.
 //!
-//! Scans every `.claude/spec/**/*.md` in the real Mustard repo, parses its
-//! header into a canonical [`SpecState`], and asserts:
+//! Since the meta-sidecar migration, **`meta.json` is the single source of
+//! truth** for every machine-parseable lifecycle field and `spec.md` carries no
+//! lifecycle header at all. This test scans every `.claude/spec/**/spec.md` (and
+//! `wave-plan.md`) in the real Mustard repo and asserts:
 //!
-//! - no legacy `### Status:` / `### Phase:` lines remain (AC-P-1, AC-P-2),
-//! - every spec carries a `### Stage:` line (AC-P-3),
-//! - the parsed `(Stage, Outcome, Flags)` triple is a legal `SpecState`
-//!   (the W1 invariants hold for every on-disk spec).
+//! - no metadata header lines remain in the markdown — neither the legacy
+//!   `### Status:` / `### Phase:` nor the canonical `### Stage:` / `### Outcome:`
+//!   / `### Flags:` / `### Scope:` / `### Lang:` / `### Checkpoint:` /
+//!   `### Parent:` / `### Total waves:`,
+//! - every spec dir carries a `meta.json` whose parsed `(Stage, Outcome, Flags)`
+//!   triple is a legal `SpecState` (the W1 invariants hold for every on-disk
+//!   spec).
 //!
-//! ## Why this is `#[ignore]`d
+//! ## Why this is environmental
 //!
-//! This test is RED until the orchestrator runs `migrate-spec-headers --apply`
-//! against the repo (AC-W7-3: "passa **após** `--apply` rodado"). Before the
-//! batch migration the specs still carry legacy `### Status:`/`### Phase:`
-//! headers, so the assertions below fail by design. It is shipped `#[ignore]`d
-//! so the suite stays green pre-migration; the orchestrator removes the
-//! `#[ignore]` (or runs `cargo test -- --ignored`) immediately after applying
-//! the migration, as the final gate of Wave 7.
+//! The test resolves `.claude/spec` from `CARGO_MANIFEST_DIR`. In a clean
+//! checkout / sandbox there may be no real specs on disk, so it asserts there is
+//! at least one and otherwise panics — this is one of the known environmental
+//! failures and is not a real regression.
 
-use mustard_core::{Flags, Outcome, SpecState, Stage};
+use mustard_core::{read_meta, Flags, Outcome, SpecState, Stage};
 use std::path::{Path, PathBuf};
 
 /// Locate the repo's `.claude/spec` directory by walking up from the crate dir.
@@ -36,19 +37,14 @@ fn spec_root() -> Option<PathBuf> {
     }
 }
 
-/// The value of an `### <Key>:` header line (case-insensitive on the key).
-///
-/// Lines inside fenced code blocks (```...```) are ignored — a documentation
-/// example like `### Stage: {stage}` inside a code fence is illustrative, not
-/// a real header. Without this guard, a wave-plan that documents the migration
-/// algorithm trips the invariant on its own example output.
-fn header_field(spec_md: &str, key: &str) -> Option<String> {
+/// `true` when an `### <Key>:` header line (case-insensitive on the key) is
+/// present outside fenced code blocks. Lines inside ```` ``` ```` fences are
+/// ignored — a documentation example like `### Stage: {stage}` is illustrative,
+/// not a real header.
+fn has_header(spec_md: &str, key: &str) -> bool {
     let want = key.to_ascii_lowercase();
     let mut in_fence = false;
     for line in spec_md.lines() {
-        // Toggle fence state on any line whose first non-whitespace token is
-        // a triple-backtick (open or close). We do not validate the language
-        // tag — only the toggle matters for header detection.
         if line.trim_start().starts_with("```") {
             in_fence = !in_fence;
             continue;
@@ -63,14 +59,12 @@ fn header_field(spec_md: &str, key: &str) -> Option<String> {
         let rest = rest.trim_start();
         let lower = rest.to_ascii_lowercase();
         if let Some(after_key) = lower.strip_prefix(&want) {
-            let after_key = after_key.trim_start();
-            if let Some(after_colon) = after_key.strip_prefix(':') {
-                let value_start = rest.len() - after_colon.len();
-                return Some(rest[value_start..].trim().to_string());
+            if after_key.trim_start().starts_with(':') {
+                return true;
             }
         }
     }
-    None
+    false
 }
 
 /// Collect every `*.md` under `root`, recursively.
@@ -93,8 +87,14 @@ fn collect_md(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The metadata header keys that must never appear in a spec markdown body.
+const METADATA_KEYS: &[&str] = &[
+    "Status", "Phase", "Stage", "Outcome", "Flags", "Scope", "Lang", "Checkpoint",
+    "Parent", "Total waves",
+];
+
 #[test]
-fn all_specs_are_migrated_and_invariant_holds() {
+fn no_metadata_headers_remain_and_meta_json_is_valid() {
     let Some(root) = spec_root() else {
         panic!(".claude/spec not found from CARGO_MANIFEST_DIR");
     };
@@ -108,53 +108,49 @@ fn all_specs_are_migrated_and_invariant_holds() {
             violations.push(format!("{}: unreadable", path.display()));
             continue;
         };
-        // Only files that look like a spec/wave-plan (carry a Stage header) are
-        // subject to the invariant. A pure prose `.md` with no lifecycle header
-        // is not a spec — but after migration any file that HAD a legacy header
-        // now has a Stage, so AC-P-1/2 below catch any straggler.
 
-        // AC-P-1 / AC-P-2: no legacy headers remain.
-        if header_field(&content, "Status").is_some() {
-            violations.push(format!("{}: still has `### Status:`", path.display()));
-        }
-        if header_field(&content, "Phase").is_some() {
-            violations.push(format!("{}: still has `### Phase:`", path.display()));
+        // No metadata header line may remain in the markdown.
+        for key in METADATA_KEYS {
+            if has_header(&content, key) {
+                violations.push(format!("{}: still has `### {key}:` header", path.display()));
+            }
         }
 
-        // AC-P-3 + invariants: only assert on files that carry a Stage header
-        // (i.e. real specs/wave-plans — a plain README without any lifecycle
-        // header is legitimately stage-less and not in scope).
-        let stage_raw = header_field(&content, "Stage");
-        let had_lifecycle = stage_raw.is_some();
-        if !had_lifecycle {
-            continue;
-        }
-
-        let stage = stage_raw.as_deref().and_then(Stage::parse);
-        let Some(stage) = stage else {
-            violations.push(format!(
-                "{}: `### Stage: {:?}` does not parse",
-                path.display(),
-                stage_raw
-            ));
-            continue;
-        };
-        let outcome = header_field(&content, "Outcome")
-            .as_deref()
-            .and_then(Outcome::parse)
-            .unwrap_or(Outcome::Active);
-        let flags = header_field(&content, "Flags")
-            .map(|f| Flags::parse(&f))
-            .unwrap_or_default();
-
-        if let Err(e) = SpecState::new(stage, outcome, flags) {
-            violations.push(format!("{}: illegal SpecState: {e}", path.display()));
+        // Every `spec.md` / `wave-plan.md` must have a `meta.json` beside it with
+        // a legal lifecycle triple.
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "spec.md" || name == "wave-plan.md" {
+            let Some(dir) = path.parent() else { continue };
+            let meta_path = dir.join("meta.json");
+            let Some(meta) = read_meta(&meta_path) else {
+                violations.push(format!("{}: missing/unreadable meta.json sidecar", path.display()));
+                continue;
+            };
+            let Some(stage) = meta.stage.as_deref().and_then(Stage::parse) else {
+                violations.push(format!(
+                    "{}: meta.json stage {:?} does not parse",
+                    path.display(),
+                    meta.stage
+                ));
+                continue;
+            };
+            let outcome = meta
+                .outcome
+                .as_deref()
+                .and_then(Outcome::parse)
+                .unwrap_or(Outcome::Active);
+            // meta.json has no flags field — default empty (the canonical model
+            // keeps qualifier flags out of the sidecar schema).
+            let flags = Flags::default();
+            if let Err(e) = SpecState::new(stage, outcome, flags) {
+                violations.push(format!("{}: illegal SpecState from meta.json: {e}", path.display()));
+            }
         }
     }
 
     assert!(
         violations.is_empty(),
-        "spec-header invariant violations ({}):\n{}",
+        "spec-metadata invariant violations ({}):\n{}",
         violations.len(),
         violations.join("\n")
     );

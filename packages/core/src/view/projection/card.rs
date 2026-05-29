@@ -21,14 +21,17 @@
 //! Events with `spec != Some(spec_name)` are filtered out before the fold —
 //! callers that pre-filtered (e.g. `store.query(Some(name))`) pay zero cost.
 //!
-//! ## Header fallback (Wave 1, 2026-05-21)
+//! ## Sidecar / header fallback (Wave 1, 2026-05-21)
 //!
 //! When the event stream is empty and a `spec.md` path is supplied, the fold
-//! parses the `### Status:` / `### Phase:` / `### Scope:` / `### Lang:` lines
-//! from the header and seeds the [`SpecView`] from them. This is the
-//! cross-collaborator path: the `SQLite` event log is per-machine and never
-//! versioned, but the `spec.md` header *is* checked into git. A teammate who
-//! pulls the repo sees a populated dashboard without re-emitting any events.
+//! seeds the [`SpecView`] from the filesystem. **`meta.json` is the single
+//! source of truth**: the sidecar beside the spec is read first
+//! (`stage` / `outcome` / `phase` / `scope` / `lang`); only an un-migrated spec
+//! without a sidecar falls back to the legacy `### Status:` / `### Phase:` /
+//! `### Scope:` / `### Lang:` header lines. This is the cross-collaborator path:
+//! the event log is per-machine and never versioned, but `meta.json` (and, for
+//! legacy specs, the header) *is* checked into git. A teammate who pulls the
+//! repo sees a populated dashboard without re-emitting any events.
 //!
 //! The fallback is opt-in (`spec_md_path = None` disables it). Timestamps stay
 //! `None` because the header alone cannot prove when work started or last
@@ -319,8 +322,47 @@ fn apply_qa_result(view: &mut SpecView, ev: &HarnessEvent) {
 /// lines after the leading `# Title`) and build a [`SpecView`] from whatever
 /// values are recognised. Returns `None` when the file is missing or every
 /// header field is unrecognised — the caller falls back to [`SpecView::empty`].
+/// Seed a [`SpecView`] from the `meta.json` sidecar beside `path` — the single
+/// source of truth for lifecycle metadata. Returns `None` when the sidecar is
+/// absent / unparseable or carries no usable `stage` (so the caller falls back
+/// to the legacy `.md` header). `started_at` / `last_event_at` stay `None` —
+/// the sidecar is not evidence of *when* work happened.
+#[allow(deprecated)] // seeds the legacy `status` field; `state` is canonical.
+fn view_from_meta(spec_name: &str, path: &Path) -> Option<SpecView> {
+    let meta = crate::domain::meta::read_meta_beside(path)?;
+    let stage = Stage::parse(meta.stage.as_deref()?)?;
+    let outcome = meta
+        .outcome
+        .as_deref()
+        .and_then(Outcome::parse)
+        .unwrap_or(Outcome::Active);
+    // The sidecar schema carries no qualifier flags — default empty.
+    let state = SpecState::new(stage, outcome, Flags::default()).ok()?;
+
+    let mut view = SpecView::empty(spec_name);
+    view.state = state.clone();
+    if let Ok(status) = SpecStatus::try_from(state) {
+        view.status = status;
+    }
+    if let Some(phase) = meta.phase.as_deref().and_then(Phase::parse) {
+        view.phase = Some(phase);
+    }
+    if let Some(scope) = meta.scope.as_deref().and_then(Scope::parse) {
+        view.scope = Some(scope);
+    }
+    if let Some(lang) = meta.lang.filter(|s| !s.trim().is_empty()) {
+        view.lang = Some(lang.trim().to_string());
+    }
+    Some(view)
+}
+
 #[allow(deprecated)] // seeds the legacy `status` field from the header; `state` derived after.
 fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
+    // `meta.json` is the single source of truth. Prefer the sidecar beside the
+    // spec; fall back to the legacy in-`.md` header only for un-migrated specs.
+    if let Some(view) = view_from_meta(spec_name, path) {
+        return Some(view);
+    }
     let raw = crate::io::fs::read_to_string(path).ok()?;
     let header = parse_header_fields(&raw);
     if header.is_empty() {
@@ -777,6 +819,42 @@ mod tests {
         // Header alone cannot prove WHEN work happened.
         assert!(view.started_at.is_none());
         assert!(view.last_event_at.is_none());
+    }
+
+    #[test]
+    fn project_spec_view_prefers_meta_json_over_md_header() {
+        // A header-less spec.md with a meta.json sidecar — the sidecar is the
+        // single source of truth and seeds the view.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spec_md(tmp.path(), "# Achatamento\n\n## Resumo\n…");
+        crate::io::fs::write_atomic(
+            &tmp.path().join("meta.json"),
+            br#"{"stage":"Close","outcome":"Completed","phase":"close","scope":"full","lang":"pt-BR"}"#,
+        )
+        .unwrap();
+        let view = project_spec_view_with_header("flatten", &[], Some(path.as_path()));
+        assert_eq!(view.status, SpecStatus::Completed);
+        assert_eq!(view.phase, Some(Phase::Close));
+        assert_eq!(view.scope, Some(Scope::Full));
+        assert_eq!(view.lang.as_deref(), Some("pt-BR"));
+    }
+
+    #[test]
+    fn project_spec_view_meta_json_wins_over_legacy_header() {
+        // meta.json says Execute/Active; a stale legacy header says completed.
+        // The sidecar wins.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spec_md(
+            tmp.path(),
+            "# Auth\n\n### Status: completed\n### Phase: close\n",
+        );
+        crate::io::fs::write_atomic(
+            &tmp.path().join("meta.json"),
+            br#"{"stage":"Execute","outcome":"Active"}"#,
+        )
+        .unwrap();
+        let view = project_spec_view_with_header("auth", &[], Some(path.as_path()));
+        assert_eq!(view.status, SpecStatus::Implementing);
     }
 
     #[test]

@@ -1,25 +1,29 @@
 //! `mustard-rt run spec-children --parent <slug>` — list sub-specs of a
-//! parent spec, discovered via `### Parent: <slug>` headers in
-//! `.claude/spec/*/spec.md`.
+//! parent spec, discovered via `meta.json#parent` (the single source of truth)
+//! beside each `.claude/spec/*/spec.md`, with a legacy fallback to the
+//! `### Parent: <slug>` header for un-migrated specs.
 //!
 //! Filesystem-only discovery
 //! -------------------------
 //!
 //! W4A migration: the SQLite branch (`SqliteSpecReader::children_of` +
 //! `correlate_waves`) was removed. Sub-spec discovery is now purely
-//! header-driven — filesystem-versioned, cross-developer canonical, durable
-//! across `git pull`. Wave correlation against the parent's `pipeline.wave.*`
-//! timeline is OUT-OF-SCOPE here (it relied on SQLite-only `started_at` /
-//! `completed_at`); a follow-up may reintroduce correlation via NDJSON walk.
+//! filesystem-driven — filesystem-versioned, cross-developer canonical, durable
+//! across `git pull`. The parent edge is read from `meta.json#parent` first
+//! (falling back to the legacy `### Parent:` header). Wave correlation against
+//! the parent's `pipeline.wave.*` timeline is OUT-OF-SCOPE here (it relied on
+//! SQLite-only `started_at` / `completed_at`); a follow-up may reintroduce
+//! correlation via NDJSON walk.
 //!
-//! Every entry surfaces with `source = Header`. `started_at` / `completed_at`
-//! / `reason` / `wave` default to `None`.
+//! Every entry surfaces with `source = Header` (the discovery channel name is
+//! retained for output-shape stability). `started_at` / `completed_at` /
+//! `reason` / `wave` default to `None`.
 //!
 //! Fail-open: any I/O failure silently degrades to an empty result. The
 //! subcommand always emits valid JSON.
 
 use mustard_core::io::fs;
-use mustard_core::domain::spec;
+use mustard_core::domain::{meta, spec};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -69,7 +73,8 @@ fn strip_wikilink(raw: &str) -> String {
 
 /// Parse the `### Parent:` link and the lifecycle status out of a `spec.md`'s
 /// leading window. Returns `(parent_slug, status_kebab_opt)` when a parent
-/// header is found, else `None`.
+/// header is found, else `None`. **Legacy fallback only** — the canonical
+/// source is `meta.json#parent` (see [`parent_and_status`]).
 ///
 /// The parent slug is normalised (surrounding `[[wikilink]]` brackets are
 /// stripped). The status is resolved through the canonical
@@ -84,6 +89,32 @@ fn parse_header_window(window: &str) -> Option<(String, Option<String>)> {
         .filter(|s| !s.is_empty())?;
     let status = spec::parse_state(window).map(|st| spec::status_word(&st).to_string());
     Some((parent, status))
+}
+
+/// Resolve `(parent_slug, status_kebab_opt)` for the spec living at
+/// `spec_md` (with its `meta.json` sidecar beside it).
+///
+/// Resolution order — **`meta.json` is the single source of truth**:
+/// 1. `meta.json#parent` (+ the `stage`+`outcome` → status word via
+///    [`mustard_core::domain::meta::status_word`]) when the sidecar declares a
+///    non-empty `parent`.
+/// 2. Legacy fallback: the `### Parent:` / lifecycle header in the `.md`
+///    window — preserved so an un-migrated spec (e.g. a teammate's branch)
+///    still links to its parent.
+///
+/// Returns `None` when neither source declares a parent (a top-level spec).
+fn parent_and_status(spec_md: &Path, window: &str) -> Option<(String, Option<String>)> {
+    if let Some(m) = meta::read_meta_beside(spec_md) {
+        if let Some(parent) = m.parent.as_deref().map(strip_wikilink).filter(|s| !s.is_empty()) {
+            // A non-empty meta.json#parent wins outright. Status comes from the
+            // canonical meta projection (empty string when no stage/outcome).
+            let word = meta::status_word(&m);
+            let status = (!word.is_empty()).then(|| word.to_string());
+            return Some((parent, status));
+        }
+    }
+    // Legacy fallback: read the parent + status from the `.md` header window.
+    parse_header_window(window)
 }
 
 /// Read at most the first `cap` bytes of a file as UTF-8 (lossy on invalid
@@ -124,10 +155,8 @@ fn scan_filesystem(project: &Path, parent: &str) -> Vec<ChildEntry> {
         if !spec_md.is_file() {
             continue;
         }
-        let Some(window) = read_header_window(&spec_md, HEADER_CAP) else {
-            continue;
-        };
-        let Some((found_parent, status_opt)) = parse_header_window(&window) else {
+        let window = read_header_window(&spec_md, HEADER_CAP).unwrap_or_default();
+        let Some((found_parent, status_opt)) = parent_and_status(&spec_md, &window) else {
             continue;
         };
         if found_parent != parent {
@@ -289,5 +318,50 @@ mod tests {
     fn parse_header_window_returns_none_without_parent() {
         let window = "# Top-level spec\n\n### Status: planning\n";
         assert!(parse_header_window(window).is_none());
+    }
+
+    /// meta.json#parent is the canonical source: a child with a header-less
+    /// `spec.md` but a `meta.json` declaring `parent` + `stage`/`outcome` is
+    /// discovered, and its status comes from the meta projection.
+    #[test]
+    fn discovers_child_via_meta_json_parent() {
+        let td = tempdir().unwrap();
+        let spec_dir = td.path().join(".claude").join("spec").join("child-meta");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // Pure-narrative spec.md (no lifecycle header).
+        std::fs::write(spec_dir.join("spec.md"), "# Child Meta\n\n## Body\n").unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Close","outcome":"Completed","parent":"parent-x"}"#,
+        )
+        .unwrap();
+        let result = list_children(td.path(), "parent-x");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].spec, "child-meta");
+        assert_eq!(result[0].status, "completed");
+    }
+
+    /// meta.json#parent wins over a divergent legacy `### Parent:` header.
+    #[test]
+    fn meta_parent_wins_over_legacy_header() {
+        let td = tempdir().unwrap();
+        let spec_dir = td.path().join(".claude").join("spec").join("child-both");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Child Both\n\n### Parent: stale-parent\n### Status: planning\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"real-parent"}"#,
+        )
+        .unwrap();
+        // Discovered under the meta.json parent, not the stale header parent.
+        assert!(list_children(td.path(), "stale-parent").is_empty());
+        let result = list_children(td.path(), "real-parent");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].spec, "child-both");
+        assert_eq!(result[0].status, "implementing");
     }
 }

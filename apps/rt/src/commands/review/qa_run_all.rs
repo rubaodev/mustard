@@ -11,23 +11,39 @@
 
 use crate::shared::context::project_dir;
 use mustard_core::ClaudePaths;
+use mustard_core::domain::meta;
 use mustard_core::io::fs as mfs;
 use serde_json::json;
 use std::path::PathBuf;
 
-/// Return `true` when a spec header indicates an active (non-terminal) spec.
+/// Return `true` when the spec's lifecycle metadata indicates an active
+/// (non-terminal) spec.
 ///
-/// A spec is active when its `### Stage:` is not `Close` and its
-/// `### Outcome:` is not `Completed`, `Cancelled`, or `Superseded`.
+/// Resolution — **`meta.json` is the single source of truth**:
+/// 1. `meta.json#stage` / `#outcome` beside the spec.
+/// 2. Legacy fallback: the `### Stage:` / `### Outcome:` header in `spec.md`
+///    (first 30 lines) for un-migrated specs.
+///
+/// A spec is active when its stage is not `Close` and its outcome is not
+/// `Completed`, `Cancelled`, or `Superseded`.
 fn is_active_spec(spec_md: &std::path::Path) -> bool {
-    let text = match mfs::read_to_string(spec_md) {
-        Ok(t) => t,
-        Err(_) => return false,
+    let (stage, outcome) = match meta::read_meta_beside(spec_md) {
+        Some(m) => (
+            m.stage.unwrap_or_default(),
+            m.outcome.unwrap_or_default(),
+        ),
+        None => {
+            // Legacy fallback: read the lifecycle header from the markdown.
+            let Ok(text) = mfs::read_to_string(spec_md) else {
+                return false;
+            };
+            let head: String = text.lines().take(30).collect::<Vec<_>>().join("\n");
+            (
+                header_value(&head, "stage").unwrap_or_default(),
+                header_value(&head, "outcome").unwrap_or_default(),
+            )
+        }
     };
-    // Only scan the first 30 lines for the lifecycle header block.
-    let head: String = text.lines().take(30).collect::<Vec<_>>().join("\n");
-    let stage = header_value(&head, "stage").unwrap_or_default();
-    let outcome = header_value(&head, "outcome").unwrap_or_default();
 
     // Terminal stages / outcomes → not active.
     if stage.eq_ignore_ascii_case("close") {
@@ -44,6 +60,7 @@ fn is_active_spec(spec_md: &std::path::Path) -> bool {
 }
 
 /// Parse `### Key: value` from a header block (case-insensitive key match).
+/// Legacy fallback path only — see [`is_active_spec`].
 fn header_value(head: &str, key_lower: &str) -> Option<String> {
     for line in head.lines() {
         let t = line.trim_start();

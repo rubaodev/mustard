@@ -1,10 +1,10 @@
 //! `mustard-rt run tactical-fix-create` — scaffold a tactical-fix sub-spec.
 //!
 //! Replaces the steps in `tactical-fix/SKILL.md`. Builds `.claude/spec/<slug>/`
-//! containing a `spec.md` with the canonical header (Stage/Outcome/Flags/Scope/
-//! Lang/Checkpoint/Parent) and a body skeleton; writes the matching
-//! `meta.json` sidecar; finally invokes `spec-link` to record the parent → child
-//! edge in the harness event store.
+//! containing a `spec.md` body skeleton (pure narrative — no lifecycle header)
+//! and the matching `meta.json` sidecar that carries every machine-parseable
+//! field (stage/outcome/scope/lang/checkpoint/parent); finally invokes
+//! `spec-link` to record the parent → child edge in the harness event store.
 //!
 //! Pure-Rust slug derivation: lowercase, strip diacritics (PT), kebab-case,
 //! ≤6 words, prefixed by `YYYY-MM-DD` (local). Idempotent on the sidecar — a
@@ -86,8 +86,11 @@ fn today_utc() -> String {
     now.chars().take(10).collect()
 }
 
-/// Build the canonical body skeleton.
-fn build_body(description: &str, parent: &str, scope: &str, lang: Locale, ts: &str) -> String {
+/// Build the canonical body skeleton. Lifecycle metadata (stage / outcome /
+/// scope / lang / checkpoint / parent) lives only in the `meta.json` sidecar;
+/// the markdown is pure narrative. The parent is still surfaced as a body link
+/// in the context note so a human reader sees the lineage.
+fn build_body(description: &str, parent: &str, lang: Locale) -> String {
     let (h_context, h_ac, h_files) = match lang {
         Locale::PtBr => ("Contexto", "Critérios de Aceitação", "Arquivos"),
         Locale::EnUs => ("Context", "Acceptance Criteria", "Files"),
@@ -96,16 +99,8 @@ fn build_body(description: &str, parent: &str, scope: &str, lang: Locale, ts: &s
         Locale::PtBr => format!("Tactical fix derivado de [[{parent}]]."),
         Locale::EnUs => format!("Tactical fix derived from [[{parent}]]."),
     };
-    let lang_code = lang.as_str();
     format!(
         "# Tactical Fix: {description}\n\n\
-         ### Stage: Analyze\n\
-         ### Outcome: Active\n\
-         ### Flags: \n\
-         ### Scope: {scope}\n\
-         ### Lang: {lang_code}\n\
-         ### Checkpoint: {ts}\n\
-         ### Parent: {parent}\n\n\
          ## {h_context}\n\n\
          {parent_note}\n\n\
          ## {h_ac}\n\n\
@@ -142,7 +137,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         return report;
     }
     let ts = now_iso8601();
-    let body = build_body(&opts.description, &opts.parent, &opts.scope, lang, &ts);
+    let body = build_body(&opts.description, &opts.parent, lang);
     let spec_path = spec_dir.join("spec.md");
     if let Err(e) = write_atomic(&spec_path, body.as_bytes()) {
         report.error = Some(format!("write spec.md failed: {e}"));
@@ -220,18 +215,22 @@ mod tests {
     }
 
     #[test]
-    fn body_includes_canonical_headers_en() {
-        let b = build_body("fix x", "epic-y", "light", Locale::EnUs, "2026-05-25T00:00:00Z");
-        assert!(b.contains("### Stage: Analyze"));
-        assert!(b.contains("### Outcome: Active"));
-        assert!(b.contains("### Parent: epic-y"));
+    fn body_has_no_lifecycle_header_en() {
+        let b = build_body("fix x", "epic-y", Locale::EnUs);
+        // Lifecycle metadata lives only in meta.json — never in the markdown.
+        assert!(!b.contains("### Stage:"));
+        assert!(!b.contains("### Outcome:"));
+        assert!(!b.contains("### Parent:"));
+        // The body still surfaces the parent as a narrative link + EN headings.
+        assert!(b.contains("[[epic-y]]"));
         assert!(b.contains("## Context"));
         assert!(b.contains("## Acceptance Criteria"));
     }
 
     #[test]
-    fn body_uses_pt_headers_when_lang_pt() {
-        let b = build_body("ajustar", "epic-y", "light", Locale::PtBr, "2026-05-25T00:00:00Z");
+    fn body_uses_pt_headings_when_lang_pt() {
+        let b = build_body("ajustar", "epic-y", Locale::PtBr);
+        assert!(!b.contains("### Stage:"));
         assert!(b.contains("## Contexto"));
         assert!(b.contains("## Critérios de Aceitação"));
         assert!(b.contains("## Arquivos"));

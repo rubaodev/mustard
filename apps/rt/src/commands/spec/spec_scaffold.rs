@@ -16,7 +16,7 @@ use mustard_core::io::fs as mfs;
 use mustard_core::domain::meta::{write_meta, Meta};
 use mustard_core::domain::spec::contract::{SpecInput, PLAN_DIVIDER, PRD_DIVIDER};
 use mustard_core::domain::spec;
-use mustard_core::{read_meta, Outcome, Scope, SpecState, Stage};
+use mustard_core::{read_meta, Outcome, Scope, Stage};
 use mustard_core::platform::i18n::{translate, Locale, Tone};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -48,7 +48,10 @@ pub fn write_spec_md(
         tone = tone.as_str(),
         instruction = crate::commands::spec::spec_draft::tone_prompt_instruction(tone),
     );
-    body.push_str("### Stage: Plan\n### Outcome: Active\n### Flags: \n\n");
+    // No lifecycle header block — `meta.json` is the single source of every
+    // machine-parseable field (stage/outcome/flags/scope/lang/...). `spec.md`
+    // is pure PRD/plan narrative.
+    body.push('\n');
     body.push_str(PRD_DIVIDER);
     body.push('\n');
     for s in &input.prd_sections {
@@ -97,33 +100,23 @@ pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
 // sync_status — atomic two-file header sync
 // ---------------------------------------------------------------------------
 
-/// Atomically synchronise the lifecycle headers in **both** `spec.md` and
-/// `meta.json` to the given `stage` + `outcome`.
+/// Atomically synchronise the lifecycle metadata to the given `stage` +
+/// `outcome` by patching **`meta.json`** — the single source of truth. The
+/// `spec.md` narrative is never touched: it carries no lifecycle header.
 ///
 /// Behaviour:
-/// - `spec.md` is rewritten via [`mustard_core::domain::spec::write_state`], which
-///   normalises any legacy `### Status:` / `### Phase:` lines to the canonical
-///   `### Stage:` / `### Outcome:` / `### Flags:` triple.
 /// - `meta.json` is read (fail-open to a zero-value [`Meta`] when absent),
 ///   `stage`/`outcome`/`checkpoint` are updated, and the document is written
 ///   back atomically — all other fields are preserved.
 ///
-/// Either file that does not yet exist is created. A missing spec directory
-/// is treated as a no-op (the directory is never created; the caller is
-/// responsible for directory setup). Errors for each file are independent:
-/// a failed `spec.md` write returns `Err` immediately; a failed `meta.json`
-/// write is returned as a second `Err` after the `spec.md` write succeeds.
+/// A missing spec directory is treated as a no-op (the directory is never
+/// created; the caller is responsible for directory setup).
 ///
 /// # Errors
 ///
-/// Returns the first I/O error encountered, annotated with the offending path.
+/// Returns the I/O error encountered, annotated with the offending path.
 pub fn sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<(), String> {
     // `spec_path` is the path to `spec.md` (or the spec directory — resolve).
-    let spec_md = if spec_path.is_dir() {
-        spec_path.join("spec.md")
-    } else {
-        spec_path.to_path_buf()
-    };
     let spec_dir = if spec_path.is_dir() {
         spec_path.to_path_buf()
     } else {
@@ -135,17 +128,9 @@ pub fn sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<(
         return Ok(());
     }
 
-    // Build the SpecState with default (empty) flags.
-    let state = SpecState::new(stage, outcome, mustard_core::Flags::default())
-        .unwrap_or(SpecState { stage, outcome, flags: mustard_core::Flags::default() });
-
-    // 1. Rewrite spec.md header.
-    if spec_md.exists() {
-        spec::write_state(&spec_md, &state)
-            .map_err(|e| format!("sync_status: write spec.md ({}): {e}", spec_md.display()))?;
-    }
-
-    // 2. Patch meta.json (preserve all other fields).
+    // Patch meta.json (preserve all other fields). `meta.json` is the single
+    // home of every machine-parseable lifecycle field — `spec.md` is left as
+    // pure narrative.
     let meta_path = spec_dir.join("meta.json");
     let mut meta = read_meta(&meta_path).unwrap_or_default();
     meta.stage = Some(spec::stage_label(stage).to_string());
@@ -240,23 +225,19 @@ mod tests {
     }
 
     #[test]
-    fn sync_status_patches_spec_md_and_meta() {
+    fn sync_status_patches_meta_and_leaves_spec_md_untouched() {
         let dir = tempdir().unwrap();
-        // Seed spec.md with legacy header.
-        std::fs::write(
-            dir.path().join("spec.md"),
-            b"# My Spec\n\n### Status: implementing\n\n## Body\ncontent\n",
-        )
-        .unwrap();
+        // Seed spec.md as pure narrative — no lifecycle header.
+        let original = b"# My Spec\n\n## Body\ncontent\n";
+        std::fs::write(dir.path().join("spec.md"), original).unwrap();
         // Seed meta.json with Plan/Active.
         write_meta_json(dir.path(), &make_meta("Plan", "Active")).unwrap();
 
         sync_status(Stage::Close, Outcome::Completed, dir.path()).unwrap();
 
-        let spec_body = std::fs::read_to_string(dir.path().join("spec.md")).unwrap();
-        assert!(spec_body.contains("### Stage: Close"), "{spec_body}");
-        assert!(spec_body.contains("### Outcome: Completed"), "{spec_body}");
-        assert!(!spec_body.contains("### Status:"));
+        // spec.md is byte-for-byte unchanged — no header was injected.
+        let spec_body = std::fs::read(dir.path().join("spec.md")).unwrap();
+        assert_eq!(spec_body, original);
 
         let meta_v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
@@ -296,24 +277,20 @@ mod tests {
         assert!(!ghost.exists());
     }
 
-    /// AC-W1.3 — a wave dir with Plan/Active headers; after sync_status(Close,
-    /// Completed), both spec.md and meta.json carry Close/Completed.
+    /// AC-W1.3 — a wave dir at Plan/Active; after sync_status(Close,
+    /// Completed), meta.json carries Close/Completed and spec.md stays narrative.
     #[test]
     fn sync_status_wave_complete() {
         let dir = tempdir().unwrap();
-        // Seed wave spec.md with Plan/Active.
+        // Seed wave spec.md as pure narrative.
         std::fs::write(
             dir.path().join("spec.md"),
-            b"# Wave 1\n\n### Stage: Plan\n### Outcome: Active\n### Flags: \n\n## Body\nwork\n",
+            b"# Wave 1\n\n## Body\nwork\n",
         )
         .unwrap();
         write_meta_json(dir.path(), &make_meta("Plan", "Active")).unwrap();
 
         sync_status(Stage::Close, Outcome::Completed, dir.path()).unwrap();
-
-        let spec_body = std::fs::read_to_string(dir.path().join("spec.md")).unwrap();
-        assert!(spec_body.contains("### Stage: Close"), "{spec_body}");
-        assert!(spec_body.contains("### Outcome: Completed"), "{spec_body}");
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())

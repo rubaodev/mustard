@@ -451,7 +451,9 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
         let Ok(content) = fs::read_to_string(&spec_file) else {
             continue;
         };
-        if let Some(state) = spec::parse_state(&content) {
+        // `meta.json` is the single source of truth for lifecycle state; the
+        // legacy `.md` header is the fallback for un-migrated specs.
+        if let Some(state) = spec_state_meta_first(&spec_file, &content) {
             let stage_ok = matches!(
                 state.stage,
                 SpecStage::Analyze | SpecStage::Plan | SpecStage::Execute
@@ -467,7 +469,7 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
         if lines.is_empty() {
             continue;
         }
-        let recency_key = recency_key_for_spec(&content, &dir_name);
+        let recency_key = recency_key_for_spec(&entry.path, &content, &dir_name);
         if recency_key > best_key {
             best_key = recency_key;
             best = Some((dir_name, content, lines));
@@ -512,12 +514,37 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<String> {
     ))
 }
 
-/// W5#4 helper: a lexicographically-comparable recency key. Prefers an ISO
-/// `### Checkpoint:` header (so `2026-05-28T10:00:00.000Z` sorts above
-/// `2026-05-27T17:56:09.926Z`); falls back to the directory name prefix
-/// (`YYYY-MM-DD-…` already sorts correctly); never panics. Returned `String`
-/// is meaningful only against other keys produced by this same function.
-fn recency_key_for_spec(content: &str, dir_name: &str) -> String {
+/// Resolve a spec's lifecycle [`SpecState`] from the filesystem,
+/// **`meta.json`-first**. The sidecar beside `spec_file` is authoritative; the
+/// already-read `.md` `content` is the legacy fallback for un-migrated specs.
+fn spec_state_meta_first(spec_file: &Path, content: &str) -> Option<mustard_core::SpecState> {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_file) {
+        if let Some(stage) = m.stage.as_deref().and_then(mustard_core::Stage::parse) {
+            let outcome = m
+                .outcome
+                .as_deref()
+                .and_then(mustard_core::Outcome::parse)
+                .unwrap_or(mustard_core::Outcome::Active);
+            return mustard_core::SpecState::new(stage, outcome, mustard_core::Flags::default()).ok();
+        }
+    }
+    spec::parse_state(content)
+}
+
+/// W5#4 helper: a lexicographically-comparable recency key. Prefers the spec's
+/// ISO checkpoint (so `2026-05-28T10:00:00.000Z` sorts above
+/// `2026-05-27T17:56:09.926Z`), read **`meta.json`-first** (`#checkpoint`) with
+/// a fallback to a legacy `### Checkpoint:` header; falls back to the directory
+/// name prefix (`YYYY-MM-DD-…` already sorts correctly); never panics. Returned
+/// `String` is meaningful only against other keys produced by this same fn.
+fn recency_key_for_spec(spec_dir: &Path, content: &str, dir_name: &str) -> String {
+    // meta.json wins.
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_dir.join("spec.md")) {
+        if let Some(cp) = m.checkpoint.filter(|s| !s.trim().is_empty()) {
+            return cp.trim().to_string();
+        }
+    }
+    // Legacy fallback: the `### Checkpoint:` header.
     for line in content.lines().take(50) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed

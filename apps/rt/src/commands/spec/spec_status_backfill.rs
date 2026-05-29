@@ -1,27 +1,32 @@
-//! W4 — spec-status-backfill — one-shot that aligns spec.md ↔ meta.json
-//! across all specs in `.claude/spec/*/`. Safe to run at any time;
-//! overwrites only the header (spec.md) or the stage/outcome fields
-//! (meta.json), never the body or other metadata.
+//! W4 — spec-status-backfill — **legacy one-shot migration** that lifts a
+//! spec's lifecycle state out of its (now-deprecated) `### Stage:` / `###
+//! Outcome:` `spec.md` header into the canonical `meta.json` sidecar.
+//!
+//! Since the meta-sidecar migration, `meta.json` is the single source of truth
+//! and `spec.md` carries no lifecycle header. This subcommand stays wired only
+//! to rescue an *un-migrated* spec (e.g. a teammate's branch) whose header was
+//! never extracted — it is `--source spec` only.
 //!
 //! ## Source modes
 //!
-//! - `--source spec` (default): spec.md is authoritative; meta.json is
-//!   rewritten to match.
-//! - `--source meta`: meta.json is authoritative; spec.md header is
-//!   rewritten to match.
+//! - `--source spec` (default): read the legacy `### Stage:` / `### Outcome:`
+//!   header from `spec.md` and write it into `meta.json`. The preferred tool
+//!   for a bulk migration is `migrate-to-meta --strip-headers`; this remains
+//!   for single-spec rescues.
+//! - `--source meta`: **documented no-op.** `spec.md` no longer carries a
+//!   lifecycle header, so there is nothing to rewrite from `meta.json`. Each
+//!   spec is reported `Unchanged`.
 //!
 //! ## Safety
 //!
-//! - Atomic per file (uses `mustard_core::write_meta` / `spec::write_state`).
+//! - Atomic per file (uses `mustard_core::write_meta`).
 //! - Fail-open per spec: errors accumulate in `conflicts` and never abort the
 //!   batch.
 //! - `closed-followup` (Close + Active) is preserved, not normalised.
 //! - `--dry-run`: prints the proposed changes without writing.
 //! - `--spec <name>`: restricts the run to a single spec.
 
-use mustard_core::domain::spec;
 use mustard_core::{header_field, read_meta, write_meta};
-use mustard_core::{Outcome, Stage};
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::json;
@@ -278,99 +283,16 @@ fn backfill_from_spec(
     PairResult::Changed(vec![meta_json_path.display().to_string()])
 }
 
-/// Source = meta.json: read stage/outcome from meta.json, rewrite spec.md header.
+/// Source = meta.json: **documented no-op.**
+///
+/// `spec.md` no longer carries a lifecycle header — `meta.json` is the single
+/// source of truth. There is therefore nothing to rewrite from `meta.json` into
+/// the markdown, so every spec is reported `Unchanged`. The signature is kept
+/// so the `--source meta` CLI flag stays accepted (it just does nothing now).
 fn backfill_from_meta(
-    spec_md_path: &Path,
-    meta_json_path: &Path,
-    dry_run: bool,
+    _spec_md_path: &Path,
+    _meta_json_path: &Path,
+    _dry_run: bool,
 ) -> PairResult {
-    if !meta_json_path.exists() {
-        return PairResult::Error(format!(
-            "{}: meta.json missing — cannot backfill from meta",
-            spec_md_path.display()
-        ));
-    }
-
-    let Some(meta) = read_meta(meta_json_path) else {
-        return PairResult::Error(format!(
-            "{}: cannot read or parse meta.json",
-            meta_json_path.display()
-        ));
-    };
-
-    let stage_str = match meta.stage.as_deref() {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
-            return PairResult::Error(format!(
-                "{}: meta.json missing stage field",
-                meta_json_path.display()
-            ))
-        }
-    };
-    let outcome_str = match meta.outcome.as_deref() {
-        Some(o) if !o.is_empty() => o.to_string(),
-        _ => {
-            return PairResult::Error(format!(
-                "{}: meta.json missing outcome field",
-                meta_json_path.display()
-            ))
-        }
-    };
-
-    // Parse into typed enums for write_state.
-    let Some(stage) = Stage::parse(&stage_str) else {
-        return PairResult::Error(format!(
-            "{}: unrecognised stage {stage_str:?} in meta.json",
-            meta_json_path.display()
-        ));
-    };
-    let Some(outcome) = Outcome::parse(&outcome_str) else {
-        return PairResult::Error(format!(
-            "{}: unrecognised outcome {outcome_str:?} in meta.json",
-            meta_json_path.display()
-        ));
-    };
-
-    if !spec_md_path.exists() {
-        return PairResult::Error(format!("{}: spec.md missing", spec_md_path.display()));
-    }
-
-    let content = match std::fs::read_to_string(spec_md_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return PairResult::Error(format!(
-                "{}: cannot read spec.md: {e}",
-                spec_md_path.display()
-            ))
-        }
-    };
-
-    // Check if already aligned.
-    let spec_stage = header_field(&content, "Stage").unwrap_or_default();
-    let spec_outcome = header_field(&content, "Outcome").unwrap_or_default();
-    if spec_stage.eq_ignore_ascii_case(&stage_str)
-        && spec_outcome.eq_ignore_ascii_case(&outcome_str)
-    {
-        return PairResult::Unchanged;
-    }
-
-    if dry_run {
-        return PairResult::Changed(vec![format!(
-            "[dry-run] would write {}",
-            spec_md_path.display()
-        )]);
-    }
-
-    let state = mustard_core::SpecState::new(stage, outcome, mustard_core::Flags::default())
-        .unwrap_or(mustard_core::SpecState {
-            stage,
-            outcome,
-            flags: mustard_core::Flags::default(),
-        });
-
-    if let Err(e) = spec::write_state(spec_md_path, &state) {
-        return PairResult::Error(format!("{}: write_state failed: {e}", spec_md_path.display()));
-    }
-
-    PairResult::Changed(vec![spec_md_path.display().to_string()])
+    PairResult::Unchanged
 }
