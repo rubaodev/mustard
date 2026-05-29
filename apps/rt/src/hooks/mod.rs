@@ -13,7 +13,7 @@
 //!   `skill_usage_observer`), and `skills_advisory` (recommended-skills count
 //!   advisory).
 //! - Wave 4: the Write/Edit family — [`size_gate`] (spec/skill size + skill
-//!   validation), [`path_guard`] (sensitive-file + boundary gates),
+//!   validation), `path_gate` (sensitive-file + boundary gates),
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
 //!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
 //!   [`entity_registry_gate`] (the entity-registry pre-pipeline gate).

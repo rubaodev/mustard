@@ -1,4 +1,4 @@
-//! `pre_edit_intent_check` — optional run-based alternative to Moment 1.
+//! `pre_edit_intent_gate` — optional run-based alternative to Moment 1.
 //!
 //! Spec A v4 / Wave 4 — T4.6. A `PreToolUse(Write|Edit)` `Check` that runs
 //! the vocabulary scan (Moment 1) against the agent's free-form context
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 /// The pre-edit Moment-1 gate module. Stateless — every invocation rebuilds
 /// from the hook input.
-pub struct PreEditIntentCheck;
+pub struct PreEditIntentGate;
 
 /// `true` when the V4 gate is enabled via env. The check is a no-op otherwise
 /// so the v3 harness can stay live during bootstrap.
@@ -48,7 +48,7 @@ fn plan_text_from_input(input: &HookInput) -> String {
     String::new()
 }
 
-impl Check for PreEditIntentCheck {
+impl Check for PreEditIntentGate {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         // Trigger guard — only PreToolUse(Write|Edit) reaches us, but be
         // defensive (the dispatcher is the source of truth).
@@ -131,7 +131,7 @@ mod tests {
         // empty plan text and no declared fns, the verdict is Allow.
         let tmp = tempfile::tempdir().expect("tempdir");
         let (input, ctx) = hook_input("", tmp.path().to_str().unwrap());
-        let verdict = PreEditIntentCheck.evaluate(&input, &ctx).expect("no error");
+        let verdict = PreEditIntentGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow));
     }
 }

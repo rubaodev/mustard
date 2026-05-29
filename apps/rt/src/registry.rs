@@ -15,10 +15,10 @@ use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification_observer::NotificationObserver;
-use crate::hooks::write::path_guard::PathGuard;
+use crate::hooks::write::path_gate::PathGate;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::pre_compact_inject::PreCompactInject;
-use crate::hooks::write::pre_edit_intent_check::PreEditIntentCheck;
+use crate::hooks::write::pre_edit_intent_gate::PreEditIntentGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -257,7 +257,7 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "path_guard",
+                id: "path_gate",
                 // `file-guard` (PreToolUse(Read|Write|Edit) sensitive-file
                 // gate) + `boundary-gate` (PreToolUse(Write|Edit) spec-boundary
                 // gate). Registered on Read too so `file-guard` covers reads.
@@ -266,7 +266,7 @@ impl Registry {
                     (Trigger::PreToolUse, ToolMatch::Named("Write")),
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
                 ],
-                check: Some(Box::new(PathGuard)),
+                check: Some(Box::new(PathGate)),
                 observer: None,
             },
             Module {
@@ -290,12 +290,12 @@ impl Registry {
             // regression gate). Gated by `MUSTARD_V4_GATE_ENABLED=1` inside
             // the module so the v3 harness keeps its semantics by default.
             Module {
-                id: "pre_edit_intent_check",
+                id: "pre_edit_intent_gate",
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Write")),
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
                 ],
-                check: Some(Box::new(PreEditIntentCheck)),
+                check: Some(Box::new(PreEditIntentGate)),
                 observer: None,
             },
             Module {
@@ -587,7 +587,7 @@ mod tests {
             "tool_result_observer",
             "skills_advisory",
             "size_gate",
-            "path_guard",
+            "path_gate",
             "close_gate",
             "entity_registry_gate",
             "post_edit",
@@ -637,13 +637,13 @@ mod tests {
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "path_guard", "close_gate"] {
+            for want in ["size_gate", "path_gate", "close_gate"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }
-        // `path_guard` (file-guard) also covers Read.
+        // `path_gate` (file-guard) also covers Read.
         assert!(
-            applicable_ids(&registry, Trigger::PreToolUse, Some("Read")).contains(&"path_guard")
+            applicable_ids(&registry, Trigger::PreToolUse, Some("Read")).contains(&"path_gate")
         );
         // `post_edit` runs on PostToolUse(Write|Edit).
         for tool in ["Write", "Edit"] {

@@ -45,7 +45,7 @@ fn hook_description(name: &str) -> &'static str {
         "close_gate" => "Closes pipeline only if QA + build pass and checklist complete",
         "entity_registry_gate" => "Blocks /feature, /bugfix if registry missing or version < 3.x",
         "size_gate" => "Warns specs > 500 lines; validates skill YAML frontmatter",
-        "path_guard" => "Blocks sensitive-file access; flags edits outside spec boundaries",
+        "path_gate" => "Blocks sensitive-file access; flags edits outside spec boundaries",
         "post_edit" => "Auto-formats by extension; auto-marks Checklist items; guard-verify; pipeline-phase events",
         "session_knowledge_observer" => "Extracts non-obvious decisions to memory_decisions SQLite; friction telemetry",
         "session_start_inject" => "Bootstraps event bus; runs spec-hygiene; injects top-N knowledge patterns",
@@ -66,7 +66,7 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
         "close_gate" => Some("MUSTARD_CHECKLIST_GATE_MODE"),
         "entity_registry_gate" => Some("MUSTARD_ENTITY_REGISTRY_GATE_MODE"),
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
-        "path_guard" => Some("MUSTARD_BOUNDARY_MODE"),
+        "path_gate" => Some("MUSTARD_BOUNDARY_MODE"),
         "post_edit" => Some("MUSTARD_POST_EDIT_MODE"),
         "session_knowledge_observer" => Some("MUSTARD_KNOWLEDGE_MODE"),
         _ => None,
@@ -155,7 +155,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 /// Map an event name to the primary enforcement module name it dispatches.
 fn event_to_module(event: &str) -> &'static str {
     match event {
-        "PreToolUse" => "bash_command_gate + model_routing_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_guard",
+        "PreToolUse" => "bash_command_gate + model_routing_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + path_gate",
         "PostToolUse" => "post_edit + session_knowledge_observer",
         "SessionStart" => "spec_hygiene_observer + session_start_inject",
         "SessionEnd" => "session_cleanup_observer + session_knowledge_observer",

@@ -1,4 +1,4 @@
-//! `path_guard` — the consolidated Write/Edit path-boundary module.
+//! `path_gate` — the consolidated Write/Edit path-boundary module.
 //!
 //! ## Scope (b3 Wave 4, Write/Edit family)
 //!
@@ -52,7 +52,7 @@ use crate::commands::{PipelineStateView, pipeline_state_from_events};
 use mustard_core::time::now_iso8601;
 
 /// The consolidated Write/Edit path-boundary module.
-pub struct PathGuard;
+pub struct PathGate;
 
 // ---------------------------------------------------------------------------
 // file-guard — deny access to sensitive files
@@ -676,7 +676,7 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
 // Contract impl
 // ---------------------------------------------------------------------------
 
-impl Check for PathGuard {
+impl Check for PathGate {
     /// Run `file-guard` then `boundary-gate` on a `PreToolUse` invocation.
     ///
     /// `file-guard` is the non-negotiable safety gate (no mode — always
@@ -726,7 +726,7 @@ mod tests {
 
     fn verdict_for(tool: &str, file_path: &str) -> Verdict {
         let (input, ctx) = pre(tool, file_path);
-        PathGuard.evaluate(&input, &ctx).expect("check never errors")
+        PathGate.evaluate(&input, &ctx).expect("check never errors")
     }
 
     // --- file-guard parity (hooks.test.js "file-guard.js") -----------------
@@ -807,7 +807,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            PathGuard.evaluate(&input, &ctx).expect("no error"),
+            PathGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }
@@ -967,7 +967,7 @@ mod tests {
             workspace_root: None,
         };
         assert_eq!(
-            PathGuard.evaluate(&input, &ctx).expect("no error"),
+            PathGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
         );
     }

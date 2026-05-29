@@ -470,7 +470,7 @@ pub enum RunCmd {
     /// text and dispatches to `review::gate_regression_check::run`. Moments 2 and 3
     /// require external `diff` + snapshots that the bare CLI does not
     /// collect today — those moments are exercised via the
-    /// `pre_edit_intent_check` hook and the W5 span-level integration.
+    /// `pre_edit_intent_gate` hook and the W5 span-level integration.
     /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
     #[command(name = "gate-regression-check")]
     GateRegressionCheck {
