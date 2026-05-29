@@ -317,6 +317,24 @@ fn archive_followups(cwd: &Path, require_ttl: bool) -> (usize, usize) {
     (scanned, archived)
 }
 
+/// Stage-1 close for `spec` (closed-followup → `pipeline.complete`) as a
+/// reusable, non-printing Rust entry point.
+///
+/// Mirrors the default `run(...)` path: a fail-open QA pass, the two-event
+/// followup mark via [`mark_followup`], then a fail-open registry rebuild.
+/// Returns the followup JSON value (`{ ok, mode: "followup", spec,
+/// affectedFiles }`) so callers — e.g.
+/// [`crate::commands::pipeline::close_orchestrate`] auto-chaining after every
+/// gate passes — can fold it into their own report without spawning a
+/// subprocess. Deterministic and idempotent (the underlying emits are
+/// idempotent on phase/status).
+pub fn run_followup(cwd: &Path, spec: &str) -> Value {
+    run_qa_fail_open(cwd, spec);
+    let followup_value = mark_followup(cwd, spec);
+    rebuild_one_fail_open(cwd, spec);
+    followup_value
+}
+
 /// Dispatch `mustard-rt run complete-spec`, writing one JSON line to stdout.
 pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_followups_flag: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
@@ -345,9 +363,8 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         std::process::exit(2);
     };
 
-    run_qa_fail_open(&cwd, spec);
-
     if archive_flag {
+        run_qa_fail_open(&cwd, spec);
         let (moved_spec, had_state) = archive(&cwd, spec);
         rebuild_one_fail_open(&cwd, spec);
         println!(
@@ -357,8 +374,7 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         return;
     }
 
-    let followup_value = mark_followup(&cwd, spec);
-    rebuild_one_fail_open(&cwd, spec);
+    let followup_value = run_followup(&cwd, spec);
     println!("{followup_value}");
 }
 
@@ -380,6 +396,9 @@ fn run_qa_fail_open(_cwd: &Path, spec: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
     #[test]
     fn parse_iso_millis_round_trips() {
         let ms = mustard_core::time::parse_iso_millis("2026-05-19T00:00:00.000Z").unwrap();
@@ -390,5 +409,53 @@ mod tests {
     fn parse_iso_millis_without_fraction() {
         assert!(mustard_core::time::parse_iso_millis("2026-05-19T12:30:45Z").is_some());
         assert!(mustard_core::time::parse_iso_millis("garbage").is_none());
+    }
+
+    /// The deterministic finalize step (the body of `run_followup`, minus the
+    /// fail-open QA / registry side-effects that resolve against the live cwd):
+    /// `mark_followup` flips the spec to `closed-followup` and emits
+    /// `pipeline.complete` + `pipeline.phase: CLOSE` into the per-spec NDJSON.
+    /// This is what `close_orchestrate` auto-chains in-process when all gates
+    /// pass. Idempotent: a second call leaves the projection on the same status.
+    #[test]
+    fn mark_followup_emits_close_and_complete_to_ndjson() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+
+        let out = mark_followup(cwd, "demo");
+        assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(out.get("mode").and_then(Value::as_str), Some("followup"));
+
+        // Projection reflects the closed-followup status.
+        let events = read_events_for_spec(cwd, "demo");
+        let view = crate::commands::event::event_projections::pipeline_state_from_events(
+            &events, "demo", None,
+        )
+        .expect("projection exists after mark_followup");
+        assert_eq!(view.status.as_deref(), Some("closed-followup"));
+
+        // The pipeline.complete event landed and is verifiable via the same
+        // reusable helper close_orchestrate uses for its auto-verify step.
+        assert!(crate::commands::event::verify_emit::verify_event_landed(
+            cwd,
+            "pipeline.complete",
+            Some("demo"),
+            Some("1h"),
+        ));
+
+        // Phase is CLOSE.
+        assert_eq!(
+            crate::commands::event::emit_phase::last_phase_for_spec(cwd, "demo").as_deref(),
+            Some("CLOSE"),
+        );
+
+        // Idempotency: a second flip keeps the same terminal-ish status.
+        let _ = mark_followup(cwd, "demo");
+        let events2 = read_events_for_spec(cwd, "demo");
+        let view2 = crate::commands::event::event_projections::pipeline_state_from_events(
+            &events2, "demo", None,
+        )
+        .expect("projection still exists");
+        assert_eq!(view2.status.as_deref(), Some("closed-followup"));
     }
 }

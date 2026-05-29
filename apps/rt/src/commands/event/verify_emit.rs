@@ -108,6 +108,68 @@ fn scan(events: &[HarnessEvent], args: &Args, now_ms: i64) -> VerifyOutcome {
     VerifyOutcome::Miss
 }
 
+/// Read + scan the per-spec NDJSON `.events/` window for a matching event, as a
+/// reusable, non-exiting Rust entry point.
+///
+/// Same read path and matching semantics as [`run`] (per-spec NDJSON, newest
+/// match within the window wins), but returns the [`VerifyOutcome`] instead of
+/// exiting the process — so callers like
+/// [`crate::commands::pipeline::close_orchestrate`] can auto-verify a freshly
+/// emitted `pipeline.complete` and fold `verified: true/false` into their own
+/// report without spawning a subprocess. Fail-open: a rejected project path
+/// yields [`VerifyOutcome::Miss`]. `now_ms` is injected for deterministic tests.
+fn verify_outcome(cwd: &std::path::Path, args: &Args, now_ms: i64) -> VerifyOutcome {
+    let specs_root = match ClaudePaths::for_project(cwd) {
+        Ok(paths) => paths.spec_dir(),
+        Err(_) => {
+            if !args.quiet {
+                eprintln!("[verify-emit] project path rejected by ClaudePaths guard");
+            }
+            return VerifyOutcome::Miss;
+        }
+    };
+    let mut events: Vec<HarnessEvent> = Vec::new();
+    if let Some(spec) = args.spec.as_deref() {
+        let dir = specs_root.join(spec).join(".events");
+        events.extend(read_harness_events_from_ndjson_dir(&dir));
+    } else if let Ok(entries) = fs::read_dir(&specs_root) {
+        for entry in entries {
+            if entry.path.is_dir() {
+                let dir = entry.path.join(".events");
+                events.extend(read_harness_events_from_ndjson_dir(&dir));
+            }
+        }
+    }
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+    scan(&events, args, now_ms)
+}
+
+/// Did `event` (optionally filtered by `spec`) land within the last `since`
+/// window? A thin, boolean-returning wrapper over [`verify_outcome`] for the
+/// orchestrator's auto-verify step. `since` accepts the same duration grammar
+/// as the CLI (`30s`, `1m`, …); `None` → 30s default.
+#[must_use]
+pub fn verify_event_landed(
+    cwd: &std::path::Path,
+    event: &str,
+    spec: Option<&str>,
+    since: Option<&str>,
+) -> bool {
+    if event.is_empty() {
+        return false;
+    }
+    let args = Args {
+        event: event.to_string(),
+        since_ms: since.map_or(30_000, parse_duration),
+        payload_key: None,
+        payload_value: None,
+        spec: spec.map(str::to_string),
+        quiet: true,
+    };
+    let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
+    matches!(verify_outcome(cwd, &args, now_ms), VerifyOutcome::Found { .. })
+}
+
 /// Dispatch `mustard-rt run verify-emit`.
 pub fn run(
     event: Option<&str>,
@@ -130,33 +192,9 @@ pub fn run(
         quiet,
     };
 
-    // Read events exclusively from per-spec NDJSON `.events/` directories.
     let project = context::project_dir();
-    let specs_root = match ClaudePaths::for_project(std::path::Path::new(&project)) {
-        Ok(paths) => paths.spec_dir(),
-        Err(_) => {
-            if !args.quiet {
-                eprintln!("[verify-emit] project path rejected by ClaudePaths guard");
-            }
-            std::process::exit(1);
-        }
-    };
-    let mut events: Vec<HarnessEvent> = Vec::new();
-    if let Some(spec) = args.spec.as_deref() {
-        let dir = specs_root.join(spec).join(".events");
-        events.extend(read_harness_events_from_ndjson_dir(&dir));
-    } else if let Ok(entries) = fs::read_dir(&specs_root) {
-        for entry in entries {
-            if entry.path.is_dir() {
-                let dir = entry.path.join(".events");
-                events.extend(read_harness_events_from_ndjson_dir(&dir));
-            }
-        }
-    }
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-
     let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
-    match scan(&events, &args, now_ms) {
+    match verify_outcome(std::path::Path::new(&project), &args, now_ms) {
         VerifyOutcome::Found { age_secs } => {
             if !args.quiet {
                 let spec_note = args

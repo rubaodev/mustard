@@ -1,17 +1,31 @@
-//! `mustard-rt run close-orchestrate` — drive the CLOSE-phase gates.
+//! `mustard-rt run close-orchestrate` — drive the CLOSE-phase gates and, when
+//! they all pass, **finalize the spec deterministically**.
 //!
-//! Replaces the imperative step list inside `close/SKILL.md`. Runs the four
-//! gates (verify-pipeline → qa-run → docs-stale-check → pipeline-summary) in
-//! order, captures a pass/fail per gate, and emits one machine-readable JSON
-//! report so the orchestrator can decide whether to finalize.
+//! Replaces the imperative step list inside `close/SKILL.md`. Runs the gates
+//! (verify-pipeline → qa-run → review-spans → docs-stale-check →
+//! pipeline-summary) in order, captures a pass/fail per gate, and derives an
+//! `overall` verdict from the boolean vector.
+//!
+//! ## Deterministic chaining (no LLM judgement)
+//!
+//! When **every** gate passes, the orchestrator auto-chains the close itself —
+//! it calls [`crate::commands::spec::complete_spec::run_followup`] **directly**
+//! (module-qualified, in-process — no subprocess), marking the spec
+//! `closed-followup` and emitting `pipeline.complete`. It then auto-verifies
+//! that the `pipeline.complete` event landed in the per-spec NDJSON window via
+//! [`crate::commands::event::verify_emit::verify_event_landed`] and folds the
+//! boolean into the report (`verified`). The LLM no longer decides whether to
+//! call `complete-spec`; it is a relay. When **any** gate fails the close is
+//! report-only (`chained: false`, no finalize) exactly as before. The
+//! `emit_pipeline` QA-gate stays the strict safety net behind both paths.
 //!
 //! ## Fail-open
 //!
 //! Each gate is fail-open at the subprocess level: a missing binary or
 //! non-zero exit becomes a `gate.ok = false` row, the next gate still runs,
-//! and the overall verdict is derived from the boolean vector. A SKILL
-//! consumer reads the `overall` field; downstream tools may inspect each
-//! individual `gate` entry.
+//! and the overall verdict is derived from the boolean vector. The chaining is
+//! *gated* on `overall == pass` (the gate itself is strict — it does not
+//! fail-open into a finalize); the auxiliary verify is best-effort.
 //!
 //! ## Output shape
 //!
@@ -25,6 +39,8 @@
 //!     { "name": "docs-stale-check","ok": true,  "duration_ms": 78 },
 //!     { "name": "pipeline-summary","ok": true,  "duration_ms": 12 }
 //!   ],
+//!   "chained":  true,
+//!   "verified": true,
 //!   "duration_ms": 669
 //! }
 //! ```
@@ -63,6 +79,13 @@ pub struct CloseReport {
     pub spec: String,
     pub overall: &'static str,
     pub gates: Vec<GateReport>,
+    /// `true` when every gate passed and the close was auto-chained
+    /// (`complete-spec` finalize ran in-process). `false` on a report-only run.
+    pub chained: bool,
+    /// `true` when the auto-chained `pipeline.complete` event was confirmed in
+    /// the per-spec NDJSON window. Omitted when nothing was chained.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
     pub duration_ms: u64,
 }
 
@@ -152,16 +175,49 @@ pub fn run(opts: CloseOrchestrateOpts) {
     });
 
     let overall_pass = gates.iter().all(|g| g.ok);
+
+    // Deterministic chaining: when every gate passes, finalize the spec in
+    // process (no LLM judgement, no subprocess) and auto-verify the
+    // `pipeline.complete` event landed. A failing gate is report-only.
+    let (chained, verified) = if overall_pass {
+        finalize_and_verify(&opts.spec)
+    } else {
+        (false, None)
+    };
+
     let total = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let report = CloseReport {
         spec: opts.spec.clone(),
         overall: if overall_pass { "pass" } else { "fail" },
         gates,
+        chained,
+        verified,
         duration_ms: total,
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "close-orchestrate", total as u64, Some(opts.spec.as_str()), json!({}));
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "close-orchestrate", total as u64, Some(opts.spec.as_str()), json!({ "chained": chained, "verified": verified }));
+}
+
+/// Finalize the spec in-process and confirm the close landed.
+///
+/// Calls [`crate::commands::spec::complete_spec::run_followup`] directly
+/// (module-qualified — no subprocess) to mark `closed-followup` and emit
+/// `pipeline.complete`, then reuses
+/// [`crate::commands::event::verify_emit::verify_event_landed`] to confirm the
+/// `pipeline.complete` event landed in the per-spec NDJSON window. Both steps
+/// are deterministic; `complete_spec`'s emits are idempotent, so a re-run after
+/// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
+fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let _ = crate::commands::spec::complete_spec::run_followup(&cwd, spec);
+    let verified = crate::commands::event::verify_emit::verify_event_landed(
+        &cwd,
+        "pipeline.complete",
+        Some(spec),
+        Some("60s"),
+    );
+    (true, Some(verified))
 }
 
 /// Walk `.claude/spec/<spec>/wave-*-*/` and run `review_spans::check_consolidation`
@@ -228,6 +284,8 @@ mod tests {
                 duration_ms: 1,
                 summary: None,
             }],
+            chained: true,
+            verified: Some(true),
             duration_ms: 2,
         };
         let v = serde_json::to_value(r).unwrap();
@@ -235,6 +293,30 @@ mod tests {
         assert!(v.get("overall").is_some());
         assert!(v.get("gates").unwrap().is_array());
         assert!(v.get("duration_ms").is_some());
+        assert_eq!(v.get("chained").and_then(Value::as_bool), Some(true));
+        assert_eq!(v.get("verified").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn report_only_run_omits_verified() {
+        // A report-only (gate failed) run carries `chained:false` and no
+        // `verified` key (skip_serializing_if = None).
+        let r = CloseReport {
+            spec: "demo".to_string(),
+            overall: "fail",
+            gates: vec![GateReport {
+                name: "verify-pipeline".to_string(),
+                ok: false,
+                duration_ms: 1,
+                summary: None,
+            }],
+            chained: false,
+            verified: None,
+            duration_ms: 2,
+        };
+        let v = serde_json::to_value(r).unwrap();
+        assert_eq!(v.get("chained").and_then(Value::as_bool), Some(false));
+        assert!(v.get("verified").is_none());
     }
 
     #[test]

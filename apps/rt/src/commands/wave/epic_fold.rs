@@ -1,8 +1,13 @@
 //! `mustard-rt run epic-fold` — consolidate and compact harness events when
 //! an epic completes.
 //!
-//! - `--detect` scans `.pipeline-states/*.json` and lists root specs whose
-//!   children are all in phase `CLOSE` (and the root itself is not).
+//! - `--detect` folds the **per-spec NDJSON event stream** (via
+//!   [`mustard_core::view::projection::read_workspace_events`]) and lists root
+//!   specs whose children are all in phase `CLOSE` (and the root itself is
+//!   not). Parent→children edges come from `spec.link` events; per-spec phase
+//!   comes from the latest `pipeline.phase` event — the same source of truth
+//!   the rest of the runtime uses. No dependency on the legacy
+//!   `.pipeline-states/*.json` sidecar (which can lag the event stream).
 //! - `--epic <name>` folds one such epic: aggregates events for the epic + its
 //!   children, emits an `epic.complete` event, writes an `epic-summary`
 //!   knowledge entry (markdown), transitions the root to `CLOSE`, and emits
@@ -73,51 +78,72 @@ fn emit_event(project_dir: &str, event: &str, payload: Value, spec: &str) {
     );
 }
 
-/// Scan `.pipeline-states/*.json` for epics ready to fold.
+/// Latest `pipeline.phase` for `spec` from a pre-folded event slice (UPPERCASE),
+/// or empty when the spec never transitioned. Pure over the slice — the
+/// NDJSON-stream analogue of [`state_phase`]'s event lookup, without per-spec
+/// disk reads.
+fn phase_from_events(events: &[HarnessEvent], spec: &str) -> String {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.event == "pipeline.phase" && e.spec.as_deref() == Some(spec))
+        .and_then(|e| e.payload.get("to").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_uppercase()
+}
+
+/// Detect epics ready to fold by folding the **per-spec NDJSON event stream**.
+///
+/// Parent→children edges are reconstructed from `spec.link` events
+/// (`{ parent, child }`); a root is an epic with ≥1 child that is itself never
+/// a child of another spec. An epic is "ready" when it is not yet in phase
+/// `CLOSE` and **every** child's latest `pipeline.phase` is `CLOSE`. Reads no
+/// `.pipeline-states/*.json` sidecar — the event stream is the single source of
+/// truth, so detection never lags a freshly-emitted child CLOSE.
 fn detect_completed_epics(cwd: &Path) -> Vec<String> {
-    let states_dir = ClaudePaths::for_project(cwd)
-        .map(|p| p.pipeline_states_dir())
-        .unwrap_or_else(|_| cwd.to_path_buf());
-    let Ok(entries) = fs::read_dir(&states_dir) else {
-        return Vec::new();
-    };
+    let mut events = mustard_core::view::projection::read_workspace_events(cwd);
+    // Stable sort by ts so the "latest pipeline.phase wins" fold is deterministic
+    // across multi-session / multi-file event slices (ISO-8601 lexicographic =
+    // chronological for UTC). A stable sort preserves append order on ts ties.
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+    // parent → set(children), and the set of all specs that are someone's child.
+    let mut children_of: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut is_child: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for ev in &events {
+        if ev.event != "spec.link" {
+            continue;
+        }
+        let parent = ev.payload.get("parent").and_then(Value::as_str);
+        let child = ev.payload.get("child").and_then(Value::as_str);
+        if let (Some(p), Some(c)) = (parent, child) {
+            children_of.entry(p.to_string()).or_default().insert(c.to_string());
+            is_child.insert(c.to_string());
+        }
+    }
+
     let mut candidates = Vec::new();
-    for entry in entries {
-        let name = entry.file_name.clone();
-        if !name.ends_with(".json") {
+    for (parent, children) in &children_of {
+        // A root epic is not itself a child of another spec.
+        if is_child.contains(parent) {
             continue;
         }
-        let Some(state) = json_io::read_json(&entry.path) else {
-            continue;
-        };
-        match state.get("parent_spec") {
-            None | Some(Value::Null) => {}
-            Some(_) => continue,
-        }
-        let children: Vec<&str> = state
-            .get("children_specs")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
         if children.is_empty() {
             continue;
         }
-        if state_phase(&state, cwd) == "CLOSE" {
+        // Idempotency: skip when the epic itself is already in CLOSE.
+        if phase_from_events(&events, parent) == "CLOSE" {
             continue;
         }
-        let all_closed = children.iter().all(|child| {
-            let child_file = states_dir.join(format!("{child}.json"));
-            json_io::read_json(&child_file)
-                .is_some_and(|cs| state_phase(&cs, cwd) == "CLOSE")
-        });
+        let all_closed = children
+            .iter()
+            .all(|child| phase_from_events(&events, child) == "CLOSE");
         if all_closed {
-            let spec = state
-                .get("spec")
-                .and_then(Value::as_str)
-                .map_or_else(|| name.trim_end_matches(".json").to_string(), str::to_string);
-            candidates.push(spec);
+            candidates.push(parent.clone());
         }
     }
+    candidates.sort();
     candidates
 }
 
@@ -363,38 +389,64 @@ pub fn run(detect: bool, epic: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::events::writer_ndjson::write_event;
     use tempfile::tempdir;
 
-    fn write_state(states: &Path, name: &str, value: Value) {
-        json_io::write_json(&states.join(format!("{name}.json")), &value);
+    /// Emit a `spec.link` event (parent→child) into the parent's NDJSON sink.
+    fn link(project: &Path, parent: &str, child: &str) {
+        let payload = json!({ "parent": parent, "child": child, "reason": "test" });
+        let _ = write_event(
+            project, Some(parent), None, "s", "spec.link", "spec",
+            Some(0), Some("s"), Some("test"), None, &payload,
+        );
+    }
+
+    /// Emit a `pipeline.phase` transition into `spec`'s NDJSON sink.
+    fn phase(project: &Path, spec: &str, to: &str) {
+        let payload = json!({ "from": null, "to": to });
+        let _ = write_event(
+            project, Some(spec), None, "s", "pipeline.phase", "pipeline",
+            Some(0), Some("s"), Some("test"), None, &payload,
+        );
     }
 
     #[test]
-    fn detect_finds_epic_with_all_children_closed() {
+    fn detect_finds_epic_with_all_children_closed_from_ndjson() {
         let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        write_state(
-            &states,
-            "epic",
-            json!({ "spec": "epic", "parent_spec": null, "children_specs": ["c1"], "phase": "EXECUTE" }),
-        );
-        write_state(&states, "c1", json!({ "spec": "c1", "phase": "CLOSE" }));
+        link(dir.path(), "epic", "c1");
+        phase(dir.path(), "epic", "EXECUTE");
+        phase(dir.path(), "c1", "CLOSE");
         assert_eq!(detect_completed_epics(dir.path()), vec!["epic".to_string()]);
     }
 
     #[test]
-    fn detect_skips_when_a_child_is_not_closed() {
+    fn detect_skips_when_a_child_is_not_closed_from_ndjson() {
         let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        write_state(
-            &states,
-            "epic",
-            json!({ "spec": "epic", "parent_spec": null, "children_specs": ["c1"], "phase": "EXECUTE" }),
-        );
-        write_state(&states, "c1", json!({ "spec": "c1", "phase": "QA" }));
+        link(dir.path(), "epic", "c1");
+        phase(dir.path(), "epic", "EXECUTE");
+        phase(dir.path(), "c1", "QA");
         assert!(detect_completed_epics(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn detect_skips_when_epic_already_closed_from_ndjson() {
+        // Idempotency: root already in CLOSE → not re-listed even if children are.
+        let dir = tempdir().unwrap();
+        link(dir.path(), "epic", "c1");
+        phase(dir.path(), "epic", "CLOSE");
+        phase(dir.path(), "c1", "CLOSE");
+        assert!(detect_completed_epics(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn detect_uses_latest_phase_event_per_child() {
+        // A child that moved QA → CLOSE counts as closed; the newest wins.
+        let dir = tempdir().unwrap();
+        link(dir.path(), "epic", "c1");
+        phase(dir.path(), "epic", "EXECUTE");
+        phase(dir.path(), "c1", "QA");
+        phase(dir.path(), "c1", "CLOSE");
+        assert_eq!(detect_completed_epics(dir.path()), vec!["epic".to_string()]);
     }
 
     #[test]
