@@ -11,22 +11,36 @@
 //! word boundary after the name and an arbitrary suffix. [`is_heading`]
 //! reproduces that contract exactly.
 
-/// Canonical section key → ordered list of accepted heading names. Index 0 is
-/// the canonical EN name; the last entry is the canonical PT name.
+/// Canonical section key → ordered list of accepted display heading names.
+/// Index 0 is the canonical EN display name; the last entry is the canonical
+/// PT display name.
+///
+/// The keys here are the language-agnostic canonical identifiers used by
+/// [`mustard_core::domain::spec::contract::PRD_SECTIONS`] /
+/// [`PLAN_SECTIONS`](mustard_core::domain::spec::contract::PLAN_SECTIONS) and
+/// throughout the rt parsers. They are matched case-insensitively, and both
+/// the kebab (`acceptance-criteria`, `non-goals`) and the legacy camelCase
+/// (`acceptanceCriteria`, `nonGoals`) spellings resolve to the same variants
+/// so older callers keep working. A spec on disk carries the *display*
+/// heading (per the author's `language`); this table bridges key → display.
 fn variants(key: &str) -> Option<&'static [&'static str]> {
-    Some(match key {
+    Some(match key.trim().to_ascii_lowercase().as_str() {
         "context" => &["Context", "Contexto"],
+        "users" => &["Users/Stakeholders", "Usuários/Stakeholders", "Users", "Usuários"],
+        "metric" => &["Success Metric", "Métrica de sucesso", "Metric", "Métrica"],
         "summary" => &["Summary", "Resumo"],
         "boundaries" => &["Boundaries", "Limites"],
         "files" => &["Files", "Arquivos"],
-        "rootCause" => &["Root cause", "Causa raiz"],
+        "rootcause" => &["Root cause", "Causa raiz"],
         "tasks" => &["Tasks", "Checklist", "Tarefas"],
-        "acceptanceCriteria" => &["Acceptance Criteria", "Critérios de Aceitação"],
-        "nonGoals" => &["Non-Goals", "Não-Objetivos"],
+        "acceptance-criteria" | "acceptancecriteria" => {
+            &["Acceptance Criteria", "Critérios de Aceitação"]
+        }
+        "non-goals" | "nongoals" => &["Non-Goals", "Não-Objetivos"],
         "concerns" => &["Concerns", "Preocupações"],
         "decisions" => &["Decisions", "Decisões não-óbvias"],
         "dependencies" => &["Dependencies", "Dependências"],
-        "entityInfo" => &["Entity Info", "Informações da Entidade"],
+        "entityinfo" => &["Entity Info", "Informações da Entidade"],
         "symptom" => &["Symptom", "Sintoma"],
         _ => return None,
     })

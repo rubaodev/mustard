@@ -38,19 +38,31 @@ use std::str::FromStr;
 // ---------------------------------------------------------------------------
 
 /// Section list a spec narrative must carry, in order, after the PRD divider.
-/// Names match the canonical PT-BR wording used in every Mustard spec; the
-/// validator matches case-insensitively and tolerates the EN equivalents
-/// (`Context` / `Users` / `Metric` / `Non-Goals` / `Acceptance Criteria`).
+///
+/// These are **canonical internal keys** — language-agnostic, kebab-case EN
+/// identifiers. They are never rendered to the user verbatim: the
+/// user-facing display heading is resolved per-locale at render time (see
+/// `apps/rt/.../spec_scaffold::section_heading_for`, which maps each key to a
+/// localised `heading.spec.*` catalogue entry). Internal artefacts and code
+/// reference the spec by these EN keys regardless of the user's `language`;
+/// the natural-language `language` only colours the spec-facing `spec.md`.
+///
+/// The `name` slot of a [`SectionBody`] carries one of these keys. The
+/// validator matches case-insensitively; it also tolerates either the EN or
+/// the PT-BR *display* wording for back-compat with hand-authored specs (the
+/// `display_matches` equivalence table in the rt-side collectors).
 pub const PRD_SECTIONS: &[&str] = &[
-    "Contexto",
-    "Usuários",
-    "Métrica",
-    "Não-Objetivos",
-    "Critérios de Aceitação",
+    "context",
+    "users",
+    "metric",
+    "non-goals",
+    "acceptance-criteria",
 ];
 
 /// Section list a spec plan must carry, in order, after the Plan divider.
-pub const PLAN_SECTIONS: &[&str] = &["Arquivos", "Tarefas", "Limites"];
+///
+/// Canonical internal keys (see [`PRD_SECTIONS`]).
+pub const PLAN_SECTIONS: &[&str] = &["files", "tasks", "boundaries"];
 
 /// Markdown comment marker dividing the PRD half from the plan half.
 pub const PRD_DIVIDER: &str = "<!-- PRD -->";

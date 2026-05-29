@@ -162,19 +162,26 @@ pub fn sync_status(stage: Stage, outcome: Outcome, spec_path: &Path) -> Result<(
 // Internal helpers (shared with spec_draft via pub re-export)
 // ---------------------------------------------------------------------------
 
-/// Translate a canonical (PT-BR) section name into the user-facing heading
-/// for the active locale. Identical to the private helper in `spec_draft` —
-/// extracted here to avoid duplication.
+/// Translate a canonical (EN, language-agnostic) section key into the
+/// user-facing display heading for the active locale.
+///
+/// The canonical keys are the kebab-case EN identifiers in
+/// [`mustard_core::domain::spec::contract::PRD_SECTIONS`] /
+/// [`PLAN_SECTIONS`](mustard_core::domain::spec::contract::PLAN_SECTIONS).
+/// The localised heading is the only place the user's natural `language`
+/// surfaces in a spec; everything else stays EN. The match is
+/// case-insensitive on the key so a `Context`-cased body name still resolves.
+/// An unrecognised key passes through unchanged (fail-open).
 pub fn section_heading_for(canonical: &str, lang: Locale) -> String {
-    let key = match canonical {
-        "Contexto" => "heading.spec.context",
-        "Usuários" => "heading.spec.users",
-        "Métrica" => "heading.spec.metric",
-        "Não-Objetivos" => "heading.spec.non_goals",
-        "Critérios de Aceitação" => "heading.spec.ac",
-        "Arquivos" => "heading.spec.files",
-        "Tarefas" => "heading.spec.tasks",
-        "Limites" => "heading.spec.limits",
+    let key = match canonical.trim().to_ascii_lowercase().as_str() {
+        "context" => "heading.spec.context",
+        "users" => "heading.spec.users",
+        "metric" => "heading.spec.metric",
+        "non-goals" => "heading.spec.non_goals",
+        "acceptance-criteria" => "heading.spec.ac",
+        "files" => "heading.spec.files",
+        "tasks" => "heading.spec.tasks",
+        "boundaries" => "heading.spec.limits",
         _ => return canonical.to_string(),
     };
     translate(key, lang).to_string()
@@ -317,9 +324,14 @@ mod tests {
 
     #[test]
     fn section_heading_for_localises() {
-        assert_eq!(section_heading_for("Contexto", Locale::EnUs), "Context");
-        assert_eq!(section_heading_for("Contexto", Locale::PtBr), "Contexto");
+        // Canonical EN keys map to the localised display heading.
+        assert_eq!(section_heading_for("context", Locale::EnUs), "Context");
+        assert_eq!(section_heading_for("context", Locale::PtBr), "Contexto");
+        // Case-insensitive on the key.
+        assert_eq!(section_heading_for("Context", Locale::EnUs), "Context");
+        assert_eq!(section_heading_for("acceptance-criteria", Locale::EnUs), "Acceptance Criteria");
+        assert_eq!(section_heading_for("boundaries", Locale::PtBr), "Limites");
         // Unknown keys pass through.
-        assert_eq!(section_heading_for("Custom", Locale::EnUs), "Custom");
+        assert_eq!(section_heading_for("custom", Locale::EnUs), "custom");
     }
 }

@@ -150,8 +150,22 @@ pub fn run(opts: SpecDraftOpts) {
         return;
     }
 
+    // ---- Resolve the project build command (AC default) from mustard.json. ----
+    // No hardcoded `rtk cargo build`: the AC runs the project's own build, or a
+    // neutral placeholder the user fills in when no `buildCommand` is set.
+    let project_root = PathBuf::from(project_dir());
+    let build_command = crate::util::mustard_config::build_command_or_fallback(&project_root);
+
     // ---- Build the canonical input + validate before writing. ----
-    let input = build_input(&slug, &opts.intent, scope, &opts.lang, opts.waves, lang_locale);
+    let input = build_input(
+        &slug,
+        &opts.intent,
+        scope,
+        &opts.lang,
+        opts.waves,
+        lang_locale,
+        &build_command,
+    );
     if let Err(violations) = mustard_core::domain::spec::contract::validate(&input) {
         let detail = violations
             .iter()
@@ -163,7 +177,6 @@ pub fn run(opts: SpecDraftOpts) {
     }
 
     // ---- Resolve tone from mustard.json (wired into the drafter prompt). ----
-    let project_root = PathBuf::from(project_dir());
     let tone = read_mustard_tone(&project_root);
 
     // ---- Materialise files. ----
@@ -188,7 +201,8 @@ pub fn run(opts: SpecDraftOpts) {
     }
 
     if matches!(scope, Scope::Full) {
-        let wave_paths = write_wave_plan(&output, &input, opts.waves, &opts.role, lang_locale);
+        let wave_paths =
+            write_wave_plan(&output, &input, opts.waves, &opts.role, lang_locale, &build_command);
         match wave_paths {
             Ok(paths) => written.extend(paths),
             Err(e) => emit_error("write wave-plan", &e),
@@ -214,9 +228,10 @@ pub fn run(opts: SpecDraftOpts) {
 
 /// Build a default [`SpecInput`] for the given intent. The stub sections each
 /// carry a single placeholder line — they are valid against the contract but
-/// the user is expected to flesh them out. Localised via `lang_locale` (every
-/// user-facing string goes through [`translate`]; the canonical section *names*
-/// in [`PRD_SECTIONS`] / [`PLAN_SECTIONS`] stay in their contract spelling).
+/// the user is expected to flesh them out. Section *bodies* are localised via
+/// `lang_locale` (the body is spec-facing narrative); the canonical section
+/// *keys* in [`PRD_SECTIONS`] / [`PLAN_SECTIONS`] stay in their EN, language-
+/// agnostic spelling and are translated to display headings only at render.
 fn build_input(
     slug: &str,
     intent: &str,
@@ -224,6 +239,7 @@ fn build_input(
     lang: &str,
     waves: u32,
     lang_locale: Locale,
+    build_command: &str,
 ) -> SpecInput {
     SpecInput {
         slug: slug.to_string(),
@@ -259,33 +275,35 @@ fn build_input(
         acceptance_criteria: vec![AcceptanceCriterion {
             id: "AC-1".to_string(),
             statement: "Pipeline build green".to_string(),
-            command: "rtk cargo build".to_string(),
+            command: build_command.to_string(),
         }],
     }
 }
 
-/// Default body for a PRD section. `name` is a canonical contract key
-/// (PT-BR — `"Contexto"`, `"Usuários"`, etc.). The returned body is fully
-/// localised via the catalogue.
+/// Default body for a PRD section. `name` is a canonical contract key — a
+/// language-agnostic EN identifier from [`PRD_SECTIONS`] (`"context"`,
+/// `"users"`, …). The returned body is fully localised via the catalogue
+/// (the body is part of the spec-facing narrative; only the keys are EN).
 fn prd_section_default(name: &str, intent: &str, lang: Locale) -> String {
     let fill_why_now = translate("placeholder.fill_why_now", lang);
     match name {
-        "Contexto" => format!("{intent}.\n\n{fill_why_now}"),
-        "Usuários" => translate("placeholder.fill_beneficiary", lang).to_string(),
-        "Métrica" => translate("placeholder.fill_metric", lang).to_string(),
-        "Não-Objetivos" => translate("placeholder.fill_excluded", lang).to_string(),
-        "Critérios de Aceitação" => translate("placeholder.see_below", lang).to_string(),
+        "context" => format!("{intent}.\n\n{fill_why_now}"),
+        "users" => translate("placeholder.fill_beneficiary", lang).to_string(),
+        "metric" => translate("placeholder.fill_metric", lang).to_string(),
+        "non-goals" => translate("placeholder.fill_excluded", lang).to_string(),
+        "acceptance-criteria" => translate("placeholder.see_below", lang).to_string(),
         _ => translate("placeholder.fill", lang).to_string(),
     }
 }
 
-/// Default body for a Plan section. `name` is a canonical contract key
-/// (PT-BR — `"Arquivos"`, `"Tarefas"`, `"Limites"`).
+/// Default body for a Plan section. `name` is a canonical contract key — a
+/// language-agnostic EN identifier from [`PLAN_SECTIONS`] (`"files"`,
+/// `"tasks"`, `"boundaries"`).
 fn plan_section_default(name: &str, lang: Locale) -> String {
     match name {
-        "Arquivos" => translate("placeholder.fill_files", lang).to_string(),
-        "Tarefas" => "- [ ] T1 — ...".to_string(),
-        "Limites" => "IN: ...\nOUT: ...".to_string(),
+        "files" => translate("placeholder.fill_files", lang).to_string(),
+        "tasks" => "- [ ] T1 — ...".to_string(),
+        "boundaries" => "IN: ...\nOUT: ...".to_string(),
         _ => translate("placeholder.fill", lang).to_string(),
     }
 }
@@ -334,6 +352,7 @@ fn write_wave_plan(
     waves: u32,
     role: &str,
     lang: Locale,
+    build_command: &str,
 ) -> Result<Vec<String>, String> {
     let n = waves.max(1);
     let mut written: Vec<String> = Vec::new();
@@ -376,7 +395,7 @@ fn write_wave_plan(
         );
         let _ = write!(
             body,
-            "- **AC-W{i}.1** — Build green. Command: `rtk cargo build`\n\n## {limits_heading}\n\nIN: ...\nOUT: ...\n"
+            "- **AC-W{i}.1** — Build green. Command: `{build_command}`\n\n## {limits_heading}\n\nIN: ...\nOUT: ...\n"
         );
         let path = wave_dir.join("spec.md");
         mfs::write_atomic(&path, body.as_bytes())
@@ -447,31 +466,53 @@ mod tests {
 
     #[test]
     fn build_input_validates() {
-        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr);
+        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build");
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
     #[test]
     fn build_input_validates_in_en_us() {
-        // Section *names* stay PT-BR (canonical contract keys); bodies are EN.
-        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs);
+        // Section *keys* are canonical EN identifiers; bodies are localised.
+        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build");
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
         // Body strings should be EN, not PT.
         let users = input
             .prd_sections
             .iter()
-            .find(|s| s.name == "Usuários")
+            .find(|s| s.name == "users")
             .unwrap();
         assert!(users.body.contains("fill in"), "EN body got: {}", users.body);
     }
 
     #[test]
+    fn build_input_ac_uses_build_command_not_hardcoded() {
+        // AC command comes from the resolved build command, not `rtk cargo build`.
+        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build");
+        assert_eq!(input.acceptance_criteria[0].command, "pnpm build");
+        // Neutral fallback flows through verbatim when no buildCommand is set.
+        let input2 = build_input(
+            "demo",
+            "Demo",
+            Scope::Light,
+            "en-US",
+            0,
+            Locale::EnUs,
+            crate::util::mustard_config::BUILD_COMMAND_FALLBACK,
+        );
+        assert_eq!(
+            input2.acceptance_criteria[0].command,
+            crate::util::mustard_config::BUILD_COMMAND_FALLBACK
+        );
+    }
+
+    #[test]
     fn section_heading_for_localises() {
         use crate::commands::spec::spec_scaffold::section_heading_for;
-        assert_eq!(section_heading_for("Contexto", Locale::EnUs), "Context");
-        assert_eq!(section_heading_for("Contexto", Locale::PtBr), "Contexto");
+        // The canonical key is EN; the display heading is per-locale.
+        assert_eq!(section_heading_for("context", Locale::EnUs), "Context");
+        assert_eq!(section_heading_for("context", Locale::PtBr), "Contexto");
         // Unknown section name passes through unchanged.
-        assert_eq!(section_heading_for("Extra", Locale::EnUs), "Extra");
+        assert_eq!(section_heading_for("extra", Locale::EnUs), "extra");
     }
 
     #[test]

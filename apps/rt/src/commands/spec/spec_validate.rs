@@ -199,19 +199,22 @@ fn collect_sections(text: &str, names: &[&str]) -> Vec<SectionBody> {
     sections
 }
 
-/// Check `## <heading>` line matches `target` case-insensitively, accepting
-/// both PT-BR and EN canonical wordings.
+/// Check a `## <heading>` line matches the canonical section key `target`
+/// (the EN, language-agnostic identifier from `PRD_SECTIONS`/`PLAN_SECTIONS`).
+///
+/// Resolution goes through the `spec_sections` key→display equivalence table
+/// (word-boundary aware, EN + PT display wordings). As a fallback we also
+/// accept a heading whose text is literally the canonical key (e.g. a spec
+/// that hand-wrote `## context`), case-insensitively, so the key spelling is
+/// always recognised even for keys without a catalogue display variant.
 fn is_heading_match(line: &str, target_lower: &str) -> bool {
+    if is_heading(line, target_lower) {
+        return true;
+    }
     let Some(rest) = line.trim_start().strip_prefix("## ") else {
         return false;
     };
-    let rest_lower = rest.trim().to_ascii_lowercase();
-    if rest_lower.starts_with(target_lower) {
-        return true;
-    }
-    // Match against the same heading equivalence table the existing
-    // spec_sections module knows.
-    is_heading(line, target_lower)
+    rest.trim().eq_ignore_ascii_case(target_lower)
 }
 
 /// Parse Acceptance Criteria entries — lines under the AC section in the

@@ -332,7 +332,6 @@ pub fn run(spec: &str, json_flag: bool) {
         // wikilink set we just pruned (so the file the agent reads matches the
         // prefix we loaded). Fail-open: write errors leave `context_path = None`.
         if let Some(written) = generate_context_on_resume(
-            &project,
             &spec_dir,
             out.current_wave,
             &kept_texts,

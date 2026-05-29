@@ -38,9 +38,12 @@ use std::process::Command;
 const FOLLOWUP_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
 
-/// Run a git command in `cwd`, returning trimmed stdout or `""` on any error.
-fn git(cwd: &Path, args: &[&str]) -> String {
-    Command::new("git")
+/// Run the project VCS binary in `cwd`, returning trimmed stdout or `""` on any
+/// error. The binary is read from `mustard.json#vcs` (default `git`); callers
+/// resolve it once via [`crate::util::mustard_config::vcs_binary`] and thread it
+/// here so the spec affected-files diff/log is not hardcoded to `git`.
+fn vcs_run(vcs_bin: &str, cwd: &Path, args: &[&str]) -> String {
+    Command::new(vcs_bin)
         .args(args)
         .current_dir(cwd)
         .output()
@@ -95,14 +98,22 @@ fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<mustard_core::domain::mod
     read_harness_events_from_ndjson_dir(&dir)
 }
 
-/// Collect the files a spec touched: harness `target.file` payloads, the git
+/// Collect the files a spec touched: harness `target.file` payloads + the VCS
 /// diff against the parent branch.
 ///
 /// Shared by the post-EXECUTE `applied`-edge inference in
 /// [`crate::commands::event::emit_phase`]: both "what did this spec touch"
 /// callers derive the file set from the same two sources (per-spec NDJSON
-/// `target.file` events + git diff vs the parent branch), so the derivation
+/// `target.file` events + a VCS diff vs the parent branch), so the derivation
 /// lives here once and is called module-qualified rather than duplicated.
+///
+/// The VCS binary is read from `mustard.json#vcs` (default `git`). A user who
+/// pins `"vcs": ""` opts out of VCS-derived files entirely — only the NDJSON
+/// `target.file` events then feed the set. The diff/log invocation shape stays
+/// git-style (`rev-parse` + `diff --name-only`); a full multi-VCS abstraction
+/// (jj/hg argument variants) is intentionally deferred — `vcs_run` fail-opens to
+/// an empty result when the pinned binary does not understand those args, so a
+/// non-git VCS degrades to events-only rather than erroring.
 pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
     let mut files: BTreeSet<String> = BTreeSet::new();
 
@@ -120,17 +131,20 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
         }
     }
 
-    // 2. Git diff against the parent branch.
-    let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
-    if !branch.is_empty() {
-        let parent = parent_branch_for(cwd, &branch);
-        if !parent.is_empty() && branch != parent {
-            let range = format!("{parent}...HEAD");
-            let diff = git(cwd, &["diff", "--name-only", &range]);
-            for f in diff.lines() {
-                let t = f.trim();
-                if !t.is_empty() {
-                    files.insert(t.to_string());
+    // 2. VCS diff against the parent branch — only when a VCS is configured
+    //    (default git; `vcs: ""` is an explicit opt-out → skip this source).
+    if let Some(vcs_bin) = crate::util::mustard_config::vcs_binary(cwd) {
+        let branch = vcs_run(&vcs_bin, cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        if !branch.is_empty() {
+            let parent = parent_branch_for(cwd, &branch);
+            if !parent.is_empty() && branch != parent {
+                let range = format!("{parent}...HEAD");
+                let diff = vcs_run(&vcs_bin, cwd, &["diff", "--name-only", &range]);
+                for f in diff.lines() {
+                    let t = f.trim();
+                    if !t.is_empty() {
+                        files.insert(t.to_string());
+                    }
                 }
             }
         }

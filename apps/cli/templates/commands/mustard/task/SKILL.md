@@ -22,17 +22,39 @@ source: manual
 
 ## L0 Enforcement
 
-Parent NEVER reads source, NEVER implements. All work inside Task contexts. Orchestrator MAY Grep `.md` config files (`guards.md`, `patterns.md`) to inject standardization slices.
+Parent NEVER reads source, NEVER implements. All work inside Task contexts. The agent prompt is **always** produced by `mustard-rt run agent-prompt-render` — NEVER hand-assembled (same inviolable rule as `/feature` and `/tactical-fix`). Standardization slices (guards + patterns) are injected via `context-slice`, not hand-Grepped into the prompt string.
+
+## Prompt rendering (mandatory)
+
+`/task` is spec-less, so there is no wave plan and no `dispatch-plan`. Render each action's prompt directly with `agent-prompt-render`, choosing `--role` from the action and `--subproject` from the scope. Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
+
+```bash
+# 1. Slice guards + patterns for the scope (cached, relevance-filtered — never the whole file).
+mustard-rt run context-slice --spec {scope} \
+  --context-claude-md {subproject}/CLAUDE.md \
+  --context {subproject}/.claude/commands/guards.md \
+  --context {subproject}/.claude/commands/patterns.md
+
+# 2. Render the dispatch prompt (one process call → Task-ready string on stdout).
+mustard-rt run agent-prompt-render --spec {scope} --role {action} \
+  --subproject {subproject} --mode first [--budget-tokens 4000]
+```
+
+Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt`. `{guards_summary}` (subproject `## Guards`), `{recommended_skills}`, `{context_md}` (the `context-slice` output above), `{reference_files}` and `{entity_info}` are filled by the renderer — do not duplicate them in the prompt.
 
 ## Flow
 
-- **analyze / review / docs** — delegate → report.
-- **audit** — load `improve-codebase-architecture` → Task(general-purpose, sonnet) with checklist → severity-classified report.
-- **compare** — one explorer per subproject (PARALLEL, single message) → Task(Plan, sonnet) merges + surfaces discrepancies.
-- **refactor** — load `improve-codebase-architecture` → Task(Plan) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → Task(general-purpose) → validate.
-- **implement** — Greps `{subproject}/.claude/commands/{guards,patterns}.md` (`-C 2`, `head_limit 20`) → single `Task(general-purpose, sonnet)` with slices inline, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
+Each action picks `--role` + `subagent_type` + model, renders via `agent-prompt-render`, then dispatches:
 
-→ See `../../../refs/task/task-prompts.md` for prompt templates.
+- **analyze** — `--role explore`, `subagent_type: Explore`, sonnet → report.
+- **review** — `--role review`, `subagent_type: general-purpose`, opus → report.
+- **docs** — `--role docs`, `subagent_type: general-purpose`, sonnet → report.
+- **audit** — load `improve-codebase-architecture` → `--role audit`, `subagent_type: general-purpose`, sonnet → append the domain checklist to the task block via `--task-filter` is N/A (no spec); inline the checklist as the task description fed alongside the rendered prompt → severity-classified report.
+- **compare** — one explorer per subproject in PARALLEL (single message), each rendered with its own `--subproject` (`--role explore`) → Task(Plan, sonnet) merges + surfaces discrepancies.
+- **refactor** — load `improve-codebase-architecture` → render `--role plan` (Plan, sonnet) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → render `--role implement` (general-purpose, opus) → validate.
+- **implement** — render `--role implement` (general-purpose, sonnet) with `--budget-tokens 4000`, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
+
+→ See `../../../refs/task/task-prompts.md` for the per-action render invocations.
 
 Graph write-back is **N/A** — `/task` is spec-less by design. Promote to `/feature` Light or `/tactical-fix` if persistent backlinks needed.
 

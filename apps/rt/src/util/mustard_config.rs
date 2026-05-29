@@ -94,6 +94,84 @@ pub fn architecture(config: &Value) -> Option<String> {
     }
 }
 
+/// Neutral fallback used when `mustard.json#buildCommand` is absent. It is a
+/// human-readable placeholder (not a runnable command) so a drafted spec never
+/// hardcodes a stack-specific build (`rtk cargo build`) the project may not
+/// use. The user is expected to replace it, or set `buildCommand` so it is
+/// filled deterministically.
+pub const BUILD_COMMAND_FALLBACK: &str = "<build command>";
+
+/// Project build command from `mustard.json#buildCommand`.
+///
+/// Used to seed the default acceptance-criterion command when a spec is
+/// drafted, so the AC is the project's own build (`pnpm build`, `make`,
+/// `rtk cargo build`, …) rather than a hardcoded stack assumption. A missing
+/// key, a non-string value, or an empty / blank string yields `None`; the
+/// caller then falls back to [`BUILD_COMMAND_FALLBACK`].
+#[must_use]
+pub fn build_command(config: &Value) -> Option<String> {
+    let raw = config.get("buildCommand").and_then(Value::as_str)?.trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_string())
+    }
+}
+
+/// Convenience reader: the project build command, or the neutral fallback.
+///
+/// Reads `<project_root>/mustard.json` fail-open and returns
+/// [`build_command`] or [`BUILD_COMMAND_FALLBACK`]. Use this where a single
+/// disk read is acceptable (the spec drafter).
+#[must_use]
+pub fn build_command_or_fallback(project_root: &Path) -> String {
+    load(project_root)
+        .as_ref()
+        .and_then(build_command)
+        .unwrap_or_else(|| BUILD_COMMAND_FALLBACK.to_string())
+}
+
+/// Version-control binary from `mustard.json#vcs`.
+///
+/// Mustard shells out to a VCS to compute a spec's affected-files diff/log.
+/// `git` is the default; a project may pin another binary (`jj`, `hg`, …) or
+/// set it to an empty string to opt out of VCS-derived file collection
+/// entirely. The returned value is the resolved policy:
+///
+/// - key absent / non-string / not present → `Some("git")` (default);
+/// - key present but empty / blank → `None` (VCS disabled — degrade to no
+///   VCS-derived files);
+/// - key present and non-empty → `Some(<binary>)`.
+#[must_use]
+pub fn vcs(config: &Value) -> Option<String> {
+    match config.get("vcs") {
+        // Absent or wrong type → default to git.
+        None => Some("git".to_string()),
+        Some(v) => match v.as_str() {
+            None => Some("git".to_string()),
+            Some(raw) => {
+                let t = raw.trim();
+                if t.is_empty() {
+                    None // Explicit opt-out.
+                } else {
+                    Some(t.to_string())
+                }
+            }
+        },
+    }
+}
+
+/// Convenience reader: the project VCS binary policy from
+/// `<project_root>/mustard.json`. `git` default; `None` when the user pinned an
+/// empty `vcs` (opt-out). Fail-open: a missing/malformed file reads as `git`.
+#[must_use]
+pub fn vcs_binary(project_root: &Path) -> Option<String> {
+    match load(project_root) {
+        Some(cfg) => vcs(&cfg),
+        None => Some("git".to_string()),
+    }
+}
+
 /// Hard cap on concurrently active pipelines from `mustard.json#maxActiveSpecs`.
 ///
 /// The value must be a non-negative integer. A missing key, a non-numeric
@@ -224,6 +302,36 @@ mod tests {
         assert_eq!(architecture(&json!({ "architecture": "   " })), None);
         assert_eq!(architecture(&json!({})), None);
         assert_eq!(architecture(&json!({ "architecture": 7 })), None);
+    }
+
+    #[test]
+    fn build_command_reads_non_empty_string_only() {
+        assert_eq!(
+            build_command(&json!({ "buildCommand": "pnpm build" })),
+            Some("pnpm build".to_string())
+        );
+        assert_eq!(
+            build_command(&json!({ "buildCommand": "  make all " })),
+            Some("make all".to_string())
+        );
+        // Absent / wrong type / blank → None (caller uses the neutral fallback).
+        assert_eq!(build_command(&json!({})), None);
+        assert_eq!(build_command(&json!({ "buildCommand": "" })), None);
+        assert_eq!(build_command(&json!({ "buildCommand": "   " })), None);
+        assert_eq!(build_command(&json!({ "buildCommand": 7 })), None);
+    }
+
+    #[test]
+    fn vcs_defaults_to_git_and_honours_optout() {
+        // Absent / wrong type → git default.
+        assert_eq!(vcs(&json!({})), Some("git".to_string()));
+        assert_eq!(vcs(&json!({ "vcs": 7 })), Some("git".to_string()));
+        // Pinned binary.
+        assert_eq!(vcs(&json!({ "vcs": "jj" })), Some("jj".to_string()));
+        assert_eq!(vcs(&json!({ "vcs": " hg " })), Some("hg".to_string()));
+        // Empty string → explicit opt-out (None).
+        assert_eq!(vcs(&json!({ "vcs": "" })), None);
+        assert_eq!(vcs(&json!({ "vcs": "   " })), None);
     }
 
     #[test]

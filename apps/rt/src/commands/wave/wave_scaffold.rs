@@ -63,11 +63,11 @@ pub(crate) struct WavePlanEntry {
     /// name `wave-{n}-{role}`.
     pub(crate) role: String,
     /// Short one-line summary surfaced in `wave-plan.md` and the wave's
-    /// `Resumo` heading.
+    /// `## Summary` heading.
     #[serde(default)]
     pub(crate) summary: String,
     /// Other wave names this wave depends on (e.g. `["wave-1-general"]`).
-    /// Rendered in the wave-plan table's `Depende de` column and the wave
+    /// Rendered in the wave-plan table's `Depends on` column and the wave
     /// spec's `## Network` section.
     #[serde(default)]
     pub(crate) depends_on: Vec<String>,
@@ -87,7 +87,15 @@ pub(crate) struct Plan {
     pub(crate) lang: Option<String>,
 }
 
-/// Localised heading strings.
+/// Heading strings for the wave layout.
+///
+/// These render **internal artefacts** — the operational `wave-plan.md` index,
+/// the per-wave `spec.md` skeletons, the review/qa scaffolds. Per the i18n
+/// rule (`feedback-mustard-i18n-agnostic`) every internal artefact is **EN by
+/// default**, independent of the user's natural `language`: the `language`
+/// only colours the user-facing `spec.md` PRD. The struct is retained (rather
+/// than inlining the literals) so the re-wave path renders through the same
+/// canonical renderers (F4-d item 2).
 ///
 /// `pub(crate)` so the re-wave path can render through the same canonical
 /// renderers (F4-d item 2).
@@ -102,41 +110,32 @@ pub(crate) struct Headings<'a> {
     review_intro: &'a str,
     qa_intro: &'a str,
     wave_table_caption: &'a str,
+    /// `## Summary` heading for the per-wave spec skeleton.
+    summary: &'a str,
+    /// Placeholder body when a wave has no summary yet.
+    summary_placeholder: &'a str,
+    /// `Depends on` label for the wave spec's Network section.
+    depends_on: &'a str,
 }
 
-pub(crate) fn headings_for(lang: &str) -> Headings<'static> {
-    // Tolerant read: accept BCP-47 + legacy short codes.
-    let lc = lang.trim().to_ascii_lowercase();
-    if lc == "en" || lc == "en-us" {
-        Headings {
-            wave_plan_title: "# Wave Plan",
-            table_header:
-                "| Wave | Spec | Role | Depends on | Summary |",
-            table_sep: "|------|------|------|------------|---------|",
-            network: "## Network",
-            parent: "Parent",
-            review_title: "# Review Plan",
-            qa_title: "# QA Plan",
-            review_intro: "Checklist for the review agent.",
-            qa_intro:
-                "Acceptance Criteria consolidated from every wave.",
-            wave_table_caption: "## Wave Table",
-        }
-    } else {
-        Headings {
-            wave_plan_title: "# Plano de Waves",
-            table_header:
-                "| Wave | Spec | Role | Depende de | Resumo |",
-            table_sep: "|------|------|------|------------|--------|",
-            network: "## Network",
-            parent: "Parent",
-            review_title: "# Plano de Review",
-            qa_title: "# Plano de QA",
-            review_intro: "Checklist para o agente de review.",
-            qa_intro:
-                "Critérios de Aceitação consolidados de todas as waves.",
-            wave_table_caption: "## Tabela de Waves",
-        }
+/// The canonical EN heading set for the (internal) wave layout. The `lang`
+/// the plan JSON carries is recorded in `meta.json#lang` (it describes the
+/// spec-facing locale) but never localises these internal artefacts.
+pub(crate) fn headings() -> Headings<'static> {
+    Headings {
+        wave_plan_title: "# Wave Plan",
+        table_header: "| Wave | Spec | Role | Depends on | Summary |",
+        table_sep: "|------|------|------|------------|---------|",
+        network: "## Network",
+        parent: "Parent",
+        review_title: "# Review Plan",
+        qa_title: "# QA Plan",
+        review_intro: "Checklist for the review agent.",
+        qa_intro: "Acceptance Criteria consolidated from every wave.",
+        wave_table_caption: "## Wave Table",
+        summary: "## Summary",
+        summary_placeholder: "_(fill in)_",
+        depends_on: "Depends on",
     }
 }
 
@@ -193,9 +192,9 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
     // events, not a per-wave header status word.
     out.push_str(&header_block(Stage::Plan));
     out.push('\n');
-    out.push_str("## Resumo\n\n");
+    let _ = writeln!(out, "{}\n", hd.summary);
     if w.summary.is_empty() {
-        out.push_str("_(preencher)_\n\n");
+        let _ = writeln!(out, "{}\n", hd.summary_placeholder);
     } else {
         let _ = writeln!(out, "{}\n", w.summary);
     }
@@ -208,7 +207,7 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
             .iter()
             .map(|d| format!("[[{d}]]"))
             .collect();
-        let _ = writeln!(out, "- Depende de: {}", deps.join(", "));
+        let _ = writeln!(out, "- {dep}: {}", deps.join(", "), dep = hd.depends_on);
     }
     out
 }
@@ -346,8 +345,10 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    // `lang` is recorded in meta.json (it is the spec-facing locale) but the
+    // wave layout itself is an internal artefact rendered in EN.
     let lang = plan.lang.as_deref().unwrap_or("pt-BR");
-    let hd = headings_for(lang);
+    let hd = headings();
 
     let _ = fs::create_dir_all(&spec_dir);
 
@@ -509,27 +510,36 @@ mod tests {
 
     #[test]
     fn renders_wave_plan_table_with_wikilinks() {
-        let hd = headings_for("pt");
+        let hd = headings();
         let md = render_wave_plan(&sample_plan(), &hd);
         assert!(md.contains("[[wave-1-general]]"));
         assert!(md.contains("[[wave-2-frontend]]"));
         assert!(md.contains("foundations"));
         assert!(md.contains("[[wave-1-general]]"));
+        // Internal artefact → EN headings regardless of the plan's `lang`.
+        assert!(md.contains("# Wave Plan"));
+        assert!(md.contains("Depends on"));
+        assert!(!md.contains("Plano de Waves"));
+        assert!(!md.contains("Depende de"));
     }
 
     #[test]
     fn renders_wave_spec_with_parent_and_status() {
-        let hd = headings_for("pt");
+        let hd = headings();
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
         assert!(s1.contains("### Parent: [[epic-x]]"));
         // New canonical header: every freshly scaffolded wave is Plan + Active.
         assert!(s1.contains("### Stage: Plan"));
         assert!(s1.contains("### Outcome: Active"));
+        // Internal artefact → EN summary heading, never PT.
+        assert!(s1.contains("## Summary"));
+        assert!(!s1.contains("## Resumo"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
         assert!(s2.contains("### Stage: Plan"));
         assert!(s2.contains("[[wave-1-general]]"));
         assert!(s2.contains("## Network"));
+        assert!(s2.contains("Depends on"));
     }
 
     #[test]

@@ -1,140 +1,56 @@
-# Task Dispatch Prompt Templates Reference
+# Task Dispatch — Render Invocations Reference
 
-> Detail for `/task`: concrete JavaScript-style prompt templates for each action (analyze, review, docs, refactor, audit, implement, compare).
+> Detail for `/task`: the concrete `agent-prompt-render` (+ `context-slice`) invocations per action. Prompts are **never hand-assembled** — this is the same inviolable rule `/feature` and `/tactical-fix` follow. The orchestrator runs the render command, then passes its **stdout verbatim** as the Task `prompt`.
 
-## Implementation
+`/task` is spec-less: there is no `wave-plan.md` and no `dispatch-plan`. The render is driven directly by the action (`--role`) and the scope (`--spec` / `--subproject`). Every placeholder fail-opens, so a spec-less invocation is safe — empty slots simply render blank.
 
-```javascript
-// analyze
+## Step 1 — slice guards + patterns (once per scope)
+
+`context-slice` produces the `{context_md}` slice that `agent-prompt-render` injects. It is relevance-filtered and capped (`MUSTARD_GLOSSARY_MAX_LINES`, default 250) — the full guards/patterns files are **never** pasted into the prompt.
+
+```bash
+mustard-rt run context-slice --spec {scope} \
+  --context-claude-md {subproject}/CLAUDE.md \
+  --context {subproject}/.claude/commands/guards.md \
+  --context {subproject}/.claude/commands/patterns.md
+```
+
+The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-prompt-render` reads it back as `{context_md}`. No `CONTEXT.md` / guards files → empty slice → `{context_md}` blank (dispatch never blocks).
+
+## Step 2 — render the dispatch prompt per action
+
+`--mode first` is the dispatch (non-retry) render; swap to `--mode granular` / `--mode fix-loop` on a retry. `--budget-tokens N` trims bulky placeholders so the rendered prompt stays under ≈N model tokens (use it on `implement` to keep the single-dispatch cheap).
+
+| Action | `--role` | `subagent_type` | Model | Render invocation |
+|--------|----------|-----------------|-------|-------------------|
+| `analyze` | `explore` | `Explore` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role explore --subproject {subproject} --mode first` |
+| `review` | `review` | `general-purpose` | opus | `mustard-rt run agent-prompt-render --spec {scope} --role review --subproject {subproject} --mode first` |
+| `docs` | `docs` | `general-purpose` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role docs --subproject {subproject} --mode first` |
+| `audit` | `audit` | `general-purpose` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first` |
+| `refactor` (plan) | `plan` | `Plan` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first` |
+| `refactor` (execute) | `implement` | `general-purpose` | opus | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first` |
+| `implement` | `implement` | `general-purpose` | sonnet | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --budget-tokens 4000` |
+
+### Dispatch shape
+
+For each rendered prompt:
+
+```text
 Task({
-  subagent_type: "Explore",
-  model: "sonnet",
-  description: `Analyze: ${scope}`,
-  prompt: `
-    # CODE ANALYSIS TASK
-    ## Scope: ${scope}
-    ## Instructions
-    1. Use scoped Grep searches with path + pattern
-    2. Read relevant files
-    3. Document patterns found
-    4. Report findings clearly
-  `
-})
-
-// review
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: `Review: ${scope}`,
-  prompt: `
-    # CODE REVIEW TASK
-    ## Scope: ${scope}
-    ## Checklist
-    - [ ] SOLID principles
-    - [ ] Error handling
-    - [ ] Security concerns
-    - [ ] Performance issues
-    ## Output: [Severity] File:Line - Issue - Suggestion
-  `
-})
-
-// docs
-Task({
-  subagent_type: "general-purpose",
-  model: "sonnet",
-  description: `Docs: ${scope}`,
-  prompt: `
-    # DOCUMENTATION TASK
-    ## Scope: ${scope}
-    ## Instructions
-    1. Use scoped Grep to find relevant code
-    2. Generate appropriate documentation
-    3. Indicate where to save
-  `
-})
-
-// refactor — Phase 1: Plan
-Task({
-  subagent_type: "Plan",
-  model: "sonnet",
-  description: `Plan refactor: ${scope}`,
-  prompt: `# Plan refactoring for ${scope}...`
-})
-
-// refactor — Phase 2: Execute (after approval)
-Task({
-  subagent_type: "general-purpose",
-  model: "opus",
-  description: `Execute refactor: ${scope}`,
-  prompt: `# Execute approved plan...`
-})
-
-// audit
-Task({
-  subagent_type: "general-purpose",
-  model: "sonnet",
-  description: `Audit: ${scope}`,
-  prompt: `
-    # QUALITY AUDIT TASK
-    ## Scope: ${scope}
-    ## READ FIRST
-    1. \`${subproject}/CLAUDE.md\` — guards, stack, key paths
-    2. \`${subproject}/.claude/commands/guards.md\` — mandatory rules
-    ## Domain: ${domain}
-    ${domainChecklist}
-    ## Output
-    | Severity | File:Line | Issue | Recommendation |
-    |----------|-----------|-------|----------------|
-    ## Suggested Actions
-    List concrete /task or pipeline commands to fix findings
-  `
-})
-
-// implement — NEW ACTION
-// Orchestrator runs targeted Greps first (each ≤500 tokens output)
-const guards   = grep({path: `${sp}/.claude/commands/guards.md`,   pattern: keyword, output_mode: "content", "-C": 2, head_limit: 20});
-const patterns = grep({path: `${sp}/.claude/commands/patterns.md`, pattern: keyword, output_mode: "content", "-C": 2, head_limit: 20});
-
-// Single dispatch with everything inlined
-Task({
-  subagent_type: "general-purpose",
-  model: "sonnet",
-  description: `Implement: ${scope}`,
-  prompt: `
-    # IMPLEMENTATION TASK (standardized, low-cost)
-    ## Scope: ${scope}
-
-    ## Guards (inline — do not re-read)
-    ${guards}
-
-    ## Patterns to follow
-    ${patterns}
-
-    ## Naming conventions
-    - PascalCase for classes/components
-    - camelCase for variables/functions
-    - snake_case for DB columns
-    - kebab-case for files/URLs
-
-    ## Return format
-    - ≤30 lines
-    - Sections: Files Changed (bullet list), Build result, Status (DONE/CONCERN/BLOCKED)
-    - Do NOT paste file contents
-  `
-})
-
-// compare — Phase 1: Parallel exploration
-subprojects.forEach(sp => Task({
-  subagent_type: "Explore",
-  model: "sonnet",
-  description: `Compare scan: ${sp.name} — ${criteria}`,
-  prompt: `# COMPARISON SCAN\n## Criteria: ${criteria}\n## Subproject: ${sp.name}\nCollect relevant data and report findings.`
-}))
-// compare — Phase 2: Consolidation
-Task({
-  subagent_type: "Plan",
-  model: "sonnet",
-  description: `Consolidate comparison: ${criteria}`,
-  prompt: `# CONSOLIDATION\n## Explorer Results:\n${explorerResults}\nIdentify discrepancies and recommend actions.`
+  subagent_type: <from table>,   // "{subproject-name}-impl" when that rich agent exists
+  model: <from table>,
+  description: `{action}: {scope}`,
+  prompt: <stdout of agent-prompt-render, verbatim>
 })
 ```
+
+`subagent_type` = `{subproject-name}-impl` when `.claude/agents/{subproject-name}-impl.md` exists (the render then suppresses `{role_block}` and the rich agent applies guards/skills/clusters natively); otherwise the table's fallback type.
+
+## Per-action notes
+
+- **audit** — first load the `improve-codebase-architecture` skill and select the domain checklist (`copy` / `design` / `a11y` / `i18n` / `consistency` / `api-contract`; default `consistency`). The checklist is the *task description* the auditor works through; the rendered prompt carries the guards + standardization context.
+- **compare** — render one prompt **per subproject** (each with its own `--subproject`, `--role explore`) and dispatch them PARALLEL in a single message. Then render a consolidation prompt (`--role plan`) that merges the explorer results and surfaces discrepancies.
+- **refactor** — two-phase: render+dispatch the `plan` role, print the plan verbatim, AskUserQuestion (Approve / Adjust / Cancel), then on approval render+dispatch the `implement` role.
+- **implement** — single dispatch, `--budget-tokens 4000`, return cap ≤30 lines (Files Changed / Build result / Status). ON CONCERN → surface + offer `/feature` Light.
+
+Graph write-back is **N/A** — `/task` is spec-less by design. Promote to `/feature` Light or `/tactical-fix` if persistent backlinks are needed.

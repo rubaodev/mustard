@@ -14,7 +14,7 @@ use crate::commands::economy::token_budget::{prune_to_budget, PrioritizedItem};
 use crate::commands::wave::wave_context::{self, WaveContextInput, WaveMapEntry, WikiLink};
 use mustard_core::io::atomic_md::find_outgoing_links;
 use mustard_core::io::fs as mfs;
-use mustard_core::platform::i18n::project_locale;
+use mustard_core::platform::i18n::SupportedLocale as Locale;
 use std::path::{Path, PathBuf};
 
 /// Extract the set of `[[name]]` targets appearing inside the operational
@@ -133,33 +133,25 @@ pub(super) fn load_pruned_prior_summaries(
 ///
 /// Builds a [`WaveContextInput`] from filesystem state — the pruned wikilinks,
 /// the wave map (every `wave-N-*` dir in `spec_dir`), and an objective line
-/// derived from the operational spec's `## Contexto` / `## Context` section
-/// when present. Resolves the project locale from `mustard.json#lang`.
+/// derived from the operational spec's `## Context` section when present.
+///
+/// `_context.md` is an **internal artefact** (the input handed to the next
+/// wave's agent), so its headings are always rendered in EN regardless of the
+/// project's natural `language` — per `feedback-mustard-i18n-agnostic`, only
+/// the user-facing `spec.md` PRD carries the user's `language`.
 ///
 /// Fail-open: returns `None` on render-cap violation or write IO error.
 pub(super) fn generate_context_on_resume(
-    project: &Path,
     spec_dir: &Path,
     current_wave: u32,
     kept_summary_texts: &[String],
     op_body: &str,
 ) -> Option<PathBuf> {
     let wave_id = find_wave_dir_name(spec_dir, current_wave)?;
-    // W6#1: prefer the spec's `### Lang:` header when present — falls back to
-    // `mustard.json#lang` via `spec_lang_resolve::resolve` when the spec has
-    // no header, then to PtBr as the catalogue default. Honest priority so a
-    // spec authored in en-US inside a pt-BR project still renders its
-    // `_context.md` in en-US.
-    let slug = spec_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let locale = if slug.is_empty() {
-        project_locale(project)
-    } else {
-        let (resolved, _src) = crate::commands::spec::spec_lang_resolve::resolve(project, slug);
-        resolved
-    };
+    // `_context.md` is an internal artefact → EN, never the user's natural
+    // `language` (which only colours the spec-facing PRD). See
+    // `feedback-mustard-i18n-agnostic`.
+    let locale = Locale::EnUs;
 
     // Inheritance: render one wikilink per kept summary (we know they fit the
     // budget; the renderer cap is words, not tokens, so listing the addresses
@@ -403,13 +395,15 @@ mod tests {
         let (texts, _used, _count) =
             load_pruned_prior_summaries(spec_dir, 12, allowed.as_ref(), RESUME_TOKEN_BUDGET);
 
-        // Project root = tempdir; no mustard.json present → fail-open default locale.
-        let written = generate_context_on_resume(dir.path(), spec_dir, 12, &texts, &op_body)
+        let written = generate_context_on_resume(spec_dir, 12, &texts, &op_body)
             .expect("context generation must succeed");
         assert!(written.ends_with("_context.md"));
         let body = std::fs::read_to_string(&written).unwrap();
-        // The 5 required headings (rendered via i18n) must be present.
+        // The 5 required headings must be present.
         assert!(body.contains("## "), "must contain markdown headings");
+        // `_context.md` is an internal artefact → EN headings, never PT.
+        assert!(body.contains("## Objective"), "internal artefact must be EN: {body}");
+        assert!(!body.contains("## Objetivo"), "internal artefact must not be PT: {body}");
         // Must contain at least one wikilink (inheritance section).
         assert!(body.contains("[[wave-"), "must reference at least one prior wave");
     }

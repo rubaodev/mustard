@@ -33,7 +33,7 @@ use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use crate::commands::wave::wave_scaffold::{
-    Plan, WavePlanEntry, headings_for, render_wave_plan, render_wave_spec, wave_name,
+    Plan, WavePlanEntry, headings, render_wave_plan, render_wave_spec, wave_name,
 };
 use crate::util::json_io;
 use mustard_core::time::now_iso8601;
@@ -75,7 +75,7 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
 ///   same value the wave directory `wave-{n}-{role}` is named after, so the
 ///   `[[wikilink]]` in `wave-plan.md` and the on-disk folder agree.
 /// - `summary` = a one-line file census (`role · N file(s): a, b`), giving the
-///   per-wave `## Resumo` and the plan-table `Resumo` column real content
+///   per-wave `## Summary` and the plan-table `Summary` column real content
 ///   without an LLM.
 /// - `depends_on` = the canonical `wave-{m}-{role(m)}` names resolved from the
 ///   numeric `dependsOn`, so the dependency wikilinks point at real wave specs.
@@ -265,7 +265,7 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    renderer here — the output is byte-identical in form.
         let lang = parent_lang(spec_file);
         let plan = dag_to_plan(&waves, &lang);
-        let hd = headings_for(&lang);
+        let hd = headings();
 
         let wave_plan_content = render_wave_plan(&plan, &hd);
         if fs::write_atomic(&wave_plan_path, wave_plan_content.as_bytes()).is_err() {
@@ -383,7 +383,7 @@ mod tests {
         let lang = "pt-BR";
         // Path A: the re-wave converter + canonical renderer.
         let plan_a = dag_to_plan(&waves, lang);
-        let hd = headings_for(lang);
+        let hd = headings();
         let rendered_a = render_wave_plan(&plan_a, &hd);
         // Path B: a Plan built directly with the same canonical fields (what a
         // PLAN-time scaffold of the same shape would feed the renderer).
@@ -407,8 +407,10 @@ mod tests {
         };
         let rendered_b = render_wave_plan(&plan_b, &hd);
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
-        // And the canonical markers are present (i18n heading + wikilinks).
-        assert!(rendered_a.contains("# Plano de Waves"));
+        // The wave-plan.md is an internal artefact → EN heading regardless of
+        // the spec's `lang`, plus the wikilinks.
+        assert!(rendered_a.contains("# Wave Plan"));
+        assert!(!rendered_a.contains("Plano de Waves"));
         assert!(rendered_a.contains("[[wave-1-general]]"));
         assert!(rendered_a.contains("[[wave-2-frontend]]"));
     }
