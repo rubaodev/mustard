@@ -16,6 +16,8 @@ use crate::hooks::write::graph_wirelink_gate::GraphWirelinkGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification_observer::NotificationObserver;
+use crate::hooks::observe::rewave_observer::RewaveObserver;
+use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
 use crate::hooks::write::path_gate::PathGate;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::pre_compact_inject::PreCompactInject;
@@ -491,6 +493,32 @@ impl Registry {
                 check: Some(Box::new(AmendWindowInject)),
                 observer: Some(Box::new(AmendWindowInject)),
             },
+            // ── FASE 4-c: auto-abertura por tipo (structural → automatic) ────
+            // Both are pure Observers — they emit/restructure as a side effect
+            // and are structurally incapable of denying a write (decision 6:
+            // re-wave / wave-advance are advisory restructuring, never gates).
+            Module {
+                id: "rewave_observer",
+                // F4-c item 1 — on the first EXECUTE write of a not-yet-decomposed
+                // spec, fire `exec_rewave_check::decompose_if_signaled` (idempotent
+                // via the `wave-plan.md` guard). PreToolUse(Write|Edit), fail-open.
+                applies_to: &[
+                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: None,
+                observer: Some(Box::new(RewaveObserver)),
+            },
+            Module {
+                id: "wave_complete_observer",
+                // F4-c item 2 — on SubagentStop, when the active wave's
+                // `_review-spans.md` ledger is clean (≥1 child returned, no red),
+                // auto-emit `pipeline.wave.complete` (idempotent via the NDJSON
+                // event check). SubagentStop, fail-open.
+                applies_to: &[(Trigger::SubagentStop, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(WaveCompleteObserver)),
+            },
         ];
         Self { modules }
     }
@@ -613,10 +641,34 @@ mod tests {
             "pre_compact_inject",
             "prompt_submit_inject",
             "amend_window_inject",
+            "rewave_observer",
+            "wave_complete_observer",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }
         assert!(registry.by_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn fase4c_auto_open_observers_apply_to_their_events() {
+        let registry = Registry::new();
+        // `rewave_observer` joins the PreToolUse(Write|Edit) family.
+        for tool in ["Write", "Edit"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PreToolUse, Some(tool))
+                    .contains(&"rewave_observer"),
+                "rewave_observer missing for {tool}"
+            );
+        }
+        // It does not fire on a Read, nor on SubagentStop.
+        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Read"))
+            .contains(&"rewave_observer"));
+        // `wave_complete_observer` fires on SubagentStop (any tool / none).
+        assert!(applicable_ids(&registry, Trigger::SubagentStop, None)
+            .contains(&"wave_complete_observer"));
+        // It does not fire on a plain PreToolUse(Write).
+        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
+            .contains(&"wave_complete_observer"));
     }
 
     #[test]

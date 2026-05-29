@@ -173,27 +173,27 @@ fn build_wave_spec_md(
     )
 }
 
-/// Dispatch `mustard-rt run exec-rewave-check`.
-pub fn run(spec_arg: Option<&str>) {
-    let emit = |v: Value| println!("{v}");
-    let Some(spec_arg) = spec_arg else {
-        emit(json!({ "action": "skip", "reason": "no-spec-arg" }));
-        return;
-    };
+/// Re-evaluate `spec_file` for wave decomposition and, when the signal mandates
+/// it (`layerCount >= 2` etc.) **and** it is not already decomposed, write the
+/// wave structure. Returns the same JSON `action` shape [`run`] prints.
+///
+/// This is the reusable, non-printing core of [`run`] — the `rewave_observer`
+/// hook (F4-c item 1) calls it directly (module-qualified, no subprocess) on the
+/// first EXECUTE write of a not-yet-decomposed spec. It is **idempotent**: the
+/// `wave-plan.md` / pipeline-state guards (steps 2–3) make a second invocation a
+/// `{ action: "skip", reason: "already-decomposed" }` no-op. Fully fail-open —
+/// any IO failure degrades to a `skip` / `keep-single` action, never an error.
+#[must_use]
+pub fn decompose_if_signaled(spec_file: &Path) -> Value {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let spec_file = if Path::new(spec_arg).is_absolute() {
-        PathBuf::from(spec_arg)
-    } else {
-        cwd.join(spec_arg)
-    };
     let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let project_root = find_project_root(&spec_dir).unwrap_or_else(|| cwd.clone());
     // F0-e: role-classification overrides from `mustard.json#rolePatterns`.
     let role_patterns = load_role_patterns(&project_root);
 
-    let result = (|| -> Value {
+    (|| -> Value {
         // 1. Read spec.
-        let Ok(spec_text) = fs::read_to_string(&spec_file) else {
+        let Ok(spec_text) = fs::read_to_string(spec_file) else {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "spec-not-readable" });
         };
         let spec_name = spec_dir
@@ -300,7 +300,7 @@ pub fn run(spec_arg: Option<&str>) {
         }
 
         // 9. Rename original spec to spec.original.md.
-        let _ = fs::rename(&spec_file, spec_dir.join("spec.original.md"));
+        let _ = fs::rename(spec_file, spec_dir.join("spec.original.md"));
 
         // 10. Update pipeline-state.
         let mut updated = state.unwrap_or_else(|| json!({ "specName": spec_name }));
@@ -326,9 +326,23 @@ pub fn run(spec_arg: Option<&str>) {
             "totalWaves": waves.len(),
             "waves": waves_meta,
         })
-    })();
+    })()
+}
 
-    emit(result);
+/// Dispatch `mustard-rt run exec-rewave-check`.
+pub fn run(spec_arg: Option<&str>) {
+    let emit = |v: Value| println!("{v}");
+    let Some(spec_arg) = spec_arg else {
+        emit(json!({ "action": "skip", "reason": "no-spec-arg" }));
+        return;
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let spec_file = if Path::new(spec_arg).is_absolute() {
+        PathBuf::from(spec_arg)
+    } else {
+        cwd.join(spec_arg)
+    };
+    emit(decompose_if_signaled(&spec_file));
 }
 
 #[cfg(test)]

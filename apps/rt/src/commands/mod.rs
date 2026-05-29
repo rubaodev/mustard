@@ -1238,6 +1238,16 @@ pub enum RunCmd {
         #[arg(long, default_value = "light")]
         scope: String,
     },
+    /// F4-c item 4 — Propose (do NOT create) tactical fixes from structured
+    /// `tactical_fix_candidates[]` in a spec's `review.result` / `qa.result`
+    /// events. Emits one `tactical_fix.proposed` event per new candidate;
+    /// never scaffolds a sub-spec (decision 6 — "não auto-aprovar").
+    #[command(name = "tactical-fix-detect")]
+    TacticalFixDetect {
+        /// Spec whose review/qa events are scanned for candidates.
+        #[arg(long)]
+        spec: Option<String>,
+    },
     /// W5.T5.4 — Build a PRD JSON document from a free-text intent.
     #[command(name = "prd-build")]
     PrdBuild {
@@ -1925,6 +1935,9 @@ pub fn dispatch(cmd: RunCmd) {
                 description,
                 scope,
             });
+        }
+        RunCmd::TacticalFixDetect { spec } => {
+            spec::tactical_fix_detect::run(spec.as_deref());
         }
         RunCmd::PrdBuild { intent, format } => {
             spec::prd_build::run(spec::prd_build::PrdBuildOpts { intent, format });

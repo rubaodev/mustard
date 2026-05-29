@@ -100,7 +100,7 @@ fn phase_from_events(events: &[HarnessEvent], spec: &str) -> String {
 /// `CLOSE` and **every** child's latest `pipeline.phase` is `CLOSE`. Reads no
 /// `.pipeline-states/*.json` sidecar — the event stream is the single source of
 /// truth, so detection never lags a freshly-emitted child CLOSE.
-fn detect_completed_epics(cwd: &Path) -> Vec<String> {
+pub fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     let mut events = mustard_core::view::projection::read_workspace_events(cwd);
     // Stable sort by ts so the "latest pipeline.phase wins" fold is deterministic
     // across multi-session / multi-file event slices (ISO-8601 lexicographic =
@@ -186,7 +186,14 @@ fn write_knowledge_entry(
 }
 
 /// Fold an epic — returns `true` on success (or when already folded).
-fn fold_epic(cwd: &Path, epic: &str) -> bool {
+///
+/// **Idempotent.** Two guards make a re-run a no-op: an epic already in phase
+/// `CLOSE` (idempotency 1) and an `epic.complete` event already present for the
+/// epic (idempotency 2). Fully fail-open — a missing pipeline-state returns
+/// `false` without erroring. Exposed (F4-c item 3) so `close_orchestrate` can
+/// auto-fold a completed epic after the last child closes, without the LLM
+/// having to call `epic-fold --epic`.
+pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
     if epic.is_empty() {
         eprintln!("[epic-fold] warn: --epic is required");
         return false;

@@ -217,7 +217,27 @@ fn finalize_and_verify(spec: &str) -> (bool, Option<bool>) {
         Some(spec),
         Some("60s"),
     );
+    // F4-c item 3 — auto epic-fold. Closing this spec may have been the last
+    // child of an epic; detect any epic now ready (all children CLOSE, root
+    // not yet CLOSE — same NDJSON source `epic-fold --detect` reads) and fold
+    // it in-process, without the LLM having to call `epic-fold --epic`.
+    // `fold_epic` is idempotent (skips when `epic.complete` already exists), so
+    // a re-run after an already-folded epic is a no-op. Fail-open: errors are
+    // swallowed — the close already succeeded.
+    auto_fold_completed_epics(&cwd);
     (true, Some(verified))
+}
+
+/// Detect every epic whose children are all CLOSE and fold each one in-process.
+///
+/// Deterministic + idempotent: detection reads the per-spec NDJSON event stream
+/// ([`crate::commands::wave::epic_fold::detect_completed_epics`]) and the fold
+/// ([`crate::commands::wave::epic_fold::fold_epic`]) skips any epic already
+/// carrying an `epic.complete` event. Module-qualified, no subprocess.
+fn auto_fold_completed_epics(cwd: &Path) {
+    for epic in crate::commands::wave::epic_fold::detect_completed_epics(cwd) {
+        let _ = crate::commands::wave::epic_fold::fold_epic(cwd, &epic);
+    }
 }
 
 /// Walk `.claude/spec/<spec>/wave-*-*/` and run `review_spans::check_consolidation`

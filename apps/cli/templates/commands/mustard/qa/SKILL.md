@@ -31,9 +31,11 @@ mustard-rt run qa-run --spec {spec}
 - **`fail`**: list failing AC. After 3 failures → AskUserQuestion: (a) fix+retry, (b) relax AC, (c) abort.
 - **`skip`**: warn *"No AC — QA skipped."*
 
-### 4. Tactical-fix discovery (post-pass, advisory)
+### 4. Tactical-fix discovery (post-pass, semi-automatic — detect + propose)
 
 Scan for `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`. Print *"Tactical fix candidate: <desc>\nRun: /mustard:tactical-fix <parent> \"<desc>\""*. Doesn't block CLOSE.
+
+**Structured payload contract (F4-c).** Include a `tactical_fix_candidates` array in the `qa.result` payload so `mustard-rt run tactical-fix-detect --spec <spec>` proposes each fix deterministically. Each entry: `{ "description": "required one-liner", "scope": "optional area", "severity": "critical|major|minor" }`. `tactical-fix-detect` emits one idempotent `tactical_fix.proposed` event per new candidate and **never** creates a sub-spec — creation stays a one-confirmation step (decision 6 — "não auto-aprovar").
 
 ### 5. CLOSE gate
 
