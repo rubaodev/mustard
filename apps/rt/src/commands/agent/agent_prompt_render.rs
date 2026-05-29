@@ -19,11 +19,13 @@
 //!   `--retry-context-file` when provided, else `""`.
 
 use crate::shared::context::project_dir;
-use crate::commands::review::gate_regression_check;
+use crate::commands::agent::context_inject;
 use crate::commands::knowledge::memory_cross_wave;
 use crate::commands::pipeline::resume_bootstrap::{read_wave_model, resolve_operational_spec_path};
 use crate::commands::skill::skill_resolve;
 use crate::commands::spec::spec_sections::is_heading;
+use mustard_core::domain::ast::{extract_entities, extract_function_signatures, GrammarLoader};
+use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::io::fs as mfs;
 use mustard_core::platform::i18n;
 use mustard_core::ClaudePaths;
@@ -115,10 +117,19 @@ pub fn run(
         .map(|w| read_prior_wave_diff(&project, spec, w - 1))
         .unwrap_or_default();
     let mut cross_wave_memory = render_cross_wave(&project, spec, wave);
-    // Append per-spec memory principles filtered by cluster relevance. T1.5
-    // requires irrelevant principles to NOT enter the prompt — filtered_spec_memory
-    // uses skill-resolve's intent tokens to match against principle names.
-    let spec_memory_block = filtered_spec_memory(&project, spec, &task_steps, role);
+    // Append per-spec memory principles filtered by relevance. T1.5 requires
+    // irrelevant principles to NOT enter the prompt — the shared matcher runs
+    // an Aho-Corasick scan over the memory-name stems so morphological variants
+    // (prompt "routing" → `tabs-routing.md`) are caught. The intent is the
+    // role label plus the task block.
+    let memory_dir = ClaudePaths::for_project(&project)
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.dir().join("memory"))
+        .unwrap_or_else(|_| project.clone());
+    let mem_intent = format!("{role} {task_steps}");
+    let spec_memory_block = context_inject::render_spec_memory_block(
+        &context_inject::match_spec_memory(&memory_dir, &mem_intent, usize::MAX, true),
+    );
     if !spec_memory_block.is_empty() {
         if !cross_wave_memory.is_empty() {
             cross_wave_memory.push_str("\n\n");
@@ -129,7 +140,7 @@ pub fn run(
     // the same Semantic/Pattern term lists the gate will check at Moment 1.
     // Locale resolved per-project; fail-open to PtBr.
     let locale = i18n::project_locale(&project);
-    let vocab_block = vocabulary_inject_block(&project, locale);
+    let vocab_block = context_inject::vocabulary_inject_block(&project, locale);
     if !vocab_block.is_empty() {
         if !cross_wave_memory.is_empty() {
             cross_wave_memory.push_str("\n\n");
@@ -145,9 +156,16 @@ pub fn run(
         &task_steps,
     );
 
-    let entity_info = String::new();
-    let reference_files = String::new();
-    let context_extras = String::new();
+    // F3-b — three placeholders that the dispatch template carries but that the
+    // renderer historically left empty (so the child re-derived them from the
+    // source). All three are now filled deterministically:
+    //   {entity_info}      registry entities whose tokens overlap the task block
+    //   {reference_files}  the spec's `## Files`/`## Arquivos` list + public
+    //                      signatures of those files via tree-sitter
+    //   {context_extras}   the per-role slice of `.claude/pipeline-config.md`
+    let entity_info = build_entity_info(&project, &task_steps);
+    let reference_files = build_reference_files(&project, &subproject_str, &op_spec_path);
+    let context_extras = build_context_extras(&project, role);
     let wave_model = wave
         .and_then(|w| read_wave_model(&spec_dir, w))
         .unwrap_or_default();
@@ -525,13 +543,7 @@ fn recommended_skills_via_resolve(
         return cached;
     }
 
-    let phase = match role.trim().to_ascii_lowercase().as_str() {
-        "review" => "REVIEW",
-        "explore" => "ANALYZE",
-        "plan" => "PLAN",
-        "qa" => "QA",
-        _ => "EXECUTE",
-    };
+    let phase = context_inject::role_to_phase(role);
     // Intent = role + first 800 chars of task block. Resolver tokenises.
     let mut intent = role.to_string();
     intent.push(' ');
@@ -558,165 +570,248 @@ fn recommended_skills_via_resolve(
     joined
 }
 
-/// Read `memory/{name}.md` files under the active spec and keep only those
-/// whose name tokens overlap the task block. Returns a markdown block ready
-/// to append to `{cross_wave_memory}`.
-fn filtered_spec_memory(project: &Path, spec: &str, task_steps: &str, role: &str) -> String {
-    let memory_dir = ClaudePaths::for_project(project)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.dir().join("memory"))
-        .unwrap_or_else(|_| project.to_path_buf());
-    let Ok(entries) = mfs::read_dir(&memory_dir) else {
+// ---------------------------------------------------------------------------
+// F3-b — deterministic placeholder fillers
+// ---------------------------------------------------------------------------
+
+/// Token-set of `text` — lowercase ASCII-alphanumeric runs ≥3 chars, deduped.
+fn task_tokens(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Build `{entity_info}` — the registry entities whose name tokens overlap the
+/// task block, as a compact `- Name: desc/first-ref` list.
+///
+/// Reads `.claude/entity-registry.json` via [`EntityRegistry`] (fail-open to an
+/// empty registry). An entity is kept when any of its name's lowercase tokens
+/// appears in the task tokens (token-overlap), so the child sees only the
+/// domain types its task actually touches. Empty when nothing overlaps.
+fn build_entity_info(project: &Path, task_steps: &str) -> String {
+    let tokens = task_tokens(task_steps);
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let registry = EntityRegistry::load(project);
+    let Some(entities) = registry.entities() else {
         return String::new();
     };
+    let mut lines: Vec<String> = Vec::new();
+    for name in registry.entity_names() {
+        // An entity matches when one of its identifier tokens (PascalCase split
+        // on case boundaries is overkill here — a whole-name lowercase token
+        // plus its non-alnum splits suffice) appears in the task.
+        let name_tokens = task_tokens(name);
+        let overlap = name_tokens.iter().any(|nt| tokens.contains(nt))
+            || tokens.contains(&name.to_ascii_lowercase());
+        if !overlap {
+            continue;
+        }
+        let detail = entities.get(name).map(entity_first_ref).unwrap_or_default();
+        if detail.is_empty() {
+            lines.push(format!("- {name}"));
+        } else {
+            lines.push(format!("- {name}: {detail}"));
+        }
+        if lines.len() >= 12 {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    lines.join("\n")
+}
 
-    // Tokenise task body + role for matching against memory file names.
-    let mut tokens: Vec<String> = role
-        .to_ascii_lowercase()
-        .split(|c: char| !c.is_ascii_alphanumeric())
+/// Pull a one-line detail for an entity — its `description`, else its first
+/// `refs[].path` / `ref`. Capped to keep `{entity_info}` compact.
+fn entity_first_ref(value: &serde_json::Value) -> String {
+    if let Some(desc) = value.get("description").and_then(serde_json::Value::as_str) {
+        if !desc.is_empty() {
+            return desc.chars().take(80).collect();
+        }
+    }
+    if let Some(arr) = value.get("refs").and_then(serde_json::Value::as_array) {
+        if let Some(path) = arr
+            .first()
+            .and_then(|r| r.get("path").or(Some(r)))
+            .and_then(serde_json::Value::as_str)
+        {
+            return path.to_string();
+        }
+    }
+    value
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-        .filter(|s| s.len() >= 3)
+        .unwrap_or_default()
+}
+
+/// Build `{reference_files}` — the spec's `## Files` / `## Arquivos` list plus
+/// a compact structural summary (public signatures + declared entities) of the
+/// listed files via tree-sitter, never a file dump.
+///
+/// The `## Files` section drives the list; each path that resolves under the
+/// subproject is parsed once through `mustard_core::domain::ast` (AST when a
+/// grammar resolves, agnostic fallback otherwise) and reduced to its public
+/// function names + entity names. Empty when the spec has no Files section.
+fn build_reference_files(project: &Path, subproject: &str, spec_path: &Path) -> String {
+    let spec_text = mfs::read_to_string(spec_path).unwrap_or_default();
+    if spec_text.is_empty() {
+        return String::new();
+    }
+    let files = files_section_paths(&spec_text);
+    if files.is_empty() {
+        return String::new();
+    }
+    let sub_root = project.join(subproject);
+    // One shared grammar loader for every file (built once, with builtins so the
+    // AST path is available for the common languages; the fallback floor covers
+    // everything else). Anchored at the subproject so on-disk grammar overrides
+    // resolve.
+    let loader = GrammarLoader::with_builtins(&sub_root);
+
+    let mut out = String::from("## Files\n");
+    for rel in files.iter().take(20) {
+        let _ = writeln!(out, "- `{rel}`");
+        let abs = sub_root.join(rel);
+        let abs = if abs.is_file() { abs } else { project.join(rel) };
+        if !abs.is_file() {
+            continue;
+        }
+        let Ok(source) = mfs::read_to_string(&abs) else {
+            continue;
+        };
+        let lang_id = loader.language_id_for_path(&abs).unwrap_or_default();
+        let summary = structural_summary(&loader, &source, &lang_id);
+        if !summary.is_empty() {
+            let _ = writeln!(out, "  - {summary}");
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Compact structural summary of one source file: up to a few public function
+/// names and declared entity names. Returns `""` when nothing is extracted so
+/// the caller omits the sub-bullet.
+fn structural_summary(loader: &GrammarLoader, source: &str, lang_id: &str) -> String {
+    let mut fns: Vec<String> = extract_function_signatures(loader, source, lang_id)
+        .into_iter()
+        .map(|s| s.name)
         .collect();
-    for word in task_steps.split(|c: char| !c.is_ascii_alphanumeric()) {
-        let w = word.to_ascii_lowercase();
-        if w.len() >= 3 {
-            tokens.push(w);
-        }
-    }
+    fns.dedup();
+    fns.truncate(6);
+    let mut ents: Vec<String> = extract_entities(loader, source, lang_id)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    ents.dedup();
+    ents.truncate(6);
 
-    let mut matched: Vec<(String, String)> = Vec::new();
-    for entry in entries {
-        if entry.is_dir {
-            continue;
-        }
-        if !entry.file_name.ends_with(".md") || entry.file_name.starts_with('_') {
-            continue;
-        }
-        let name = entry.file_name.trim_end_matches(".md").to_ascii_lowercase();
-        let name_tokens: Vec<&str> = name
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|s| s.len() >= 3)
-            .collect();
-        // Match: ANY name token appears in the task tokens — keep.
-        let relevant = name_tokens
-            .iter()
-            .any(|nt| tokens.iter().any(|t| t == nt));
-        if !relevant {
-            continue;
-        }
-        let Ok(text) = mfs::read_to_string(&entry.path) else {
-            continue;
-        };
-        let summary = extract_memory_summary(&text);
-        matched.push((entry.file_name, summary));
+    let mut parts: Vec<String> = Vec::new();
+    if !ents.is_empty() {
+        parts.push(format!("types: {}", ents.join(", ")));
     }
-    if matched.is_empty() {
-        return String::new();
+    if !fns.is_empty() {
+        parts.push(format!("fns: {}", fns.join(", ")));
     }
-    let mut out = String::from("## SPEC MEMORY\n");
-    for (file, summary) in matched {
-        let _ = writeln!(out, "- [[{}]] — {summary}", file.trim_end_matches(".md"));
-    }
-    out
+    parts.join(" | ")
 }
 
-/// First non-empty body line (skipping frontmatter + headings) — used as the
-/// inline summary for a memory entry.
-fn extract_memory_summary(text: &str) -> String {
-    let mut in_fm = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed == "---" {
-            in_fm = !in_fm;
-            continue;
-        }
-        if in_fm || trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        // Return the first meaningful body line, capped to 120 chars.
-        let cap: String = trimmed.chars().take(120).collect();
-        return cap;
-    }
-    String::new()
-}
-
-/// W5.T5.3 — Render the regression-vocabulary block for injection into the
-/// rendered prompt. Reuses [`gate_regression_check::build_vocab_matcher`] so
-/// the inject path agrees with the gate's Moment-1 scan on which terms get
-/// surfaced. Empty when the project has no resolvable vocabulary
-/// (fail-open).
-fn vocabulary_inject_block(project: &Path, locale: i18n::Locale) -> String {
-    let Some(_matcher) = gate_regression_check::build_vocab_matcher(project) else {
-        return String::new();
+/// Extract the file paths listed under a spec's `## Files` / `## Arquivos`
+/// section. Each line's first backtick-quoted token (or, failing that, the
+/// first path-ish token) is taken as the path. Stops at the next `## ` heading.
+fn files_section_paths(spec_text: &str) -> Vec<String> {
+    let lines: Vec<&str> = spec_text.lines().collect();
+    let Some(start) = lines.iter().position(|l| is_heading(l, "files")) else {
+        return Vec::new();
     };
-    let (semantic, pattern) = read_vocab_layers_for_inject(project);
-    if semantic.is_empty() && pattern.is_empty() {
-        return String::new();
-    }
-    let heading = i18n::translate("gate.vocabulary.inject.heading", locale);
-    let lead = i18n::translate("gate.vocabulary.inject.lead", locale);
-    let semantic_label = i18n::translate("gate.vocabulary.inject.semantic", locale);
-    let pattern_label = i18n::translate("gate.vocabulary.inject.pattern", locale);
-
-    let mut out = String::with_capacity(256);
-    out.push_str("## ");
-    out.push_str(heading);
-    out.push('\n');
-    out.push_str(lead);
-    out.push_str("\n\n");
-    if !semantic.is_empty() {
-        out.push_str("- ");
-        out.push_str(semantic_label);
-        out.push_str(": ");
-        out.push_str(&semantic.join(", "));
-        out.push('\n');
-    }
-    if !pattern.is_empty() {
-        out.push_str("- ");
-        out.push_str(pattern_label);
-        out.push_str(": ");
-        out.push_str(&pattern.join(", "));
-        out.push('\n');
+    let mut out: Vec<String> = Vec::new();
+    for line in lines.iter().skip(start + 1) {
+        if line.starts_with("## ") {
+            break;
+        }
+        if let Some(path) = first_path_token(line) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
     }
     out
 }
 
-/// Resolve the (semantic, pattern) layer term lists for the project. Reads
-/// `.claude/vocab/regression.toml` and falls back to the gate's in-memory
-/// defaults when the file is absent. Best-effort TOML walk — full parsing is
-/// covered by [`gate_regression_check::build_vocab_matcher`] on the scan
-/// side; this helper only needs the term names for display.
-fn read_vocab_layers_for_inject(project: &Path) -> (Vec<String>, Vec<String>) {
-    // W5#2: dedup'd via `VocabularyDoc::layer_terms` shared with
-    // `subagent_inject::read_vocab_layers`.
-    let toml_path = project
-        .join(".claude")
-        .join("vocab")
-        .join("regression.toml");
-    let (mut semantic, mut pattern) =
-        match mustard_core::domain::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
-            Ok(doc) => (
-                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Semantic)
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect::<Vec<String>>(),
-                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Pattern)
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect::<Vec<String>>(),
-            ),
-            Err(_) => (Vec::new(), Vec::new()),
-        };
-    if semantic.is_empty() && pattern.is_empty() {
-        semantic = vec![
-            "fail-open".into(),
-            "intent drift".into(),
-            "stub fail-open".into(),
-            "empurrar pra W".into(),
-        ];
-        pattern = vec!["None".into(), "Vec::new()".into(), "Default::default()".into()];
+/// First path-like token in a `## Files` bullet: the content of the first
+/// backtick pair when present, else the first whitespace-delimited token that
+/// looks like a path (contains `/` or a dotted extension).
+fn first_path_token(line: &str) -> Option<String> {
+    if let Some(open) = line.find('`') {
+        if let Some(close_rel) = line[open + 1..].find('`') {
+            let inner = line[open + 1..open + 1 + close_rel].trim();
+            if !inner.is_empty() {
+                return Some(inner.replace('\\', "/"));
+            }
+        }
     }
-    (semantic, pattern)
+    let stripped = line
+        .trim_start()
+        .trim_start_matches(['-', '*', ' '])
+        .trim_start_matches(['[', 'x', ' ', ']'])
+        .trim_start();
+    let first = stripped.split_whitespace().next()?;
+    let looks_pathy = first.contains('/')
+        || first
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()));
+    if looks_pathy {
+        Some(first.trim_matches(['(', ')', ',']).replace('\\', "/"))
+    } else {
+        None
+    }
+}
+
+/// Build `{context_extras}` — the per-role slice of `.claude/pipeline-config.md`.
+///
+/// Scans `pipeline-config.md` for a `## ` / `### ` heading that names the role
+/// (case-insensitive substring, e.g. role `review` matches `## Review Rules`)
+/// and returns that section's body up to the next same-or-higher heading.
+/// Reuses the same heading-scan shape as [`read_guards_block`]. Empty when the
+/// file or a role-specific section is absent (fail-open).
+fn build_context_extras(project: &Path, role: &str) -> String {
+    let cfg = ClaudePaths::for_project(project)
+        .map(|p| p.claude_dir().join("pipeline-config.md"))
+        .unwrap_or_else(|_| project.join(".claude").join("pipeline-config.md"));
+    let text = mfs::read_to_string(&cfg).unwrap_or_default();
+    if text.is_empty() {
+        return String::new();
+    }
+    let role_lc = role.trim().to_ascii_lowercase();
+    if role_lc.is_empty() {
+        return String::new();
+    }
+    let mut in_section = false;
+    let mut collected = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
+            if in_section {
+                break; // Next heading ends the role slice.
+            }
+            let heading = trimmed.trim_start_matches('#').trim().to_ascii_lowercase();
+            if heading.contains(&role_lc) {
+                in_section = true;
+                collected.push_str(line);
+                collected.push('\n');
+                continue;
+            }
+        }
+        if in_section {
+            collected.push_str(line);
+            collected.push('\n');
+        }
+    }
+    collected.trim().to_string()
 }
 
 /// Conventional 4-chars-per-token heuristic. Used by [`apply_budget`].
@@ -928,5 +1023,145 @@ mod tests {
         assert!(steps.contains("Tarefas"));
         assert!(steps.contains("do a"));
         assert!(!steps.contains("Deps"));
+    }
+
+    // -----------------------------------------------------------------------
+    // F3-b — {entity_info} / {reference_files} / {context_extras} fillers
+    // -----------------------------------------------------------------------
+
+    /// Plant a workspace anchor so `ClaudePaths::for_project` / `EntityRegistry`
+    /// accept the temp dir.
+    fn anchor(dir: &Path) {
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::write(dir.join("mustard.json"), b"{}").unwrap();
+    }
+
+    #[test]
+    fn build_entity_info_matches_task_tokens() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // Write a v4 registry with two entities; only one overlaps the task.
+        let registry = ClaudePaths::for_project(dir.path()).unwrap().entity_registry_json_path();
+        std::fs::write(
+            &registry,
+            r#"{"_meta":{"version":"4.0"},"_patterns":{},"_enums":{},
+                "e":{"UserAccount":{"description":"the account"},"OrderLine":{"ref":"src/order.rs"}}}"#,
+        )
+        .unwrap();
+        let info = build_entity_info(dir.path(), "## Tasks\n- refactor the useraccount module");
+        assert!(info.contains("UserAccount"), "got: {info}");
+        assert!(info.contains("the account"));
+        assert!(!info.contains("OrderLine"), "non-overlapping entity leaked");
+        // No overlap → empty.
+        assert!(build_entity_info(dir.path(), "unrelated work").is_empty());
+    }
+
+    #[test]
+    fn build_reference_files_lists_files_and_signatures() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // A source file under the subproject with a public fn + struct.
+        let sub = dir.path().join("api");
+        std::fs::create_dir_all(sub.join("src")).unwrap();
+        std::fs::write(
+            sub.join("src").join("user.rs"),
+            "pub struct User { id: i32 }\npub fn make_user() -> User { User { id: 0 } }\n",
+        )
+        .unwrap();
+        let spec = dir.path().join("spec.md");
+        std::fs::write(&spec, "# T\n## Files\n- `src/user.rs` — the user model\n## Tasks\n- x\n").unwrap();
+        let refs = build_reference_files(dir.path(), "api", &spec);
+        assert!(refs.contains("## Files"));
+        assert!(refs.contains("src/user.rs"));
+        // Structural summary surfaces the public fn / type name.
+        assert!(refs.contains("make_user") || refs.contains("User"), "got: {refs}");
+        // No spec Files section → empty.
+        let empty_spec = dir.path().join("empty.md");
+        std::fs::write(&empty_spec, "# T\n## Tasks\n- x\n").unwrap();
+        assert!(build_reference_files(dir.path(), "api", &empty_spec).is_empty());
+    }
+
+    #[test]
+    fn build_context_extras_slices_role_section() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let cfg = ClaudePaths::for_project(dir.path()).unwrap().claude_dir().join("pipeline-config.md");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            "# Pipeline\n## Review Rules\n- stay skeptical\n- run tests\n## Model Selection\n- sonnet\n",
+        )
+        .unwrap();
+        let extras = build_context_extras(dir.path(), "review");
+        assert!(extras.contains("Review Rules"));
+        assert!(extras.contains("stay skeptical"));
+        assert!(!extras.contains("Model Selection"), "slice bled into next heading");
+        // Unknown role → empty.
+        assert!(build_context_extras(dir.path(), "nonexistent-role").is_empty());
+    }
+
+    #[test]
+    fn dispatch_render_fills_three_placeholders_and_leaves_no_unfilled() {
+        // End-to-end: assemble the dispatch block, substitute the three F3-b
+        // placeholders + the rest with realistic values, then assert no
+        // `{...}` placeholder remains (the `scan_unfilled` contract).
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let registry = ClaudePaths::for_project(dir.path()).unwrap().entity_registry_json_path();
+        std::fs::write(
+            &registry,
+            r#"{"_meta":{"version":"4.0"},"_patterns":{},"_enums":{},
+                "e":{"Widget":{"description":"a widget"}}}"#,
+        )
+        .unwrap();
+        let sub = dir.path().join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("widget.rs"), "pub fn build_widget() {}\n").unwrap();
+        let spec = dir.path().join("spec.md");
+        std::fs::write(
+            &spec,
+            "# T\n## Files\n- `widget.rs`\n## Tasks\n- [ ] refactor the widget pipeline\n",
+        )
+        .unwrap();
+        let cfg = ClaudePaths::for_project(dir.path()).unwrap().claude_dir().join("pipeline-config.md");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "# P\n## Review Rules\n- skeptical\n## Next\n- x\n").unwrap();
+
+        let task_steps = read_task_steps(&spec);
+        let entity_info = build_entity_info(dir.path(), &task_steps);
+        let reference_files = build_reference_files(dir.path(), "api", &spec);
+        let context_extras = build_context_extras(dir.path(), "review");
+        assert!(!entity_info.is_empty(), "entity_info empty");
+        assert!(!reference_files.is_empty(), "reference_files empty");
+        assert!(!context_extras.is_empty(), "context_extras empty");
+
+        let mut rendered = extract_block(TEMPLATE, "dispatch").expect("dispatch block");
+        let subs: &[(&str, &str)] = &[
+            ("{subproject}", "api"),
+            ("{guards_summary}", "g"),
+            ("{role_block}", "ROLE: review"),
+            ("{spec_lang}", "en-US"),
+            ("{task_steps}", &task_steps),
+            ("{context_md}", ""),
+            ("{prior_wave_diff}", ""),
+            ("{cross_wave_memory}", ""),
+            ("{recommended_skills}", "karpathy-guidelines"),
+            ("{entity_info}", &entity_info),
+            ("{reference_files}", &reference_files),
+            ("{context_extras}", &context_extras),
+            ("{wave_model}", ""),
+            ("{retry_context}", ""),
+        ];
+        for (k, v) in subs {
+            rendered = rendered.replace(k, v);
+        }
+        assert!(rendered.contains("Widget"), "entity_info not rendered");
+        assert!(rendered.contains("widget.rs"), "reference_files not rendered");
+        assert!(rendered.contains("Review Rules"), "context_extras not rendered");
+        assert!(
+            scan_unfilled(&rendered).is_empty(),
+            "unfilled placeholders remain: {:?}",
+            scan_unfilled(&rendered)
+        );
     }
 }

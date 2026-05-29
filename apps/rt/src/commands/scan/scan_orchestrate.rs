@@ -18,10 +18,12 @@ use crate::commands::scan::scan_precompute::{
     backup_generated_mds, build_structure_block, build_tooling_block, ensure_notes_md,
     purge_generated_skills,
 };
+use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
@@ -462,12 +464,102 @@ fn force_refresh(root: &Path, detect: &Value, result: &mut ScanResult) {
     }
 }
 
+/// Byte cap for the `{{samplesBlock}}` excerpt — keeps the pre-mined sample
+/// list compact (≈the dispatch's structure-block budget) so the agent renders
+/// facts rather than re-walking the tree.
+const SAMPLES_BLOCK_MAX_BYTES: usize = 1200;
+
+/// Pull the `_patterns.{stack}.discovered[]` clusters tagged for `subproject`
+/// out of an already-parsed entity-registry document.
+///
+/// A cluster matches when it has no `subprojectName` (un-scoped) or its
+/// `subprojectName` equals / is a path-suffix of the subproject path — mirrors
+/// [`EntityRegistry::cluster_labels`]'s scoping. Returns the raw cluster
+/// objects (so the caller can read label/suffix/folder/fileCount/samples).
+fn clusters_for_subproject<'a>(patterns: &'a Map<String, Value>, subproject: &str) -> Vec<&'a Value> {
+    let mut out: Vec<&Value> = Vec::new();
+    for body in patterns.values() {
+        let Some(arr) = body.get("discovered").and_then(Value::as_array) else {
+            continue;
+        };
+        for cluster in arr {
+            // Keep un-scoped clusters and those whose `subprojectName` equals /
+            // is a path-suffix of the subproject path.
+            let scoped_out = matches!(
+                cluster.get("subprojectName").and_then(Value::as_str),
+                Some(name) if !subproject.ends_with(name) && name != subproject
+            );
+            if !scoped_out {
+                out.push(cluster);
+            }
+        }
+    }
+    out
+}
+
+/// Build `{{clustersBlock}}` — a compact `## Pre-mined clusters` table of the
+/// pre-discovered structural clusters (label, suffix, folder pattern, file
+/// count). Empty when no cluster is tagged for the subproject.
+fn build_clusters_block(clusters: &[&Value]) -> String {
+    if clusters.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## Pre-mined clusters\n");
+    out.push_str("Trust these — already discovered by the scan. Do not re-walk the tree.\n\n");
+    out.push_str("| Label | Suffix | Folder | Files |\n|---|---|---|---|\n");
+    for c in clusters {
+        let label = c.get("label").and_then(Value::as_str).unwrap_or("");
+        let suffix = c.get("suffix").and_then(Value::as_str).unwrap_or("");
+        let folder = c
+            .get("folderPattern")
+            .or_else(|| c.get("folder"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let count = c.get("fileCount").and_then(Value::as_u64).unwrap_or(0);
+        let _ = writeln!(out, "| {label} | {suffix} | {folder} | {count} |");
+    }
+    out
+}
+
+/// Build `{{samplesBlock}}` — the verified sample file paths the scan recorded
+/// per cluster, capped at [`SAMPLES_BLOCK_MAX_BYTES`]. Empty when no cluster
+/// carries samples.
+fn build_samples_block(clusters: &[&Value]) -> String {
+    let mut body = String::new();
+    for c in clusters {
+        let label = c.get("label").and_then(Value::as_str).unwrap_or("");
+        let Some(samples) = c.get("samples").and_then(Value::as_array) else {
+            continue;
+        };
+        let paths: Vec<&str> = samples.iter().filter_map(Value::as_str).collect();
+        if paths.is_empty() {
+            continue;
+        }
+        let _ = writeln!(body, "- {label}: {}", paths.join(", "));
+        if body.len() >= SAMPLES_BLOCK_MAX_BYTES {
+            body.push_str("…[truncated sample list]\n");
+            break;
+        }
+    }
+    if body.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## Verified samples\n");
+    out.push_str(&body);
+    out
+}
+
 /// Render the agent prompt for one subproject from the loaded template.
+///
+/// `patterns` is the registry's `_patterns` map (when loaded) so the
+/// `{{clustersBlock}}` / `{{samplesBlock}}` placeholders are filled with
+/// pre-mined facts instead of the empty strings the regression left behind.
 fn render_prompt(
     template: &str,
     root: &Path,
     sub: &Value,
     blocks: &std::collections::BTreeMap<String, (String, String)>,
+    patterns: Option<&Map<String, Value>>,
     force: bool,
 ) -> String {
     let name = sub.get("name").and_then(Value::as_str).unwrap_or("");
@@ -481,6 +573,11 @@ fn render_prompt(
         ""
     };
     let (tooling, structure) = blocks.get(path).cloned().unwrap_or_default();
+    let clusters = patterns
+        .map(|p| clusters_for_subproject(p, path))
+        .unwrap_or_default();
+    let clusters_block = build_clusters_block(&clusters);
+    let samples_block = build_samples_block(&clusters);
     template
         .replace("{{name}}", name)
         .replace("{{path}}", path)
@@ -488,8 +585,8 @@ fn render_prompt(
         .replace("{{role}}", role)
         .replace("{{stack}}", stack)
         .replace("{{forceBlock}}", force_block)
-        .replace("{{clustersBlock}}", "")
-        .replace("{{samplesBlock}}", "")
+        .replace("{{clustersBlock}}", &clusters_block)
+        .replace("{{samplesBlock}}", &samples_block)
         .replace("{{budgetBlock}}", "")
         .replace("{{evidenceBlock}}", "")
         .replace("{{toolingBlock}}", &tooling)
@@ -547,6 +644,12 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
 
     // Render the agent prompt for each dispatch target. The template is baked
     // into the binary; an on-disk copy overrides it when present.
+    // Load the entity-registry once so `{{clustersBlock}}` / `{{samplesBlock}}`
+    // render the pre-mined `_patterns.{stack}.discovered[]` facts instead of
+    // the empty strings the regression left behind. Fail-open: a missing /
+    // empty registry yields no patterns, and the blocks stay empty.
+    let registry = EntityRegistry::load(root);
+    let patterns = registry.patterns();
     let template_path = claude_dir.join("scripts").join("scan").join("agent-prompt.template.md");
     let template = read_safe(&template_path).unwrap_or_else(|| EMBEDDED_PROMPT_TEMPLATE.to_string());
     for sub in &dispatch {
@@ -556,7 +659,7 @@ fn orchestrate(root: &Path, force: bool, target: Option<&str>) -> ScanResult {
         let stack = sub.get("stackSummary").and_then(Value::as_str).unwrap_or("");
         result.dispatch.push(json!({
             "name": name, "path": path, "role": role, "stackSummary": stack,
-            "agentPrompt": render_prompt(&template, root, sub, &blocks, force),
+            "agentPrompt": render_prompt(&template, root, sub, &blocks, patterns, force),
         }));
     }
 
@@ -678,9 +781,61 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub = json!({ "name": "api", "path": "api", "role": "backend", "stackSummary": "TS" });
         let blocks = std::collections::BTreeMap::new();
-        let rendered = render_prompt(EMBEDDED_PROMPT_TEMPLATE, dir.path(), &sub, &blocks, false);
+        let rendered = render_prompt(EMBEDDED_PROMPT_TEMPLATE, dir.path(), &sub, &blocks, None, false);
         assert!(!rendered.contains("{{"), "unresolved placeholder remains");
         assert!(rendered.contains("api"));
+    }
+
+    #[test]
+    fn render_prompt_injects_clusters_and_samples_from_patterns() {
+        let dir = tempdir().unwrap();
+        let sub = json!({ "name": "api", "path": "api", "role": "backend", "stackSummary": "TS" });
+        let blocks = std::collections::BTreeMap::new();
+        // A `_patterns.{stack}` map shaped like the registry writes it.
+        let patterns: Map<String, Value> = serde_json::from_value(json!({
+            "typescript": {
+                "discovered": [
+                    {
+                        "label": "Service",
+                        "suffix": "Service",
+                        "folderPattern": "**/services/",
+                        "fileCount": 7,
+                        "samples": ["UserService.ts", "OrderService.ts"],
+                        "subprojectName": "api"
+                    },
+                    {
+                        "label": "OtherSub",
+                        "suffix": "Repo",
+                        "fileCount": 4,
+                        "samples": ["X.ts"],
+                        "subprojectName": "web"
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+        let rendered = render_prompt(
+            EMBEDDED_PROMPT_TEMPLATE,
+            dir.path(),
+            &sub,
+            &blocks,
+            Some(&patterns),
+            false,
+        );
+        // The api-scoped cluster surfaces; the web-scoped one does not.
+        assert!(rendered.contains("Pre-mined clusters"), "clusters block missing: {rendered}");
+        assert!(rendered.contains("Service"));
+        assert!(rendered.contains("**/services/"));
+        assert!(rendered.contains("Verified samples"), "samples block missing");
+        assert!(rendered.contains("UserService.ts"));
+        assert!(!rendered.contains("OtherSub"), "web-scoped cluster leaked into api prompt");
+        assert!(!rendered.contains("{{"), "unresolved placeholder remains");
+    }
+
+    #[test]
+    fn cluster_and_sample_blocks_empty_without_patterns() {
+        assert!(build_clusters_block(&[]).is_empty());
+        assert!(build_samples_block(&[]).is_empty());
     }
 
     #[test]

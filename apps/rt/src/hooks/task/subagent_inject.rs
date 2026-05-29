@@ -31,13 +31,14 @@ use crate::shared::events::economy;
 use mustard_core::io::atomic_md::MarkdownStore;
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
-use mustard_core::platform::i18n::{self, Locale};
+use mustard_core::platform::i18n;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
+use crate::commands::agent::context_inject;
 use crate::commands::review::gate_regression_check::{
-    self, check_after_child_return, GateError, GateInput, RegressionVerdict,
+    check_after_child_return, GateError, GateInput, RegressionVerdict,
 };
 use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
@@ -91,9 +92,10 @@ fn read_context_md_slice(project: &Path) -> String {
     }
 }
 
-/// Pull the spec-memory principle files most relevant to the dispatch.
-/// Mirrors the matching used by `agent_prompt_render::filtered_spec_memory`,
-/// but capped at [`SPEC_MEMORY_MAX`] and scoped to the active spec only.
+/// Pull the spec-memory principle files most relevant to the dispatch via the
+/// shared [`context_inject::match_spec_memory`] (Aho-Corasick over the
+/// memory-name stems), capped at [`SPEC_MEMORY_MAX`] and scoped to the active
+/// spec. Name-only rendering (no inline summary) keeps the hook slice short.
 fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> String {
     let Some(memory_dir) = ClaudePaths::for_project(project)
         .ok()
@@ -102,57 +104,9 @@ fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> St
     else {
         return String::new();
     };
-    let Ok(entries) = fs::read_dir(&memory_dir) else {
-        return String::new();
-    };
-
-    let mut tokens: Vec<String> = role
-        .to_ascii_lowercase()
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .map(str::to_string)
-        .filter(|s| s.len() >= 3)
-        .collect();
-    for w in prompt.split(|c: char| !c.is_ascii_alphanumeric()) {
-        let w = w.to_ascii_lowercase();
-        if w.len() >= 3 {
-            tokens.push(w);
-        }
-    }
-
-    let mut matched: Vec<String> = Vec::new();
-    for entry in entries {
-        if entry.is_dir {
-            continue;
-        }
-        if !entry.file_name.ends_with(".md") || entry.file_name.starts_with('_') {
-            continue;
-        }
-        let name = entry.file_name.trim_end_matches(".md").to_ascii_lowercase();
-        let name_tokens: Vec<&str> = name
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|s| s.len() >= 3)
-            .collect();
-        let relevant = name_tokens
-            .iter()
-            .any(|nt| tokens.iter().any(|t| t == nt));
-        if !relevant {
-            continue;
-        }
-        matched.push(name.clone());
-        if matched.len() >= SPEC_MEMORY_MAX {
-            break;
-        }
-    }
-    if matched.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("## SPEC MEMORY\n");
-    for name in matched {
-        out.push_str("- [[");
-        out.push_str(&name);
-        out.push_str("]]\n");
-    }
-    out
+    let intent = format!("{role} {prompt}");
+    let matches = context_inject::match_spec_memory(&memory_dir, &intent, SPEC_MEMORY_MAX, false);
+    context_inject::render_spec_memory_block(&matches)
 }
 
 /// Build a knowledge-inject block by scanning `.claude/knowledge/` via
@@ -189,91 +143,6 @@ fn knowledge_block(project: &Path) -> String {
         }
     }
     out
-}
-
-/// Render the regression-vocabulary block injected into a child agent's
-/// prompt (W5.T5.1). Reuses [`gate_regression_check::build_vocab_matcher`] so
-/// the gate and the inject path agree on which terms get surfaced.
-///
-/// The block is intentionally short — Semantic + Pattern layers only,
-/// keyword/noise hits are background data the agent doesn't need to see.
-/// Empty when the project has no matcher (fail-open).
-fn vocabulary_inject_block(project: &Path, locale: Locale) -> String {
-    let Some(_matcher) = gate_regression_check::build_vocab_matcher(project) else {
-        return String::new();
-    };
-    let (semantic, pattern) = read_vocab_layers(project);
-    if semantic.is_empty() && pattern.is_empty() {
-        return String::new();
-    }
-    let heading = i18n::translate("gate.vocabulary.inject.heading", locale);
-    let lead = i18n::translate("gate.vocabulary.inject.lead", locale);
-    let semantic_label = i18n::translate("gate.vocabulary.inject.semantic", locale);
-    let pattern_label = i18n::translate("gate.vocabulary.inject.pattern", locale);
-
-    let mut out = String::with_capacity(256);
-    out.push_str("## ");
-    out.push_str(heading);
-    out.push('\n');
-    out.push_str(lead);
-    out.push_str("\n\n");
-    if !semantic.is_empty() {
-        out.push_str("- ");
-        out.push_str(semantic_label);
-        out.push_str(": ");
-        out.push_str(&semantic.join(", "));
-        out.push('\n');
-    }
-    if !pattern.is_empty() {
-        out.push_str("- ");
-        out.push_str(pattern_label);
-        out.push_str(": ");
-        out.push_str(&pattern.join(", "));
-        out.push('\n');
-    }
-    out
-}
-
-/// Resolve the (semantic, pattern) layer term lists for the project.
-///
-/// Reads `<project>/.claude/vocab/regression.toml` and best-effort parses
-/// `[semantic]` / `[pattern]` sections. Falls back to the gate's in-memory
-/// defaults when the file is absent so the inject block is never empty on a
-/// fresh project (matches [`gate_regression_check::build_vocab_matcher`]'s
-/// fallback contract).
-fn read_vocab_layers(project: &Path) -> (Vec<String>, Vec<String>) {
-    // W5#2: dedup'd via `VocabularyDoc::layer_terms`. The inline TOML walk
-    // this function used to ship lives in `mustard_core::domain::vocabulary` now —
-    // both `subagent_inject` and `agent_prompt_render` flow through the
-    // same accessor.
-    let toml_path = project
-        .join(".claude")
-        .join("vocab")
-        .join("regression.toml");
-    let (mut semantic, mut pattern) =
-        match mustard_core::domain::vocabulary::VocabularyDoc::load_from_file(&toml_path) {
-            Ok(doc) => (
-                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Semantic)
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect::<Vec<String>>(),
-                doc.layer_terms(mustard_core::domain::vocabulary::Layer::Pattern)
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect::<Vec<String>>(),
-            ),
-            Err(_) => (Vec::new(), Vec::new()),
-        };
-    if semantic.is_empty() && pattern.is_empty() {
-        semantic = vec![
-            "fail-open".into(),
-            "intent drift".into(),
-            "stub fail-open".into(),
-            "empurrar pra W".into(),
-        ];
-        pattern = vec!["None".into(), "Vec::new()".into(), "Default::default()".into()];
-    }
-    (semantic, pattern)
 }
 
 /// Resolve the active wave directory for the project. Reads the
@@ -425,14 +294,8 @@ fn recommended_skills_block(
     subproject: Option<&str>,
     role: &str,
 ) -> String {
-    // Map role → phase the same way `agent_prompt_render` does.
-    let phase = match role.trim().to_ascii_lowercase().as_str() {
-        "review" => "REVIEW",
-        "explore" => "ANALYZE",
-        "plan" => "PLAN",
-        "qa" => "QA",
-        _ => "EXECUTE",
-    };
+    // Map role → phase via the shared helper (same mapping both call sites use).
+    let phase = context_inject::role_to_phase(role);
     let resolved =
         crate::commands::skill::skill_resolve::resolve(project, intent, subproject, Some(phase), TOP_K_SKILLS);
     if resolved.is_empty() {
@@ -511,7 +374,7 @@ impl Check for SubagentInject {
         // W5.T5.1 — Pre-arm the child with the regression vocabulary the
         // gate will check. Locale resolved per-project, fail-open to PtBr.
         let locale = i18n::project_locale(&project);
-        let vocab = vocabulary_inject_block(&project, locale);
+        let vocab = context_inject::vocabulary_inject_block(&project, locale);
         if !vocab.is_empty() {
             sections.push(vocab);
         }
