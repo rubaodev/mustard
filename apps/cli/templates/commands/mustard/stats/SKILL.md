@@ -25,7 +25,7 @@ Summary (5-8 lines, pipelines/orphans/Pass@1/RTK/top alert) → Active+Orphaned 
 
 ## DORA event sources (auto-emitted)
 
-`pr.opened` / `pr.merged` from `gh pr create` / `gh pr merge` (via `bash_guard` PostToolUse(Bash) observer). `review.start` / `review.complete` from `/mustard:review` (inline emit). Pairing by `payload.spec` (preferred) or `payload.branch` within the window.
+`pr.opened` / `pr.merged` from `gh pr create` / `gh pr merge` (via `bash_command_gate` PostToolUse(Bash) observer). `review.start` / `review.complete` from `/mustard:review` (inline emit). Pairing by `payload.spec` (preferred) or `payload.branch` within the window.
 
 ## Examples
 

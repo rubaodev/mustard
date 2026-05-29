@@ -133,21 +133,21 @@ Accumulation: ≥2 agents in same wave return `CONCERN` → surface all together
 
 ## Enforcement Hooks
 
-Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_guard`, `model_routing`, `tracker`, `skills_audit`, `close_gate`, ...). `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event.
+Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_command_gate`, `model_routing_gate`, `tool_use_counter`, `skills_advisory`, `close_gate`, ...). `settings.json` wires one `mustard-rt on <event>` entry per lifecycle event.
 
 | Module | Matcher | Mode env | Blocks on |
 |--------|---------|----------|-----------|
 | `close_gate` | `emit-pipeline` phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/type/lint/test fail |
 | `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (default strict) | no `qa.result` or `qa.result=fail` |
-| `bash_guard` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged / build broken |
-| `bash_guard` (native-redirect) | Bash | `MUSTARD_BASH_REDIRECT_MODE` (default strict) | grep/ls/cat/head/tail/find → suggests Grep/Glob/Read |
-| `model_routing` | Task | `MUSTARD_MODEL_GATE_MODE` (default strict) | model upgrades vs routing table |
-| `tracker` | `.*` + SubagentStart/Stop | hard | Explore agents at 15 tool uses (warn at 12) |
-| `skills_audit` | Task | advisory | skills count >10 |
+| `bash_command_gate` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged / build broken |
+| `bash_command_gate` (native-redirect) | Bash | `MUSTARD_BASH_REDIRECT_MODE` (default strict) | grep/ls/cat/head/tail/find → suggests Grep/Glob/Read |
+| `model_routing_gate` | Task | `MUSTARD_MODEL_GATE_MODE` (default strict) | model upgrades vs routing table |
+| `tool_use_counter` | `.*` + SubagentStart/Stop | hard | Explore agents at 15 tool uses (warn at 12) |
+| `skills_advisory` | Task | advisory | skills count >10 |
 
 Bug in the hook itself (I/O error, timeout outside child process) fails open — only real sensor failures block.
 
-### bash_guard Safety Rules (BG01–BG13)
+### bash_command_gate Safety Rules (BG01–BG13)
 
 Each rule has a stable ID surfaced in the deny reason (`[bash-safety BGnn]`): BG01 recursive force delete (`rm -rf`); BG02 force push (`git push --force`/`-f`; `--force-with-lease` allowed); BG03 hard reset; BG04 force clean (`git clean -f`); BG05 discard working-tree (`git checkout -- .`); BG06 restore all (`git restore .`); BG07 delete main/master branch; BG08 chmod 777; BG09 mkfs (Linux/macOS); BG10 raw disk write (`dd if=`); BG11 Windows `format <letter>:`; BG12 shutdown; BG13 reboot.
 
@@ -159,14 +159,14 @@ Each rule has a stable ID surfaced in the deny reason (`[bash-safety BGnn]`): BG
 
 | Table | Writer | Purpose |
 |-------|--------|---------|
-| `knowledge_patterns` (FTS5) | `mustard-rt` `knowledge` module (direct INSERT) | Confidence-ranked patterns across sessions |
+| `knowledge_patterns` (FTS5) | `mustard-rt` `session_knowledge_observer` module (direct INSERT) | Confidence-ranked patterns across sessions |
 | `memory_decisions` (FTS5) | `mustard-rt run memory decision` | Architectural decisions |
 | `memory_lessons` (FTS5) | `mustard-rt run memory decision` | Operational lessons |
 | `pipeline_state_for_spec` projection | `mustard-rt run emit-pipeline --kind <kind> --spec <name>` | Pipeline state — derived from events |
 
 Agent context is read via **views** in `mustard-rt run event-projections --view <name>`: `agent-visibility`, `pipeline-state`, `cross-session-timeline`, `session-summary`, `spec-tree`, `epic-summary`, `pr-metrics`.
 
-`session_start` module rotates `.harness/events.jsonl` → `.harness/sessions/{sessionId}.jsonl` and prunes sessions >30 days.
+`session_start_inject` module rotates `.harness/events.jsonl` → `.harness/sessions/{sessionId}.jsonl` and prunes sessions >30 days.
 
 ### On-Demand Memory Queries
 
