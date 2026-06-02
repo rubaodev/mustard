@@ -15,7 +15,7 @@ import { discoverProjects } from '@/api/discovery';
 import { IntentHero } from '@/features/prd/IntentHero';
 import { EntityPicker } from '@/features/prd/EntityPicker';
 import { EditableList } from '@/features/prd/EditableList';
-import { useEntityRegistry } from '@/hooks/useEntityRegistry';
+import { useModelEntities } from '@/hooks/useModelEntities';
 import { useLapidator } from '@/hooks/useLapidator';
 import type { LapidatedPrd } from '@/lib/types/prd';
 import { Badge } from '@/components/ui/badge';
@@ -122,7 +122,7 @@ export function Prd() {
     return projects.find((p) => p.id === form.projectId)?.path ?? null;
   }, [form.projectId, projects]);
 
-  const { data: entities = [] } = useEntityRegistry(activeProjectPath);
+  const { data: entities = [] } = useModelEntities(activeProjectPath);
 
   useEffect(() => {
     try {

@@ -1,0 +1,55 @@
+# Language registry — the ONLY place a language is declared.
+#
+# grain's Rust source contains no language name, extension, or grammar node name.
+# Everything language-specific lives here and under queries/<dir>/*.scm. To add a
+# language:
+#   1. add a [[language]] entry below;
+#   2. drop tags.scm (+ optional supertypes.scm) under queries/<dir>/;
+#   3. ONLY if the grammar crate is new: add it to Cargo.toml (aliased, e.g.
+#      `grammar_kt = { package = "tree-sitter-kotlin", ... }`) and point `grammar`
+#      at its LanguageFn constant.
+# No change to grain's logic is ever required — build.rs reads this file and
+# embeds the queries; the engine stays generic.
+#
+# Fields:
+#   name        display id, stored on each module (e.g. shown in the JSON model)
+#   extensions  file extensions that select this language (no leading dot)
+#   dir         subdirectory under queries/ holding this language's .scm files
+#   grammar     Rust expression yielding the grammar's tree-sitter LanguageFn;
+#               build.rs emits it verbatim, so the crate symbol never appears in src/.
+
+[[language]]
+name = "csharp"
+extensions = ["cs"]
+dir = "csharp"
+grammar = "grammar_cs::LANGUAGE"
+
+[[language]]
+name = "typescript"
+extensions = ["ts", "mts", "cts"]
+dir = "typescript"
+grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
+
+[[language]]
+name = "tsx"
+extensions = ["tsx"]
+dir = "typescript"
+grammar = "grammar_ts::LANGUAGE_TSX"
+
+[[language]]
+name = "python"
+extensions = ["py", "pyi"]
+dir = "python"
+grammar = "grammar_py::LANGUAGE"
+
+[[language]]
+name = "rust"
+extensions = ["rs"]
+dir = "rust"
+grammar = "grammar_rs::LANGUAGE"
+
+[[language]]
+name = "go"
+extensions = ["go"]
+dir = "go"
+grammar = "grammar_go::LANGUAGE"

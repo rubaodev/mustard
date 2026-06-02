@@ -1,0 +1,71 @@
+//! `scan` — mine the workspace into `grain.model.json` via the bundled grain
+//! tool. This is THE scan now: it replaces the old in-tree scan engine
+//! (miner / ast / vocabulary / cluster discovery / skill+agent generation),
+//! which is removed. grain is deterministic and fully
+//! language-agnostic; Mustard never reads project source to understand a repo.
+//!
+//! The model lands at `<root>/.claude/grain.model.json` (the durable product,
+//! re-run when the codebase changes). Downstream commands consume it through the
+//! [`mustard_core::Scan`] client (`digest --query`, `spec`), never by reading
+//! source. No skills, agents, or `.claude/` subproject artifacts are produced.
+
+use std::path::{Path, PathBuf};
+
+use mustard_core::Scan;
+use mustard_core::domain::scan::read_projects;
+use serde_json::{json, Value};
+
+use super::scan_claude;
+
+/// Default model location under the project's `.claude/` directory.
+fn default_model_path(root: &Path) -> PathBuf {
+    root.join(".claude").join("grain.model.json")
+}
+
+/// Run `grain scan <root> --out <model>`; print a small JSON result. Fail-open:
+/// a spawn/exit error is reported, never panics (matches the other handlers).
+///
+/// When `full` is `true`, (re)generates a lean CLAUDE.md per subproject after
+/// the model is written, preserving any existing `## Guards` section. In the
+/// default mode, oversized CLAUDE.md files (> [`scan_claude::CLAUDE_MD_WARN_BYTES`])
+/// are reported in the JSON output and a human-readable warning is printed to
+/// stderr.
+pub fn run(root: &Path, out: Option<&Path>, full: bool) {
+    let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
+    let scan_result = Scan::locate().scan(root, &model_path);
+
+    let mut result: Value = match &scan_result {
+        Ok(()) => json!({ "ok": true, "model": model_path.to_string_lossy() }),
+        Err(err) => {
+            eprintln!("scan: grain failed: {err}");
+            json!({ "ok": false, "error": err.to_string() })
+        }
+    };
+
+    // Only run the CLAUDE.md pass when grain succeeded (model file is valid).
+    if scan_result.is_ok() {
+        let projects = read_projects(&model_path);
+        let pass = scan_claude::run_pass(root, &projects, full);
+
+        if full {
+            result["regenerated"] = json!(pass.regenerated);
+        } else {
+            if !pass.oversized.is_empty() {
+                for entry in &pass.oversized {
+                    eprintln!(
+                        "scan: CLAUDE.md oversized ({} bytes > {} threshold): {} — run with --full to regenerate",
+                        entry.bytes,
+                        scan_claude::CLAUDE_MD_WARN_BYTES,
+                        entry.path,
+                    );
+                }
+            }
+            let oversized_json: Vec<Value> = pass.oversized.iter().map(|e| {
+                json!({ "path": e.path, "bytes": e.bytes })
+            }).collect();
+            result["oversized"] = json!(oversized_json);
+        }
+    }
+
+    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
+}

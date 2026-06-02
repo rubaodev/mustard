@@ -138,6 +138,26 @@ pub struct HookInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 
+    /// Unique identifier of the subagent this hook fired inside, when any.
+    ///
+    /// **Harness-provided, subagent-only.** Per Claude Code's hook contract
+    /// (the "Common input fields" table) `agent_id` is "present only when the
+    /// hook fires inside a subagent call — use this to distinguish subagent
+    /// hook calls from main-thread calls." It is therefore the authoritative
+    /// per-invocation actor signal: `Some(_)` ⇒ a `Task` subagent is the actor,
+    /// `None` ⇒ the main orchestrator. Contrast [`Self::agent_type`], which the
+    /// harness *also* sets when the MAIN session runs with `--agent`, so it is
+    /// not a reliable main-vs-subagent discriminator on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+
+    /// Agent type/name of the subagent or `--agent` session, when any
+    /// (e.g. `"Explore"`, `"security-reviewer"`). Set both inside a subagent
+    /// AND when the main session runs with `--agent`; prefer [`Self::agent_id`]
+    /// for the main-vs-subagent decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+
     /// Every field of the original JSON, including ones not modelled above.
     /// Use this to read new harness fields without changing the crate.
     #[serde(flatten)]
@@ -153,6 +173,27 @@ impl HookInput {
         self.hook_event_name
             .as_deref()
             .and_then(Trigger::from_event_name)
+    }
+
+    /// `true` when this hook fired inside a `Task` subagent, `false` when it
+    /// fired in the main orchestrator context.
+    ///
+    /// Derived from the harness-provided [`Self::agent_id`], which the Claude
+    /// Code contract documents as "present only when the hook fires inside a
+    /// subagent call." A blank `agent_id` is treated as absent (main). This is
+    /// the per-invocation, authoritative actor signal — unlike a shared depth
+    /// gauge maintained out-of-band by lifecycle hooks. Falls back to reading
+    /// `raw["agent_id"]` so it keeps working even if a caller deserialised the
+    /// payload before this field was modelled.
+    #[must_use]
+    pub fn is_subagent(&self) -> bool {
+        let typed = self.agent_id.as_deref().filter(|s| !s.is_empty()).is_some();
+        typed
+            || self
+                .raw
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
     }
 }
 
@@ -377,6 +418,27 @@ mod tests {
     #[test]
     fn unknown_trigger_fails_open_to_none() {
         assert_eq!(Trigger::from_event_name("Bogus"), None);
+    }
+
+    #[test]
+    fn is_subagent_reads_harness_agent_id() {
+        // A PostToolUse inside a subagent carries `agent_id` → is_subagent.
+        let sub = r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"a.rs"},"agent_id":"explore-42","agent_type":"Explore"}"#;
+        let input: HookInput = serde_json::from_str(sub).expect("lenient parse");
+        assert_eq!(input.agent_id.as_deref(), Some("explore-42"));
+        assert_eq!(input.agent_type.as_deref(), Some("Explore"));
+        assert!(input.is_subagent(), "agent_id present ⇒ subagent");
+
+        // Same event with no agent_id is the main orchestrator.
+        let main = r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"a.rs"}}"#;
+        let input: HookInput = serde_json::from_str(main).expect("lenient parse");
+        assert_eq!(input.agent_id, None);
+        assert!(!input.is_subagent(), "absent agent_id ⇒ main");
+
+        // An empty-string agent_id is treated as absent (main), not a subagent.
+        let blank = r#"{"hook_event_name":"PostToolUse","tool_name":"Edit","agent_id":""}"#;
+        let input: HookInput = serde_json::from_str(blank).expect("lenient parse");
+        assert!(!input.is_subagent(), "blank agent_id ⇒ main");
     }
 
     #[test]

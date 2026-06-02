@@ -5,6 +5,8 @@
   "cleanupPeriodDays": 30,
   "attribution": { "commit": "assistant", "pr": "assistant" },
 
+  "worktree": { "bgIsolation": "none" },
+
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
@@ -12,6 +14,7 @@
     "MUSTARD_CHECKLIST_GATE_MODE": "strict",
     "MUSTARD_BOUNDARY_MODE": "warn",
     "MUSTARD_MAIN_BUDGET_MODE": "warn",
+    "MUSTARD_DELEGATION_WARN_MODE": "warn",
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
     "OTEL_METRICS_EXPORTER": "otlp",
     "OTEL_LOGS_EXPORTER": "otlp",

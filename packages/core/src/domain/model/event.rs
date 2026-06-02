@@ -291,6 +291,28 @@ pub struct PipelineCompletePayload {
     pub affected_files: Vec<String>,
 }
 
+impl PipelineCompletePayload {
+    /// Deserialize from a raw [`Value`], tolerating a `null` / absent payload.
+    ///
+    /// A bare `pipeline.complete` emitted without a `--payload` lands as
+    /// [`Value::Null`], which serde rejects when targeting a struct (`invalid
+    /// type: null, expected struct`). A null / absent payload is semantically
+    /// "an empty completion", so it maps to the all-default payload rather than
+    /// an error. Any other JSON value goes through the normal lenient
+    /// deserialiser (every field is `#[serde(default)]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`serde_json::Error`] only for a *malformed* non-null payload
+    /// (e.g. a wrong-typed field), never for a null/absent one.
+    pub fn from_value_lenient(value: Value) -> Result<Self, serde_json::Error> {
+        if value.is_null() {
+            return Ok(Self::default());
+        }
+        serde_json::from_value(value)
+    }
+}
+
 /// Payload for [`EVENT_PIPELINE_AMEND_OPEN`].
 ///
 /// Emitted when a new amendment window is opened for a closed pipeline.
@@ -409,5 +431,37 @@ mod tests {
         let ev: HarnessEvent = serde_json::from_str(raw).expect("parse session.start");
         assert!(ev.spec.is_none());
         assert!(ev.actor.id.is_none());
+    }
+
+    /// A bare `pipeline.complete` carries a `null` payload (no `--payload`
+    /// supplied). [`PipelineCompletePayload::from_value_lenient`] must treat it
+    /// as the all-default completion rather than the serde error
+    /// `invalid type: null, expected struct PipelineCompletePayload`.
+    #[test]
+    fn pipeline_complete_payload_lenient_accepts_null() {
+        let p = PipelineCompletePayload::from_value_lenient(Value::Null)
+            .expect("null payload maps to default");
+        assert!(p.closed_at.is_none());
+        assert!(p.affected_files.is_empty());
+    }
+
+    /// The lenient deserialiser still reads a populated object payload.
+    #[test]
+    fn pipeline_complete_payload_lenient_reads_object() {
+        let v = serde_json::json!({
+            "closedAt": "2026-06-01T00:00:00Z",
+            "affectedFiles": ["a.rs", "b.rs"],
+        });
+        let p = PipelineCompletePayload::from_value_lenient(v).expect("object payload parses");
+        assert_eq!(p.closed_at.as_deref(), Some("2026-06-01T00:00:00Z"));
+        assert_eq!(p.affected_files, vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
+
+    /// A genuinely malformed (wrong-typed) payload still surfaces an error —
+    /// leniency covers null/absent only, not type mismatches.
+    #[test]
+    fn pipeline_complete_payload_lenient_rejects_wrong_type() {
+        let v = serde_json::json!({ "affectedFiles": "not-an-array" });
+        assert!(PipelineCompletePayload::from_value_lenient(v).is_err());
     }
 }

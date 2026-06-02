@@ -1,19 +1,20 @@
 //! `mustard-rt run pipeline-prelude` — consolidate the per-phase warm-up.
 //!
-//! Replaces the three-call dance every pipeline ANALYZE/PLAN/EXECUTE used to
-//! perform manually (`spec-hygiene` probe + `diff-context` snapshot +
-//! `sync-detect` / `sync-registry` gate). W6 callers invoke this single
-//! subcommand once per phase entry — the binary chains the steps internally and
-//! emits one summary JSON.
+//! Replaces the multi-call dance every pipeline ANALYZE/PLAN/EXECUTE used to
+//! perform manually. W6 callers invoke this single subcommand once per phase
+//! entry — the binary chains the steps internally and emits one summary JSON.
+//! (Subproject discovery is no longer a prelude step: it lives in
+//! `grain.model.json`, produced by `mustard-rt run scan` and gated before the
+//! pipeline even starts.)
 //!
 //! Each inner step is fail-open: an error degrades a field to a string and the
 //! prelude continues with the next step. The phase-specific behavior:
 //!
 //! | Phase      | Steps                                          |
 //! |------------|------------------------------------------------|
-//! | `ANALYZE`  | sync-detect only (diff is empty pre-work)      |
-//! | `PLAN`     | sync-detect + diff-context summary             |
-//! | `EXECUTE`  | sync-detect + diff-context summary             |
+//! | `ANALYZE`  | (none — diff is empty pre-work)                |
+//! | `PLAN`     | diff-context summary                           |
+//! | `EXECUTE`  | diff-context summary                           |
 //!
 //! ## Output shape
 //!
@@ -22,7 +23,6 @@
 //!   "spec":   "<slug>",
 //!   "phase":  "EXECUTE",
 //!   "steps":  [
-//!     { "name": "sync-detect",  "ok": true, "duration_ms": 12 },
 //!     { "name": "diff-context", "ok": true, "duration_ms": 34 }
 //!   ],
 //!   "duration_ms": 46
@@ -79,8 +79,10 @@ pub fn normalised_phase(raw: &str) -> String {
 #[must_use]
 pub fn steps_for_phase(phase: &str) -> Vec<&'static str> {
     match phase {
-        "ANALYZE" => vec!["sync-detect"],
-        _ => vec!["sync-detect", "diff-context"],
+        // ANALYZE is pre-work: the diff is empty and the repo model already
+        // exists (gated by `scan_gate`), so there is nothing to warm up.
+        "ANALYZE" => vec![],
+        _ => vec!["diff-context"],
     }
 }
 
@@ -88,14 +90,6 @@ pub fn steps_for_phase(phase: &str) -> Vec<&'static str> {
 fn run_step(step: &str, phase: &str) -> (bool, u64) {
     let started = std::time::Instant::now();
     let ok = match step {
-        "sync-detect" => {
-            // Best-effort: shell out to ourselves so the user sees the same JSON
-            // they would from a direct call. We don't parse the result — the
-            // success signal is `exit == 0`.
-            rtk_command("mustard-rt", &["run", "sync-detect"])
-                .output()
-                .is_ok_and(|o| o.status.success())
-        }
         "diff-context" => rtk_command(
             "mustard-rt",
             &["run", "diff-context", "--phase", &phase.to_ascii_lowercase()],
@@ -148,21 +142,21 @@ mod tests {
     }
 
     #[test]
-    fn analyze_phase_skips_diff_context() {
+    fn analyze_phase_has_no_steps() {
         let steps = steps_for_phase("ANALYZE");
-        assert_eq!(steps, vec!["sync-detect"]);
+        assert!(steps.is_empty());
     }
 
     #[test]
-    fn execute_phase_runs_sync_and_diff() {
+    fn execute_phase_runs_diff_context() {
         let steps = steps_for_phase("EXECUTE");
-        assert_eq!(steps, vec!["sync-detect", "diff-context"]);
+        assert_eq!(steps, vec!["diff-context"]);
     }
 
     #[test]
-    fn plan_phase_runs_sync_and_diff() {
+    fn plan_phase_runs_diff_context() {
         let steps = steps_for_phase("PLAN");
-        assert_eq!(steps, vec!["sync-detect", "diff-context"]);
+        assert_eq!(steps, vec!["diff-context"]);
     }
 
     #[test]
@@ -170,7 +164,7 @@ mod tests {
         let r = PreludeReport {
             spec: "demo".to_string(),
             phase: "EXECUTE".to_string(),
-            steps: vec![StepReport { name: "sync-detect".to_string(), ok: true, duration_ms: 1 }],
+            steps: vec![StepReport { name: "diff-context".to_string(), ok: true, duration_ms: 1 }],
             duration_ms: 2,
         };
         let v = serde_json::to_value(r).unwrap();

@@ -14,7 +14,9 @@
 
 use mustard_core::io::fs as mfs;
 use mustard_core::domain::meta::{write_meta, Meta, MetaFlags};
-use mustard_core::domain::spec::contract::{SpecInput, PLAN_DIVIDER, PRD_DIVIDER};
+use mustard_core::domain::spec::contract::{
+    render_checklist_item, SpecInput, CHECKLIST_HEADING, PLAN_DIVIDER, PRD_DIVIDER,
+};
 use mustard_core::domain::spec;
 use mustard_core::{read_meta, Scope, SpecState};
 use mustard_core::platform::i18n::{translate, Locale, Tone};
@@ -76,6 +78,16 @@ pub fn write_spec_md(
             let heading = section_heading_for(&s.name, lang);
             let _ = write!(body, "\n## {heading}\n\n{}\n", s.body);
         }
+    }
+    // Trackable `## Checklist` — emitted for BOTH scopes so the close-gate
+    // checklist gate is never orphaned. The heading is the EN-only
+    // `CHECKLIST_HEADING` (language-agnostic) so the auto-mark hook,
+    // `mark-checklist-item`, and close-gate all key off the exact same literal;
+    // each line is rendered via `render_checklist_item` into the canonical
+    // `- [ ] <label> → <path>` shape those consumers parse.
+    let _ = write!(body, "\n## {CHECKLIST_HEADING}\n\n");
+    for item in &input.checklist {
+        let _ = writeln!(body, "{}", render_checklist_item(item));
     }
     if let Some(sigs) = signals {
         if !sigs.trim().is_empty() {

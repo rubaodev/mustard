@@ -15,9 +15,11 @@
 //!      [`crate::commands::wave::wave_lib::detect_role_with`] (the same
 //!      classifier the wave gates use, with `mustard.json#rolePatterns`
 //!      overrides);
-//!    - `newEntityCount` by **diffing the entity registry**: PascalCase entity
-//!      tokens referenced in the spec text that are *not yet* present in
-//!      `.claude/entity-registry.json` (exact key lookup via [`EntityRegistry`]).
+//!    - `newEntityCount` by **diffing the repo model**: PascalCase entity tokens
+//!      referenced in the spec text that are *not yet* among the known
+//!      declaration names of `.claude/grain.model.json` (read via the scan tool's
+//!      `facts` command — this crate never parses the model's schema itself).
+//!
 //!    The spec body is still passed as `text` so the roadmap-signal detection
 //!    runs identically. The result is the same [`decide`] verdict the stdin path
 //!    would emit for the equivalent signals.
@@ -26,7 +28,6 @@
 
 use crate::commands::spec::prd_build::pascal_tokens;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
-use mustard_core::domain::entity_registry::EntityRegistry;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -239,7 +240,7 @@ pub fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value 
         roles.len() as i64
     };
 
-    let new_entity_count = new_entity_count_from_registry(spec_text, project_root);
+    let new_entity_count = new_entity_count_from_model(spec_text, project_root);
 
     json!({
         "fileCount": file_count,
@@ -290,21 +291,27 @@ pub(crate) fn spec_prose(spec_text: &str) -> String {
 }
 
 /// Count PascalCase entity tokens referenced in `spec_text` that are **not yet**
-/// present in the entity registry under `project_root`.
+/// among the repo model's known declaration names under `project_root`.
 ///
 /// Reuses [`pascal_tokens`] (the same entity-reference heuristic `prd-build`
-/// uses) over the spec's narrative prose ([`spec_prose`]) and the canonical
-/// [`EntityRegistry`] exact key lookup, so "new" means "referenced but not
-/// registered" — a deterministic stand-in for the `newEntityCount` the LLM used
-/// to estimate. A missing / unreadable registry fails open to empty (every
-/// referenced token then counts as new).
-fn new_entity_count_from_registry(spec_text: &str, project_root: &Path) -> i64 {
-    let registry = EntityRegistry::load(project_root);
-    let known: BTreeSet<String> = registry
-        .entity_names()
+/// uses) over the spec's narrative prose ([`spec_prose`]) and grain's mined
+/// declaration names (read via the scan tool's `facts`), so "new" means
+/// "referenced but not yet in the model" — a deterministic stand-in for the
+/// `newEntityCount` the LLM used to estimate. A missing model (no scan yet) fails
+/// open to empty (every referenced token then counts as new).
+fn new_entity_count_from_model(spec_text: &str, project_root: &Path) -> i64 {
+    let model = project_root.join(".claude").join("grain.model.json");
+    let known: BTreeSet<String> = mustard_core::read_entity_names(&model)
         .iter()
         .map(|n| n.to_ascii_lowercase())
         .collect();
+    count_new_entities(spec_text, &known)
+}
+
+/// Pure: count PascalCase entity tokens in the spec's prose that are not in
+/// `known` (lowercased). Split from the model I/O so it is unit-tested without
+/// the scan tool.
+fn count_new_entities(spec_text: &str, known: &BTreeSet<String>) -> i64 {
     pascal_tokens(&spec_prose(spec_text))
         .into_iter()
         .filter(|tok| !known.contains(&tok.to_ascii_lowercase()))
@@ -392,19 +399,18 @@ mod tests {
     }
 
     /// Plant a workspace anchor (`mustard.json` + `.claude/`) so
-    /// `workspace_root` accepts `root`, optionally with a v4 registry.
-    fn plant_project(root: &std::path::Path, registry_json: Option<&str>) {
+    /// `workspace_root` accepts `root`. No `grain.model.json` ⇒ `read_entity_names`
+    /// fails open to empty (every referenced entity then counts as new); the
+    /// known-set diff itself is unit-tested via [`count_new_entities`].
+    fn plant_project(root: &std::path::Path) {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        if let Some(body) = registry_json {
-            std::fs::write(root.join(".claude").join("entity-registry.json"), body).unwrap();
-        }
     }
 
     #[test]
     fn from_spec_computes_multi_layer_signals() {
         let dir = tempfile::tempdir().unwrap();
-        plant_project(dir.path(), None);
+        plant_project(dir.path());
         // Two distinct roles (schema + api) ⇒ layerCount 2 ⇒ multi-layer.
         let spec = "# Spec\n\n## Files\n- src/schema/user.ts\n- src/api/users.ts\n";
         let signals = compute_signals_from_spec(spec, dir.path());
@@ -424,7 +430,7 @@ mod tests {
     #[test]
     fn from_spec_single_layer_keeps() {
         let dir = tempfile::tempdir().unwrap();
-        plant_project(dir.path(), None);
+        plant_project(dir.path());
         // All files in one generic bucket ⇒ layerCount 1 ⇒ single-layer.
         let spec = "# Spec\n\n## Files\n- src/util/a.ts\n- src/util/b.ts\n";
         let signals = compute_signals_from_spec(spec, dir.path());
@@ -433,20 +439,18 @@ mod tests {
     }
 
     #[test]
-    fn from_spec_new_entity_count_diffs_registry() {
-        let dir = tempfile::tempdir().unwrap();
-        // Registry knows `User`; the spec references `User` (known) and
-        // `Invoice` (new) ⇒ newEntityCount 1.
-        plant_project(dir.path(), Some(r#"{"e":{"User":{}}}"#));
+    fn count_new_entities_diffs_known_set() {
+        // The model knows `User`; the spec references `User` (known) and
+        // `Invoice` (new) ⇒ count 1. Pure logic — no model file / scan tool.
+        let known: BTreeSet<String> = ["user"].into_iter().map(str::to_string).collect();
         let spec = "# Spec\nlink the Invoice to the User entity.\n\n## Files\n- src/util/a.ts\n";
-        let signals = compute_signals_from_spec(spec, dir.path());
-        assert_eq!(signals["newEntityCount"], json!(1), "Invoice new, User known");
+        assert_eq!(count_new_entities(spec, &known), 1, "Invoice new, User known");
     }
 
     #[test]
     fn from_spec_wide_and_new_entities_decomposes() {
         let dir = tempfile::tempdir().unwrap();
-        plant_project(dir.path(), None); // empty registry ⇒ all referenced entities new
+        plant_project(dir.path()); // no model ⇒ all referenced entities new
         // 11 files in one bucket (layerCount 1) + 2 new entities ⇒ wide-and-new.
         let mut files = String::from("# Spec\nadd the Invoice and the Payment models.\n\n## Files\n");
         for i in 0..11 {

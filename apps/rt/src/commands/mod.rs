@@ -7,9 +7,9 @@
 //! its inputs as `clap` arguments (a directory, flags), never from stdin, and
 //! prints its result to stdout exactly as the JS script did.
 //!
-//! Each ported script is its own submodule. Wave 1 ports `sync-detect`
-//! (subproject discovery + SHA-256 change detection) and the scanner subsystem
-//! it shares with the still-JS `sync-registry.js`.
+//! Each ported script is its own submodule. (The early `sync-detect` /
+//! `sync-registry` scanner ports were since removed — subproject discovery now
+//! comes from grain's `grain.model.json` via the scan tool.)
 
 pub mod migrate;
 pub mod i18n;
@@ -17,7 +17,6 @@ pub mod agent;
 pub mod checklist;
 pub mod doctor;
 pub mod review;
-pub mod skill;
 pub mod knowledge;
 pub mod economy;
 pub mod pipeline;
@@ -26,6 +25,8 @@ pub mod wave;
 pub mod spec;
 pub mod maint;
 pub mod scan;
+pub mod scan_claude;
+pub mod feature;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -46,20 +47,33 @@ use std::path::PathBuf;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum — clap-Subcommand; boxing breaks derive
 pub enum RunCmd {
-    /// Discover subprojects, detect roles, and emit the `sync-detect` JSON.
-    SyncDetect {
-        /// The monorepo root to scan. Defaults to the current directory.
+    /// Mine the workspace into `grain.model.json` via the bundled `scan` tool —
+    /// THE scan (replaced the old in-tree miner + per-project skill/agent
+    /// generation; the model is the single durable artifact).
+    Scan {
+        /// The workspace root to scan. Defaults to the current directory.
         #[arg(long, default_value = ".")]
         root: PathBuf,
-    },
-    /// Scan entities, clusters and conventions; write `entity-registry.json` v4.0.
-    SyncRegistry {
-        /// The monorepo root to scan. Defaults to the current directory.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Regenerate even when the registry is already populated.
+        /// Output path. Defaults to `<root>/.claude/grain.model.json`.
         #[arg(long)]
-        force: bool,
+        out: Option<PathBuf>,
+        /// (Re)generate a lean CLAUDE.md for every subproject found in the
+        /// grain model. Guards sections are preserved verbatim. Without this
+        /// flag the command only warns about CLAUDE.md files that exceed
+        /// the size threshold.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Research a feature request against the repo via the `scan` digest (no
+    /// source reading) and emit the structured insumos for decomposition +
+    /// `scan spec`. The grounding step of the elicitation loop.
+    Feature {
+        /// The free-text feature/bugfix request to research.
+        #[arg(long)]
+        intent: String,
+        /// Workspace root. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
     /// Emit a compact git diff summary for agent context.
     DiffContext {
@@ -200,21 +214,6 @@ pub enum RunCmd {
         /// terms. Optional; the CONTEXT.md path(s) remain primary.
         #[arg(long = "context-claude-md")]
         context_claude_md: Option<String>,
-    },
-    /// Resolve a scope into its minimum concept-node closure.
-    ///
-    /// Walks the Wave-3 graph (`.claude/graph/`) from the seeds derived from
-    /// `{entities, operation, layer, role, seeds}`, dedup'ing by id, sorted
-    /// by distance, truncated by the role's prompt budget, and dereferenced
-    /// to in-line content. Emits byte-stable JSON. Fail-open: a missing
-    /// graph or an empty scope degrades to an empty closure.
-    ContextResolve {
-        /// Scope JSON literal (e.g. `{"entities":["user"],"role":"explore"}`).
-        #[arg(long)]
-        scope: Option<String>,
-        /// Read the scope JSON from a file instead of `--scope`.
-        #[arg(long = "scope-file")]
-        scope_file: Option<PathBuf>,
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
     /// `cross-wave` is the read-side: emits markdown summarising prior waves.
@@ -439,8 +438,8 @@ pub enum RunCmd {
     ///
     /// With `--from-spec <path>`, computes `fileCount` / `layerCount` /
     /// `newEntityCount` deterministically in Rust from the spec's `## Files`
-    /// section + an entity-registry diff (no LLM). Without it, reads a
-    /// pre-computed signals JSON from stdin (legacy / override).
+    /// section + a diff against the repo model's entity names (no LLM). Without
+    /// it, reads a pre-computed signals JSON from stdin (legacy / override).
     ScopeDecompose {
         /// Compute the signals deterministically from this spec file instead of
         /// reading them from stdin.
@@ -498,18 +497,6 @@ pub enum RunCmd {
         /// span-level decision without going through the `SubagentStop` hook.
         #[arg(long = "wave-dir")]
         wave_dir: Option<String>,
-    },
-    /// Match an entity + operation to a code recipe skeleton.
-    RecipeMatch {
-        /// Entity name.
-        #[arg(long)]
-        entity: Option<String>,
-        /// Operation type.
-        #[arg(long)]
-        operation: Option<String>,
-        /// Subproject path used for placeholder resolution.
-        #[arg(long)]
-        subproject: Option<String>,
     },
     /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
     QaRun {
@@ -616,14 +603,6 @@ pub enum RunCmd {
         #[arg(long)]
         preview: bool,
     },
-    /// Skill-family CLI: `validate`, `graph`, or `orphans`.
-    Skills {
-        /// Subcommand: `validate`, `graph`, or `orphans`.
-        subcommand: Option<String>,
-        /// Subcommand flags (`--json`, `--factual`, `--days`, …).
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// Scan a project tree for committed secrets + misconfigurations.
     SecurityScan {
         /// Directory to scan. Defaults to the current directory.
@@ -655,104 +634,6 @@ pub enum RunCmd {
     },
     /// Normalise `rtk gain` analytics into the Mustard JSON shape.
     RtkGain,
-    /// Pre-dispatch orchestration for `/scan` — emits the dispatch plan JSON.
-    ScanOrchestrate {
-        /// Single subproject to scan (optional positional).
-        target: Option<String>,
-        /// Full re-scan: ignore the change-detection cache.
-        #[arg(long)]
-        force: bool,
-        /// After the deterministic pass (registry + SKILL.md + stack.md),
-        /// dispatch one lean prose-enrichment agent per changed subproject (in
-        /// parallel). Default `/scan` is zero-AI: `dispatch[]` stays empty.
-        #[arg(long)]
-        enrich: bool,
-    },
-    /// Post-dispatch finalization for `/scan` — registry + skills + security.
-    ScanFinalize {
-        /// Skip the security scan step.
-        #[arg(long = "skip-security")]
-        skip_security: bool,
-    },
-    /// Agnostic Rust-only structural scan of one subproject (or every detected
-    /// subproject when `--subproject` is omitted). Parses manifests, counts
-    /// source extensions, and runs the agnostic cluster discovery; writes a
-    /// `stack.md` ≤60 lines under `<sub>/.claude/commands/` and prints a JSON
-    /// digest to stdout. Fail-open per parser.
-    ScanStructural {
-        /// Subproject path relative to the repo root (e.g. `apps/cli`).
-        /// Defaults to scanning the repo root + every `apps/*` + `packages/*`.
-        #[arg(long)]
-        subproject: Option<String>,
-    },
-    /// Validate `.md` artifacts generated by `/scan` against the W3 contract:
-    /// size caps per kind, `<!-- mustard:generated -->` fence presence under
-    /// `commands/` and `skills/`, wirelink resolution against
-    /// `.claude/graph/index.md`, `Ref:` path existence, and cross-file
-    /// paragraph duplication. Fail-open unless `--strict` is set.
-    ScanMdValidate {
-        /// Limit the scan to one subproject (path relative to repo root).
-        #[arg(long)]
-        from: Option<String>,
-        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
-        #[arg(long)]
-        strict: bool,
-    },
-    /// Deterministically render per-cluster SKILL.md files (+ `references/
-    /// examples.md`) from the entity-registry `_patterns.{stack}.discovered[]`
-    /// clusters. No LLM on the main path. Each qualified cluster (≥3 files,
-    /// non-noise suffix; top-8 per subproject by file count) gets a skill with
-    /// `appliesTo` populated, `metadata.generated_by: scan`, and the generated
-    /// fence. Idempotent (byte-stable regeneration; stale generated skills
-    /// reaped); hand-authored skills are never touched. Fail-open.
-    ScanSkillRender {
-        /// Limit rendering to one subproject (registry name or `apps/<name>`).
-        #[arg(long)]
-        subproject: Option<String>,
-    },
-    /// Validate `.claude/recipes/<sub>/*.json` shape: required keys, real
-    /// `files[].path` existence inside the recipe's subproject, and absence of
-    /// literal `{Entity}` / `{ClusterLabel}` placeholders. Fail-open unless
-    /// `--strict` is set.
-    ScanRecipesValidate {
-        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
-        #[arg(long)]
-        strict: bool,
-    },
-    /// Emit a *slice* of `entity-registry.json` — never the whole file.
-    ///
-    /// The registry is large (hundreds of entities, ~half a MB). This replaces
-    /// the SKILL/template instructions that told the LLM to read the raw file
-    /// and walk it by hand. Parses the registry once in Rust and prints only the
-    /// relevant slice as compact, byte-stable JSON. No LLM. Fail-open: a missing
-    /// / invalid registry degrades to `{}` (entity / spec modes) or `[]`
-    /// (subproject mode), exit 0.
-    ///
-    /// Exactly one mode flag is expected (precedence `--entity` → `--for-spec`
-    /// → `--subproject`):
-    /// - `--entity <name>`: exact, case-insensitive lookup → the single entity
-    ///   object `e[name]`. `--with-refs` also includes the first-degree entities
-    ///   named in its `refs`.
-    /// - `--for-spec <path>`: the entities whose names appear in the spec's
-    ///   *prose* (PascalCase tokens ∩ entity names; headings / file-path bullets
-    ///   / fenced code excluded).
-    /// - `--subproject <x>`: the `_patterns.{stack}.discovered[]` clusters tagged
-    ///   for that subproject (the `{{clustersBlock}}` fallback slice).
-    #[command(name = "registry-query")]
-    RegistryQuery {
-        /// Exact (case-insensitive) entity name to look up.
-        #[arg(long)]
-        entity: Option<String>,
-        /// With `--entity`, also include the first-degree `refs` entities.
-        #[arg(long = "with-refs")]
-        with_refs: bool,
-        /// Spec file whose prose entity-references to slice for.
-        #[arg(long = "for-spec")]
-        for_spec: Option<PathBuf>,
-        /// Subproject whose discovered clusters to slice for.
-        #[arg(long)]
-        subproject: Option<String>,
-    },
     /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
     ///
     /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318).
@@ -814,23 +695,6 @@ pub enum RunCmd {
         #[arg(long = "session-id")]
         session_id: String,
     },
-    /// Build the concept-node graph index from `.claude/graph/`.
-    ///
-    /// Walks every markdown file under `.claude/graph/`, parses its frontmatter
-    /// `id` + inline `[[id]]` edges, constructs the `id → path` lookup table +
-    /// adjacency map, validates (orphan / cycle → warning), writes the
-    /// `index.md` MOC, and (best-effort) injects `aliases:[id]` into matching
-    /// `.claude/skills/*/SKILL.md` files. Emits byte-stable pretty JSON.
-    /// Fail-open: a missing graph directory degrades to an empty index.
-    GraphIndex,
-    /// List concept-nodes with zero spec backlinks (deletion candidates).
-    ///
-    /// Walks `<project>/.claude/spec/**/spec.md`, parses each auto-managed
-    /// `## Backlinks` block, and returns the set of ids in `.claude/graph/`
-    /// that no spec links to. Emits byte-stable pretty JSON
-    /// (`{ "dead": [...], "count": <usize> }`). Fail-open: a missing graph
-    /// or spec tree degrades to `{ "dead": [], "count": 0 }`.
-    GraphDead,
     /// Materialise the canonical SDD wave layout (wave-plan + wave-N/spec.md
     /// + review/spec.md + qa/spec.md) from a declarative JSON plan. Idempotent.
     WaveScaffold {
@@ -922,7 +786,7 @@ pub enum RunCmd {
     /// Project + harness status snapshot.
     ///
     /// Default mode: git branch, modified files, active vs orphaned pipelines,
-    /// last build result, entity-registry summary.
+    /// last build result, repo-model summary (grain.model.json).
     ///
     /// `--harness` mode: reads `.claude/settings.json`, groups hooks by lifecycle
     /// event, resolves enforcement mode from env vars, and renders a 4-column
@@ -931,38 +795,6 @@ pub enum RunCmd {
         /// Include hooks table (harness view).
         #[arg(long)]
         harness: bool,
-        /// Output format: `table` (default) or `json`.
-        #[arg(long, default_value = "table")]
-        format: String,
-        /// Project root directory (default: current working directory).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// List installed skills with name, source, and description.
-    ///
-    /// Globs `<root>/.claude/skills/*/SKILL.md`, parses YAML frontmatter, and
-    /// renders a table or JSON array. Source defaults to `manual` when the
-    /// frontmatter `source:` field is absent.
-    SkillsList {
-        /// Output format: `table` (default) or `json`.
-        #[arg(long, default_value = "table")]
-        format: String,
-        /// Project root directory (default: current working directory).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Browse entity registry and knowledge base.
-    ///
-    /// Subcommand `glossary`: reads `<root>/.claude/entity-registry.json`,
-    /// iterates entities (skipping `_`-prefixed metadata keys), and renders
-    /// name + description + first ref. Optional `--filter TERM` narrows by
-    /// case-insensitive substring match on name or description.
-    Knowledge {
-        /// Subcommand: `glossary`.
-        subcommand: Option<String>,
-        /// Case-insensitive substring filter on name or description (`glossary`).
-        #[arg(long)]
-        filter: Option<String>,
         /// Output format: `table` (default) or `json`.
         #[arg(long, default_value = "table")]
         format: String,
@@ -1110,14 +942,15 @@ pub enum RunCmd {
         #[arg(long)]
         confirm: bool,
     },
-    /// Draft a new spec layout (`spec.md` + `meta.json` + optional wave plan)
-    /// conforming to `mustard_core::domain::spec::contract`. Replaces the literal
-    /// ~80-line template block inside the `/mustard:feature` SKILL.md.
+    /// Draft a new spec layout (`spec.md` + `meta.json`) conforming to
+    /// `mustard_core::domain::spec::contract`. Replaces the literal ~80-line
+    /// template block inside the `/mustard:feature` SKILL.md.
     ///
-    /// `--scope full` materialises `wave-plan.md` + `wave-N-{role}/spec.md`
-    /// directories. `--lang` accepts BCP-47 only (`pt-BR` / `en-US`); short
-    /// codes are rejected. `--signals` is a free-form comma-separated list
-    /// embedded in `spec.md` as a comment for downstream tooling.
+    /// `spec-draft` materialises ONLY the top-level `spec.md` + `meta.json`
+    /// (recording `scope`/`totalWaves`/`isWavePlan`); full-scope wave dirs are
+    /// materialised by `wave-scaffold`. `--lang` accepts BCP-47 only (`pt-BR` /
+    /// `en-US`); short codes are rejected. `--signals` is a free-form
+    /// comma-separated list embedded in `spec.md` as a comment.
     SpecDraft {
         /// Free-text intent (becomes the spec title + slug seed).
         #[arg(long)]
@@ -1134,15 +967,35 @@ pub enum RunCmd {
         /// Output directory (default `.claude/spec/{slug}/`).
         #[arg(long)]
         output: Option<PathBuf>,
-        /// Number of waves under Full scope (default 1).
+        /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
+        /// The wave dirs themselves are materialised by `wave-scaffold`.
         #[arg(long, default_value_t = 1)]
         waves: u32,
-        /// Role applied to each scaffolded wave (default `mixed`).
-        #[arg(long, default_value = "mixed")]
-        role: String,
         /// Overwrite an existing output directory.
         #[arg(long)]
         force: bool,
+    },
+    /// Compile the deterministic spec draft for one entity via `grain spec` and
+    /// print the resulting Markdown verbatim to stdout. Thin passthrough to
+    /// `mustard_core::domain::scan::Scan::spec`. Invoke as
+    /// `mustard-rt run scan spec --entity <Name>`.
+    #[command(name = "scan-spec")]
+    ScanSpec {
+        /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
+        #[arg(long)]
+        entity: String,
+        /// Existing sibling to mirror; omit for auto-pick.
+        #[arg(long)]
+        like: Option<String>,
+        /// Extra operations beyond the base vertical (comma-separated, e.g. `approve,cancel`).
+        #[arg(long, value_delimiter = ',')]
+        ops: Vec<String>,
+        /// Cross-cutting invariants the unit must obey (repeatable).
+        #[arg(long)]
+        invariant: Vec<String>,
+        /// Workspace root (must contain `.claude/grain.model.json`).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
     /// Validate a spec directory against the Wave 1 layout contract. Reads
     /// `meta.json` + `spec.md` and runs `mustard_core::domain::spec::contract::validate`.
@@ -1153,27 +1006,6 @@ pub enum RunCmd {
         #[arg(long)]
         spec: String,
         /// Emit pretty JSON (default — kept for symmetry with siblings).
-        #[arg(long)]
-        json: bool,
-    },
-    /// Score every discoverable SKILL.md against a free-text intent +
-    /// subproject + phase. Pure Rust — no LLM. Emits the top-K skills with
-    /// a numeric score and reason list. Consumed in-process by
-    /// `agent-prompt-render` to fill `{recommended_skills}`.
-    SkillResolve {
-        /// Free-text intent (verb + nouns).
-        #[arg(long)]
-        intent: String,
-        /// Optional subproject path (e.g. `apps/dashboard`).
-        #[arg(long)]
-        subproject: Option<String>,
-        /// Pipeline phase: `ANALYZE` / `EXECUTE` / `REVIEW` / `PLAN` / `QA`.
-        #[arg(long)]
-        phase: Option<String>,
-        /// Top-K cap (default 5).
-        #[arg(long = "top-k", default_value_t = 5)]
-        top_k: usize,
-        /// Emit JSON instead of the table form.
         #[arg(long)]
         json: bool,
     },
@@ -1307,23 +1139,6 @@ pub enum RunCmd {
         #[arg(long, default_value = "json")]
         format: String,
     },
-    /// W5.T5.5a — Fetch and install a skill from a local path or GitHub spec.
-    #[command(name = "skill-fetch")]
-    SkillFetch {
-        /// Source spec: `path:./local`, `github:owner/repo/path`, or a slug.
-        #[arg(long)]
-        name: String,
-        /// Skip writes (preview only).
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// W5.T5.5b — Inspect the skill install cache for one entry.
-    #[command(name = "skill-cache")]
-    SkillCache {
-        /// Skill slug to check.
-        #[arg(long = "check")]
-        check: String,
-    },
     /// W5.T5.6 — Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
     #[command(name = "adapt-cursor")]
     AdaptCursor {
@@ -1338,7 +1153,7 @@ pub enum RunCmd {
     ///
     /// Walks `apps/cli/templates/{refs,commands/mustard,skills}/**`, SHA-256
     /// compares each source against the consumer `.claude/<sub>/`, and copies
-    /// divergent files. Generated artefacts (`entity-registry.json`, caches)
+    /// divergent files. Generated artefacts (`grain.model.json`, caches)
     /// and volatile state dirs are excluded. Emits `{copied, skipped,
     /// conflicts, errors}` JSON. Fail-open; exit code is always 0.
     #[command(name = "refresh-claude")]
@@ -1487,7 +1302,7 @@ pub enum RunCmd {
         #[arg(long)]
         spec: Option<String>,
     },
-    /// W5.T5.16 — Consolidate per-phase prelude (sync-detect + diff-context).
+    /// W5.T5.16 — Consolidate per-phase prelude (diff-context snapshot).
     #[command(name = "pipeline-prelude")]
     PipelinePrelude {
         /// Spec slug under `.claude/spec/`.
@@ -1506,8 +1321,8 @@ pub enum RunCmd {
 /// script writes its own output and the process exits cleanly afterwards.
 pub fn dispatch(cmd: RunCmd) {
     match cmd {
-        RunCmd::SyncDetect { root } => scan::sync_detect::run(&root),
-        RunCmd::SyncRegistry { root, force } => scan::sync_entity_registry::run(&root, force),
+        RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
+        RunCmd::Feature { intent, root } => feature::run(&intent, &root),
         RunCmd::DiffContext {
             parent,
             subproject,
@@ -1571,9 +1386,6 @@ pub fn dispatch(cmd: RunCmd) {
             max_lines,
             context_claude_md.as_deref(),
         ),
-        RunCmd::ContextResolve { scope, scope_file } => {
-            scan::resolve::run(scope.as_deref(), scope_file.as_deref());
-        }
         RunCmd::Memory {
             subcommand,
             json,
@@ -1699,11 +1511,6 @@ pub fn dispatch(cmd: RunCmd) {
                 Err(_) => std::process::exit(2),
             }
         }
-        RunCmd::RecipeMatch {
-            entity,
-            operation,
-            subproject,
-        } => scan::recipe_match::run(entity.as_deref(), operation.as_deref(), subproject.as_deref()),
         RunCmd::QaRun { spec, format } => review::qa_run::run(&spec, &format),
         RunCmd::QaRunAll => review::qa_run_all::run(),
         RunCmd::RebuildSpecs => spec::rebuild_specs::run(),
@@ -1737,7 +1544,6 @@ pub fn dispatch(cmd: RunCmd) {
             subproject,
         } => review::review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
         RunCmd::Statusline { preview } => statusline::run(preview),
-        RunCmd::Skills { subcommand, args } => skill::skills::run(subcommand.as_deref(), &args),
         RunCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
         RunCmd::VerifyEmit {
             event,
@@ -1755,31 +1561,6 @@ pub fn dispatch(cmd: RunCmd) {
             quiet,
         ),
         RunCmd::RtkGain => economy::rtk_gain::run(),
-        RunCmd::ScanOrchestrate { target, force, enrich } => {
-            scan::scan_orchestrate::run(force, enrich, target.as_deref());
-        }
-        RunCmd::ScanFinalize { skip_security } => scan::scan_finalize::run(skip_security),
-        RunCmd::ScanStructural { subproject } => scan::scan_structural::run(subproject.as_deref()),
-        RunCmd::ScanMdValidate { from, strict } => {
-            scan::scan_md_validate::run(from.as_deref(), strict);
-        }
-        RunCmd::ScanSkillRender { subproject } => {
-            scan::scan_skill_render::run(subproject.as_deref());
-        }
-        RunCmd::ScanRecipesValidate { strict } => scan::scan_recipes_validate::run(strict),
-        RunCmd::RegistryQuery {
-            entity,
-            with_refs,
-            for_spec,
-            subproject,
-        } => {
-            scan::registry_query::run(scan::registry_query::RegistryQueryOpts {
-                entity,
-                with_refs,
-                for_spec,
-                subproject,
-            });
-        }
         RunCmd::OtelCollector => economy::otel::collector::run(),
         RunCmd::TranscriptWatcher { once } => economy::transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {
@@ -1807,8 +1588,6 @@ pub fn dispatch(cmd: RunCmd) {
             manifest,
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         RunCmd::AmendFinalize { session_id } => agent::amend_finalize::run_cli(&session_id),
-        RunCmd::GraphIndex => knowledge::graph_index::run(),
-        RunCmd::GraphDead => knowledge::graph_dead::run(),
         RunCmd::WaveScaffold { spec_dir, plan } => {
             wave::wave_scaffold::run(spec_dir.as_deref(), plan.as_deref());
         }
@@ -1825,28 +1604,6 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::Status { harness, format, root } => {
             pipeline::status::run(pipeline::status::StatusOpts { harness, format, root });
-        }
-        RunCmd::SkillsList { format, root } => {
-            // Delegate to the existing skill::skills::run with the "list" subcommand,
-            // passing --format and --root via the args slice.
-            let args: Vec<String> = vec![
-                "--format".to_string(),
-                format,
-                "--root".to_string(),
-                root.display().to_string(),
-            ];
-            skill::skills::run(Some("list"), &args);
-        }
-        RunCmd::Knowledge { subcommand, filter, format, root } => {
-            match subcommand.as_deref() {
-                Some("glossary") | None => {
-                    knowledge::knowledge::run(knowledge::knowledge::GlossaryOpts { filter, format, root });
-                }
-                Some(other) => {
-                    eprintln!("knowledge: unknown subcommand '{other}'. Try: glossary");
-                    std::process::exit(1);
-                }
-            }
         }
         RunCmd::ReviewPrefetch { pr_ref, format, root } => {
             let pr_ref = pr_ref.unwrap_or_default();
@@ -1908,7 +1665,6 @@ pub fn dispatch(cmd: RunCmd) {
             signals,
             output,
             waves,
-            role,
             force,
         } => {
             spec::spec_draft::run(spec::spec_draft::SpecDraftOpts {
@@ -1918,28 +1674,21 @@ pub fn dispatch(cmd: RunCmd) {
                 signals,
                 output,
                 waves,
-                role,
                 force,
+            });
+        }
+        RunCmd::ScanSpec { entity, like, ops, invariant, root } => {
+            spec::scan_spec::run(spec::scan_spec::ScanSpecOpts {
+                entity,
+                like,
+                ops,
+                invariants: invariant,
+                root,
             });
         }
         RunCmd::SpecValidate { spec, json } => {
             let _ = json; // currently always emits JSON
             spec::spec_validate::run(std::path::Path::new(&spec), true);
-        }
-        RunCmd::SkillResolve {
-            intent,
-            subproject,
-            phase,
-            top_k,
-            json,
-        } => {
-            skill::skill_resolve::run(skill::skill_resolve::SkillResolveOpts {
-                intent,
-                subproject,
-                phase,
-                json,
-                top_k,
-            });
         }
         RunCmd::SpecMemory {
             subcommand,
@@ -2014,12 +1763,6 @@ pub fn dispatch(cmd: RunCmd) {
         }
         RunCmd::PrdBuild { intent, format } => {
             spec::prd_build::run(spec::prd_build::PrdBuildOpts { intent, format });
-        }
-        RunCmd::SkillFetch { name, dry_run } => {
-            skill::skill_fetch::run(skill::skill_fetch::SkillFetchOpts { name, dry_run });
-        }
-        RunCmd::SkillCache { check } => {
-            skill::skill_cache::run(skill::skill_cache::SkillCacheOpts { check });
         }
         RunCmd::AdaptCursor { repo, dry_run } => {
             maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });

@@ -40,8 +40,9 @@ use crate::io::events::reader::EventReader;
 use crate::io::events::types::Event;
 
 use super::model::{
-    AgentCost, ContextRoutingMetrics, EconomySummary, SavingsBreakdown, SavingsBySource,
-    SavingsSource, SessionCost, SpecCost, WaveCost,
+    AgentCost, ContextRoutingMetrics, EconomySummary, MetricTokenModelBucket, MetricTokenSummary,
+    PerPhaseTokenSummary, PhaseTokenBucket, SavingsBreakdown, SavingsBySource, SavingsSource,
+    SessionCost, SpecCost, WaveCost, PHASE_UNATTRIBUTED,
 };
 use super::multi_project::MultiProjectReader;
 use super::scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
@@ -61,6 +62,14 @@ const CONTEXT_FRAME_KIND: &str = "pipeline.economy.context.frame";
 
 /// Event name for the OTEL metric channel (cost.usage / token.usage / etc.).
 const TELEMETRY_METRIC_KIND: &str = "pipeline.telemetry.metric";
+
+/// `payload.metric` value carrying token counts on the OTEL metric channel.
+const TOKEN_USAGE_METRIC: &str = "claude_code.token.usage";
+
+/// Event name carrying a pipeline-phase transition. `payload.to` is the phase
+/// the session entered; correlating its timestamp with the phase-less token
+/// metric channel is how [`per_phase_token_summary`] recovers per-phase totals.
+const PHASE_TRANSITION_KIND: &str = "pipeline.phase";
 
 /// Event name carrying a single Rust-native operation invocation. The payload
 /// holds `operation` + `duration_ms`; consumed by the rt economy baseline
@@ -452,6 +461,332 @@ fn run_event_started_at_ms(ev: &Event) -> Option<i64> {
         None
     } else {
         Some(ms)
+    }
+}
+
+/// MEASURED token totals from `pipeline.telemetry.metric` /
+/// `claude_code.token.usage` datapoints, split input vs output and grouped by
+/// model. This is the canonical reader for the OTEL token channel: the metric
+/// events are the only place the real billed token counts live, and they carry
+/// a `token_type` (`input` / `output` / `cacheRead` / `cacheCreation`) the
+/// folded [`economy_summary::total_tokens`](economy_summary) discards.
+///
+/// Scope handling mirrors [`economy_summary`]: the metric datapoints carry no
+/// spec/wave dimension, so a `Spec`/`Wave` scope cannot match them and yields
+/// an empty summary — the same fail-empty contract every reader follows when
+/// the requested slice has no matching rows.
+///
+/// # Errors
+///
+/// Returns `Ok` always — every IO failure degrades to the partial aggregate.
+pub fn metric_token_summary(
+    project_root: &Path,
+    scope: EconomyScope,
+) -> Result<MetricTokenSummary> {
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |root, proj| {
+            metric_token_summary(root, EconomyScope::Project(proj.clone()))
+        });
+        let mut by_model: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+        let mut datapoint_count = 0i64;
+        let mut input_tokens = 0i64;
+        let mut output_tokens = 0i64;
+        for s in per_project.values() {
+            datapoint_count += s.datapoint_count;
+            input_tokens += s.input_tokens;
+            output_tokens += s.output_tokens;
+            for b in &s.by_model {
+                let entry = by_model.entry(b.model.clone()).or_insert((0, 0, 0));
+                entry.0 += b.datapoint_count;
+                entry.1 += b.input_tokens;
+                entry.2 += b.output_tokens;
+            }
+        }
+        return Ok(finish_metric_token_summary(
+            datapoint_count,
+            input_tokens,
+            output_tokens,
+            by_model,
+        ));
+    }
+
+    // The metric channel has no spec/wave dimension. At a filtered scope, no
+    // datapoint can match, so we short-circuit to an empty summary rather than
+    // walk the disk — consistent with `economy_summary`, which only reads
+    // measured metrics at the unfiltered scope.
+    let (spec_f, wave_f) = scope_filters(&scope);
+    if spec_f.is_some() || wave_f.is_some() {
+        return Ok(MetricTokenSummary::default());
+    }
+
+    let mut by_model: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+    let mut datapoint_count = 0i64;
+    let mut input_tokens = 0i64;
+    let mut output_tokens = 0i64;
+
+    for ev in walk_events(project_root) {
+        if event_name(&ev) != TELEMETRY_METRIC_KIND {
+            continue;
+        }
+        if ev.payload.get("metric").and_then(Value::as_str) != Some(TOKEN_USAGE_METRIC) {
+            continue;
+        }
+        let sum = ev.payload.get("sum").and_then(Value::as_f64).unwrap_or(0.0);
+        let count = sum.round() as i64;
+        let token_type = ev.payload.get("token_type").and_then(Value::as_str).unwrap_or("");
+        let model = ev
+            .payload
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // `output` is the only output-side token type; `input`, `cacheRead`,
+        // and `cacheCreation` all bill as input-side tokens.
+        let is_output = token_type == "output";
+        datapoint_count += 1;
+        let entry = by_model.entry(model).or_insert((0, 0, 0));
+        entry.0 += 1;
+        if is_output {
+            output_tokens += count;
+            entry.2 += count;
+        } else {
+            input_tokens += count;
+            entry.1 += count;
+        }
+    }
+
+    Ok(finish_metric_token_summary(
+        datapoint_count,
+        input_tokens,
+        output_tokens,
+        by_model,
+    ))
+}
+
+/// Fold the per-model `(datapoint_count, input, output)` accumulator into a
+/// sorted [`MetricTokenSummary`] (buckets ordered by total tokens descending).
+fn finish_metric_token_summary(
+    datapoint_count: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    by_model: BTreeMap<String, (i64, i64, i64)>,
+) -> MetricTokenSummary {
+    let mut buckets: Vec<MetricTokenModelBucket> = by_model
+        .into_iter()
+        .map(|(model, (dp, input, output))| MetricTokenModelBucket {
+            model,
+            datapoint_count: dp,
+            input_tokens: input,
+            output_tokens: output,
+        })
+        .collect();
+    buckets.sort_by_key(|b| std::cmp::Reverse(b.input_tokens + b.output_tokens));
+    MetricTokenSummary {
+        datapoint_count,
+        input_tokens,
+        output_tokens,
+        by_model: buckets,
+    }
+}
+
+/// Epoch-ms timestamp of an NDJSON event, used to order phase transitions and
+/// token datapoints on one shared axis.
+///
+/// Prefers the top-level `ts_ms` the writer pre-computes (see
+/// `writer_ndjson::NdjsonRecord`), then falls back to the metric payload's
+/// `ts_bucket` / `updated_at` (the fields the OTEL collector stamps and the
+/// existing metric fixtures carry), and finally parses the ISO `ts` string.
+/// Events with no recoverable timestamp return `None` and are dropped by the
+/// caller — an undated datapoint cannot be placed on the phase timeline.
+fn event_ts_ms(ev: &Event) -> Option<i64> {
+    if let Some(v) = ev.raw.get("ts_ms").and_then(Value::as_i64) {
+        return Some(v);
+    }
+    if let Some(v) = ev
+        .payload
+        .get("ts_bucket")
+        .or_else(|| ev.payload.get("updated_at"))
+        .and_then(Value::as_i64)
+    {
+        return Some(v);
+    }
+    let ts = ev.raw.get("ts").and_then(Value::as_str)?;
+    crate::platform::time::parse_iso_millis(ts).filter(|ms| *ms != 0)
+}
+
+/// Read the session id from an NDJSON event, trying the top-level `session_id`
+/// (the writer's canonical field) then the metric payload's own `session_id`.
+fn event_session_id(ev: &Event) -> Option<String> {
+    ev.raw
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            ev.payload
+                .get("session_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .map(str::to_string)
+}
+
+/// Per-PHASE token totals, recovered by CORRELATING the phase-less OTEL token
+/// metric channel with the `pipeline.phase` transition timeline.
+///
+/// The OTEL `claude_code.token.usage` datapoints carry no phase dimension, so
+/// the phase is reconstructed per session:
+///
+/// 1. Collect every `pipeline.phase` transition `(ts_ms, payload.to)` and sort
+///    ascending by timestamp — that is the session's phase timeline.
+/// 2. For each token datapoint, bisect the timeline: the active phase is the
+///    last transition whose `ts <= datapoint.ts`. A datapoint that predates the
+///    first transition (or whose session has no transitions) lands in the
+///    [`PHASE_UNATTRIBUTED`] bucket.
+/// 3. Split the datapoint into input/output by `token_type` exactly like
+///    [`metric_token_summary`], accumulating into the resolved phase's bucket.
+///
+/// Like [`metric_token_summary`], the metric channel has no spec/wave dimension,
+/// so a `Spec`/`Wave` scope yields an empty summary (the same fail-empty
+/// contract). At `AllProjects` scope the per-project results are merged by phase.
+///
+/// # Errors
+///
+/// Returns `Ok` always — every IO failure degrades to the partial aggregate.
+pub fn per_phase_token_summary(
+    project_root: &Path,
+    scope: EconomyScope,
+) -> Result<PerPhaseTokenSummary> {
+    if let EconomyScope::AllProjects(ref projects) = scope {
+        let reader = MultiProjectReader::new();
+        let per_project = reader.fan_out(projects, |root, proj| {
+            per_phase_token_summary(root, EconomyScope::Project(proj.clone()))
+        });
+        let mut by_phase: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+        for s in per_project.values() {
+            for b in &s.by_phase {
+                let entry = by_phase.entry(b.phase.clone()).or_insert((0, 0, 0));
+                entry.0 += b.datapoint_count;
+                entry.1 += b.input_tokens;
+                entry.2 += b.output_tokens;
+            }
+        }
+        return Ok(finish_per_phase_token_summary(by_phase));
+    }
+
+    // The metric channel carries no spec/wave dimension; a filtered scope can
+    // match nothing — short-circuit to empty, mirroring `metric_token_summary`.
+    let (spec_f, wave_f) = scope_filters(&scope);
+    if spec_f.is_some() || wave_f.is_some() {
+        return Ok(PerPhaseTokenSummary::default());
+    }
+
+    let events = walk_events(project_root);
+
+    // Phase timeline per session: ascending (ts_ms, phase) transitions.
+    let mut timelines: HashMap<String, Vec<(i64, String)>> = HashMap::new();
+    for ev in &events {
+        if event_name(ev) != PHASE_TRANSITION_KIND {
+            continue;
+        }
+        let Some(session) = event_session_id(ev) else {
+            continue;
+        };
+        let Some(ts) = event_ts_ms(ev) else { continue };
+        let Some(phase) = ev
+            .payload
+            .get("to")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        timelines
+            .entry(session)
+            .or_default()
+            .push((ts, phase.to_string()));
+    }
+    for tl in timelines.values_mut() {
+        tl.sort_by_key(|(ts, _)| *ts);
+    }
+
+    // Attribute each token datapoint to the phase active at its timestamp.
+    let mut by_phase: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+    for ev in &events {
+        if event_name(ev) != TELEMETRY_METRIC_KIND {
+            continue;
+        }
+        if ev.payload.get("metric").and_then(Value::as_str) != Some(TOKEN_USAGE_METRIC) {
+            continue;
+        }
+        let Some(ts) = event_ts_ms(ev) else { continue };
+        let session = event_session_id(ev).unwrap_or_default();
+        let phase = timelines
+            .get(&session)
+            .and_then(|tl| phase_active_at(tl, ts))
+            .unwrap_or(PHASE_UNATTRIBUTED);
+
+        let sum = ev.payload.get("sum").and_then(Value::as_f64).unwrap_or(0.0);
+        let count = sum.round() as i64;
+        let token_type = ev.payload.get("token_type").and_then(Value::as_str).unwrap_or("");
+        let is_output = token_type == "output";
+
+        let entry = by_phase.entry(phase.to_string()).or_insert((0, 0, 0));
+        entry.0 += 1;
+        if is_output {
+            entry.2 += count;
+        } else {
+            entry.1 += count;
+        }
+    }
+
+    Ok(finish_per_phase_token_summary(by_phase))
+}
+
+/// Bisect an ascending `(ts, phase)` timeline: return the phase of the last
+/// transition with `ts <= at`, or `None` when `at` predates the first
+/// transition (the caller maps that to [`PHASE_UNATTRIBUTED`]).
+fn phase_active_at(timeline: &[(i64, String)], at: i64) -> Option<&str> {
+    // partition_point gives the count of elements with ts <= at; the one just
+    // before it is the active transition. O(log n) per datapoint.
+    let idx = timeline.partition_point(|(ts, _)| *ts <= at);
+    if idx == 0 {
+        None
+    } else {
+        Some(timeline[idx - 1].1.as_str())
+    }
+}
+
+/// Fold a per-phase `(datapoint_count, input, output)` accumulator into a sorted
+/// [`PerPhaseTokenSummary`] (buckets ordered by total tokens descending).
+fn finish_per_phase_token_summary(
+    by_phase: BTreeMap<String, (i64, i64, i64)>,
+) -> PerPhaseTokenSummary {
+    let mut datapoint_count = 0i64;
+    let mut input_tokens = 0i64;
+    let mut output_tokens = 0i64;
+    let mut buckets: Vec<PhaseTokenBucket> = by_phase
+        .into_iter()
+        .map(|(phase, (dp, input, output))| {
+            datapoint_count += dp;
+            input_tokens += input;
+            output_tokens += output;
+            PhaseTokenBucket {
+                phase,
+                datapoint_count: dp,
+                input_tokens: input,
+                output_tokens: output,
+            }
+        })
+        .collect();
+    buckets.sort_by_key(|b| std::cmp::Reverse(b.input_tokens + b.output_tokens));
+    PerPhaseTokenSummary {
+        datapoint_count,
+        input_tokens,
+        output_tokens,
+        by_phase: buckets,
     }
 }
 
@@ -1220,6 +1555,134 @@ mod tests {
     fn operation_invoked_samples_empty_when_no_events() {
         let dir = tempdir().unwrap();
         assert!(operation_invoked_samples(dir.path(), "verify").is_empty());
+    }
+
+    #[test]
+    fn metric_token_summary_splits_input_output_by_model() {
+        let dir = tempdir().unwrap();
+        // Two models, with the four OTEL token types. input + cacheRead +
+        // cacheCreation roll into input; output stands alone.
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.token.usage","model":"opus","token_type":"input","sum":100.0}}"#,
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.token.usage","model":"opus","token_type":"output","sum":40.0}}"#,
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.token.usage","model":"opus","token_type":"cacheRead","sum":1000.0}}"#,
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.token.usage","model":"sonnet","token_type":"cacheCreation","sum":7.0}}"#,
+                // A non-token metric must be ignored.
+                r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.cost.usage","model":"opus","sum":99.0}}"#,
+            ],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let s = metric_token_summary(dir.path(), scope).unwrap();
+        assert_eq!(s.input_tokens, 1107); // 100 + 1000 + 7
+        assert_eq!(s.output_tokens, 40);
+        assert_eq!(s.datapoint_count, 4); // cost.usage excluded
+        assert_eq!(s.by_model.len(), 2);
+        // Ordered by total tokens desc — opus (1140) before sonnet (7).
+        assert_eq!(s.by_model[0].model, "opus");
+        assert_eq!(s.by_model[0].input_tokens, 1100);
+        assert_eq!(s.by_model[0].output_tokens, 40);
+        assert_eq!(s.by_model[1].model, "sonnet");
+        assert_eq!(s.by_model[1].input_tokens, 7);
+    }
+
+    #[test]
+    fn per_phase_token_summary_attributes_by_timestamp() {
+        let dir = tempdir().unwrap();
+        // One session with two phase transitions: ANALYZE@1000, EXECUTE@3000.
+        // Token datapoints straddle both transitions:
+        //   ts=500  → before ANALYZE  → unattributed (input 5)
+        //   ts=1500 → ANALYZE active  → input 100
+        //   ts=2000 → ANALYZE active  → output 40
+        //   ts=3500 → EXECUTE active  → input 1000
+        //   ts=4000 → EXECUTE active  → output 200
+        // Phase events live in the per-spec sink; metrics in the session sink
+        // (cross-spec, spec:null) — both walked by `walk_events`. They are
+        // correlated by top-level `session_id` + `ts_ms`.
+        plant_spec_events(
+            dir.path(),
+            "spec-A",
+            &[
+                r#"{"event":"pipeline.phase","kind":"pipeline.phase","session_id":"sess-A","spec":"spec-A","ts_ms":1000,"payload":{"from":null,"to":"ANALYZE"}}"#,
+                r#"{"event":"pipeline.phase","kind":"pipeline.phase","session_id":"sess-A","spec":"spec-A","ts_ms":3000,"payload":{"from":"ANALYZE","to":"EXECUTE"}}"#,
+            ],
+        );
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[
+                r#"{"event":"pipeline.telemetry.metric","kind":"pipeline.telemetry.metric","session_id":"sess-A","ts_ms":500,"payload":{"metric":"claude_code.token.usage","session_id":"sess-A","token_type":"input","sum":5.0}}"#,
+                r#"{"event":"pipeline.telemetry.metric","kind":"pipeline.telemetry.metric","session_id":"sess-A","ts_ms":1500,"payload":{"metric":"claude_code.token.usage","session_id":"sess-A","token_type":"input","sum":100.0}}"#,
+                r#"{"event":"pipeline.telemetry.metric","kind":"pipeline.telemetry.metric","session_id":"sess-A","ts_ms":2000,"payload":{"metric":"claude_code.token.usage","session_id":"sess-A","token_type":"output","sum":40.0}}"#,
+                r#"{"event":"pipeline.telemetry.metric","kind":"pipeline.telemetry.metric","session_id":"sess-A","ts_ms":3500,"payload":{"metric":"claude_code.token.usage","session_id":"sess-A","token_type":"cacheRead","sum":1000.0}}"#,
+                r#"{"event":"pipeline.telemetry.metric","kind":"pipeline.telemetry.metric","session_id":"sess-A","ts_ms":4000,"payload":{"metric":"claude_code.token.usage","session_id":"sess-A","token_type":"output","sum":200.0}}"#,
+            ],
+        );
+        let scope = EconomyScope::Project(ProjectPath::new(dir.path()));
+        let s = per_phase_token_summary(dir.path(), scope).unwrap();
+
+        assert_eq!(s.datapoint_count, 5);
+        assert_eq!(s.input_tokens, 1105); // 5 + 100 + 1000
+        assert_eq!(s.output_tokens, 240); // 40 + 200
+
+        let bucket = |name: &str| s.by_phase.iter().find(|b| b.phase == name).cloned();
+
+        let execute = bucket("EXECUTE").expect("EXECUTE bucket");
+        assert_eq!(execute.input_tokens, 1000);
+        assert_eq!(execute.output_tokens, 200);
+        assert_eq!(execute.datapoint_count, 2);
+
+        let analyze = bucket("ANALYZE").expect("ANALYZE bucket");
+        assert_eq!(analyze.input_tokens, 100);
+        assert_eq!(analyze.output_tokens, 40);
+        assert_eq!(analyze.datapoint_count, 2);
+
+        let unattributed = bucket(PHASE_UNATTRIBUTED).expect("unattributed bucket");
+        assert_eq!(unattributed.input_tokens, 5);
+        assert_eq!(unattributed.output_tokens, 0);
+        assert_eq!(unattributed.datapoint_count, 1);
+
+        // Ordered by total tokens desc — EXECUTE (1200) leads.
+        assert_eq!(s.by_phase[0].phase, "EXECUTE");
+    }
+
+    #[test]
+    fn per_phase_token_summary_empty_at_spec_scope() {
+        let dir = tempdir().unwrap();
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[r#"{"event":"pipeline.telemetry.metric","kind":"pipeline.telemetry.metric","session_id":"sess-A","ts_ms":1500,"payload":{"metric":"claude_code.token.usage","token_type":"input","sum":100.0}}"#],
+        );
+        let scope = EconomyScope::Spec {
+            project: ProjectPath::new(dir.path()),
+            spec: SpecId::new("spec-A"),
+        };
+        let s = per_phase_token_summary(dir.path(), scope).unwrap();
+        assert_eq!(s.datapoint_count, 0);
+        assert!(s.by_phase.is_empty());
+    }
+
+    #[test]
+    fn metric_token_summary_empty_at_spec_scope() {
+        let dir = tempdir().unwrap();
+        // Metric datapoints carry no spec dimension, so a spec scope must yield
+        // an empty summary rather than leak the unfiltered totals.
+        plant_session_events(
+            dir.path(),
+            "sess-A",
+            &[r#"{"kind":"pipeline.telemetry.metric","event":"pipeline.telemetry.metric","payload":{"metric":"claude_code.token.usage","model":"opus","token_type":"input","sum":100.0}}"#],
+        );
+        let scope = EconomyScope::Spec {
+            project: ProjectPath::new(dir.path()),
+            spec: SpecId::new("spec-A"),
+        };
+        let s = metric_token_summary(dir.path(), scope).unwrap();
+        assert_eq!(s.datapoint_count, 0);
+        assert_eq!(s.input_tokens, 0);
+        assert!(s.by_model.is_empty());
     }
 
     #[test]

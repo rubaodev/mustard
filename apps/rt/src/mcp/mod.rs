@@ -160,16 +160,27 @@ struct GetSpecMetricsArgs {
 }
 
 /// Input for `get_run_summary`.
+///
+/// `phase` is now WIRED: when set, the tool delegates to the core
+/// `per_phase_token_summary` reader, which correlates the phase-less OTEL token
+/// metric channel against the `pipeline.phase` transition timeline and returns
+/// only the requested phase's input/output token totals (per-model breakdown is
+/// not available at phase granularity, so `byModel` is empty under a phase
+/// filter). `limit` stays inert — the reader aggregates the full datapoint set
+/// rather than capping rows.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GetRunSummaryArgs {
     /// Optional spec filter.
     #[serde(default)]
     spec: Option<String>,
-    /// Optional pipeline-phase filter.
+    /// Optional pipeline-phase filter (e.g. `"EXECUTE"`). When set, the totals
+    /// are narrowed to tokens attributed to that phase by timestamp correlation.
     #[serde(default)]
     phase: Option<String>,
-    /// Maximum runs to aggregate (`1..=5000`, default `1000`).
+    /// Maximum runs to aggregate (accepted for compatibility; the core reader
+    /// aggregates the full datapoint set).
     #[serde(default)]
+    #[allow(dead_code)]
     limit: Option<u32>,
 }
 
@@ -504,36 +515,107 @@ impl MustardMemory {
         json_result(&metrics)
     }
 
-    /// Tool 5 — aggregated token/duration summary from `pipeline.telemetry.run`
-    /// NDJSON events (written by the W5A OTEL collector).
-    #[tool(description = "Aggregated token/duration summary from pipeline.telemetry.run events; groups by model")]
+    /// Tool 5 — aggregated token summary from the MEASURED OTEL token channel,
+    /// grouped by model.
+    ///
+    /// Delegates to the canonical core reader
+    /// [`mustard_core::domain::economy::metric_token_summary`], which folds the
+    /// `pipeline.telemetry.metric` / `claude_code.token.usage` datapoints (the
+    /// only place the real billed token counts live, split by `token_type`).
+    /// The tool previously hand-rolled a filter over `pipeline.telemetry.run`
+    /// events, which carry no token datapoints — so it always reported zero.
+    /// The output JSON shape (count / totalInputTokens /
+    /// totalOutputTokens / totalDurationMs / byModel) is unchanged; only the
+    /// data source moved to the source of truth.
+    #[tool(description = "Aggregated token summary from the OTEL token-usage metric channel; groups by model, or narrows to one pipeline phase when `phase` is set")]
     fn get_run_summary(
         &self,
         Parameters(args): Parameters<GetRunSummaryArgs>,
     ) -> CallToolResult {
-        let limit = args.limit.unwrap_or(1000).clamp(1, 5000) as usize;
-        let Some(paths) = self.claude_paths() else {
-            return json_result(&empty_run_summary());
-        };
-        // Cross-spec walk: include both per-spec and the cross-session sink.
-        let mut events: Vec<Event> = Vec::new();
-        collect_ndjson_under(&paths.spec_dir(), &mut events);
-        collect_ndjson_under(&paths.claude_dir().join(".session"), &mut events);
+        let scope = run_summary_scope(&self.project_dir, args.spec.as_deref());
+        // `phase` set → correlate the phase-less metric channel against the
+        // `pipeline.phase` timeline and return ONLY that phase's totals.
+        if let Some(phase) = args.phase.as_deref().filter(|s| !s.is_empty()) {
+            let per_phase = mustard_core::domain::economy::per_phase_token_summary(
+                &self.project_dir,
+                scope,
+            )
+            .unwrap_or_default();
+            return json_result(&run_summary_for_phase(&per_phase, phase));
+        }
+        let summary = mustard_core::domain::economy::metric_token_summary(
+            &self.project_dir,
+            scope,
+        )
+        .unwrap_or_default();
+        json_result(&run_summary_from_metrics(&summary))
+    }
+}
 
-        let runs: Vec<&Event> = events
-            .iter()
-            .filter(|e| e.kind == "pipeline.telemetry.run")
-            .filter(|e| match args.spec.as_deref() {
-                Some(s) => e.payload.get("spec").and_then(Value::as_str) == Some(s),
-                None => true,
-            })
-            .filter(|e| match args.phase.as_deref() {
-                Some(p) => e.payload.get("phase").and_then(Value::as_str) == Some(p),
-                None => true,
-            })
-            .take(limit)
-            .collect();
-        json_result(&summarize_runs(&runs))
+/// Build the [`EconomyScope`] for a `get_run_summary` call. A `spec` filter
+/// maps to [`EconomyScope::Spec`]; absent, the unfiltered project scope (which
+/// is the only scope under which the metric channel reports anything, since the
+/// datapoints carry no spec dimension).
+fn run_summary_scope(
+    project_dir: &Path,
+    spec: Option<&str>,
+) -> mustard_core::domain::economy::EconomyScope {
+    use mustard_core::domain::economy::scope::{EconomyScope, ProjectPath, SpecId};
+    match spec {
+        Some(s) => EconomyScope::Spec {
+            project: ProjectPath::new(project_dir),
+            spec: SpecId::new(s),
+        },
+        None => EconomyScope::Project(ProjectPath::new(project_dir)),
+    }
+}
+
+/// Map a core [`MetricTokenSummary`] onto the MCP `RunSummary` output shape.
+///
+/// `count` mirrors the contributing datapoint count, and `byModel` is keyed by
+/// model name with the same `{count, in, out, durationMs}` bucket shape as
+/// before. `durationMs` is always `0` — the OTEL token channel carries token
+/// counts only, no span duration — preserving the field for shape stability.
+fn run_summary_from_metrics(
+    summary: &mustard_core::domain::economy::MetricTokenSummary,
+) -> RunSummary {
+    let mut by_model: Map<String, Value> = Map::new();
+    for b in &summary.by_model {
+        let bucket = ModelBucket {
+            count: u64::try_from(b.datapoint_count).unwrap_or(0),
+            r#in: b.input_tokens,
+            out: b.output_tokens,
+            duration_ms: 0,
+        };
+        if let Ok(value) = serde_json::to_value(&bucket) {
+            by_model.insert(b.model.clone(), value);
+        }
+    }
+    RunSummary {
+        count: usize::try_from(summary.datapoint_count).unwrap_or(0),
+        total_input_tokens: summary.input_tokens,
+        total_output_tokens: summary.output_tokens,
+        total_duration_ms: 0,
+        by_model,
+    }
+}
+
+/// Map a [`PerPhaseTokenSummary`] onto the MCP `RunSummary` output, narrowed to
+/// a single `phase`. Returns the matching phase bucket's totals, or an empty
+/// summary when the phase has no attributed tokens. `byModel` is empty:
+/// per-phase attribution is timestamp-correlated against the metric channel,
+/// which carries no model split at phase granularity.
+fn run_summary_for_phase(
+    summary: &mustard_core::domain::economy::PerPhaseTokenSummary,
+    phase: &str,
+) -> RunSummary {
+    let bucket = summary.by_phase.iter().find(|b| b.phase == phase);
+    RunSummary {
+        count: bucket.map_or(0, |b| usize::try_from(b.datapoint_count).unwrap_or(0)),
+        total_input_tokens: bucket.map_or(0, |b| b.input_tokens),
+        total_output_tokens: bucket.map_or(0, |b| b.output_tokens),
+        total_duration_ms: 0,
+        by_model: Map::new(),
     }
 }
 
@@ -689,53 +771,141 @@ fn missing_metrics(spec: &str) -> Value {
     json!({ "error": "no metrics for spec", "spec": spec })
 }
 
-/// Aggregate `pipeline.telemetry.run` event payloads into the
-/// `get_run_summary` output shape.
-fn summarize_runs(runs: &[&Event]) -> RunSummary {
-    let mut by_model: Map<String, Value> = Map::new();
-    let mut buckets: std::collections::BTreeMap<String, ModelBucket> =
-        std::collections::BTreeMap::new();
-    let mut total_input = 0_i64;
-    let mut total_output = 0_i64;
-    let mut total_duration = 0_i64;
+// ---------------------------------------------------------------------------
+// Tests — `get_run_summary` consolidation onto the core economy reader
+// ---------------------------------------------------------------------------
 
-    for run in runs {
-        let p = &run.payload;
-        let input = p.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
-        let output = p.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
-        let duration = p.get("duration_ms").and_then(Value::as_i64).unwrap_or(0);
-        total_input += input;
-        total_output += output;
-        total_duration += duration;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mustard_core::domain::economy::{metric_token_summary, EconomyScope, ProjectPath};
+    use std::fs;
 
-        let model = p
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| "unknown".to_string());
-        let bucket = buckets.entry(model).or_default();
-        bucket.count += 1;
-        bucket.r#in += input;
-        bucket.out += output;
-        bucket.duration_ms += duration;
+    /// Plant cross-spec session metric rows at
+    /// `<root>/.claude/.session/<id>/.events/seed.ndjson`. This mirrors where
+    /// the OTEL collector writes token datapoints (the cross-session sink).
+    fn plant_session_metrics(root: &Path, id: &str, lines: &[String]) {
+        let dir = root
+            .join(".claude")
+            .join(".session")
+            .join(id)
+            .join(".events");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("seed.ndjson"), lines.join("\n")).unwrap();
     }
 
-    for (model, bucket) in buckets {
-        if let Ok(value) = serde_json::to_value(&bucket) {
-            by_model.insert(model, value);
-        }
+    /// A `claude_code.token.usage` metric NDJSON line for one model + type.
+    fn token_metric_line(model: &str, token_type: &str, sum: i64) -> String {
+        json!({
+            "kind": "pipeline.telemetry.metric",
+            "event": "pipeline.telemetry.metric",
+            "payload": {
+                "metric": "claude_code.token.usage",
+                "session_id": "sess-1",
+                "model": model,
+                "token_type": token_type,
+                "sum": sum,
+            }
+        })
+        .to_string()
     }
 
-    RunSummary {
-        count: runs.len(),
-        total_input_tokens: total_input,
-        total_output_tokens: total_output,
-        total_duration_ms: total_duration,
-        by_model,
+    /// AC1: a fixture of `pipeline.telemetry.metric` token datapoints (input /
+    /// output / cacheRead / cacheCreation) for one model must surface nonzero
+    /// token totals grouped by that model. Before the fix the tool filtered on
+    /// `pipeline.telemetry.run` and reported zero.
+    #[test]
+    fn run_summary_includes_metric_events() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_session_metrics(
+            dir.path(),
+            "sess-1",
+            &[
+                token_metric_line("opus", "input", 100),
+                token_metric_line("opus", "output", 40),
+                token_metric_line("opus", "cacheRead", 1000),
+                token_metric_line("opus", "cacheCreation", 7),
+            ],
+        );
+
+        let summary = metric_token_summary(
+            dir.path(),
+            EconomyScope::Project(ProjectPath::new(dir.path())),
+        )
+        .unwrap();
+        let out = run_summary_from_metrics(&summary);
+
+        // input + cacheRead + cacheCreation = 100 + 1000 + 7 = 1107; output = 40.
+        assert_eq!(out.total_input_tokens, 1107);
+        assert_eq!(out.total_output_tokens, 40);
+        assert_eq!(out.count, 4);
+        // Grouped by model — the single "opus" bucket carries the same totals.
+        let opus = out.by_model.get("opus").expect("opus bucket present");
+        assert_eq!(opus["in"].as_i64(), Some(1107));
+        assert_eq!(opus["out"].as_i64(), Some(40));
+        assert_eq!(opus["count"].as_u64(), Some(4));
+        // No span duration on the token channel — the field stays present at 0.
+        assert_eq!(out.total_duration_ms, 0);
+        assert_eq!(opus["durationMs"].as_i64(), Some(0));
+    }
+
+    /// AC2: the MCP summary totals must be consistent with calling the core
+    /// `economy_summary`/`metric_token_summary` reader directly on the same
+    /// fixture — the tool is a thin mapping over the source of truth, not a
+    /// reimplementation.
+    #[test]
+    fn run_summary_matches_core_economy() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_session_metrics(
+            dir.path(),
+            "sess-1",
+            &[
+                token_metric_line("opus", "input", 200),
+                token_metric_line("opus", "output", 50),
+                token_metric_line("sonnet", "input", 30),
+                token_metric_line("sonnet", "output", 10),
+            ],
+        );
+
+        let core = metric_token_summary(
+            dir.path(),
+            EconomyScope::Project(ProjectPath::new(dir.path())),
+        )
+        .unwrap();
+        let out = run_summary_from_metrics(&core);
+
+        // Totals match the core aggregate exactly.
+        assert_eq!(out.total_input_tokens, core.input_tokens);
+        assert_eq!(out.total_output_tokens, core.output_tokens);
+        assert_eq!(out.count as i64, core.datapoint_count);
+        // Per-model split matches too — two distinct models surface.
+        assert_eq!(out.by_model.len(), core.by_model.len());
+        assert_eq!(out.by_model.len(), 2);
+        let opus = out.by_model.get("opus").expect("opus bucket");
+        assert_eq!(opus["in"].as_i64(), Some(200));
+        assert_eq!(opus["out"].as_i64(), Some(50));
+    }
+
+    /// A spec-scoped query cannot match the phase/spec-less metric channel, so
+    /// it yields an all-zero summary rather than crashing — preserving the
+    /// fail-empty contract for filters that have no matching datapoints.
+    #[test]
+    fn run_summary_spec_scope_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_session_metrics(
+            dir.path(),
+            "sess-1",
+            &[token_metric_line("opus", "input", 100)],
+        );
+        let core = metric_token_summary(
+            dir.path(),
+            run_summary_scope(dir.path(), Some("some-spec")),
+        )
+        .unwrap();
+        let out = run_summary_from_metrics(&core);
+        assert_eq!(out.count, 0);
+        assert_eq!(out.total_input_tokens, 0);
+        assert!(out.by_model.is_empty());
     }
 }
 
-/// The `get_run_summary` output for an empty / unavailable run set.
-fn empty_run_summary() -> RunSummary {
-    summarize_runs(&[])
-}

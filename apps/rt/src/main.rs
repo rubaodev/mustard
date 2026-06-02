@@ -67,7 +67,7 @@ use std::io::{Read, Write};
 
 /// The `mustard-rt` command line.
 #[derive(Debug, Parser)]
-#[command(name = "mustard-rt", about = "Mustard enforcement runtime")]
+#[command(name = "mustard-rt", version = env!("MUSTARD_VERSION_FULL"), about = "Mustard enforcement runtime")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -105,6 +105,7 @@ fn main() {
     // `--help` natively). Keeps `run metrics --help` and `run metrics collect`
     // working unchanged. See wave-network spec AC-6.
     let argv: Vec<String> = rewrite_metrics_wave_status(std::env::args().collect());
+    let argv = rewrite_scan_spec(argv);
     let cli = Cli::parse_from(argv);
 
     // The `Run` and `Mcp` faces are not enforcement faces: they never read
@@ -173,6 +174,27 @@ fn rewrite_metrics_wave_status(mut argv: Vec<String>) -> Vec<String> {
         // Collapse the two tokens into one: `metrics wave-status` → `metrics-wave-status`.
         argv[metrics_idx] = "metrics-wave-status".to_string();
         argv.remove(wave_idx);
+    }
+    argv
+}
+
+/// Rewrite `mustard-rt run scan spec [args...]` to
+/// `mustard-rt run scan-spec [args...]` so clap routes to the top-level
+/// `RunCmd::ScanSpec` variant. All other argv shapes pass through unchanged.
+/// Mirrors the `rewrite_metrics_wave_status` pattern (same invariant: the two
+/// tokens immediately follow `run`).
+fn rewrite_scan_spec(mut argv: Vec<String>) -> Vec<String> {
+    let Some(run_idx) = argv.iter().position(|a| a == "run") else {
+        return argv;
+    };
+    let scan_idx = run_idx + 1;
+    let spec_idx = run_idx + 2;
+    if argv.get(scan_idx).map(String::as_str) == Some("scan")
+        && argv.get(spec_idx).map(String::as_str) == Some("spec")
+    {
+        // Collapse the two tokens into one: `scan spec` → `scan-spec`.
+        argv[scan_idx] = "scan-spec".to_string();
+        argv.remove(spec_idx);
     }
     argv
 }

@@ -1,6 +1,7 @@
 mod common;
 
 pub mod context_budget_gate;
+pub mod delegation_advisory;
 pub mod main_context_counter;
 pub mod metrics_observer;
 pub mod model_routing_gate;

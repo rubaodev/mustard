@@ -41,7 +41,7 @@ de falha em produção) estão **fora do escopo** de uma ferramenta dev-time.
 
 | Princípio / prática | Já tem | Falta |
 |---|---|---|
-| 1. Fronteiras | `path_gate` + `entity_registry_gate` + `CLAUDE.md` por subprojeto (quem escreve onde). | Fronteira por **regra de import no código** (módulo A não pode importar B). |
+| 1. Fronteiras | `path_gate` + `grain.model.json` (via `mustard-rt run scan`) + `CLAUDE.md` por subprojeto (quem escreve onde). | Fronteira por **regra de import no código** (módulo A não pode importar B). |
 | 5. Comunicação explícita | `## Component Contract` no spec (documento); `graph_wirelink_gate`. | Enforcement do *Public API Provider pattern* — nada barra acesso interno direto entre módulos. |
 | 9. Observabilidade | Forte, mas **do pipeline** (events/otel/economy). | Observabilidade do alvo em runtime (fora de escopo). |
 | Governança automatizada (curso Mód. 6) | `close_gate` (build/type/lint/test+QA), `bash_command_gate`, `model_routing_gate`, `gate_regression_check`. | Gates rodam em **PreToolUse** (quando a IA edita) — não como pre-commit/CI que rode também p/ humanos. |
@@ -70,10 +70,10 @@ arquitetura — **modo `warn` por padrão**.
 
 ### Decisão de arquitetura — "tirar ClaudePaths do core"
 
-Dentro de `packages/core/src` só **3 módulos** chamam `ClaudePaths`
-(`domain/config.rs`, `domain/entity_registry.rs`, `view/projection/mod.rs`); os
-~440 usos restantes vivem em `apps/rt`/`apps/dashboard` — **adaptadores Claude
-legítimos**. Portanto: **mover a definição** de `ClaudePaths`/`SpecPaths`/`WavePaths`
+Dentro de `packages/core/src` poucos módulos chamam `ClaudePaths`
+(`domain/config.rs`, `view/projection/mod.rs`; o antigo `domain/entity_registry.rs`
+já foi **removido**); os ~440 usos restantes vivem em `apps/rt`/`apps/dashboard`
+— **adaptadores Claude legítimos**. Portanto: **mover a definição** de `ClaudePaths`/`SpecPaths`/`WavePaths`
 para um crate novo `packages/claude-paths`, desacoplar os 3 consumidores do `core`,
 e trocar o caminho do `import` nos ~111 arquivos dos adaptadores (mecânico).
 **Não** introduzir trait + dynamic-dispatch nos 533 sites (indireção sem ganho).
@@ -92,8 +92,8 @@ alguém importa `dashboard`. Opcional CI: `deny.toml` + `cargo-deny`.
   (e o `doctor --check claude-paths`).
 - `core`: remover `pub use` (`lib.rs:109`) + `pub mod claude_paths` (`io/mod.rs:3`);
   desacoplar: `config.rs:249` → `root.join("mustard.json")` direto;
-  `entity_registry.rs` (`:58`,`:253`) e `projection/mod.rs:84` → receber o path
-  do artefato **por parâmetro** do adaptador.
+  `projection/mod.rs:84` → receber o path do artefato **por parâmetro** do
+  adaptador (o antigo consumidor `entity_registry.rs` já foi removido).
 - Adaptadores: dep em `claude-paths`; `use mustard_core::ClaudePaths` →
   `use claude_paths::ClaudePaths` nos ~111 arquivos (validar com `cargo check`).
 - A1 passa a guardar `core ⊥ claude-paths`.
@@ -121,7 +121,8 @@ e preservar no `EntityInfo`.
 
 **B2. Montar `LayerEdge` reais + persistir violações** *(baixo — liga os fios)*
 `apps/rt/src/commands/scan/architecture.rs:218-233`: alimentar `LayerEdge` com os
-roles de B1; persistir a lista de violações no `entity-registry`/`patternsOverlay`.
+roles de B1; persistir a lista de violações no `grain.model.json` (via `mustard-rt
+run scan`)/`patternsOverlay`.
 
 **B3. Gate de arquitetura no REVIEW** *(médio)*
 Novo check (ex.: `apps/rt/src/commands/review/architecture_fitness.rs`) que computa
@@ -142,6 +143,6 @@ padrão de `review_dispatch.rs`. Controle `MUSTARD_ARCH_GATE_MODE = warn (defaul
 - **A3:** teste de concorrência (N threads em `write_event`) sem linha
   intercalada; `mustard.json` válido sob escrita interrompida.
 - **B:** fixtures *clean* (infra→domain) e *dirty* (domain→infra). `/scan` no dirty
-  marca violação no registry; `/review` num diff com violação mostra banner `warn`
+  marca violação no `grain.model.json`; `/review` num diff com violação mostra banner `warn`
   (e bloqueia só com `MUSTARD_ARCH_GATE_MODE=strict`). Unitários p/ B1 (role
   preservado) e B2 (`LayerEdge` a partir de import real).

@@ -305,6 +305,92 @@ pub struct SessionCost {
     pub specs: Vec<String>,
 }
 
+/// Token totals projected from MEASURED OTEL `claude_code.token.usage`
+/// metric datapoints, split by token side and grouped by model.
+///
+/// Unlike [`EconomySummary`] (which folds input + output into a single
+/// `total_tokens`), this view keeps the input/output split the OTEL metric
+/// carries on its `token_type` attribute, plus a per-model breakdown — the
+/// shape the rt MCP `get_run_summary` contract exposes. The metric channel
+/// is the only place the real billed token counts live, so this reader is the
+/// canonical bridge between that channel and any consumer that needs the split.
+///
+/// Token-side mapping (matches Anthropic billing semantics): the OTEL
+/// `type` attribute spells `input` / `output` / `cacheRead` / `cacheCreation`.
+/// `output` is the only output-side type; `input`, `cacheRead`, and
+/// `cacheCreation` are all input-side and roll into `input_tokens`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MetricTokenSummary {
+    /// How many `claude_code.token.usage` datapoints contributed.
+    pub datapoint_count: i64,
+    /// Total input-side tokens (input + cacheRead + cacheCreation).
+    pub input_tokens: i64,
+    /// Total output-side tokens.
+    pub output_tokens: i64,
+    /// Per-model buckets, ordered by total (input + output) tokens descending.
+    pub by_model: Vec<MetricTokenModelBucket>,
+}
+
+/// One model's slice of a [`MetricTokenSummary`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricTokenModelBucket {
+    /// Model name as reported on the metric's `model` attribute, or
+    /// `"unknown"` when the attribute is absent.
+    pub model: String,
+    /// How many datapoints rolled into this model.
+    pub datapoint_count: i64,
+    /// Input-side tokens (input + cacheRead + cacheCreation) for this model.
+    pub input_tokens: i64,
+    /// Output-side tokens for this model.
+    pub output_tokens: i64,
+}
+
+/// Token totals attributed to each pipeline PHASE (ANALYZE / PLAN / EXECUTE /
+/// QA / CLOSE / …) by CORRELATING the phase-less OTEL token metric channel with
+/// the `pipeline.phase` transition timeline.
+///
+/// The OTEL `claude_code.token.usage` datapoints carry no phase dimension (and
+/// `spec: null`), so a phase cannot be read off a datapoint directly. Instead
+/// [`super::reader::per_phase_token_summary`] reconstructs, per session, the
+/// ordered list of `(ts, phase)` transitions emitted by `pipeline.phase`, then
+/// assigns every token datapoint to whichever phase was active at the
+/// datapoint's timestamp (the last transition with `ts <= datapoint.ts`).
+/// Datapoints that predate the first transition in their session fall into the
+/// synthetic [`PHASE_UNATTRIBUTED`] bucket.
+///
+/// Token-side mapping matches [`MetricTokenSummary`]: `output` is the only
+/// output-side type; `input` / `cacheRead` / `cacheCreation` roll into input.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PerPhaseTokenSummary {
+    /// How many `claude_code.token.usage` datapoints were attributed in total.
+    pub datapoint_count: i64,
+    /// Total input-side tokens across every phase.
+    pub input_tokens: i64,
+    /// Total output-side tokens across every phase.
+    pub output_tokens: i64,
+    /// Per-phase buckets, ordered by total (input + output) tokens descending.
+    pub by_phase: Vec<PhaseTokenBucket>,
+}
+
+/// Synthetic phase name for token datapoints that fall before the first
+/// `pipeline.phase` transition in their session (no phase was active yet).
+pub const PHASE_UNATTRIBUTED: &str = "unattributed";
+
+/// One phase's slice of a [`PerPhaseTokenSummary`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseTokenBucket {
+    /// Pipeline phase name as emitted on `pipeline.phase` `payload.to`
+    /// (e.g. `"ANALYZE"`, `"EXECUTE"`), or [`PHASE_UNATTRIBUTED`] for
+    /// datapoints that predate the first transition in their session.
+    pub phase: String,
+    /// How many datapoints rolled into this phase.
+    pub datapoint_count: i64,
+    /// Input-side tokens (input + cacheRead + cacheCreation) for this phase.
+    pub input_tokens: i64,
+    /// Output-side tokens for this phase.
+    pub output_tokens: i64,
+}
+
 /// Per-agent cost roll-up. Ordered by `cost_usd_micros` desc by the reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCost {

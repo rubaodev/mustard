@@ -2,12 +2,11 @@
 //!
 //! WARN-level spec validator (never blocks the pipeline). Checks layer
 //! coverage, file-reference resolvability, task-count sanity, and the
-//! extended-light scope ↔ registry constraint. Emits one JSON line:
+//! extended-light scope ↔ model constraint. Emits one JSON line:
 //! `{ "ok": bool, "issues": [{ severity, type, message, file? }] }`.
 
 use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs;
-use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -219,28 +218,22 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
         }
     }
 
-    // Validation 4: extended-light scope requires entity in registry.
+    // Validation 4: extended-light scope requires the entity to already exist in
+    // the repo model (grain.model.json declaration names, read via the scan tool —
+    // this crate never parses the model's schema itself).
     if let Some(scope) = extract_kv(content, "scope") {
         if scope.eq_ignore_ascii_case("extended-light") {
             if let Some(entity) = extract_kv(content, "entity") {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let registry_path: PathBuf = ClaudePaths::for_project(&cwd)
-                    .map(|p| p.entity_registry_json_path())
-                    .unwrap_or_default();
-                if let Ok(registry) = fs::read_to_string(&registry_path) {
-                    if !registry.to_lowercase().contains(&entity.to_lowercase()) {
-                        issues.push(json!({
-                            "severity": "WARN",
-                            "type": "scope-mismatch",
-                            "message": format!("Extended Light scope requires entity \"{entity}\" in registry, but not found. Reclassify as Full."),
-                        }));
-                    }
-                } else {
-                    issues.push(json!({
-                        "severity": "WARN",
-                        "type": "scope-mismatch",
-                        "message": "Extended Light scope requires entity-registry.json, but file not found. Reclassify as Full.",
-                    }));
+                let model = cwd.join(".claude").join("grain.model.json");
+                let known = mustard_core::read_entity_names(&model);
+                if !known.iter().any(|k| k.eq_ignore_ascii_case(entity)) {
+                    let message = if known.is_empty() {
+                        "Extended Light scope requires the entity in grain.model.json, but no model/declarations were found. Reclassify as Full.".to_string()
+                    } else {
+                        format!("Extended Light scope requires entity \"{entity}\" in grain.model.json, but not found. Reclassify as Full.")
+                    };
+                    issues.push(json!({ "severity": "WARN", "type": "scope-mismatch", "message": message }));
                 }
             }
         }

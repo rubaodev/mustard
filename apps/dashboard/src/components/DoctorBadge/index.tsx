@@ -54,7 +54,7 @@ function fixHintFor(checkName: string): string | null {
     case "drift":
       return "Run `mustard update` to resync the `.claude/` payload.";
     case "state-health":
-      return "Run `mustard-rt run sync-registry` (entity-registry missing).";
+      return "Run `mustard-rt run scan` (grain.model.json missing).";
     case "claude_cli":
       return "Install Claude Code and add `claude` to PATH.";
     case "lsp":

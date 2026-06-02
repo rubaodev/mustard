@@ -53,8 +53,16 @@ fn parse_expect(raw: &str) -> Option<u64> {
     raw.parse::<u64>().ok().map(|n| n * 1000)
 }
 
-/// `[env]` — required telemetry environment variables.
-fn check_env() -> Value {
+/// `[env]` — telemetry environment variables.
+///
+/// `dual_emit_healthy` is true when the harness is running in the dual-emit
+/// path (`MUSTARD_HARNESS_DUAL_EMIT=1`) AND the collector is alive AND its
+/// `/healthz` returned 200. In that mode the harness ships token/cost data
+/// without the OTEL exporter vars, so their absence is informational, not a
+/// failure: `env.ok` stays true and each unset var is reported as `null` in
+/// `status` (shape unchanged) for visibility. Outside that mode the original
+/// strict contract holds — every listed var must be set for `ok`.
+fn check_env(dual_emit_healthy: bool) -> Value {
     let required = [
         "CLAUDE_CODE_ENABLE_TELEMETRY",
         "OTEL_METRICS_EXPORTER",
@@ -62,7 +70,7 @@ fn check_env() -> Value {
         "MUSTARD_HARNESS_DUAL_EMIT",
     ];
     let mut status = serde_json::Map::new();
-    let mut ok = true;
+    let mut all_set = true;
     for key in required {
         match std::env::var(key) {
             Ok(v) if !v.is_empty() => {
@@ -70,11 +78,34 @@ fn check_env() -> Value {
             }
             _ => {
                 status.insert(key.to_string(), Value::Null);
-                ok = false;
+                all_set = false;
             }
         }
     }
+    // Dual-emit + a healthy collector is a valid delivery path on its own; the
+    // exporter vars are then a note, not a gate.
+    let ok = all_set || dual_emit_healthy;
     json!({ "ok": ok, "status": status })
+}
+
+/// True when the harness is in the dual-emit path AND the collector liveness
+/// and health checks both passed — the scenario under which the OTEL exporter
+/// vars are optional (the data still flows).
+///
+/// `dual_emit_on` is passed in (read from `MUSTARD_HARNESS_DUAL_EMIT` by the
+/// caller) rather than read here, keeping this a pure predicate the tests can
+/// drive without mutating process-global env state.
+fn dual_emit_path_healthy(dual_emit_on: bool, collector: &Value, health: &Value) -> bool {
+    let collector_ok = collector["ok"].as_bool() == Some(true);
+    let health_ok = health["ok"].as_bool() == Some(true);
+    dual_emit_on && collector_ok && health_ok
+}
+
+/// Read `MUSTARD_HARNESS_DUAL_EMIT` as the dual-emit toggle (`"1"` ⇒ on).
+fn dual_emit_enabled() -> bool {
+    std::env::var("MUSTARD_HARNESS_DUAL_EMIT")
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }
 
 /// True when a process with `pid` is alive. Portable liveness probe — the JS
@@ -105,8 +136,18 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// `[collector]` — PID file present and the process alive.
+///
+/// Resolves the `.claude` root from the process working directory. The actual
+/// probe is delegated to [`check_collector_in`] so tests can inject a
+/// deterministic root; production behavior is unchanged.
 fn check_collector() -> Value {
-    let pid_file = claude_dir().join(".harness").join(".otel-collector.pid");
+    check_collector_in(&claude_dir())
+}
+
+/// `[collector]` probe rooted at an explicit `.claude` directory. The PID file
+/// is `<claude_dir>/.harness/.otel-collector.pid`.
+fn check_collector_in(claude_dir: &Path) -> Value {
+    let pid_file = claude_dir.join(".harness").join(".otel-collector.pid");
     if !pid_file.exists() {
         return json!({ "ok": false, "reason": "no pid file", "pid": Value::Null });
     }
@@ -372,10 +413,15 @@ pub fn run(json_flag: bool, expect_rows_after: Option<&str>) {
     }
 
     let data = check_data(&root);
+    // Collector + health drive the env verdict: dual-emit with a live, healthy
+    // collector is a valid path even when the OTEL exporter vars are unset.
+    let collector = check_collector();
+    let health = check_health(port);
+    let dual_emit_healthy = dual_emit_path_healthy(dual_emit_enabled(), &collector, &health);
     let mut report = json!({
-        "env": check_env(),
-        "collector": check_collector(),
-        "health": check_health(port),
+        "env": check_env(dual_emit_healthy),
+        "collector": collector,
+        "health": health,
         "data": data.clone(),
         "subtractions": check_subtractions(&root),
     });
@@ -430,10 +476,12 @@ mod tests {
 
     #[test]
     fn check_collector_missing_pid_file() {
-        // No project dir override → cwd; the pid file almost certainly
-        // does not exist here. The check must report, never panic.
-        let v = check_collector();
-        assert!(v["ok"].as_bool() == Some(false));
+        // Deterministic root: a fresh temp dir has no `.otel-collector.pid`,
+        // so the probe must report ok=false regardless of whether the host
+        // machine happens to have a live collector in its own cwd.
+        let tmp = tempfile::tempdir().unwrap();
+        let v = check_collector_in(tmp.path());
+        assert_eq!(v["ok"].as_bool(), Some(false));
         assert!(v["reason"].is_string());
     }
 
@@ -478,6 +526,29 @@ mod tests {
         let v = check_subtractions(tmp.path());
         assert_eq!(v["ok"].as_bool(), Some(true));
         assert_eq!(v["count"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn dual_emit_healthy_requires_dual_emit_collector_and_health() {
+        let alive = json!({ "ok": true });
+        let dead = json!({ "ok": false });
+        // Pure predicate — dual-emit toggle is a parameter, no env mutation.
+        assert!(dual_emit_path_healthy(true, &alive, &alive));
+        assert!(!dual_emit_path_healthy(true, &dead, &alive));
+        assert!(!dual_emit_path_healthy(true, &alive, &dead));
+        assert!(!dual_emit_path_healthy(false, &alive, &alive));
+    }
+
+    #[test]
+    fn env_ok_under_dual_emit_even_when_exporter_vars_unset() {
+        // AC4: with dual-emit + a healthy collector, the absent OTEL exporter
+        // vars must NOT mark env as a failure. `check_env(true)` reports
+        // `ok: true` while still listing each unset var as null in `status`.
+        let v = check_env(true);
+        assert_eq!(v["ok"].as_bool(), Some(true));
+        // Shape stays stable — `status` still carries every required key.
+        assert!(v["status"]["OTEL_METRICS_EXPORTER"].is_null()
+            || v["status"]["OTEL_METRICS_EXPORTER"].is_string());
     }
 
     #[test]

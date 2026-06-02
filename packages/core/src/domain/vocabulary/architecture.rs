@@ -340,9 +340,8 @@ pub enum ArchitectureStyle {
 }
 
 impl ArchitectureStyle {
-    /// Stable lowercase tag written to `entity-registry.json` and consumed by
-    /// the dashboard / skill selection. [`Self::Unknown`] maps to `"unknown"`,
-    /// preserving the legacy registry value byte-for-byte.
+    /// Stable lowercase tag for the architecture style. [`Self::Unknown`] maps
+    /// to `"unknown"`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -533,6 +532,27 @@ pub fn role_path_counts(vocab: &ArchitectureVocabulary, paths: &[String]) -> BTr
     counts
 }
 
+/// `true` when `content` *defines* this architecture-role vocabulary rather
+/// than *uses* a layout. Colocated with the role schema above so the markers
+/// stay in sync when the schema changes.
+///
+/// A definition is recognised by structural markers of this module's own
+/// shape — markers a normal source file organised into layers cannot exhibit:
+///
+/// - it embeds the role table: contains the `[[role]]` table-array header AND
+///   the `role =` key, OR
+/// - it declares the role taxonomy: names the `LayerRole` enum together with
+///   its `as_str` mapping.
+///
+/// This lets the scan engine skip the file that authors the vocabulary itself
+/// without enumerating any concrete architecture, language, or path.
+#[must_use]
+pub fn is_vocabulary_definition(content: &str) -> bool {
+    let embeds_table = content.contains("[[role]]") && content.contains("role =");
+    let declares_taxonomy = content.contains("LayerRole") && content.contains("as_str");
+    embeds_table || declares_taxonomy
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,5 +711,29 @@ signals = ["kernel"]
         let tmp = tempfile::tempdir().unwrap();
         let v = ArchitectureVocabulary::load(DEFAULT_ARCHITECTURE_NAME, tmp.path()).unwrap();
         assert_eq!(v.classify_segment("domain"), Some(LayerRole::Domain));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_vocabulary_definition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn vocabulary_definition_recognises_own_source() {
+        let own = include_str!("architecture.rs");
+        assert!(is_vocabulary_definition(own));
+    }
+
+    #[test]
+    fn vocabulary_definition_recognises_table_shape() {
+        let toml = "[[role]]\nrole = \"domain\"\nsignals = [\"kernel\"]\n";
+        assert!(is_vocabulary_definition(toml));
+    }
+
+    #[test]
+    fn vocabulary_definition_rejects_layered_source_file() {
+        // A normal file living under a `domain` folder is not a vocabulary
+        // definition just because it sits in a layered layout.
+        let usage = "pub struct User { pub id: u64 }\n";
+        assert!(!is_vocabulary_definition(usage));
     }
 }

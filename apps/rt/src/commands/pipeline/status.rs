@@ -3,7 +3,7 @@
 //! Two modes:
 //! - Default (no `--harness`): git branch/modified/last-commit, active vs
 //!   orphaned pipelines (via `metrics collect` JSON), last build result, and
-//!   entity-registry summary.
+//!   the repo-model summary (grain.model.json presence + project count).
 //! - `--harness`: reads `<root>/.claude/settings.json`, groups hooks by
 //!   lifecycle event, resolves the enforcement mode for each hook via its env
 //!   var, and renders a 4-column table.
@@ -13,7 +13,6 @@
 //! Every IO/parse failure produces a graceful fallback value. The process
 //! always exits 0 — a status command must never block work.
 
-use mustard_core::domain::entity_registry::EntityRegistry;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
@@ -43,7 +42,7 @@ fn hook_description(name: &str) -> &'static str {
         "main_context_counter" => "Enforces L0 delegation; warns/denies un-delegated main-context tool calls",
         "context_budget_gate" => "Blocks Task prompts over per-role budget; advisory over 40% model window",
         "close_gate" => "Closes pipeline only if QA + build pass and checklist complete",
-        "entity_registry_gate" => "Blocks /feature, /bugfix if registry missing or version < 3.x",
+        "scan_gate" => "Blocks /feature, /bugfix until grain.model.json exists (run `mustard-rt run scan`)",
         "size_gate" => "Warns specs > 500 lines; validates skill YAML frontmatter",
         "path_gate" => "Blocks sensitive-file access; flags edits outside spec boundaries",
         "post_edit" => "Auto-formats by extension; auto-marks Checklist items; guard-verify; pipeline-phase events",
@@ -64,7 +63,7 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
         "main_context_counter" => Some("MUSTARD_MAIN_BUDGET_MODE"),
         "context_budget_gate" => Some("CONTEXT_BUDGET_MODE"),
         "close_gate" => Some("MUSTARD_CHECKLIST_GATE_MODE"),
-        "entity_registry_gate" => Some("MUSTARD_ENTITY_REGISTRY_GATE_MODE"),
+        // `scan_gate` is always strict (no mode env var).
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
         "path_gate" => Some("MUSTARD_BOUNDARY_MODE"),
         "post_edit" => Some("MUSTARD_POST_EDIT_MODE"),
@@ -265,43 +264,27 @@ fn run_git(root: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
-struct RegistryMeta {
+struct ModelMeta {
     version: String,
     generated_at: String,
     entity_count: usize,
 }
 
-fn registry_meta(root: &Path) -> RegistryMeta {
-    let Ok(paths) = ClaudePaths::for_project(root) else {
-        return RegistryMeta {
+fn model_meta(root: &Path) -> ModelMeta {
+    // The repo model is grain's `.claude/grain.model.json` (produced by
+    // `mustard-rt run scan`). Report its presence + project count.
+    let model = root.join(".claude").join("grain.model.json");
+    if !model.is_file() {
+        return ModelMeta {
             version: "missing".to_string(),
             generated_at: String::new(),
             entity_count: 0,
         };
-    };
-    let path = paths.entity_registry_json_path();
-    let Ok(text) = fs::read_to_string(&path) else {
-        return RegistryMeta {
-            version: "missing".to_string(),
-            generated_at: String::new(),
-            entity_count: 0,
-        };
-    };
-    let Ok(v): Result<Value, _> = serde_json::from_str(&text) else {
-        return RegistryMeta {
-            version: "parse-error".to_string(),
-            generated_at: String::new(),
-            entity_count: 0,
-        };
-    };
-
-    // Queries go through the canonical v4 reader. The prior entity count walked
-    // the document root — wrong for v4, where entities live under `e`.
-    let registry = EntityRegistry::from_value(v);
-    RegistryMeta {
-        version: registry.version().unwrap_or("unknown").to_string(),
-        generated_at: registry.generated_at().unwrap_or("").to_string(),
-        entity_count: registry.entity_count(),
+    }
+    ModelMeta {
+        version: "grain".to_string(),
+        generated_at: String::new(),
+        entity_count: mustard_core::read_projects(&model).len(),
     }
 }
 
@@ -329,8 +312,8 @@ struct PipelineSummary {
 }
 
 fn pipeline_summary(root: &Path) -> PipelineSummary {
-    // Read entity-registry just for the pipeline summary — re-use metrics
-    // collect JSON if possible, but fall back to scanning spec directory.
+    // Re-use the `metrics collect` JSON if possible, but fall back to scanning
+    // the spec directory.
     let Ok(paths) = ClaudePaths::for_project(root) else {
         return PipelineSummary {
             active: Vec::new(),
@@ -397,7 +380,7 @@ fn render_default_table(
     git: &GitStatus,
     pipelines: &PipelineSummary,
     build: &Option<BuildResult>,
-    registry: &RegistryMeta,
+    registry: &ModelMeta,
 ) -> String {
     let mut lines = Vec::new();
 
@@ -500,7 +483,7 @@ fn render_default_json(
     git: &GitStatus,
     pipelines: &PipelineSummary,
     build: &Option<BuildResult>,
-    registry: &RegistryMeta,
+    registry: &ModelMeta,
 ) -> String {
     let doc = json!({
         "git": {
@@ -552,7 +535,7 @@ pub fn run(opts: StatusOpts) {
         let git = git_status(root);
         let pipelines = pipeline_summary(root);
         let build = last_build(root);
-        let registry = registry_meta(root);
+        let registry = model_meta(root);
         match opts.format.as_str() {
             "json" => println!("{}", render_default_json(&git, &pipelines, &build, &registry)),
             _ => println!("{}", render_default_table(&git, &pipelines, &build, &registry)),
@@ -636,25 +619,24 @@ mod tests {
     }
 
     #[test]
-    fn registry_meta_missing_file_returns_missing() {
+    fn model_meta_missing_file_returns_missing() {
         let td = tempdir().unwrap();
-        let meta = registry_meta(td.path());
+        let meta = model_meta(td.path());
         assert_eq!(meta.version, "missing");
         assert_eq!(meta.entity_count, 0);
     }
 
     #[test]
-    fn registry_meta_parses_version_and_entities() {
+    fn model_meta_present_reports_grain() {
+        // A present grain.model.json reports version "grain". The project COUNT
+        // comes from the scan tool's `facts` command (`read_projects`); that
+        // extraction is covered by scan's and mustard-core's own tests, not here
+        // — this asserts only the presence branch (no scan binary required).
         let td = tempdir().unwrap();
         let dir = td.path().join(".claude");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("entity-registry.json"),
-            r#"{"_meta":{"version":"4.0","generatedAt":"2026-05-23T00:00:00Z"},"e":{"User":{},"Post":{}}}"#,
-        )
-        .unwrap();
-        let meta = registry_meta(td.path());
-        assert_eq!(meta.version, "4.0");
-        assert_eq!(meta.entity_count, 2);
+        std::fs::write(dir.join("grain.model.json"), b"{}").unwrap();
+        let meta = model_meta(td.path());
+        assert_eq!(meta.version, "grain");
     }
 }

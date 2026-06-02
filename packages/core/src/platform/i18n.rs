@@ -324,6 +324,22 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
         ("placeholder.fill_files", Locale::EnUs) => "fill in affected files.",
 
+        // Trackable `## Checklist` item labels (`spec_draft::build_checklist`).
+        // `touch_file` carries a ` → <path>` auto-mark anchor; `first_task` is
+        // the path-less fallback when the scan surfaced no precedent.
+        ("checklist.touch_file", Locale::PtBr) => "Implementar a mudança em",
+        ("checklist.touch_file", Locale::EnUs) => "Implement the change in",
+        ("checklist.first_task", Locale::PtBr) => "T1 — primeira tarefa rastreável.",
+        ("checklist.first_task", Locale::EnUs) => "T1 — first trackable task.",
+
+        // Scan-digest enrichment block injected into the Context section by
+        // `spec_draft::context_enrichment` — the anchors/precedent the digest
+        // already found, so the drafted Context is not an empty placeholder.
+        ("context.scan_anchors", Locale::PtBr) => "Âncoras (do scan)",
+        ("context.scan_anchors", Locale::EnUs) => "Anchors (from scan)",
+        ("context.scan_slices", Locale::PtBr) => "Fatias recorrentes (precedente a espelhar)",
+        ("context.scan_slices", Locale::EnUs) => "Recurring slices (precedent to mirror)",
+
         // Spec A v4 / W3 — wave _summary.md section headings.
         ("heading.summary.objective", Locale::PtBr) => "Objetivo",
         ("heading.summary.objective", Locale::EnUs) => "Objective",

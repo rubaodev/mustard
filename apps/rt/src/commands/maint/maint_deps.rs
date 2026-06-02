@@ -1,10 +1,11 @@
 //! `mustard-rt run maint-deps` — install dependencies in every subproject.
 //!
 //! Port of the `deps` action in `maint/SKILL.md`. Auto-discovers subprojects
-//! via the existing `sync-detect` JSON, picks the install command per stack
-//! (`pnpm install` for JS/TS, `cargo fetch` for Rust, `dotnet restore` for .NET),
-//! and runs them in sequence (parallelism is left to the user — this is a
-//! maintenance helper, not a CI driver).
+//! from grain's repo model (`.claude/grain.model.json` `projects[]`, via the
+//! scan tool — never parsed directly), picks the install command per project
+//! kind (`pnpm install` for npm, `cargo fetch` for cargo, `dotnet restore` for
+//! .NET, …), and runs them in sequence (parallelism is left to the user — this
+//! is a maintenance helper, not a CI driver).
 
 use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
@@ -12,8 +13,7 @@ use crate::shared::context;
 use crate::shared::events::economy;
 use mustard_core::platform::process::rtk_command;
 use serde::Serialize;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Options for `mustard-rt run maint-deps`.
 #[derive(Debug, Clone)]
@@ -37,62 +37,40 @@ pub struct MaintDepsReport {
     pub installs: Vec<InstallRecord>,
 }
 
-/// Pick the canonical install command for a stack token.
+/// Pick the canonical install command for a project kind (grain's manifest
+/// `kind`: npm/cargo/dotnet/go/pub/maven; common stack aliases also accepted).
 #[must_use]
-pub fn install_command(stack: &str) -> Option<(&'static str, Vec<&'static str>)> {
-    match stack.to_ascii_lowercase().as_str() {
-        "typescript" | "javascript" | "react" | "nextjs" | "next" | "node" => {
+pub fn install_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)> {
+    match kind.to_ascii_lowercase().as_str() {
+        "npm" | "node" | "typescript" | "javascript" | "react" | "nextjs" | "next" => {
             Some(("pnpm", vec!["install"]))
         }
-        "rust" => Some(("cargo", vec!["fetch"])),
+        "cargo" | "rust" => Some(("cargo", vec!["fetch"])),
         "dotnet" | "csharp" | "c#" => Some(("dotnet", vec!["restore"])),
-        "python" => Some(("pip", vec!["install", "-e", "."])),
         "go" => Some(("go", vec!["mod", "download"])),
+        "pub" | "dart" | "flutter" => Some(("dart", vec!["pub", "get"])),
+        "maven" | "java" => Some(("mvn", vec!["install", "-q", "-DskipTests"])),
+        "python" => Some(("pip", vec!["install", "-e", "."])),
         _ => None,
     }
 }
 
-/// Discover subprojects via `sync-detect`. Returns the parsed JSON or `None`.
-fn discover_subprojects() -> Option<Value> {
-    let out = rtk_command("mustard-rt", &["run", "sync-detect"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&out.stdout).ok()
-}
-
-/// Run the install routine. Pure-ish (spawns subprocesses).
+/// Run the install routine. Pure-ish (spawns subprocesses). Subprojects come
+/// from grain's repo model (`read_projects` → the scan tool's `facts`).
 fn install_all(dry_run: bool) -> MaintDepsReport {
     let mut installs: Vec<InstallRecord> = Vec::new();
-    let Some(detect) = discover_subprojects() else {
-        // No detection → emit an empty report; the caller knows their tree.
-        return MaintDepsReport { dry_run, installs };
-    };
-    let subs = detect
-        .get("subprojects")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for sub in subs {
-        let path = sub
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let stack = sub
-            .get("stack")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let Some((bin, args)) = install_command(&stack) else {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let model = cwd.join(".claude").join("grain.model.json");
+    for project in mustard_core::read_projects(&model) {
+        let Some((bin, args)) = install_command(&project.kind) else {
             continue;
         };
         let cmd_str = format!("{bin} {}", args.join(" "));
+        let display = if project.dir.is_empty() { project.name.clone() } else { project.dir.clone() };
+        let run_dir = if project.dir.is_empty() { cwd.clone() } else { cwd.join(&project.dir) };
         if dry_run {
             installs.push(InstallRecord {
-                subproject: path,
+                subproject: display,
                 command: cmd_str,
                 ok: true,
                 duration_ms: 0,
@@ -101,12 +79,12 @@ fn install_all(dry_run: bool) -> MaintDepsReport {
         }
         let started = std::time::Instant::now();
         let result = rtk_command(bin, &args)
-            .current_dir(&path)
+            .current_dir(&run_dir)
             .output();
         let dur = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let ok = matches!(result, Ok(ref o) if o.status.success());
         installs.push(InstallRecord {
-            subproject: path,
+            subproject: display,
             command: cmd_str,
             ok,
             duration_ms: dur,
@@ -124,17 +102,6 @@ pub fn run(opts: MaintDepsOpts) {
     economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "maint-deps", started.elapsed().as_millis() as u64, None, json!({}));
 }
 
-
-// Resolve the relative subproject path against the project's repo root.
-// (Kept for future hardening — `install_all` currently shells in cwd of each path.)
-#[allow(dead_code)]
-fn join_repo(repo: &Path, sub: &str) -> PathBuf {
-    if Path::new(sub).is_absolute() {
-        PathBuf::from(sub)
-    } else {
-        repo.join(sub)
-    }
-}
 
 #[cfg(test)]
 mod tests {

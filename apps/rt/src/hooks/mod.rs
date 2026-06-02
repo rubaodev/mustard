@@ -16,7 +16,7 @@
 //!   validation), `path_gate` (sensitive-file + boundary gates),
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
 //!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
-//!   [`entity_registry_gate`] (the entity-registry pre-pipeline gate).
+//!   [`scan_gate`] (the pre-pipeline scan gate — blocks until grain.model.json).
 //! - Wave 5: the session-lifecycle families — `session_start_inject`
 //!   (harness-init / session-memory / spec-hygiene), `session_knowledge_observer`
 //!   (session-knowledge / -inc / memory-auto-extract), `session_cleanup_observer`

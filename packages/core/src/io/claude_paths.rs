@@ -28,7 +28,7 @@
 //! ├── CLAUDE.md
 //! ├── settings.json
 //! ├── mustard.json
-//! ├── entity-registry.json
+//! ├── grain.model.json
 //! ├── pipeline-config.md
 //! ├── .cache/
 //! │   ├── detect.json
@@ -410,12 +410,6 @@ impl ClaudePaths {
     #[must_use]
     pub fn mustard_json_path(&self) -> PathBuf {
         self.root.join("mustard.json")
-    }
-
-    /// `<root>/.claude/entity-registry.json` — scan-driven entity registry.
-    #[must_use]
-    pub fn entity_registry_json_path(&self) -> PathBuf {
-        self.claude_dir().join("entity-registry.json")
     }
 
     /// `<root>/.claude/pipeline-config.md` — long-form pipeline rules.

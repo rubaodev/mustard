@@ -1,10 +1,11 @@
 //! `mustard-rt run maint-validate` — build/type-check every subproject.
 //!
-//! Port of the `validate` action in `maint/SKILL.md`. Uses `sync-detect` to
-//! enumerate subprojects, picks the canonical validate command per stack
-//! (`pnpm typecheck` for TS/JS, `cargo check` for Rust, `dotnet build` for .NET),
-//! and runs them sequentially. Pass/fail per subproject is captured in the JSON
-//! report; the overall verdict is the conjunction.
+//! Port of the `validate` action in `maint/SKILL.md`. Enumerates subprojects
+//! from grain's repo model (`.claude/grain.model.json` `projects[]`, via the
+//! scan tool — never parsed directly), picks the canonical validate command per
+//! project kind (`pnpm typecheck` for npm, `cargo check` for cargo, `dotnet
+//! build` for .NET, …), and runs them sequentially. Pass/fail per subproject is
+//! captured in the JSON report; the overall verdict is the conjunction.
 
 use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
@@ -12,7 +13,7 @@ use crate::shared::context;
 use crate::shared::events::economy;
 use mustard_core::platform::process::rtk_command;
 use serde::Serialize;
-use serde_json::Value;
+use std::path::PathBuf;
 
 /// Options for `mustard-rt run maint-validate`.
 #[derive(Debug, Clone)]
@@ -37,63 +38,46 @@ pub struct MaintValidateReport {
     pub validates: Vec<ValidateRecord>,
 }
 
-/// Pick the canonical validate command for a stack token.
+/// Pick the canonical validate command for a project kind (grain's manifest
+/// `kind`: npm/cargo/dotnet/go/pub/maven; common stack aliases also accepted).
 #[must_use]
-pub fn validate_command(stack: &str) -> Option<(&'static str, Vec<&'static str>)> {
-    match stack.to_ascii_lowercase().as_str() {
-        "typescript" | "javascript" | "react" | "nextjs" | "next" | "node" => {
+pub fn validate_command(kind: &str) -> Option<(&'static str, Vec<&'static str>)> {
+    match kind.to_ascii_lowercase().as_str() {
+        "npm" | "node" | "typescript" | "javascript" | "react" | "nextjs" | "next" => {
             Some(("pnpm", vec!["typecheck"]))
         }
-        "rust" => Some(("cargo", vec!["check"])),
+        "cargo" | "rust" => Some(("cargo", vec!["check"])),
         "dotnet" | "csharp" | "c#" => Some(("dotnet", vec!["build"])),
-        "python" => Some(("python", vec!["-m", "py_compile", "."])),
         "go" => Some(("go", vec!["build", "./..."])),
+        "pub" | "dart" | "flutter" => Some(("dart", vec!["analyze"])),
+        "maven" | "java" => Some(("mvn", vec!["compile", "-q"])),
+        "python" => Some(("python", vec!["-m", "py_compile", "."])),
         _ => None,
     }
 }
 
-fn discover_subprojects() -> Option<Value> {
-    let out = rtk_command("mustard-rt", &["run", "sync-detect"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&out.stdout).ok()
-}
-
 fn validate_all(dry_run: bool) -> MaintValidateReport {
     let mut validates: Vec<ValidateRecord> = Vec::new();
-    let Some(detect) = discover_subprojects() else {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let model = cwd.join(".claude").join("grain.model.json");
+    let projects = mustard_core::read_projects(&model);
+    if projects.is_empty() {
         return MaintValidateReport {
             dry_run,
             overall: "skip",
             validates,
         };
-    };
-    let subs = detect
-        .get("subprojects")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for sub in subs {
-        let path = sub
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let stack = sub
-            .get("stack")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let Some((bin, args)) = validate_command(&stack) else {
+    }
+    for project in projects {
+        let Some((bin, args)) = validate_command(&project.kind) else {
             continue;
         };
         let cmd_str = format!("{bin} {}", args.join(" "));
+        let display = if project.dir.is_empty() { project.name.clone() } else { project.dir.clone() };
+        let run_dir = if project.dir.is_empty() { cwd.clone() } else { cwd.join(&project.dir) };
         if dry_run {
             validates.push(ValidateRecord {
-                subproject: path,
+                subproject: display,
                 command: cmd_str,
                 ok: true,
                 duration_ms: 0,
@@ -102,12 +86,12 @@ fn validate_all(dry_run: bool) -> MaintValidateReport {
         }
         let started = std::time::Instant::now();
         let result = rtk_command(bin, &args)
-            .current_dir(&path)
+            .current_dir(&run_dir)
             .output();
         let dur = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let ok = matches!(result, Ok(ref o) if o.status.success());
         validates.push(ValidateRecord {
-            subproject: path,
+            subproject: display,
             command: cmd_str,
             ok,
             duration_ms: dur,

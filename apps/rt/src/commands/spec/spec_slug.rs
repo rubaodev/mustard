@@ -12,8 +12,7 @@
 //! ## Fail-open
 //!
 //! Every helper accepts free-form input. An empty or fully non-alphanumeric
-//! input degrades to `"x"` (the floor inherited from the existing
-//! `scan::interpret::slugify` contract).
+//! input degrades to `"x"` (the floor inherited from the legacy slug contract).
 //!
 //! ## W6 — subcommand entry point
 //!
@@ -33,9 +32,9 @@ use std::str::FromStr;
 
 /// Slugify `title` for `lang`. PT strips accents, EN does not.
 ///
-/// This is the typed-locale variant of the legacy ascii-only
-/// `scan::interpret::slugify(&str)`; callers that already hold a
-/// [`Locale`] should prefer this entry point so the choice is explicit.
+/// This is the typed-locale variant of the legacy ascii-only slug helper;
+/// callers that already hold a [`Locale`] should prefer this entry point so
+/// the choice is explicit.
 #[must_use]
 pub fn for_locale(title: &str, lang: Locale) -> String {
     slugify(title, lang)

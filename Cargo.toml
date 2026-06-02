@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/cli", "apps/rt", "packages/core"]
+members = ["apps/cli", "apps/rt", "apps/scan", "packages/core"]
 # Intentionally excluded: edition-2021 / rust-1.77 Tauri shell with its own
 # Cargo.lock and pinned deps. Keeping it out of the workspace means a normal
 # `cargo build --workspace` ignores it (the dashboard is built via
@@ -52,19 +52,22 @@ tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # verified on crates.io (0.11.0, 2026-04-08); the 0.10+ line renamed
 # `get_completion_max_tokens` and added the o200k_harmony singleton.
 tiktoken-rs = "0.11"
-# Cross-platform filesystem notification — used by `mustard-rt` for the opt-in
-# `transcript-watcher` daemon (Wave 3 of economia-moat-unification). Pinned to
-# the 6.x line because `apps/dashboard/src-tauri` already vendors `notify = "6"`
-# (via `notify-debouncer-mini = "0.4"`), so reusing the same major keeps the
-# workspace on a single `notify` graph rather than splitting it. Latest stable
-# is 8.2 on crates.io (May 2026); a future workspace-wide bump can move both
-# crates together.
-notify = "6"
-# Data-parallelism primitives — `mustard-rt run sync-registry` uses rayon to
-# parallelise the single-pass file visitor (`scan::file_utils::visit`) so each
-# subproject is read once across all scanners instead of once per faceta.
+# Cross-platform filesystem notification — used by `mustard-rt` for the
+# transcript-watcher daemon (Wave 3). Updated to notify 8.2 (May 2026); the
+# dashboard maintains its own Cargo.lock and is decoupled from the workspace via
+# the `exclude` directive, so the two `notify` graphs are already independent.
+notify = "8"
+# Data-parallelism primitives — rayon parallelises the per-subproject
+# verification pass (`verify_pipeline`) so targets are checked concurrently.
 # Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
 rayon = "1.10"
+# SHA-256 — `mustard-core::model::provenance` fingerprints vendored template
+# trees and `mustard-rt` digests backup-specs MANIFEST.json entries. Centralised
+# here so both crates share one `sha2` graph. Bumped to the 0.11 line (May 2026),
+# which moves the digest output from `generic-array` to `hybrid-array`; this
+# crate only consumes the output as a byte slice / iterator / `[u8; 32]`, all of
+# which stay source-compatible.
+sha2 = "0.11"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 # Only `mustard-core` opts in today; the dashboard crate is intentionally

@@ -764,8 +764,9 @@ impl Check for SessionStartInject {
         // `MUSTARD_COLD_PATH_INVOKED=1` on every subprocess it spawns; we
         // self-allow here so the sub-session is effectively hook-less while
         // OAuth/keychain auth still works (which `claude --bare` would have
-        // broken — see `crate::commands::scan::interpret::call_model` rationale).
-        if std::env::var_os(crate::commands::scan::interpret::COLD_PATH_INVOKED_ENV).is_some() {
+        // broken). Any subprocess that sets `MUSTARD_COLD_PATH_INVOKED` is
+        // treated as hook-less here.
+        if std::env::var_os("MUSTARD_COLD_PATH_INVOKED").is_some() {
             return Ok(Verdict::Allow);
         }
         let cwd = ctx.project_dir_or_cwd(input);

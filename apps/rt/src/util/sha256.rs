@@ -1,11 +1,10 @@
 //! A dependency-free SHA-256 implementation.
 //!
-//! `sync-detect.js` used Node's `crypto.createHash('sha256')` to fingerprint a
-//! subproject's source tree. The `mustard-rt` crate carries no crypto
-//! dependency, so the algorithm (FIPS 180-4) is implemented here directly. It
-//! is used only for change detection — a content fingerprint, not a security
-//! primitive — but the digest is the genuine SHA-256 so a hash computed by the
-//! JS script and by this port over the same bytes is identical.
+//! The `mustard-rt` crate carries no crypto dependency, so the algorithm
+//! (FIPS 180-4) is implemented here directly. It is used only for change
+//! detection — a content fingerprint, not a security primitive — but the digest
+//! is the genuine SHA-256, identical to any standard implementation over the
+//! same bytes.
 
 /// SHA-256 round constants — the first 32 bits of the fractional parts of the
 /// cube roots of the first 64 primes.

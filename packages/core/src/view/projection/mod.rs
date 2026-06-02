@@ -130,7 +130,6 @@ pub(crate) fn extract_to_phase(ev: &HarnessEvent) -> Option<Phase> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::platform::time::iso_diff_ms;
 
     #[test]

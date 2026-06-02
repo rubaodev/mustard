@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mustard-memory": {
+      "command": "mustard-rt",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

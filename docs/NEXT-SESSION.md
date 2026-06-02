@@ -57,7 +57,10 @@ O user autorizou mexer em id/env (ninguém usa mustard ainda). Papel = contrato:
 `_counter`/`_budget` (limites). Cada rename toca TODAS as identidades: arquivo
 (`git mv`), struct, id de wire (`Registry.id` + listas em registry.rs ~511/648/772),
 env `MUSTARD_<ID>_MODE` (status.rs), descrição (status.rs), `mod.rs`, doc-links,
-testes. **Já feito:** `enforce_entity_registry → entity_registry_gate`.
+testes. **Nota:** o antigo hook que reforçava a entity-registry foi REMOVIDO
+junto com o conceito; o modelo do repo agora é `.claude/grain.model.json`, gerado
+por `mustard-rt run scan` e lido só via scan facts/digest ou
+`mustard_core::read_entity_names`/`read_projects`.
 
 **ARQUIVO ≠ STRUCT ≠ ID (muitos-pra-um).** `task/tracker.rs` registra 5 hooks
 (`ToolUseCounter`, `MainContextCounter`, `SubagentTracker`, `MetricsTracker`,

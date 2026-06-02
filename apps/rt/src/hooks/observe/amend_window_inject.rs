@@ -646,6 +646,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             cwd: Some(cwd.to_string()),
             raw: json!({ "tool_response": { "exit_code": 0 } }),
+            ..HookInput::default()
         }
     }
 
@@ -657,6 +658,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             cwd: Some(cwd.to_string()),
             raw: json!({ "tool_response": { "exit_code": exit_code } }),
+            ..HookInput::default()
         }
     }
 
@@ -668,6 +670,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             cwd: Some(cwd.to_string()),
             raw: json!({ "prompt": prompt }),
+            ..HookInput::default()
         }
     }
 
@@ -679,6 +682,7 @@ mod tests {
             session_id: Some(session_id.to_string()),
             cwd: Some(cwd.to_string()),
             raw: json!({}),
+            ..HookInput::default()
         }
     }
 

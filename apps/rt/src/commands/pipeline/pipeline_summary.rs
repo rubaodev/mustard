@@ -230,9 +230,9 @@ fn follow_ups_from_files(files: &[String], pt: bool) -> Vec<String> {
         }
         if lower.contains(".schema.") || lower.ends_with("schema.rs") || lower.ends_with(".prisma") {
             add("schema", if pt {
-                "Regerar tipos do ORM / atualizar entity-registry".to_string()
+                "Regerar tipos do ORM / rodar `mustard-rt run scan`".to_string()
             } else {
-                "Regenerate ORM types / refresh entity-registry".to_string()
+                "Regenerate ORM types / re-run `mustard-rt run scan`".to_string()
             });
         }
         if lower.contains("docker-compose") {

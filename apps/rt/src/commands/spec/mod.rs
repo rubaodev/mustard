@@ -20,3 +20,4 @@ pub mod prd_build;
 pub mod scope_decompose;
 pub mod tactical_fix_create;
 pub mod tactical_fix_detect;
+pub mod scan_spec;

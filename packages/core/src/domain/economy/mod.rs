@@ -29,13 +29,15 @@ pub use estimator::{
 };
 pub use model::{
     AgentCost, ApiCostFrame, ContextCostFrame, ContextRoutingMetrics, EconomySummary,
+    MetricTokenModelBucket, MetricTokenSummary, PerPhaseTokenSummary, PhaseTokenBucket,
     SavingsBreakdown, SavingsBySource, SavingsRecord, SavingsSource, SessionCost, SpanRecord,
-    SpecCost, WaveCost,
+    SpecCost, WaveCost, PHASE_UNATTRIBUTED,
 };
 pub use multi_project::MultiProjectReader;
 pub use reader::{
-    context_routing_quality, economy_summary, operation_invoked_samples, per_agent_costs,
-    per_spec_costs, per_wave_costs, savings_breakdown, OperationSample,
+    context_routing_quality, economy_summary, metric_token_summary, operation_invoked_samples,
+    per_agent_costs, per_phase_token_summary, per_spec_costs, per_wave_costs, savings_breakdown,
+    OperationSample,
 };
 pub use scope::{AgentId, EconomyScope, ProjectPath, SpecId, WaveId};
 pub use writer::{

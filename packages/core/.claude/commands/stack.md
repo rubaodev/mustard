@@ -1,66 +1,51 @@
-<!-- mustard:generated at:2026-05-29T00:00:00Z role:general -->
-# Stack — mustard-core
+<!-- mustard:generated -->
+# Stack — `packages/core`
 
-Shared foundation crate (`mustard-core`) for the Mustard hook/script/CLI Rust migration. Pure-Rust library: event model, hook contract, pipeline-state types, the filesystem seam, and pure projections. No binary, `publish = false`.
+<!-- mustard:enrich hash=94d1ef47a514 -->
+## Purpose
 
-## Language / edition
+`packages/core` (`mustard-core`) is a pure Rust library — the agnostic kernel the CLI, runtime, and dashboard all build on. Its dependency choices reflect that role: `tree-sitter` plus the per-language grammar crates (rust, typescript, python, go, java, c-sharp) and `tree-sitter-loader` drive AST extraction; `aho-corasick` backs the framework/architecture/regression vocabularies; `tiktoken-rs` estimates token counts for the economy domain; `serde`/`serde_json`/`toml` handle the on-disk config, registry, and vocabulary documents; `sha2`, `rayon`, `similar`, and `ureq` support hashing, parallel scanning, diffing, and optional grammar acquisition; `thiserror` defines the crate error type; `insta` and `tempfile` are test-only. The crate is overwhelmingly `.rs` with embedded tree-sitter query files (`.scm`) and TOML vocabulary data.
+<!-- /mustard:enrich -->
 
-| Item | Value | Ref |
-|---|---|---|
-| Crate | `mustard-core` v0.1.0 | `Cargo.toml` |
-| Edition | 2024 | `Cargo.toml` |
-| MSRV | 1.85 | `Cargo.toml` |
-| `unsafe_code` | `forbid` (crate root) | `src/lib.rs:1` |
-| `clippy::unwrap_used` | `deny` workspace-wide (allowed only under `cfg(test)`) | `src/lib.rs:7` |
-| Lints | inherit workspace (`pedantic = warn`) | `Cargo.toml` `[lints] workspace = true` |
+## Manifests
+- `Cargo.toml`
 
-## Dependencies (declared via workspace table)
+## Dependencies
+- `serde` (from `Cargo.toml`)
+- `serde_json` (from `Cargo.toml`)
+- `thiserror` (from `Cargo.toml`)
+- `sha2` (from `Cargo.toml`)
+- `rayon` (from `Cargo.toml`)
+- `tiktoken-rs` (from `Cargo.toml`)
+- `aho-corasick` (from `Cargo.toml`)
+- `toml` (from `Cargo.toml`)
+- `tree-sitter` (from `Cargo.toml`)
+- `tree-sitter-loader` (from `Cargo.toml`)
+- `tree-sitter-rust` (from `Cargo.toml`)
+- `tree-sitter-typescript` (from `Cargo.toml`)
+- `tree-sitter-python` (from `Cargo.toml`)
+- `tree-sitter-go` (from `Cargo.toml`)
+- `tree-sitter-java` (from `Cargo.toml`)
+- `tree-sitter-c-sharp` (from `Cargo.toml`)
+- `similar` (from `Cargo.toml`)
+- `ureq` (from `Cargo.toml`)
+- `insta` (from `Cargo.toml`)
+- `tempfile` (from `Cargo.toml`)
 
-| Crate | Version | Used by | Ref |
-|---|---|---|---|
-| serde / serde_json | workspace | every `model` / boundary type | `Cargo.toml` |
-| thiserror | workspace | `platform::error::Error` | `src/platform/error.rs` |
-| sha2 | 0.10.9 | `model::provenance::tree_checksum` | `Cargo.toml` |
-| tiktoken-rs | workspace | `economy::estimator` (cl100k_base, ±5%) | `Cargo.toml` |
-| aho-corasick | 1.1 | `vocabulary::VocabularyMatcher` | `src/domain/vocabulary/aho.rs` |
-| toml | 0.8 | `vocabulary` (regression.toml) | `Cargo.toml` |
-| tree-sitter (+loader) | 0.26 | `domain::ast` (agnostic AST) | `src/domain/ast/` |
-| tree-sitter-{rust,typescript,python,go,java,c-sharp} | pinned | in-crate grammars | `Cargo.toml` |
-| similar | 2 | `regression_check` textual fallback | `src/domain/regression_check/` |
-| rayon | workspace, **optional** | `atomic_md::store::scan_dir` (>50 files) | `Cargo.toml` |
-| ureq | workspace, **optional** | WASM grammar acquisition only | `src/domain/ast/wasm_acquire.rs` |
+## Source extensions
+- `.rs` — 87
+- `.scm` — 14
+- `.toml` — 4
+- `.md` — 1
+- `.pending-snap` — 1
 
-## Features
-
-| Feature | Default | Effect | Ref |
-|---|---|---|---|
-| `wasm-grammars` | OFF | `tree-sitter/wasm` + `dep:ureq`; pulls wasmtime (heavy). Native + textual floor identical when off | `Cargo.toml:78` |
-
-## Dev dependencies
-
-| Crate | Use | Ref |
-|---|---|---|
-| insta | snapshot tests | workspace |
-| tempfile | io round-trip / config tests | workspace |
-
-## Commands
-
-| Goal | Command | Notes |
-|---|---|---|
-| Build | `rtk cargo build -p mustard-core` | default features (no wasm) |
-| Check | `rtk cargo check -p mustard-core` | |
-| Test | `rtk cargo test -p mustard-core` | unit + `tests/*.rs` |
-| Lint | `rtk cargo clippy -p mustard-core` | pedantic=warn, unwrap_used=deny |
-| Feature build | `rtk cargo build -p mustard-core --features wasm-grammars` | acquires WASM grammars at runtime |
-
-## Layer map
-
-| Layer | Responsibility | Ref |
-|---|---|---|
-| `domain::model` | pure serde data types, zero side effects (event schema, hook contract, ViewModels) | `src/domain/model/` |
-| `io::fs` | the single canonical filesystem seam (port + RealFs + FakeFs + free fns) | `src/io/fs/` |
-| `io::events` | NDJSON `Event` / `EventReader` + workspace walker | `src/io/events/` |
-| `view::projection` | pure folds over `&[HarnessEvent]` → one fn per ViewModel | `src/view/projection/` |
-| `platform::error` | typed error + fail-open helpers | `src/platform/error.rs` |
-| `domain` (cross-cut) | `config`, `meta`, `vocabulary`, `ast`, `economy`, `knowledge`, `skill` | `src/domain/` |
-| `platform` (cross-cut) | `env`, `i18n`, `metrics`, `process`, `time` | `src/platform/` |
+## Clusters
+- 17 clusters across 107 source files
+- `domain`
+- `ast`
+- `economy`
+- `sources`
+- `model`
+- `view`
+- `regression_check`
+- `skill`

@@ -14,7 +14,7 @@
 //!
 //! **What is preserved.** Only the Mustard-owned folders are deleted, so
 //! everything else under `.claude/` survives untouched: `CLAUDE.md`,
-//! `pipeline-config.md`, `entity-registry.json`, `docs/`, `spec/`, `memory/`,
+//! `pipeline-config.md`, `grain.model.json`, `docs/`, `spec/`, `memory/`,
 //! and any user-authored command outside `commands/mustard/`. The project-root
 //! `mustard.json` is loaded and rewritten with only `version` bumped — git
 //! flow, commands, language/tone, `runtime` and any user keys are preserved.
@@ -80,7 +80,7 @@ pub fn update_with_templates(
 
     println!("  Will recreate: commands/mustard/  skills/  scripts/  refs/  settings.json");
     println!(
-        "  Will preserve: CLAUDE.md  pipeline-config.md  entity-registry.json  mustard.json  docs/  spec/  memory/"
+        "  Will preserve: CLAUDE.md  pipeline-config.md  grain.model.json  mustard.json  docs/  spec/  memory/"
     );
 
     // Confirm — interactive only. `--force` skips the prompt; a non-TTY stdin

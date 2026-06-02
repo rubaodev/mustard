@@ -64,6 +64,12 @@ pub const PRD_SECTIONS: &[&str] = &[
 /// Canonical internal keys (see [`PRD_SECTIONS`]).
 pub const PLAN_SECTIONS: &[&str] = &["files", "tasks", "boundaries"];
 
+/// Canonical heading text of the trackable checklist section. The auto-mark
+/// hook, `mark-checklist-item`, and the close-gate checklist check all key off
+/// a literal `## Checklist` H2 (EN-only, language-agnostic) — so the section is
+/// emitted under this exact heading regardless of the spec narrative locale.
+pub const CHECKLIST_HEADING: &str = "Checklist";
+
 /// Markdown comment marker dividing the PRD half from the plan half.
 pub const PRD_DIVIDER: &str = "<!-- PRD -->";
 
@@ -84,6 +90,39 @@ pub struct AcceptanceCriterion {
     pub statement: String,
     /// Runnable command — exit 0 ⇒ pass.
     pub command: String,
+}
+
+// ---------------------------------------------------------------------------
+// Checklist item
+// ---------------------------------------------------------------------------
+
+/// One trackable checklist entry. Rendered as a `- [ ] <label> → <path>` line
+/// inside the spec's `## Checklist` section — the exact shape the auto-mark
+/// hook (`run_checklist_auto_mark`), `mark-checklist-item`, and the close-gate
+/// checklist check already parse. The optional `path` is the auto-mark anchor:
+/// when set, it is appended after an ` → ` arrow so a `Write`/`Edit` of that
+/// file flips the box (Strategy 1 in the auto-mark hook). When absent the item
+/// is still mark-able by hand (or by basename, Strategy 2) but carries no
+/// arrow target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecklistItem {
+    /// Human-readable task label (narrative locale). Required, non-empty.
+    pub label: String,
+    /// Optional auto-mark anchor — a repo-relative file path. When set it is
+    /// rendered after an ` → ` arrow so the auto-mark hook keys off it.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Render one [`ChecklistItem`] as a canonical `- [ ]` markdown line. The shape
+/// is exactly what the three consumers parse: dash, space, `[ ]`, space, label,
+/// then (when a path is set) ` → <path>` so the auto-mark hook can flip it.
+#[must_use]
+pub fn render_checklist_item(item: &ChecklistItem) -> String {
+    match item.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(path) => format!("- [ ] {} → {path}", item.label.trim()),
+        None => format!("- [ ] {}", item.label.trim()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +177,12 @@ pub struct SpecInput {
     /// + command runnable).
     #[serde(default)]
     pub acceptance_criteria: Vec<AcceptanceCriterion>,
+    /// Trackable checklist items — one per task (light) or per task/file-group
+    /// (full). Materialised as the `## Checklist` section the close-gate +
+    /// auto-mark hook + `mark-checklist-item` consume. The validator enforces
+    /// at least one non-empty item so the checklist gate is never orphaned.
+    #[serde(default)]
+    pub checklist: Vec<ChecklistItem>,
 }
 
 /// One narrative section: heading + body text.
@@ -177,6 +222,12 @@ pub enum ContractViolation {
     /// At least one acceptance criterion is required.
     #[error("no acceptance criteria")]
     AcEmpty,
+    /// At least one trackable `## Checklist` item is required.
+    #[error("no checklist items")]
+    ChecklistEmpty,
+    /// A checklist item has an empty `label`.
+    #[error("checklist item missing label")]
+    ChecklistMissingLabel,
     /// Full scope requires a `total_waves` ≥ 1.
     #[error("Full scope requires total_waves ≥ 1")]
     FullScopeNoWaves,
@@ -250,6 +301,20 @@ pub fn validate(input: &SpecInput) -> Result<(), Vec<ContractViolation>> {
     for ac in &input.acceptance_criteria {
         if ac.command.trim().is_empty() {
             violations.push(ContractViolation::AcMissingCommand(ac.id.clone()));
+        }
+    }
+
+    // --- Checklist --------------------------------------------------------
+    // The checklist gate (close-gate) blocks CLOSE on any unmarked `[ ]`. To
+    // keep it from being orphaned, drafting MUST materialise at least one
+    // trackable item — otherwise the gate has nothing to enforce against and
+    // the drafter could ship a spec the gate silently ignores.
+    if input.checklist.is_empty() {
+        violations.push(ContractViolation::ChecklistEmpty);
+    }
+    for item in &input.checklist {
+        if item.label.trim().is_empty() {
+            violations.push(ContractViolation::ChecklistMissingLabel);
         }
     }
 
@@ -337,6 +402,10 @@ mod tests {
                 id: "AC-1".into(),
                 statement: "x".into(),
                 command: "rtk echo ok".into(),
+            }],
+            checklist: vec![ChecklistItem {
+                label: "T1".into(),
+                path: Some("src/lib.rs".into()),
             }],
         }
     }
@@ -434,5 +503,53 @@ mod tests {
         input.acceptance_criteria.clear();
         let err = validate(&input).unwrap_err();
         assert!(err.contains(&ContractViolation::AcEmpty));
+    }
+
+    #[test]
+    fn rejects_empty_checklist() {
+        // The checklist gate (close-gate) blocks on unmarked `[ ]`; the
+        // contract requires drafting to materialise at least one item so the
+        // gate is never orphaned.
+        let mut input = fixture(Scope::Full);
+        input.checklist.clear();
+        let err = validate(&input).unwrap_err();
+        assert!(err.contains(&ContractViolation::ChecklistEmpty));
+    }
+
+    #[test]
+    fn rejects_checklist_item_without_label() {
+        let mut input = fixture(Scope::Full);
+        input.checklist[0].label = String::new();
+        let err = validate(&input).unwrap_err();
+        assert!(err.contains(&ContractViolation::ChecklistMissingLabel));
+    }
+
+    #[test]
+    fn light_scope_requires_checklist_too() {
+        let mut input = fixture(Scope::Light);
+        input.plan_sections.clear();
+        input.checklist.clear();
+        let err = validate(&input).unwrap_err();
+        assert!(err.contains(&ContractViolation::ChecklistEmpty));
+    }
+
+    #[test]
+    fn render_checklist_item_with_path_uses_arrow() {
+        // The arrow form is the auto-mark hook's Strategy-1 anchor; the line
+        // shape must be exactly `- [ ] <label> → <path>`.
+        let item = ChecklistItem {
+            label: "Add list view".into(),
+            path: Some("src/list.rs".into()),
+        };
+        assert_eq!(render_checklist_item(&item), "- [ ] Add list view → src/list.rs");
+    }
+
+    #[test]
+    fn render_checklist_item_without_path_is_plain() {
+        let item = ChecklistItem { label: "Write docs".into(), path: None };
+        assert_eq!(render_checklist_item(&item), "- [ ] Write docs");
+        // An empty/whitespace path degrades to the plain form (no dangling arrow).
+        let item2 = ChecklistItem { label: "X".into(), path: Some("  ".into()) };
+        assert_eq!(render_checklist_item(&item2), "- [ ] X");
     }
 }

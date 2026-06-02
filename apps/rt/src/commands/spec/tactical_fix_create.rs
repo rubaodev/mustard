@@ -45,11 +45,14 @@ pub struct TacticalFixReport {
     pub error: Option<String>,
 }
 
-/// Cap the slug at 6 hyphen-separated words.
+/// Max number of words kept in a tactical-fix slug (keeps slugs short).
+const SLUG_MAX_TOKENS: usize = 4;
+
+/// Cap the slug at [`SLUG_MAX_TOKENS`] hyphen-separated words.
 fn cap_words(slug: &str) -> String {
     slug.split('-')
         .filter(|s| !s.is_empty())
-        .take(6)
+        .take(SLUG_MAX_TOKENS)
         .collect::<Vec<_>>()
         .join("-")
 }

@@ -8,10 +8,9 @@
 //! 3. recursively copy `templates/` → `.claude/`;
 //! 4. copy `templates/.github/` → project-root `.github/` when a GitHub
 //!    remote is detected;
-//! 5. seed an empty `entity-registry.json` on a fresh install;
-//! 6. ensure global Claude Code permissions in `~/.claude/settings.json`;
-//! 7. install RTK (token economy) if missing — fail-open;
-//! 8. write the single project-root `mustard.json`: git-flow + agnostically
+//! 5. ensure global Claude Code permissions in `~/.claude/settings.json`;
+//! 6. install RTK (token economy) if missing — fail-open;
+//! 7. write the single project-root `mustard.json`: git-flow + agnostically
 //!    detected build/test/lint/type-check commands + spec language + tone +
 //!    the `runtime`/`version` stamp.
 //!
@@ -108,10 +107,7 @@ pub fn init_with_templates(
         return Ok(());
     }
 
-    let mut fresh_install = true;
-
     if claude_path.exists() {
-        fresh_install = false;
         match decide_existing_action(&claude_path, options)? {
             ExistingAction::Cancel => {
                 println!("\n  Cancelled.\n");
@@ -132,10 +128,6 @@ pub fn init_with_templates(
         let count = copy_dir(templates_dir, &claude_path, true, &[".github", ".claude"])?;
         let gh = install_github_templates(templates_dir, &project_path)?;
         report_copy(count, gh, true);
-    }
-
-    if fresh_install {
-        seed_entity_registry(&claude_path)?;
     }
 
     ensure_global_permissions().unwrap_or_else(|err| {
@@ -296,19 +288,6 @@ fn has_github_remote(project_path: &Path) -> bool {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
         .is_some_and(|url| url.contains("github.com"))
-}
-
-/// Seed an empty `entity-registry.json` on a fresh install (only when absent).
-fn seed_entity_registry(claude_path: &Path) -> Result<()> {
-    let registry = claude_path.join("entity-registry.json");
-    if registry.exists() {
-        return Ok(());
-    }
-    let body = serde_json::to_string_pretty(&json!({ "_patterns": {}, "_enums": {}, "e": {} }))
-        .context("serializing the empty entity registry")?;
-    mfs::write_atomic(&registry, body.as_bytes())
-        .with_context(|| format!("writing {}", registry.display()))?;
-    Ok(())
 }
 
 /// Build and write the single project-root `mustard.json`.
@@ -742,8 +721,9 @@ mod tests {
         assert_eq!(memory.get("command").and_then(|c| c.as_str()), Some("mustard-rt"));
         assert!(memory.get("env").is_none(), "no MUSTARD_DB_PATH / SQLite env");
 
-        // Fresh install seeds the entity registry.
-        assert!(claude.join("entity-registry.json").exists());
+        // init no longer seeds any entity-registry — the repo model is grain's
+        // `.claude/grain.model.json`, produced on demand by `mustard-rt run scan`.
+        assert!(!claude.join("entity-registry.json").exists());
     }
 
     #[test]

@@ -10,7 +10,8 @@ use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs as mfs;
 use mustard_core::domain::meta::read_meta_beside;
 use mustard_core::domain::spec::contract::{
-    self, AcceptanceCriterion, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
+    self, AcceptanceCriterion, ChecklistItem, SectionBody, SpecInput, CHECKLIST_HEADING,
+    PLAN_SECTIONS, PRD_SECTIONS,
 };
 use mustard_core::ClaudePaths;
 use mustard_core::{domain::model::view::Phase, Outcome, Scope, Stage};
@@ -125,6 +126,7 @@ fn build_input_from_files(slug: &str, spec_text: &str, meta: Option<&mustard_cor
     let prd = collect_sections(spec_text, PRD_SECTIONS);
     let plan = collect_sections(spec_text, PLAN_SECTIONS);
     let acs = collect_acceptance_criteria(spec_text);
+    let checklist = collect_checklist(spec_text);
 
     let stage = meta
         .and_then(|m| m.stage.as_deref())
@@ -155,7 +157,47 @@ fn build_input_from_files(slug: &str, spec_text: &str, meta: Option<&mustard_cor
         prd_sections: prd,
         plan_sections: plan,
         acceptance_criteria: acs,
+        checklist,
     }
+}
+
+/// Collect trackable `## Checklist` items — the `- [ ] <label>` / `- [x]
+/// <label>` lines under the EN-only `## Checklist` H2 (the literal the auto-mark
+/// hook + close-gate key off). A ` → <path>` suffix is split back into the
+/// item's `path` so the round-trip matches what `spec-draft` wrote.
+fn collect_checklist(text: &str) -> Vec<ChecklistItem> {
+    let lines: Vec<&str> = text.lines().collect();
+    let checklist_h2 = format!("## {CHECKLIST_HEADING}");
+    let Some(start) = lines
+        .iter()
+        .position(|l| l.trim_end().eq_ignore_ascii_case(&checklist_h2))
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<ChecklistItem> = Vec::new();
+    for line in lines.iter().skip(start + 1) {
+        if line.starts_with("## ") {
+            break;
+        }
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("- ") else {
+            continue;
+        };
+        // `[ ]` (unchecked) or `[x]`/`[X]` (checked) — strip whichever leads.
+        let body = rest
+            .strip_prefix("[ ]")
+            .or_else(|| rest.strip_prefix("[x]"))
+            .or_else(|| rest.strip_prefix("[X]"));
+        let Some(body) = body else { continue };
+        let body = body.trim();
+        // Split a trailing ` → <path>` arrow back into label + path.
+        let (label, path) = match body.rsplit_once('→') {
+            Some((l, p)) => (l.trim().to_string(), Some(p.trim().to_string())),
+            None => (body.to_string(), None),
+        };
+        out.push(ChecklistItem { label, path });
+    }
+    out
 }
 
 /// Extract the `# Title` line from a spec body.
@@ -284,6 +326,7 @@ mod tests {
         for n in PLAN_SECTIONS {
             s.push_str(&format!("\n## {n}\n\nbody\n"));
         }
+        s.push_str("\n## Checklist\n\n- [ ] Touch the file → src/list.rs\n- [ ] Write docs\n");
         s
     }
 
@@ -302,6 +345,28 @@ mod tests {
         assert_eq!(acs.len(), 1);
         assert_eq!(acs[0].id, "AC-1");
         assert_eq!(acs[0].command, "rtk cargo build");
+    }
+
+    #[test]
+    fn collects_checklist_items_with_and_without_arrow() {
+        let items = collect_checklist(&fixture_full_spec());
+        assert_eq!(items.len(), 2);
+        // Arrow form splits into label + path.
+        assert_eq!(items[0].label, "Touch the file");
+        assert_eq!(items[0].path.as_deref(), Some("src/list.rs"));
+        // Plain form carries no path.
+        assert_eq!(items[1].label, "Write docs");
+        assert!(items[1].path.is_none());
+    }
+
+    #[test]
+    fn collects_checked_items_too() {
+        // A `- [x]` (already-marked) item still round-trips so re-validation of
+        // a partially-completed spec keeps the contract green.
+        let body = "# X\n\n## Checklist\n\n- [x] done → a.rs\n- [ ] open → b.rs\n";
+        let items = collect_checklist(body);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].path.as_deref(), Some("a.rs"));
     }
 
     #[test]

@@ -223,8 +223,8 @@ export const ENV_CATALOG: EnvGroup[] = [
         desc: 'Força um modo de resume. Default auto: continued se state <10min OR currentWave>1 sem falha; senão pergunta.',
         valueDocs: {
           auto: 'Decide pelo estado do pipeline (default).',
-          continued: 'Sempre confia no pipeline-state — pula sync-registry + diff-context.',
-          reanalyzed: 'Sempre re-roda sync-registry + diff-context (modo seguro).',
+          continued: 'Sempre confia no pipeline-state — pula a re-análise (scan) + diff-context.',
+          reanalyzed: 'Sempre re-roda a re-análise (scan) + diff-context (modo seguro).',
           ask: 'Restaura o prompt legacy a cada resume.',
         },
       },

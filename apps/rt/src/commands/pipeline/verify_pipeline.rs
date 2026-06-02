@@ -1,7 +1,8 @@
 //! `mustard-rt run verify-pipeline` — multi-stack pipeline verification.
 //!
 //! Runs build/test verification for the active pipeline: discovers the
-//! subprojects (via `mustard-rt run sync-detect`), runs each subproject's
+//! subprojects from grain's repo model (`grain.model.json` `projects[]`, via
+//! the scan tool), runs each subproject's
 //! build + test command in **parallel** via `rayon`, and reports per-subproject
 //! status with the new JSON shape introduced in W10.T10.1:
 //!
@@ -26,7 +27,7 @@
 //! - TS/JS:   120 s (`MUSTARD_VERIFY_TIMEOUT_TS`)
 //! - Python:  180 s (`MUSTARD_VERIFY_TIMEOUT_PYTHON`)
 //!
-//! Fail-open on discovery: a missing `sync-detect` degrades to the defaults
+//! Fail-open on discovery: a missing repo model degrades to the config/defaults
 //! probe. Exit `1` when any verification command fails, `0` otherwise.
 //!
 //! `--format html` additionally writes a standalone HTML report and prints its
@@ -44,7 +45,6 @@ use rayon::prelude::*;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Default per-command timeout (2 min) — the historical contract from
 /// `verify-pipeline.js`. Used when the command prefix gives no stack hint.
@@ -89,65 +89,29 @@ struct VerifyTarget {
     test: Option<String>,
 }
 
-/// Discover targets via `mustard-rt run sync-detect`.
+/// Discover verification targets from grain's model
+/// (`.claude/grain.model.json` `projects[]`, via the scan tool) — the
+/// deterministic subproject list. Build/test commands come from `mustard.json`
+/// (the project's own commands), run in each subproject's directory.
 ///
-/// Under `cfg(test)` this is a no-op: `current_exe()` would resolve to the
-/// libtest binary, and spawning it with `run sync-detect` re-runs the whole
-/// suite (a fork bomb). Production builds spawn the real `mustard-rt`.
-fn discover_via_sync_detect(cwd: &Path) -> Vec<VerifyTarget> {
+/// Under `cfg(test)` this is a no-op so unit tests drive verification with their
+/// own targets rather than the real model.
+fn discover_via_grain(cwd: &Path) -> Vec<VerifyTarget> {
     if cfg!(test) {
         return Vec::new();
     }
-    let Ok(exe) = std::env::current_exe() else {
+    let cmds = mustard_core::ProjectConfig::load(cwd).commands();
+    if cmds.build.is_none() && cmds.test.is_none() {
         return Vec::new();
-    };
-    let output = Command::new(exe)
-        .args(["run", "sync-detect"])
-        .current_dir(cwd)
-        .output();
-    let Ok(out) = output else {
-        return Vec::new();
-    };
-    let Ok(text) = String::from_utf8(out.stdout) else {
-        return Vec::new();
-    };
-    let Ok(parsed) = serde_json::from_str::<Value>(&text) else {
-        return Vec::new();
-    };
-    let subprojects = parsed
-        .get("subprojects")
-        .or_else(|| parsed.get("projects"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for (i, sp) in subprojects.iter().enumerate() {
-        let build = sp
-            .get("buildCommand")
-            .or_else(|| sp.get("validateCommand"))
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let test = sp
-            .get("testCommand")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        if build.is_none() && test.is_none() {
-            continue;
-        }
-        let name = sp
-            .get("name")
-            .or_else(|| sp.get("path"))
-            .and_then(Value::as_str)
-            .map_or_else(|| format!("subproject-{i}"), str::to_string);
-        let sp_cwd = sp
-            .get("path")
-            .and_then(Value::as_str)
-            .map_or_else(|| cwd.to_path_buf(), |p| cwd.join(p));
-        out.push(VerifyTarget { name, cwd: sp_cwd, build, test });
     }
-    out
+    let model = cwd.join(".claude").join("grain.model.json");
+    mustard_core::read_projects(&model)
+        .into_iter()
+        .map(|p| {
+            let target_cwd = if p.dir.is_empty() { cwd.to_path_buf() } else { cwd.join(&p.dir) };
+            VerifyTarget { name: p.name, cwd: target_cwd, build: cmds.build.clone(), test: cmds.test.clone() }
+        })
+        .collect()
 }
 
 /// Fallback: scan `pipeline-config.md` for a Build Command column.
@@ -421,21 +385,21 @@ fn scripts_from_stack_md(sub_cwd: &Path) -> Option<(Option<String>, Option<Strin
     Some((build, test))
 }
 
-/// Discover verification targets — sync-detect, then the `pipeline-config.md`
+/// Discover verification targets — the grain model, then the `pipeline-config.md`
 /// fallback, then the defaults probe. Kept separate from [`verify_targets`] so
-/// tests can drive verification without the `sync-detect` subprocess spawn.
+/// tests can drive verification without spawning the scan tool.
 ///
 /// W10.T10.2: after discovery, each target's commands are overridden when its
 /// subproject ships a `[scripts]` block inside `.claude/commands/stack.md`.
 fn discover_targets(cwd: &Path) -> Vec<VerifyTarget> {
-    let mut targets = discover_via_sync_detect(cwd);
+    let mut targets = discover_via_grain(cwd);
     if targets.is_empty() {
         targets = discover_via_config(cwd);
     }
     if targets.is_empty() {
         targets = discover_defaults(cwd);
     }
-    // W10.T10.2 — let stack.md scripts win over sync-detect defaults.
+    // W10.T10.2 — let stack.md scripts win over the discovered defaults.
     for t in &mut targets {
         if let Some((b, te)) = scripts_from_stack_md(&t.cwd) {
             if b.is_some() {
@@ -592,8 +556,8 @@ mod tests {
 
     #[test]
     fn verify_targets_empty_yields_empty_result() {
-        // `verify_targets` is exercised directly — `verify()` would spawn
-        // `current_exe() run sync-detect`, which under a test binary recurses.
+        // `verify_targets` is exercised directly — `verify()` would discover
+        // targets via the scan tool (`read_projects`), which a unit test avoids.
         let result = verify_targets(&[]);
         assert!(result.per_subproject.is_empty());
         assert!(!result.any_failure());

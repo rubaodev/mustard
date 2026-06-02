@@ -353,13 +353,13 @@ fn classify(
         );
     }
 
-    // 2. CLAUDE.md / pipeline-config.md / entity-registry.json / settings.json
+    // 2. CLAUDE.md / pipeline-config.md / grain.model.json / settings.json
     //    sit at the root of every installed `.claude/`. Treat them as KEEP
     //    (their consumers are declared in templates/ and in mustard-rt itself).
     let well_known_files: BTreeSet<&'static str> = [
         "CLAUDE.md",
         "pipeline-config.md",
-        "entity-registry.json",
+        "grain.model.json",
         "settings.json",
         "settings.local.json",
         "mustard.json",

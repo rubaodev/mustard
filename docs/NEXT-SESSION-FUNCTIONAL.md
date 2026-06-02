@@ -69,8 +69,8 @@ Commit a cada passo/fase **somente com a árvore verde**.
   integra no `GrammarLoader`/`TreeSitterParser` (WasmStore por parser; `language.is_wasm()`);
   fail-open → floor textual. Testes sem rede (`#[ignore]` no teste de rede).
 
-**F1** Scan/entity-registry: wire `ast::EntityExtractor` no `InterpretedScanner`/
-`sync_entity_registry` (entities/enums/campos/edges; popular `properties/decorators/table_name`;
+**F1** Scan/model: wire `ast::EntityExtractor` no `InterpretedScanner` que produz
+`.claude/grain.model.json` via `mustard-rt run scan` (entities/enums/campos/edges; popular `properties/decorators/table_name`;
 conectar `pluralize`; **remover** o `entity_extractor.rs` duplicado do scan); `patternsOverlay`
 determinístico; **detecção de arquitetura** (via `detect_framework_signals` + direção do
 import-graph → campo `architecture`); `interpret::call_model` → fallback opt-in default-OFF +
@@ -95,7 +95,7 @@ conclusão determinística (auto-emit `wave.complete`; `close_orchestrate` encad
 renderizadores de wave-plan.md; auto-abertura por tipo (re-wave/wave/epic-fold automáticos;
 tf/followup semi via payload estruturado); refatorar `resume_bootstrap` (SRP).
 
-**F5** Lifecycle + i18n: `scope_decompose` com sinais do scan/registry; `prd_build::entity_present`
+**F5** Lifecycle + i18n: `scope_decompose` com sinais do `.claude/grain.model.json` (via scan); `prd_build::entity_present`
 lookup exato; `bugfix_cache` rootCauseHash determinístico; `/task` via `agent-prompt-render`;
 PRD_SECTIONS chaves EN; `language`+`tone` só na spec-facing (`mustard.json`); AC command e VCS
 do `mustard.json` (fim de `rtk cargo build`/`git` hardcoded); artefatos internos → EN.

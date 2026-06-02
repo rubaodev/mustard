@@ -26,6 +26,10 @@ nul
 .env.*
 *.local
 
+# Per-build version counter (install.ps1 increments this and feeds it to the
+# cargo build as MUSTARD_BUILD_NUMBER; local-only, regenerable from 1)
+.mustard-build-number
+
 # Logs
 *.log
 npm-debug.log*

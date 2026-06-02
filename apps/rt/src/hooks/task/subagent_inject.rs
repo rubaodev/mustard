@@ -45,10 +45,6 @@ use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, V
 /// snippet without ballooning the parent context budget.
 const INJECT_MAX_CHARS: usize = 1500;
 
-/// Top-K skills surfaced to the dispatch. Matches the
-/// `recommended_skills_via_resolve` cap in `agent_prompt_render`.
-const TOP_K_SKILLS: usize = 4;
-
 /// Max spec-memory principles loaded per dispatch (T8.10).
 const SPEC_MEMORY_MAX: usize = 3;
 
@@ -286,29 +282,6 @@ fn span_level_eval_and_append_in(
     Some(verdict_label)
 }
 
-/// Build the recommended-skills block via [`crate::commands::skill::skill_resolve::resolve`].
-fn recommended_skills_block(
-    project: &Path,
-    intent: &str,
-    subproject: Option<&str>,
-    role: &str,
-) -> String {
-    // Map role → phase via the shared helper (same mapping both call sites use).
-    let phase = context_inject::role_to_phase(role);
-    let resolved =
-        crate::commands::skill::skill_resolve::resolve(project, intent, subproject, Some(phase), TOP_K_SKILLS);
-    if resolved.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("## RECOMMENDED SKILLS\n");
-    for s in &resolved {
-        out.push_str("- ");
-        out.push_str(&s.name);
-        out.push('\n');
-    }
-    out
-}
-
 /// The dispatch prompt — `tool_input.prompt` for a Task call.
 fn dispatch_prompt(input: &HookInput) -> String {
     input
@@ -349,10 +322,6 @@ impl Check for SubagentInject {
         let role = role_from_input(input);
 
         let mut sections: Vec<String> = Vec::new();
-        let skills = recommended_skills_block(&project, &prompt, None, &role);
-        if !skills.is_empty() {
-            sections.push(skills);
-        }
         let ctx_md = read_context_md_slice(&project);
         if !ctx_md.is_empty() {
             sections.push(format!("## CONTEXT.md (slice)\n{ctx_md}"));

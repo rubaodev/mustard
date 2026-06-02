@@ -11,7 +11,8 @@ import type { LapidatedPrd } from '@/lib/types/prd';
  * Shells out to the local Claude CLI (via the Rust backend) to lapidate a
  * free-form intent into a structured PRD. `projectPath` is the absolute path
  * to the project root — the CLI runs with cwd = projectPath so it can confront
- * the intent against the real `.claude/entity-registry.json` and filesystem.
+ * the intent against the real repo model (`.claude/grain.model.json`, via scan)
+ * and the filesystem.
  */
 export async function lapidatePrd(intent: string, projectPath: string): Promise<LapidatedPrd> {
   return invoke<LapidatedPrd>('lapidate_prd', { intent, projectPath });
@@ -27,11 +28,10 @@ export async function checkClaudeAvailable(): Promise<boolean> {
 }
 
 /**
- * Reads `.claude/entity-registry.json` from the given project root and returns
- * the discovered entity names. Falls back to top-level keys minus reserved
- * `_*` prefixes when there is no explicit `entities` key (the common shape
- * today). Returns an empty array when the registry is missing.
+ * Reads the repo model's known entity names from `.claude/grain.model.json`
+ * **via the scan tool** (the dashboard never parses the model directly).
+ * Returns an empty array when the project hasn't been scanned yet.
  */
-export async function readEntityRegistry(projectPath: string): Promise<string[]> {
-  return invoke<string[]>('read_entity_registry', { repoPath: projectPath });
+export async function readModelEntities(projectPath: string): Promise<string[]> {
+  return invoke<string[]>('read_model_entities', { repoPath: projectPath });
 }

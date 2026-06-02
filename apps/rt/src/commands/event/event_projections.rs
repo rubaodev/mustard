@@ -1072,7 +1072,10 @@ pub fn pipeline_state_from_events(
                 }
             }
             EVENT_PIPELINE_COMPLETE => {
-                match serde_json::from_value::<PipelineCompletePayload>(ev.payload.clone()) {
+                // Lenient: a bare `pipeline.complete` (no `--payload`) lands as
+                // a `null` payload — treated as the all-default completion
+                // rather than dropped with a serde "invalid type: null" error.
+                match PipelineCompletePayload::from_value_lenient(ev.payload.clone()) {
                     Ok(p) => {
                         view.closed_at = p.closed_at;
                         view.affected_files = p.affected_files;

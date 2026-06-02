@@ -6,38 +6,69 @@ source: manual
 <!-- mustard:generated -->
 # /feature - Feature Pipeline
 
-`/feature <feature-name>` — search for newest docs before any change. Heavy lifting delegates to `mustard-rt`; orchestrator routes phases + emits events.
+`/feature <request>` — understand the client, research the repo through the deterministic `scan` tool (never reading source by hand), then plan + implement.
+Heavy lifting delegates to `mustard-rt`; the orchestrator routes phases + emits events. You (the AI) do the reasoning that grain cannot: elicitation, decomposition, lapidation.
+
+> **Artifact order — read before editing the flow.** The spec dir + `spec.md` + `meta.json` are MATERIALISED by `mustard-rt run spec-draft` in PLAN (step 2). They do **not** exist during ANALYZE. The slug is born from `--intent` at that step. Never reference `.claude/spec/{slug}/spec.md` (or run a command that reads it) before it has been materialised.
 
 ## Action
 
-### 1. Hygiene + ANALYZE
+### 1. Understand + RESEARCH (ANALYZE)
 
-→ `../../../refs/feature/spec-hygiene.md`. Emit `pipeline.stage: Analyze`. Run `sync-detect` (and `sync-registry` if `hashChanged: true`). Resolve entities via `mustard-rt run registry-query --entity {Entity}` (or `--for-spec {spec}` for all at once) — the slice, never the full JSON. Read `.claude/pipeline-config.md` once.
+→ `../../../refs/feature/spec-hygiene.md`. Emit `pipeline.stage: Analyze`.
 
-Scope: light (1-2 layers, ≤5 files, known pattern) | extended-light (entity in registry + modifies existing + ≤8 files) | full (3+ layers, new entity/pattern). MAX 5 reads in ANALYZE. Skip Explore when entity is in registry.
+- **Note the client's intent** in your own words (what they actually want, plus every concrete critique from the conversation).
+- **Ensure the model exists/is fresh**: `mustard-rt run scan` produces `.claude/grain.model.json` (the durable repo model). Run it if absent or the codebase changed materially.
+- **Research via the scan digest, not the repo**: `mustard-rt run feature --intent "<request>"` → structured *insumos* (`matchedTerms`, `slices`, `contracts`, `hubs`, `anchors`, `miss`, `note`). Re-query with **repo-vocabulary** terms on a `miss` (the term index has no synonyms and false negatives — e.g. a PT request maps to EN code terms). NEVER conclude "absent" from a `miss` alone.
+- **Read ONLY the `anchors`** the insumos point to (~12 real files) — never the whole repo, never `grain.model.json` directly. This is the low-consumption contract. **When the anchors span ≥2 subprojects, do NOT read them in the parent.** Every file you open in a subproject auto-injects that subproject's `CLAUDE.md` + skill catalog into your context — the most expensive, longest-lived one — so reading across N subprojects pays that fixed overhead N×, re-sent on every later turn of ANALYZE+PLAN. Instead dispatch **one `Task(Explore)` per subproject**; each reads only that subproject's anchors and returns ≤40 lines (the pattern to mirror, files to touch, contract wiring). Reserve direct parent reads for a single-subproject feature, and read only the slice you need (`offset`/`limit`), never whole files.
 
-End: `rtk mustard-rt run analyze-validation --spec .claude/spec/{spec}/spec.md` — append `issues[]` to `## Concerns` on `ok: false` (non-blocking).
+Scope: light (1-2 layers, ≤5 files, mirrors a matched slice) | extended-light (matched slice + modifies existing + ≤8 files) | full (3+ layers, net-new or spans multiple slices). MAX 5 reads beyond the anchors in ANALYZE.
 
-### 2. PLAN
+ANALYZE ends at scope detection. There is **no spec file yet**, so nothing is validated here — `analyze-validation` runs in PLAN (step 4), after the scaffold exists.
+
+### 2. DECOMPOSE
+
+From the insumos + anchors, split the request into three natures (this is the judgement grain cannot make):
+
+- **Units with precedent** → each maps to a matched slice; you will ask `scan spec` for each (with `--like <sibling>` when one exists).
+- **Cross-cutting invariants to obey** → contracts/hubs the repo already enforces (e.g. an injected `ICurrentTenant`); pass each via `scan spec --invariant <Name>` so the draft anchors the real wiring. NEVER invent the mechanism — mirror the anchored consumers.
+- **Net-new gaps** (no precedent; `miss` after a repo-vocabulary re-query) → surface as a design decision; do not let a `scan spec` draft's "deterministic" framing imply a unit that has no precedent is safe to clone.
+
+### 3. PLAN
 
 → `../../../refs/feature/spec-language.md` (header translation, narrative rules, Component Contract). → `../../../refs/feature/wave-decomposition.md`.
 
-Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUserQuestion once → persist to `meta.json`). **Concern Coverage Audit**: every concrete user critique from the conversation must map to covered by wave/task | non-goal justified | surfaced for decision. Orphaned items block the AskUserQuestion. Full scope: wave decomposition when `file_count ≥ 6 OR layer_count ≥ 3 OR independent_subbehaviors ≥ 3` — `mustard-rt run wave-scaffold --spec-dir <dir> --plan <plan.json>`.
+Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUserQuestion once) — hold the resolved value for `spec-draft --lang` (step 2 persists it to `meta.json`).
 
-Write `.claude/spec/{date}-{name}/spec.md` two-layer: `## PRD` → `## Contexto`, `## Usuários/Stakeholders`, `## Métrica de sucesso`, `## Não-Objetivos`, `## Critérios de Aceitação`; `## Plano` → `## Informações da Entidade`, `## Arquivos`, optional `## Component Contract` (UI only), `## Tarefas`, `## Dependências`, `## Limites`.
+PLAN materialises the spec in a **fixed order** — every artifact exists before the next step consumes it:
+
+1. **Lapidate the body (no file yet).** Per unit: `mustard-rt run scan spec --entity {Unit} [--like {Sibling}] [--invariant {Contract}] [--ops create,...]` → a draft carrying the auto-chosen pattern menu, per-project sections, the anchors, and acceptance criteria. Read the draft + its anchors + the client request; resolve the bifurcation, prune, add domain rules, mark assumptions — **in the project's language/tone** (`mustard.json#specLang`/`tone`). The draft's project-unit sections ARE the wave/agent decomposition. Hold the lapidated body in context; do **not** write a file here.
+2. **Materialise the scaffold.** `mustard-rt run spec-draft --intent "<request>" --scope {light|full} --lang <bcp47> [--waves N]` writes `.claude/spec/{slug}/spec.md` + `meta.json` (slug born from `--intent`; `meta.json` is the single lifecycle source; the `context` section is pre-filled with the scan anchors/slices). This is the **only** writer of the spec scaffold — never hand-write `spec.md` with the Write tool.
+3. **Fold the body in.** `Edit` the lapidated bodies from step 1 into the scaffold's Plan-layer sections (`entities`, `files`, optional `component-contract` UI-only, `tasks`, `dependencies`, `boundaries`). Edit — never overwrite — so the digest-enriched `context` section survives. **Full scope** (`file_count ≥ 6 OR layer_count ≥ 3 OR independent_subbehaviors ≥ 3`): `mustard-rt run wave-scaffold --spec-dir <dir> --plan <plan.json>` adds the per-wave specs + review/qa scaffolds from the plan you built out of the `scan spec` project-unit decomposition.
+4. **Validate (file now exists).** `mustard-rt run analyze-validation --spec .claude/spec/{slug}/spec.md` → append `issues[]` to `## Concerns` on `ok: false` (non-blocking, WARN-level).
+5. **Concern Coverage Audit.** Every concrete user critique must map to covered by wave/task | non-goal justified | surfaced for decision. Orphaned items block the AskUserQuestion.
+
+Spec layout — **canonical section keys** (EN, language-agnostic); the rendered heading localises per `mustard.json#specLang` (e.g. `context` → `## Context` / `## Contexto`): **PRD layer** — `context`, `users`, `metric`, `non-goals`, `acceptance-criteria`; **Plan layer** — `entities`, `files`, optional `component-contract` (UI only), `tasks`, `dependencies`, `boundaries`.
 
 Emit `pipeline.scope` + `pipeline.stage: Plan`. Print spec verbatim + `wave-tree`. AskUserQuestion: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
-### 3. Light/Extended-Light EXECUTE (inline)
+> **Materialisation split (no overlap).** `spec-draft` writes ONLY the top-level `spec.md` + `meta.json` (scope/totalWaves/isWavePlan); `wave-scaffold` is the sole owner of the wave breakdown (`wave-plan.md` + per-wave specs + review/qa, plan-driven). Full scope = `spec-draft` (step 2) then `wave-scaffold` (step 3).
 
-User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `exec-rewave-check` (decomposed → use wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch agents via `agent-prompt-render` (NEVER hand-craft; all agents of a wave → one message) → per-wave validate + `memory agent` + `write-back --kind injected` → REVIEW per subproject (sonnet for re-reviews, `review-result` emit, max 2 fix loops) → QA (`qa-run`; pass → CLOSE; fail → return failing AC; skip → warn + allow CLOSE; max 3 QA iterations).
+### 4. Light/Extended-Light EXECUTE (inline)
+
+User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `exec-rewave-check` (decomposed → use wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch agents via `agent-prompt-render` (NEVER hand-craft; all agents of a wave → one message; the subagent's context is the spec's project section + its anchors) → per-wave validate + `memory agent` → REVIEW per subproject (sonnet for re-reviews, `review-result` emit, max 2 fix loops) → QA (`qa-run`; pass → CLOSE; fail → return failing AC; skip → warn + allow CLOSE; max 3 QA iterations).
 
 Escalations: `CONCERN` → `## Concerns`, continue. `BLOCKED` → STOP + AskUserQuestion. `PARTIAL` → granular retry (max 2). `DEFERRED` → note + confirm. → `../../../refs/feature/ac-cross-shell.md`.
 
 ## INVIOLABLE RULES
 
-- NEVER read more files after Explore returns. MAX 5 reads in ANALYZE.
+- ALWAYS research via `mustard-rt run feature` (the scan digest) — NEVER read the repo or `grain.model.json` to understand it.
+- READ ONLY the `anchors` the scan tools point to (~12 files). NEVER bulk-read source. When anchors cross ≥2 subprojects, delegate the reading to one `Task(Explore)` per subproject (keeps each subproject's `CLAUDE.md`+skill catalog out of the parent context); read slices via `offset`/`limit`, never whole files.
+- The spec scaffold (`spec.md` + `meta.json`) is materialised ONLY by `mustard-rt run spec-draft`; fold lapidated `scan spec` bodies in with `Edit`. NEVER hand-write `spec.md` with the Write tool.
+- `analyze-validation` runs in PLAN, AFTER `spec-draft` wrote `spec.md` (it `exit(1)`s on a missing file) — NEVER at the end of ANALYZE.
+- NEVER Read back a spec, scaffold, or `meta.json` you just wrote or edited yourself — the content is already in context and Write/Edit confirmed success; re-reading is pure token round-trip. (Reading a *tool-generated* draft from `scan spec` for the first time is fine — that content is new to you.)
+- NEVER hand-craft agent prompts — always `agent-prompt-render`; the subagent's context is the spec section + anchors (there are no generated skills/agents).
+- ALWAYS compile each unit's draft with `mustard-rt run scan spec`, then lapidate in the project's language (`mustard.json#specLang`/`tone`).
+- A `miss` is NOT "absent": re-query with repo-vocabulary terms; treat true net-new as DESIGN, not recomposition.
 - NEVER skip `analyze-validation` or `dependency-precheck`.
-- NEVER hand-craft agent prompts — always `agent-prompt-render`.
-- ALWAYS resolve entities via `mustard-rt run registry-query` (the slice), never read the full `entity-registry.json`.
 - ALWAYS emit `pipeline.scope` + `pipeline.stage` at each transition.

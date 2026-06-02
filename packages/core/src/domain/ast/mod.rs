@@ -45,9 +45,12 @@
 //! - [`extract_entities`] — named type declarations (struct/class/enum/…)
 //!   from a source blob, AST (via the built-in `entity_definitions` query)
 //!   or agnostic textual floor.
+//! - [`is_test_path`], [`is_comment`] — agnostic, structural source-file
+//!   predicates shared across the scan engine (see [`conventions`]).
 //! - [`Tree`], [`FunctionSig`], [`ExtractedEntity`], [`StubMatch`],
 //!   [`StubPattern`], [`DetectionMode`], [`AstError`].
 
+pub mod conventions;
 pub mod entity;
 pub mod loader;
 pub mod parser;
@@ -68,7 +71,8 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 // Re-exports for the canonical W1.5 public surface.
-pub use entity::{extract_entities, ExtractedEntity};
+pub use conventions::{is_comment, is_test_path};
+pub use entity::{extract_entities, is_plausible_entity_name, ExtractedEntity};
 pub use loader::GrammarLoader;
 pub use parser::TreeSitterParser;
 pub use queries::QuerySet;

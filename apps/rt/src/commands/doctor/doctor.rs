@@ -18,7 +18,7 @@
 //!   reachable from cwd (consumer project).
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
 //!   spec), expired `closed-followup` state files, missing
-//!   `entity-registry.json`. WARN per anomaly.
+//!   `grain.model.json`. WARN per anomaly.
 //! - **nerd-font** — at least one Nerd Font detected in the OS font
 //!   directories. WARN with install hint (`mustard install-nerd-font`) when
 //!   absent. Powerline statusline themes require this; without it the
@@ -27,7 +27,6 @@
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
 use crate::shared::events::economy;
-use crate::commands::skill::skill_discovery_lint;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
@@ -102,8 +101,6 @@ const KNOWN_EVENTS: &[&str] = &[
 /// All `mustard-rt run <subcommand>` names recognized by the binary.
 /// Derived from the `RunCmd` enum variants in `run/mod.rs` (kebab-case).
 const KNOWN_RUN_SUBCOMMANDS: &[&str] = &[
-    "sync-detect",
-    "sync-registry",
     "diff-context",
     "emit-event",
     "emit-phase",
@@ -479,8 +476,8 @@ fn lsp_server_for_stack(stack: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// Detect which language stacks are active in `project_dir` by probing for
-/// well-known manifest files — the same signals `sync-detect` uses, but
-/// reduced to stack-name strings. Fail-open: IO errors → empty list.
+/// well-known manifest files, reduced to stack-name strings. Fail-open: IO
+/// errors → empty list.
 fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
     let mut stacks: Vec<&'static str> = Vec::new();
 
@@ -607,14 +604,14 @@ fn lsp_check(project_dir: &Path) -> CheckResult {
 // ---------------------------------------------------------------------------
 
 /// Inspect `.claude/.pipeline-states/` for orphan or stale state files;
-/// also checks for missing `entity-registry.json`.
+/// also checks for a missing repo model (`grain.model.json`).
 fn check_state_health(claude_dir: &Path) -> CheckResult {
     let mut warnings: Vec<String> = Vec::new();
 
-    // Check entity-registry.json presence.
-    let registry = claude_dir.join("entity-registry.json");
-    if !registry.exists() {
-        warnings.push("entity-registry.json missing (run `mustard-rt run sync-registry`)".to_string());
+    // Check the repo model's presence (grain.model.json, produced by `scan`).
+    let model = claude_dir.join("grain.model.json");
+    if !model.exists() {
+        warnings.push("grain.model.json missing (run `mustard-rt run scan`)".to_string());
     }
 
     // Inspect pipeline-states/.
@@ -940,25 +937,6 @@ fn render_report(results: &[CheckResult]) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// skill-discovery check integration
-// ---------------------------------------------------------------------------
-
-/// Run the skill-discovery lint and return a `CheckResult`.
-fn run_skill_discovery_check(root: &Path) -> CheckResult {
-    let report = skill_discovery_lint::check(root);
-    if report.violations.is_empty() {
-        let mut r = CheckResult::ok("skill-discovery");
-        r.details.push(format!("scanned {} SKILL.md file(s) — no violations", report.scanned));
-        r
-    } else {
-        let details: Vec<String> = report
-            .violations
-            .iter()
-            .map(|v| format!("{}:{} — {}", v.path, v.line, v.phrase))
-            .collect();
-        CheckResult::warn("skill-discovery", details)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // JSON renderer
@@ -1323,12 +1301,11 @@ pub fn run(opts: DoctorOpts) {
         }
 
         let result = match check_name.as_str() {
-            "skill-discovery" => run_skill_discovery_check(&cwd),
             "wave-integrity" => check_wave_integrity(&claude_dir),
             "status-consistency" => check_status_consistency(&claude_dir),
             other => {
                 eprintln!(
-                    "doctor: unknown check '{other}'. Known: skill-discovery, \
+                    "doctor: unknown check '{other}'. Known: \
                      wave-integrity, claude-paths, workspace-leaks, i1, status-consistency"
                 );
                 std::process::exit(1);
@@ -1353,8 +1330,6 @@ pub fn run(opts: DoctorOpts) {
         check_nerd_font(),
         // W10.T10.5 — new check, always in the full run.
         check_wave_integrity(&claude_dir),
-        // skill-discovery is always included in the full run (advisory).
-        run_skill_discovery_check(&cwd),
         // W2 spec-status-consistency — always in the full run.
         check_status_consistency(&claude_dir),
     ];
@@ -1692,8 +1667,8 @@ mod tests {
             &states_dir.join("orphan.json"),
             r#"{ "spec": "2026-01-01-nonexistent-spec", "state": "execute" }"#,
         );
-        // entity-registry.json present to isolate the orphan check.
-        write_file(&claude_dir.join("entity-registry.json"), "{}");
+        // grain.model.json present to isolate the orphan check.
+        write_file(&claude_dir.join("grain.model.json"), "{}");
 
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Warn);
@@ -1702,15 +1677,15 @@ mod tests {
     }
 
     #[test]
-    fn state_health_missing_registry_warns() {
+    fn state_health_missing_model_warns() {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // No entity-registry.json, no .pipeline-states/.
+        // No grain.model.json, no .pipeline-states/.
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Warn);
-        let has_registry = result.details.iter().any(|d| d.contains("entity-registry.json"));
-        assert!(has_registry, "expected registry warning, got: {:?}", result.details);
+        let has_model = result.details.iter().any(|d| d.contains("grain.model.json"));
+        assert!(has_model, "expected model warning, got: {:?}", result.details);
     }
 
     #[test]
@@ -1718,8 +1693,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // Registry present, no .pipeline-states/ directory.
-        write_file(&claude_dir.join("entity-registry.json"), "{}");
+        // Model present, no .pipeline-states/ directory.
+        write_file(&claude_dir.join("grain.model.json"), "{}");
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }
@@ -1761,8 +1736,8 @@ mod tests {
 
         // Minimal settings.json so wiring check doesn't fail hard.
         make_minimal_settings(&claude_dir, "mustard-rt on PreToolUse");
-        // entity-registry.json to keep state-health from warning.
-        write_file(&claude_dir.join("entity-registry.json"), "{}");
+        // grain.model.json to keep state-health from warning.
+        write_file(&claude_dir.join("grain.model.json"), "{}");
 
         // Run all checks the same way `run()` does, rooted at the tempdir.
         let mut results: Vec<CheckResult> = Vec::new();

@@ -160,7 +160,8 @@ fn watch_loop(shutdown: &AtomicBool) {
 
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     // `recommended_watcher` picks the best backend per platform
-    // (inotify/FSEvents/ReadDirectoryChangesW). `notify = "6"` returns
+    // (inotify/FSEvents/ReadDirectoryChangesW). `notify = "8"` still accepts an
+    // `mpsc::Sender<notify::Result<Event>>` as the event handler and returns
     // `notify::Result`; we degrade to fail-open on watcher init failure.
     let mut watcher = match notify::recommended_watcher(tx) {
         Ok(w) => w,
@@ -194,7 +195,7 @@ fn watch_loop(shutdown: &AtomicBool) {
 
 /// Dispatch one `notify::Event`: re-ingest every `*.jsonl` path it touches.
 ///
-/// `notify` v6 reports `Modify` for appends on most backends and `Create` for
+/// `notify` v8 reports `Modify` for appends on most backends and `Create` for
 /// the initial JSONL write. Both reach this branch; non-matching kinds are
 /// silently skipped.
 fn handle_event(event: &Event) {

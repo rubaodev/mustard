@@ -55,6 +55,32 @@ pub struct ExtractedEntity {
     pub mode: DetectionMode,
 }
 
+/// Upper bound on the length of a plausible entity identifier. A name longer
+/// than this is a parse artefact (e.g. a captured byte span that ran past the
+/// declaration into the rest of an ERROR node), not a real type name.
+const MAX_ENTITY_NAME_LEN: usize = 128;
+
+/// `true` when `name` looks like a real entity identifier rather than a parse
+/// artefact. Agnostic to any language: it accepts the universal identifier
+/// character class — ASCII letters, digits, `_`, plus the `.` / `:`
+/// qualifiers used for namespaced names (`crate.Foo`, `My.Nested.Type`,
+/// `pkg::Type`). It rejects anything empty, anything carrying whitespace or a
+/// newline (a multi-line capture is never one identifier), and anything over
+/// [`MAX_ENTITY_NAME_LEN`].
+///
+/// Public so the apps-layer structural extractor reuses the SAME guard on every
+/// path that mints an entity name — including the ORM table-name derivation,
+/// which does not flow through the AST/floor captures this guard already covers.
+#[must_use]
+pub fn is_plausible_entity_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_ENTITY_NAME_LEN {
+        return false;
+    }
+    name.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == ':'
+    })
+}
+
 /// Universal entity-declaration keywords for the textual floor.
 ///
 /// **Agnostic by construction** — no `lang_id` appears anywhere. The list is
@@ -169,6 +195,12 @@ fn extract_entities_via_query(
         }
 
         if let Some((name, line)) = name {
+            // Reject captures that are not a sound identifier — a name spanning
+            // an ERROR node can drag in trailing source. Skipping keeps the
+            // entity list clean rather than emitting garbage downstream.
+            if !is_plausible_entity_name(&name) {
+                continue;
+            }
             // `@kind` anchors the declaration node; fall back to a generic
             // label when the query omitted it.
             let kind = kind.unwrap_or_else(|| "entity".to_string());
@@ -245,7 +277,7 @@ fn extract_entities_via_floor(source: &str) -> Vec<ExtractedEntity> {
         let keyword = &line[hit.start..hit.end];
         let rest = &line[hit.end..];
         let name = parse_name(rest);
-        if name.is_empty() {
+        if !is_plausible_entity_name(&name) {
             continue;
         }
         out.push(ExtractedEntity {
@@ -502,6 +534,60 @@ mod tests {
         assert_eq!(parse_name(" User { }"), "User");
         assert_eq!(parse_name(" *Ptr"), "Ptr");
         assert_eq!(parse_name("   "), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_plausible_entity_name — the name guard
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn plausible_name_accepts_real_identifiers() {
+        assert!(is_plausible_entity_name("User"));
+        assert!(is_plausible_entity_name("crate.Foo"));
+        assert!(is_plausible_entity_name("My.Nested.Type"));
+        assert!(is_plausible_entity_name("pkg::Type"));
+        assert!(is_plausible_entity_name("_private"));
+        assert!(is_plausible_entity_name("Order123"));
+    }
+
+    #[test]
+    fn plausible_name_rejects_parse_artefacts() {
+        // A multi-line capture that overran an ERROR node.
+        assert!(!is_plausible_entity_name("name: );\n assert!(...)"));
+        // Empty / whitespace / punctuation noise.
+        assert!(!is_plausible_entity_name(""));
+        assert!(!is_plausible_entity_name("has space"));
+        assert!(!is_plausible_entity_name("line\nbreak"));
+        assert!(!is_plausible_entity_name("a();"));
+        // Over the length cap.
+        let too_long: String = "A".repeat(MAX_ENTITY_NAME_LEN + 1);
+        assert!(!is_plausible_entity_name(&too_long));
+        // Exactly the cap is still accepted.
+        let at_cap: String = "A".repeat(MAX_ENTITY_NAME_LEN);
+        assert!(is_plausible_entity_name(&at_cap));
+    }
+
+    #[test]
+    fn floor_skips_implausible_names() {
+        // A line whose keyword fires but whose tail is not a sound identifier
+        // must not emit an entity. `parse_name` already stops at the first
+        // non-identifier char, so the guard mainly defends the AST path; here
+        // we confirm a degenerate floor line yields nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let loader = GrammarLoader::empty(tmp.path());
+        let ents = extract_entities(&loader, "struct ;", "totally-made-up");
+        assert!(ents.is_empty(), "no plausible name on `struct ;`, got {ents:?}");
+    }
+
+    #[test]
+    fn real_fixture_still_yields_entities_with_guard() {
+        // Regression: the name guard must not suppress legitimate entities.
+        let (_tmp, loader) = builtin_loader();
+        let src = "pub struct User { id: i32 }\npub enum Status { Active }\n";
+        let ents = extract_entities(&loader, src, "rust");
+        let got = names(&ents);
+        assert!(got.contains(&"User".to_string()), "got {got:?}");
+        assert!(got.contains(&"Status".to_string()), "got {got:?}");
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::commands::update::{self, UpdateOptions};
 
 /// Framework-agnostic CLI for Claude Code project setup.
 #[derive(Debug, Parser)]
-#[command(name = "mustard", version, about, long_about = None)]
+#[command(name = "mustard", version = env!("MUSTARD_VERSION_FULL"), about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,

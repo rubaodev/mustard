@@ -3,6 +3,11 @@
 //! `sync_status` call, while `spec.md` is left as pure narrative (no lifecycle
 //! header is ever injected or rewritten).
 
+// Integration tests legitimately `.unwrap()` on fixtures — a broken fixture
+// should fail the test loudly. Clippy auto-exempts `#[cfg(test)]` unit tests
+// from `unwrap_used`, but not `tests/` integration crates; opt in explicitly.
+#![allow(clippy::unwrap_used)]
+
 use mustard_core::{Flags, Outcome, SpecState, Stage};
 use mustard_rt::commands::spec::spec_scaffold::sync_status;
 

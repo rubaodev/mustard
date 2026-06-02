@@ -3,27 +3,23 @@
 //! Pure-Rust port of the deterministic structure described in
 //! `prd/SKILL.md`. The skill spec is explicit: no `Task(Explore)`, no source
 //! file `Read`, no LLM opinion — just heuristic extraction + mechanical
-//! confronting against `.claude/entity-registry.json` and a `Glob` for path
-//! existence.
+//! confronting against the repo model's declaration names (read via the scan
+//! tool) and a `Glob` for path existence.
 //!
 //! This Rust version performs the same shape (camelCase JSON) without
-//! invoking the LLM at all. Token/path confronting is done via filesystem
-//! reads (registry file + manifest glob), so the output is byte-stable for a
-//! given input.
+//! invoking the LLM at all. Token/path confronting uses the model's entity
+//! names (via [`mustard_core::read_entity_names`]) + a manifest glob, so the
+//! output is byte-stable for a given input.
 //!
-//! Entity confronting is an **exact** lookup against the canonical
-//! [`EntityRegistry`] `e` map (case-insensitive), not a substring scan of the
-//! raw JSON — so a token `User` no longer false-positives against a registry
-//! that only declares `UserService`.
+//! Entity confronting is an **exact** lookup against the model's declaration
+//! names (case-insensitive), not a substring scan — so a token `User` no longer
+//! false-positives against a model that only declares `UserService`.
 
 use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
 use crate::shared::events::economy;
-use mustard_core::domain::entity_registry::EntityRegistry;
-use mustard_core::io::fs::read_to_string;
 use mustard_core::platform::i18n::{slugify, SupportedLocale as Locale};
-use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -137,22 +133,11 @@ pub(crate) fn pascal_tokens(intent: &str) -> Vec<String> {
     out
 }
 
-/// Whether `token` names an entity that is *exactly* present in the registry.
-///
-/// The previous implementation did a raw `str::contains` over the registry
-/// JSON body, which produced false positives: a token `"User"` matched a
-/// registry that only declared `"UserService"` (substring of the key — or even
-/// a substring of an unrelated `description` field). This now does an **exact,
-/// case-insensitive key lookup** against the canonical [`EntityRegistry`] `e`
-/// map, so `"User"` matches only when an entity literally named `User` (any
-/// case) exists. Sentinel `_`-prefixed keys are excluded by [`entity_names`].
-///
-/// [`entity_names`]: EntityRegistry::entity_names
-fn entity_present(registry: &EntityRegistry, token: &str) -> bool {
-    registry
-        .entity_names()
-        .iter()
-        .any(|name| name.eq_ignore_ascii_case(token))
+/// Whether `token` names an entity exactly present in grain's model — an exact,
+/// case-insensitive match against the model's declaration names (so `"User"`
+/// matches only a declaration literally named `User`, not `UserService`).
+fn entity_present(known: &[String], token: &str) -> bool {
+    known.iter().any(|name| name.eq_ignore_ascii_case(token))
 }
 
 /// Detect bugfix intent from the description (`/bug|erro|quebrad|fix|corrigir|broken/i`).
@@ -235,9 +220,9 @@ pub fn derive_title(intent: &str) -> String {
     }
 }
 
-/// Build the report — pure, byte-stable for a given (intent, registry_body).
+/// Build the report — pure, byte-stable for a given (intent, known entities).
 #[must_use]
-pub fn build(intent: &str, registry_body: &str) -> PrdReport {
+pub fn build(intent: &str, known: &[String]) -> PrdReport {
     let trimmed = intent.trim();
     if trimmed.is_empty() {
         return PrdReport {
@@ -257,18 +242,11 @@ pub fn build(intent: &str, registry_body: &str) -> PrdReport {
         };
     }
 
-    // Parse the registry once into the canonical reader. An empty / malformed
-    // body fails open to an empty registry (every token then lands in
-    // `entities_missing`), preserving the prior no-registry behaviour.
-    let registry = EntityRegistry::from_value(
-        serde_json::from_str(registry_body).unwrap_or(Value::Null),
-    );
-
     let tokens = pascal_tokens(trimmed);
     let mut entities_found: Vec<String> = Vec::new();
     let mut entities_missing: Vec<String> = Vec::new();
     for t in &tokens {
-        if entity_present(&registry, t) {
+        if entity_present(known, t) {
             entities_found.push(t.clone());
         } else {
             entities_missing.push(t.clone());
@@ -319,11 +297,9 @@ pub fn build(intent: &str, registry_body: &str) -> PrdReport {
 pub fn run(opts: PrdBuildOpts) {
     let started = std::time::Instant::now();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let registry_path = ClaudePaths::for_project(&cwd)
-        .map(|p| p.entity_registry_json_path())
-        .unwrap_or_default();
-    let registry = read_to_string(&registry_path).unwrap_or_default();
-    let report = build(&opts.intent, &registry);
+    let model = cwd.join(".claude").join("grain.model.json");
+    let known = mustard_core::read_entity_names(&model);
+    let report = build(&opts.intent, &known);
     // The SKILL spec demands raw camelCase JSON — pretty-print is fine because
     // serde keeps key order stable.
     let _ = opts.format; // JSON is the only supported format today.
@@ -380,7 +356,7 @@ mod tests {
 
     #[test]
     fn empty_intent_returns_minimum_valid_shape() {
-        let r = build("", "");
+        let r = build("", &[]);
         assert_eq!(r.kind, "feature");
         assert_eq!(r.scope, "light");
         assert!(r.summary.is_empty());
@@ -388,34 +364,30 @@ mod tests {
     }
 
     #[test]
-    fn entity_lookup_uses_registry_body() {
-        // v4 registry: entities live under the `e` key.
-        let r = build("Update User record", r#"{"e":{"User":{}}}"#);
+    fn entity_lookup_uses_known_names() {
+        let r = build("Update User record", &["User".to_string()]);
         assert!(r.confront.entities_found.iter().any(|e| e == "User"));
     }
 
     #[test]
     fn entity_present_is_exact_not_substring() {
-        // The false-positive the raw `str::contains` produced: a registry that
-        // declares only `UserService` must NOT report the token `User` as
-        // present. Exact-key lookup rejects the substring match.
-        let only_service = r#"{"e":{"UserService":{}}}"#;
-        let reg = EntityRegistry::from_value(serde_json::from_str(only_service).unwrap());
-        assert!(!entity_present(&reg, "User"), "User must not match UserService");
-        assert!(entity_present(&reg, "UserService"));
+        // A model that declares only `UserService` must NOT report the token
+        // `User` as present — exact match rejects the substring.
+        let only_service = ["UserService".to_string()];
+        assert!(!entity_present(&only_service, "User"), "User must not match UserService");
+        assert!(entity_present(&only_service, "UserService"));
 
         // And it still matches when the entity exists exactly (case-insensitive).
-        let with_user = r#"{"e":{"User":{}}}"#;
-        let reg2 = EntityRegistry::from_value(serde_json::from_str(with_user).unwrap());
-        assert!(entity_present(&reg2, "User"));
-        assert!(entity_present(&reg2, "user"), "case-insensitive exact match");
-        assert!(!entity_present(&reg2, "Users"), "plural is not the same entity");
+        let with_user = ["User".to_string()];
+        assert!(entity_present(&with_user, "User"));
+        assert!(entity_present(&with_user, "user"), "case-insensitive exact match");
+        assert!(!entity_present(&with_user, "Users"), "plural is not the same entity");
     }
 
     #[test]
     fn build_does_not_false_positive_user_in_userservice() {
         // End-to-end through `build`: the substring false positive is gone.
-        let r = build("Refactor User module", r#"{"e":{"UserService":{}}}"#);
+        let r = build("Refactor User module", &["UserService".to_string()]);
         assert!(
             r.confront.entities_missing.iter().any(|e| e == "User"),
             "User should be MISSING when only UserService is registered, got found={:?} missing={:?}",
@@ -426,7 +398,7 @@ mod tests {
 
     #[test]
     fn json_shape_includes_required_fields() {
-        let r = build("Add new feature for User", "{}");
+        let r = build("Add new feature for User", &[]);
         let v = serde_json::to_value(&r).unwrap();
         for f in ["type", "slug", "title", "scope", "summary", "layers", "_confront"] {
             assert!(v.get(f).is_some(), "missing camelCase field {f}");

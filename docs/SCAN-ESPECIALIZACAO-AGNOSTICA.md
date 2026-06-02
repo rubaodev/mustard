@@ -32,7 +32,7 @@ hardcoded · agnóstico** (lógica do core genérica; específico vem de dado ov
 ## Contexto e confirmação empírica da fundação
 
 A Fase 1 (desta sessão, commit `25b2173`) religou os geradores determinísticos ao
-`/scan`: modo padrão zero-IA gera registry + `SKILL.md` por cluster + `stack.md` +
+`/scan`: modo padrão zero-IA gera o `.claude/grain.model.json` + `SKILL.md` por cluster + `stack.md` +
 `guards.md`. O que falta é **especialização plugável** sem ferir o agnosticismo.
 
 Confirmado no código (não re-investigar):
@@ -44,7 +44,7 @@ Confirmado no código (não re-investigar):
 | Vocab de arquitetura | **plugável por arquivo** | `vocabulary/architecture.rs::load(name, root)` lê `.claude/vocab/{name}.toml`, fallback ao `architecture_builtin.toml` embarcado; `classify_segment` (Aho + token-split) |
 | Vocab de frameworks | plugável por arquivo, **mas com gap** | `vocabulary/frameworks.rs::load` lê `.claude/vocab/frameworks.toml`; **`detect_framework_signals()` usa `builtin()` só** — ignora override (gap a corrigir) |
 | Motor Aho genérico | pronto, agnóstico | `vocabulary/aho.rs::KeyedAutomaton<K>` |
-| **`architecture` no registry** | **JÁ LIGADO (premissa "fixo unknown" está desatualizada)** | `scan/mod.rs:307` chama `detect_subproject_architecture` no scan; `sync_entity_registry.rs:385-390` grava em `_patterns.{stack}.architecture` (só quando ≠ unknown, p/ byte-stability); honra `mustard.json#architecture` (`architecture.rs:195`) |
+| **`architecture` no `grain.model.json`** | **JÁ LIGADO (premissa "fixo unknown" está desatualizada)** | `scan/mod.rs:307` chama `detect_subproject_architecture` no scan; o escritor do modelo (`scan/mod.rs`) grava em `_patterns.{stack}.architecture` (só quando ≠ unknown, p/ byte-stability); honra `mustard.json#architecture` (`architecture.rs:195`) |
 | `mustard.json` (`ProjectConfig`) | pronto p/ estender | `core/domain/config.rs`: tem `architecture`, `primaryExt`, `sourceExtensions`, `rolePatterns`, `#[serde(flatten)] extra` (chaves desconhecidas preservadas) |
 | `core::economy::SavingsSource` | 6 variantes | `economy/model.rs:89`; receita exata p/ nova variante mapeada |
 
@@ -60,7 +60,7 @@ Confirmado no código (não re-investigar):
 
 A detecção/escrita/override já estão feitos. Resta apenas:
 
-1. **Accessor tipado** em `core/domain/entity_registry.rs`:
+1. **Accessor tipado** no leitor do modelo (`mustard_core`, ao lado de `read_entity_names`/`read_projects`):
    ```rust
    pub fn architecture(&self, stack_id: &str) -> Option<&str>
    ```
@@ -106,7 +106,7 @@ O cache vive em `~/.mustard/vocab/{tech}/{version}/` com o mesmo `manifest.json 
 
 ### 3.3 Quando adquirir (gatilho — usando dados que o scan já lê)
 
-No `sync-registry`, no passe por subprojeto, **depois** do `detect_stack` + leitura de manifests/deps (que `scan-structural` já faz): se um signal de tecnologia (uma **dependência**, um **manifesto** ou uma **extensão**) mapeia para um `tech-id` do `vocab_registry` que **ainda não está em cache** → adquire (fail-open). Idempotente (uma vez por tech+versão).
+No `mustard-rt run scan`, no passe por subprojeto, **depois** do `detect_stack` + leitura de manifests/deps (que o scan estrutural já faz): se um signal de tecnologia (uma **dependência**, um **manifesto** ou uma **extensão**) mapeia para um `tech-id` do `vocab_registry` que **ainda não está em cache** → adquire (fail-open). Idempotente (uma vez por tech+versão).
 
 > **Exemplo GraphQL:** detectar `*.graphql`/`*.gql` OU dep `graphql`/`@nestjs/graphql`/`async-graphql` no manifesto → `tech-id = graphql` → adquire o pacote `graphql` (convenções `@Resolver/@Query/Resolver-suffix` + `grammar.ref = graphql` p/ a SDL).
 
@@ -151,21 +151,21 @@ Nova variante `SavingsSource::ScanSpecializationVocab` (receita exata: `model.rs
 ## Riscos e mitigações
 
 - **Segurança do download** (ponto de atenção): registry **pinado e controlado** (in-crate), nunca terceiro; SHA-256 verificado; vocab é **dado declarativo** (parseado, não executado). Pacote envenenado só induz docs enganosos → mitigado por pin+SHA+revisão de release. Grammar (`.wasm`) executável mantém o modelo de alto-risco existente (feature OFF, ABI, SHA).
-- **byte-stability do registry v4**: clusters mudam quando o pacote entra → incluir `tech+version` no hash do `.cluster-cache.json` (já há tunables no hash) p/ invalidar determinístico; ordenação preservada.
+- **byte-stability do `grain.model.json`**: clusters mudam quando o pacote entra → incluir `tech+version` no hash do `.cluster-cache.json` (já há tunables no hash) p/ invalidar determinístico; ordenação preservada.
 - **format/ABI do pacote de vocab**: campo `formatVersion` no manifest; rejeitar incompatível (fail-open → floor).
 - **Offline / indisponível / SHA-mismatch**: fail-open → vocab builtin + floor textual; scan completa com clusters genéricos, nunca quebra.
 - **Não repetir o erro original**: cada consumidor (framework-signals, cluster_discovery, arquitetura, skills, guards) é **ligado no mesmo commit** em que a aquisição é escrita; PR não fecha sem o consumidor acionado + evento de savings.
 
 ## Verificação E2E (por fase, com `claude` fora do PATH)
 
-- **Fase 2**: registry tem `architecture`; accessor o devolve; `guards.md` traz a fronteira do estilo; override `mustard.json#architecture` respeitado.
+- **Fase 2**: `grain.model.json` tem `architecture`; accessor o devolve; `guards.md` traz a fronteira do estilo; override `mustard.json#architecture` respeitado.
 - **Fase 3 — online, tech não-cacheada**: projeto-alvo com GraphQL (sem cache) → scan detecta dep/ext → adquire pacote `graphql` (pin+SHA) → `cluster_discovery` forma cluster `Resolver` → `SKILL.md`/`guards.md` refletem a convenção → cache em `~/.mustard/vocab/graphql/{ver}/`; **0 chamadas claude**; evento de savings emitido.
 - **Fase 3 — offline / SHA-mismatch / opt-out**: aquisição falha/recusada → **floor genérico** (builtin + textual) → scan completa com clusters genéricos, sem quebrar.
 - **Idempotência**: 2ª rodada não re-baixa (cache hit por `tech+version`); skills/guards byte-idênticos.
 
 ## Arquivos críticos a tocar
 
-**Fase 2:** `core/domain/entity_registry.rs` (accessor `architecture`), `apps/rt/.../scan/guards_seed.rs` (usar accessor).
+**Fase 2:** leitor do modelo em `mustard_core` (accessor `architecture`, ao lado de `read_entity_names`/`read_projects`), `apps/rt/.../scan/guards_seed.rs` (usar accessor).
 
 **Fase 3:**
 - **novo** `core/domain/vocabulary/vocab_acquire.rs` (espelha `wasm_acquire`: registry pinado in-crate, download+SHA, cache `~/.mustard/vocab/`, manifest, fail-open).

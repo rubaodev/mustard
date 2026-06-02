@@ -146,11 +146,11 @@ Agrupado pela **estrutura de domínio proposta** (§6). Hoje todos estão soltos
 ### 4.5 `pipeline/` — orquestração e status
 | Arquivo | O que faz |
 |---|---|
-| `pipeline_prelude` | warm-up ANALYZE/PLAN/EXECUTE (sync-detect + diff-context) |
+| `pipeline_prelude` | warm-up ANALYZE/PLAN/EXECUTE (scan + diff-context) |
 | `pipeline_summary` | render Done/Left/Next/Follow-ups no CLOSE |
 | `verify_pipeline` | build+test paralelo (rayon) com descoberta de stack |
 | `close_orchestrate` | gate CLOSE (verify→qa→docs→summary) |
-| `status` | snapshot git + pipelines + build + registry |
+| `status` | snapshot git + pipelines + build + `grain.model.json` (via scan) |
 | `resume_bootstrap` | engine de decisão de resume (mode/stage/wave/model) |
 
 ### 4.6 `economy/` — custo, budget e telemetria
@@ -184,14 +184,13 @@ Agrupado pela **estrutura de domínio proposta** (§6). Hoje todos estão soltos
 | `scan_orchestrate` / `scan_precompute` / `scan_finalize` | pré/pós-dispatch |
 | `scan_structural` | manifests + deps + extensions + clusters |
 | `scan_md_validate` / `scan_recipes_validate` | validação de `.md`/recipes gerados |
-| `sync_detect` | detecta subprojetos, roles, hashes SHA-256 |
-| `sync_registry` | gera `entity-registry.json` v4 |
+| `scan` | minera o repo e (re)gera `.claude/grain.model.json`; expõe `scan facts`/`scan digest` |
 | `recipe_match` | busca recipe por entity+operation |
 
 ### 4.8 `knowledge/` — memória e grafo de conhecimento
 | Arquivo | O que faz |
 |---|---|
-| `knowledge` | browser do glossário via `entity-registry.json` |
+| `knowledge` | browser do glossário via `scan facts`/`scan digest` (sobre `.claude/grain.model.json`) |
 | `memory` | CLI unificada de persistência markdown (agent/decision/…) |
 | `memory_cross_wave` | renderiza memórias de waves anteriores |
 | `memory_ingest` | migração legacy JSON → markdown |
@@ -271,7 +270,7 @@ Famílias: **bash/tool** (`bash_guard`) · **task** (`budget`, `model_routing`, 
 | A3 | **gestão de baselines** (walk NDJSON manual reinventando `EventReader`/`reader`) | economy_capture_baseline, economy_reconcile, economy_report | `core::economy::baselines` |
 | A4 | **projeção `pipeline_state_from_events`** mora no `rt` mas é fold puro | event_projections | `core::projection` |
 | A5 | **discovery de SKILL.md + parse de frontmatter** (1 usa `core::skill`, outro parseia YAML à mão — inconsistente) | skill_resolve, skills | `core::skill::discover` (unificar no `core::skill::frontmatter`) |
-| A6 | **queries de entity-registry** | knowledge, skill_resolve, skills, prd_build | `core::entity` (novo) |
+| A6 | **acesso ao modelo do repo** (antes queries ao removido entity-registry; hoje via `scan facts`/`scan digest` sobre `grain.model.json`) | knowledge, skill_resolve, skills, prd_build | `mustard_core::{read_entity_names, read_projects}` |
 | A7 | **parse de frontmatter/wikilink** apesar de `core::atomic_md` existir | scan/graph, scan/resolve, scan_md_validate, scan/refs_installer | usar `core::atomic_md` |
 
 ### B. Para helpers do `rt` (específicos do binário)
@@ -283,7 +282,7 @@ Famílias: **bash/tool** (`bash_guard`) · **task** (`budget`, `model_routing`, 
 | B3 | **render markdown** (`write_heading`, `write_wikilink_list`, `write_code_table`, `write_ac_rows`) | wave_context, wave_summary | `rt::run::wave::markdown_render` |
 | B4 | **extração de seção** (`## Files`/`## Arquivos`, `## Summary`, `## Tasks`, wave-plan rows) | wave_files, wave_size_check, exec_rewave_check, dependency_precheck, qa_run, wave_tree | estender `spec_sections` (ou `core::spec::sections`) |
 | B5 | **`slug_for` + `fnv1a8`** (cópias idênticas) | memory, memory_ingest | `rt::run::knowledge::slug` |
-| B6 | **detecção de stack/signals** (3 cópias) | scan/mod, sync_detect, sync_registry | constante/enum único em `scan/` |
+| B6 | **detecção de stack/signals** (cópias dos removidos sync_detect/sync_registry, hoje só no scan) | scan/mod | constante/enum único em `scan/` |
 | B7 | **contrato de hook**: `project_dir(input,ctx)`, `extract_tool_field`, `resolve_content` (Write vs Edit), `path \\→/`, `resolve_mode(env,default)` | 15+ hooks | `rt::hooks::contract` |
 
 ### C. Migrações de bypass (mecânicas, por categoria)
@@ -308,7 +307,7 @@ apps/rt/src/
 │   ├── event/            # §4.4  (8)
 │   ├── pipeline/         # §4.5  (6)
 │   ├── economy/          # §4.6  (+ otel/) (14)
-│   ├── scan/             # §4.7  (consolida os scan_*/sync_* soltos) (19)
+│   ├── scan/             # §4.7  (consolida os scan_* soltos) (19)
 │   ├── knowledge/        # §4.8  (6)
 │   ├── skill/            # §4.9  (5)
 │   ├── review/           # §4.10 (11)
@@ -324,7 +323,8 @@ apps/rt/src/
 ```
 
 `core` ganha: `time` (A1), `economy::{emit_economy, baselines}` (A2/A3),
-`projection::pipeline_state` (A4), `skill::discover` (A5), `entity` (A6).
+`projection::pipeline_state` (A4), `skill::discover` (A5). O acesso ao modelo do repo (A6) usa
+`mustard_core::{read_entity_names, read_projects}` sobre `grain.model.json` — não há novo `core::entity`.
 
 ---
 
@@ -332,7 +332,7 @@ apps/rt/src/
 
 Ordem por **dependência + alavancagem** (cada passo compila e passa testes antes do próximo):
 
-1. **Fundação no `core`** — A1 `time`, A2 `emit_economy`, A6 `entity`. (destrava o resto; sem mover arquivos)
+1. **Fundação no `core`** — A1 `time`, A2 `emit_economy`, A6 (unificar acesso ao modelo em `mustard_core::{read_entity_names, read_projects}`). (destrava o resto; sem mover arquivos)
 2. **Helpers do `rt`** — B1 `json_io`, B2 `platform`, B7 `hooks::contract`.
 3. **Reorganização física** — mover `run/*` para os domínios da §7 (puro `git mv` + ajuste de `mod.rs`/paths). Big-bang: 1 commit por domínio.
 4. **Dedup intra-domínio** — B3/B4 (wave), B5 (knowledge), B6 (scan), A3/A4/A5/A7.

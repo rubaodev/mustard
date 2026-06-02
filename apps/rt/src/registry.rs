@@ -10,10 +10,10 @@ use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
+use crate::hooks::task::delegation_advisory::DelegationAdvisory;
 use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
-use crate::hooks::write::entity_registry_gate::EntityRegistryGate;
-use crate::hooks::write::graph_wirelink_gate::GraphWirelinkGate;
+use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::task::model_routing_gate::ModelRoutingGate;
 use crate::hooks::observe::notification_observer::NotificationObserver;
@@ -284,14 +284,14 @@ impl Registry {
                 observer: None,
             },
             Module {
-                id: "entity_registry_gate",
-                // `entity-registry-gate` — PreToolUse(Skill) pre-pipeline gate.
+                id: "scan_gate",
+                // `scan-gate` — PreToolUse(Skill) pre-pipeline gate (grain model).
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
-                check: Some(Box::new(EntityRegistryGate)),
+                check: Some(Box::new(ScanGate)),
                 observer: None,
             },
             // F4-d item 1 — hard cap on concurrently active pipelines. A
-            // PreToolUse(Skill) gate sibling to `entity_registry_gate`: it sits
+            // PreToolUse(Skill) gate sibling to `scan_gate`: it sits
             // on the entry of `/feature` and `/bugfix` and refuses (strict) or
             // warns (default) when opening another pipeline would exceed
             // `mustard.json#maxActiveSpecs` (default 10). Mode via
@@ -301,19 +301,6 @@ impl Registry {
                 id: "active_spec_limit_gate",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
                 check: Some(Box::new(ActiveSpecLimitGate)),
-                observer: None,
-            },
-            // FASE 2 (decision 8 — wirelinks) — pre-write `[[id]]` validation
-            // scoped to `.claude/graph/**`. Advisory only (Warn/Inject via
-            // `MUSTARD_GRAPH_WIRELINK_MODE`, default warn) — NEVER denies, so a
-            // typo wirelink is caught before it becomes a silent orphan edge.
-            Module {
-                id: "graph_wirelink_gate",
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: Some(Box::new(GraphWirelinkGate)),
                 observer: None,
             },
             // Spec A v4 / W4 — opt-in pre-edit intent check (Moment 1 of the
@@ -327,6 +314,20 @@ impl Registry {
                 ],
                 check: Some(Box::new(PreEditIntentGate)),
                 observer: None,
+            },
+            Module {
+                id: "delegation_advisory",
+                // Advisory (L0 Universal Delegation): on PostToolUse(Write|Edit)
+                // it counts DISTINCT files the main context edits during an
+                // active pipeline and, past a threshold, reminds the
+                // orchestrator to delegate via Task. Pure Observer —
+                // side-effects only, NEVER blocks (it cannot return a verdict).
+                applies_to: &[
+                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
+                ],
+                check: None,
+                observer: Some(Box::new(DelegationAdvisory)),
             },
             Module {
                 id: "post_edit",
@@ -645,9 +646,9 @@ mod tests {
             "size_gate",
             "path_gate",
             "close_gate",
-            "entity_registry_gate",
+            "scan_gate",
             "active_spec_limit_gate",
-            "graph_wirelink_gate",
+            "delegation_advisory",
             "post_edit",
             "spec_hygiene_observer",
             "session_start_inject",
@@ -717,10 +718,9 @@ mod tests {
     fn write_edit_family_applies_on_pre_tool_use() {
         let registry = Registry::new();
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
-        // `graph_wirelink_gate` (FASE 2) joins the same family.
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "path_gate", "close_gate", "graph_wirelink_gate"] {
+            for want in ["size_gate", "path_gate", "close_gate"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }
@@ -734,9 +734,22 @@ mod tests {
                 applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"post_edit")
             );
         }
-        // `entity_registry_gate` + `active_spec_limit_gate` run on
+        // `delegation_advisory` rides PostToolUse(Write|Edit) too.
+        for tool in ["Write", "Edit"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PostToolUse, Some(tool))
+                    .contains(&"delegation_advisory"),
+                "delegation_advisory missing for {tool}"
+            );
+        }
+        // It does not fire on a PreToolUse(Write) nor on a Read.
+        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
+            .contains(&"delegation_advisory"));
+        assert!(!applicable_ids(&registry, Trigger::PostToolUse, Some("Read"))
+            .contains(&"delegation_advisory"));
+        // `scan_gate` + `active_spec_limit_gate` run on
         // PreToolUse(Skill) — the two pipeline-entry gates.
-        for want in ["entity_registry_gate", "active_spec_limit_gate"] {
+        for want in ["scan_gate", "active_spec_limit_gate"] {
             assert!(
                 applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).contains(&want),
                 "missing {want} on PreToolUse(Skill)"

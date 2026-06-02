@@ -91,13 +91,6 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     // EXECUTE, gather every concept-node id the resolver cached during the
     // session and write them back into `spec.md` as `injected` backlinks.
     // Fail-open — any IO error is swallowed, telemetry stays best-effort.
-    if from_phase
-        .as_deref()
-        .is_some_and(|p| p.eq_ignore_ascii_case("EXECUTE"))
-        && !to.eq_ignore_ascii_case("EXECUTE")
-    {
-        write_back_after_execute(spec);
-    }
 
     let ts = now_iso8601();
     let sid = session_id();
@@ -138,60 +131,6 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     );
 }
 
-/// Resolve the spec.md path for `spec` under the active project, then write
-/// the spec's backlinks: the union of every cached resolver closure as
-/// `injected` edges (a *fact* — the resolver records exactly what it injected)
-/// plus the `applied` edges inferred from the files this wave touched (a
-/// heuristic — `injected` wins over `applied` on a target collision via
-/// [`graph::merge_edges`]).
-///
-/// `files_changed` is derived from the same source as pipeline close
-/// ([`crate::commands::spec::complete_spec::collect_affected_files`]): the
-/// per-spec NDJSON `target.file` payloads of the wave, unioned with the git
-/// diff (`--name-only`) against the parent branch.
-///
-/// Fully fail-open: a missing project dir, missing spec dir, empty cache, or
-/// any IO failure degrades to a silent no-op. Telemetry must never block a
-/// phase transition.
-fn write_back_after_execute(spec: &str) {
-    let project_root = std::path::PathBuf::from(project_dir());
-    let Ok(spec_path) = ClaudePaths::for_project(&project_root)
-        .and_then(|p| p.for_spec(spec))
-        .map(|sp| sp.spec_md_path())
-    else {
-        return;
-    };
-    if !spec_path.exists() {
-        return;
-    }
-    use crate::commands::scan::graph;
-
-    // `injected` — the deterministic resolver closure cached this session.
-    let closure_ids = crate::commands::scan::resolve::collect_cached_closure_ids(&project_root);
-
-    // `applied` — concept-nodes the wave's file diff heuristically touched.
-    // Derived from the same file set the pipeline-close uses.
-    let files_changed =
-        crate::commands::spec::complete_spec::collect_affected_files(&project_root, spec);
-    let applied = graph::infer_applied_edges(&project_root, &files_changed, &closure_ids);
-
-    // Nothing to write back from either source → no-op (fail-open).
-    if closure_ids.is_empty() && applied.is_empty() {
-        return;
-    }
-
-    // Merge: `injected` (fact) wins over `applied` (inference) on a collision.
-    let injected: Vec<graph::SpecBacklinkEdge> = closure_ids
-        .iter()
-        .map(|id| graph::SpecBacklinkEdge {
-            target: id.clone(),
-            kind: graph::EdgeKind::Injected,
-            confidence: None,
-        })
-        .collect();
-    let merged = graph::merge_edges(&injected, &applied);
-    let _ = graph::write_back_edges(&spec_path, &merged);
-}
 
 #[cfg(test)]
 mod tests {

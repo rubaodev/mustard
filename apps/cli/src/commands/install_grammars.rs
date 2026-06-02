@@ -134,8 +134,8 @@ impl GrammarsCatalog {
 }
 
 /// Detect every language id whose manifest signals are present under
-/// `project_root` (depth ≤ 3). Walks subprojects the same way `sync-detect`
-/// does so a monorepo with Rust + TypeScript + Python returns all three.
+/// `project_root` (depth ≤ 3). Walks subprojects so a monorepo with Rust +
+/// TypeScript + Python returns all three.
 fn detect_languages(project_root: &Path, catalog: &GrammarsCatalog) -> Vec<String> {
     let mut detected: BTreeSet<String> = BTreeSet::new();
     walk_for_signals(project_root, 0, catalog, &mut detected);
@@ -152,9 +152,8 @@ fn detect_languages(project_root: &Path, catalog: &GrammarsCatalog) -> Vec<Strin
     expanded.into_iter().collect()
 }
 
-/// Recursive walker bounded to depth 3 — mirrors `scan_for_subprojects` in
-/// `sync_detect.rs` so monorepo detection stays consistent without pulling
-/// in that module.
+/// Recursive walker bounded to depth 3 — self-contained, manifest-signal-based
+/// monorepo detection (no dependency on any other module).
 fn walk_for_signals(
     dir: &Path,
     depth: usize,

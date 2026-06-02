@@ -1,10 +1,11 @@
 #!/usr/bin/env pwsh
 # install.ps1 — Build + install Mustard and scaffold .claude/ into a project.
 #
-# Dogfooding installer: it builds the two binaries in release, installs them to
-# ~/.cargo/bin (so the hooks in .claude/settings.json — which invoke `mustard-rt`
-# from PATH — resolve at runtime), then runs `mustard init` in the target
-# project, pointed at this repo's bundled templates/ payload.
+# Dogfooding installer: it builds the three binaries (scan, mustard-rt, mustard)
+# in release, installs them to ~/.cargo/bin (so the hooks in .claude/settings.json
+# — which invoke `mustard-rt` from PATH — resolve at runtime, and `mustard-rt`
+# finds the `scan` miner as its ~/.cargo/bin sibling), then runs `mustard init`
+# in the target project, pointed at this repo's bundled templates/ payload.
 #
 # Why MUSTARD_TEMPLATES_DIR: `cargo install` copies only the binary to
 # ~/.cargo/bin, not its templates/ payload. Without an explicit pointer the
@@ -31,12 +32,64 @@ $Root         = $PSScriptRoot
 $CargoBin     = Join-Path $env:USERPROFILE '.cargo\bin'
 $MustardExe   = Join-Path $CargoBin 'mustard.exe'
 $RtExe        = Join-Path $CargoBin 'mustard-rt.exe'
+$ScanExe      = Join-Path $CargoBin 'scan.exe'
 $TemplatesDir = Join-Path $Root 'apps\cli\templates'
+$BuildNumFile = Join-Path $Root '.mustard-build-number'
 
 # Native commands don't throw on a non-zero exit under $ErrorActionPreference;
 # check $LASTEXITCODE explicitly so a failed build/init aborts the installer.
 function Assert-LastExit([string]$What) {
     if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)." }
+}
+
+# Bump the gitignored per-build counter and return the new value. The cargo
+# build's build.rs stamps this into `mustard --version` / `mustard-rt --version`
+# as MUSTARD_BUILD_NUMBER. The file is created with 1 on first build; a missing
+# or garbled value resets to 1 rather than aborting the install.
+function Step-BuildNumber([string]$Path) {
+    $current = 0
+    if (Test-Path -LiteralPath $Path) {
+        $raw = (Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue).Trim()
+        [int]::TryParse($raw, [ref]$current) | Out-Null
+    }
+    $next = $current + 1
+    Set-Content -LiteralPath $Path -Value $next -NoNewline -Encoding utf8
+    return $next
+}
+
+# Build a crate and replace its installed binary, tolerating the Windows lock on
+# a running .exe. The mustard-rt MCP server (`mustard-rt mcp`) and any live hook
+# hold ~/.cargo/bin/mustard-rt.exe open for the whole Claude Code session, so
+# `cargo install --force` fails its final move with "Access is denied (os error
+# 5)" — it cannot overwrite a binary that is mapped into a running process.
+# Windows DOES allow *renaming* that binary, though: the running image keeps its
+# handle on the renamed file while the original name is freed for cargo to write
+# the fresh build. So park the in-use binary aside first; the old image stays
+# valid for the holding processes until they exit (next Claude Code restart).
+function Install-Bin([string]$ExePath, [string]$CratePath, [string]$BinName) {
+    $parked = $null
+    if (Test-Path $ExePath) {
+        # Best-effort sweep of stale parks from earlier installs whose holders
+        # have since exited; a still-locked .old- is skipped silently.
+        $dir  = Split-Path -Parent $ExePath
+        $leaf = Split-Path -Leaf   $ExePath
+        Get-ChildItem -LiteralPath $dir -Filter "$leaf.old-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch {} }
+        # Free the name. Rename (not delete/overwrite) succeeds even while the
+        # image is mapped into a running process.
+        $parked = "$ExePath.old-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        try { Move-Item -LiteralPath $ExePath -Destination $parked -Force -ErrorAction Stop }
+        catch { throw "Could not free $ExePath for replacement: $($_.Exception.Message). Close running mustard-rt processes (MCP servers / hooks) and re-run." }
+    }
+    cargo install --path $CratePath --bin $BinName --force
+    if ($LASTEXITCODE -ne 0) {
+        # Build failed: restore the previous binary so the install isn't left
+        # without one (cargo only writes the new exe after a successful build).
+        if ($parked -and (Test-Path $parked) -and -not (Test-Path $ExePath)) {
+            Move-Item -LiteralPath $parked -Destination $ExePath -Force -ErrorAction SilentlyContinue
+        }
+        throw "cargo install $BinName failed (exit $LASTEXITCODE)."
+    }
 }
 
 # Prerequisite: the bundled templates/ payload `mustard init` copies from.
@@ -63,11 +116,24 @@ if (-not $SkipBuild) {
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         throw 'cargo is not on PATH. Install the Rust toolchain (https://rustup.rs) and re-run.'
     }
-    Write-Host '==> Installing mustard-rt + mustard (release) to ~/.cargo/bin ...'
-    cargo install --path (Join-Path $Root 'apps\rt')  --bin mustard-rt --force
-    Assert-LastExit 'cargo install mustard-rt'
-    cargo install --path (Join-Path $Root 'apps\cli') --bin mustard    --force
-    Assert-LastExit 'cargo install mustard'
+    # Bump the per-build counter and feed it to the cargo build as
+    # MUSTARD_BUILD_NUMBER (the build.rs in apps/rt + apps/cli stamps it into
+    # `--version`). Scope the env var to the two build invocations and restore
+    # it afterwards, exactly like MUSTARD_TEMPLATES_DIR below, so the script
+    # stays safe to dot-source.
+    $buildNumber       = Step-BuildNumber $BuildNumFile
+    $prevBuildNumber   = $env:MUSTARD_BUILD_NUMBER
+    $env:MUSTARD_BUILD_NUMBER = $buildNumber
+    Write-Host "==> Installing scan + mustard-rt + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
+    try {
+        # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
+        # (Scan::locate), and the feature/spec/digest/facts flow depends on it.
+        Install-Bin $ScanExe    (Join-Path $Root 'apps\scan') 'scan'
+        Install-Bin $RtExe      (Join-Path $Root 'apps\rt')  'mustard-rt'
+        Install-Bin $MustardExe (Join-Path $Root 'apps\cli') 'mustard'
+    } finally {
+        $env:MUSTARD_BUILD_NUMBER = $prevBuildNumber
+    }
 }
 if (-not (Test-Path $MustardExe)) { $MustardExe = 'mustard' }  # fall back to PATH
 
@@ -112,3 +178,15 @@ try {
     $env:MUSTARD_TEMPLATES_DIR = $prevTemplates
 }
 Write-Host '==> Done. .claude/ is installed; mustard-rt hooks are wired via settings.json.'
+
+# A long-running `mustard-rt mcp` server (the mustard-memory MCP face) and any
+# in-flight hook keep the *previous* binary mapped until they exit. The fresh
+# build is already in place on disk, but live Claude Code sessions won't pick it
+# up until they restart. Surface this so the new binary isn't assumed live.
+if (-not $SkipBuild) {
+    $stillRunning = @(Get-Process -Name mustard-rt -ErrorAction SilentlyContinue)
+    if ($stillRunning.Count -gt 0) {
+        Write-Warning "$($stillRunning.Count) mustard-rt process(es) are still running the previous binary (e.g. `mustard-rt mcp`)."
+        Write-Warning '  Restart Claude Code (or those processes) for the freshly installed binary to take effect.'
+    }
+}

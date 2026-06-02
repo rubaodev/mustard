@@ -3,7 +3,7 @@
 //! ## Scope (F4-d item 1 — "não se perder")
 //!
 //! A `PreToolUse(Skill)` gate, sibling to
-//! [`crate::hooks::write::entity_registry_gate::EntityRegistryGate`]: it sits on
+//! [`crate::hooks::write::scan_gate::ScanGate`]: it sits on
 //! the **entry** of a new pipeline (`/feature`, `/bugfix`) and refuses (or
 //! warns) when the number of pipelines already running would exceed a cap.
 //! Before this gate the `26` in `active_specs` was a *display* truncation only;
@@ -51,7 +51,7 @@ use mustard_core::platform::error::Error;
 use std::path::Path;
 
 /// The pipeline skills the limit gate applies to. Mirrors
-/// [`crate::hooks::write::entity_registry_gate`]'s `PIPELINE_SKILLS`: only the
+/// [`crate::hooks::write::scan_gate`]'s `PIPELINE_SKILLS`: only the
 /// pipeline *entry* skills open a new pipeline, so only they are gated.
 const PIPELINE_SKILLS: &[&str] = &["mustard:feature", "mustard:bugfix", "feature", "bugfix"];
 

@@ -293,6 +293,29 @@ pub fn detect_framework_signals_with(root: &Path, content: &str) -> Vec<Framewor
     }
 }
 
+/// `true` when `content` *defines* this framework vocabulary rather than
+/// *uses* a framework. Colocated with the vocabulary schema above so the
+/// markers stay in sync when the schema changes.
+///
+/// A definition is recognised by structural markers of this module's own
+/// shape — markers a normal source file that merely emits a framework signal
+/// (e.g. an `@Injectable()` usage) cannot exhibit:
+///
+/// - it embeds the vocabulary table: contains the `[[signal]]` table-array
+///   header AND the `category =` key, OR
+/// - it declares the category taxonomy: names the `FrameworkCategory` enum
+///   together with its `as_str` mapping.
+///
+/// This lets the scan engine skip the file that authors the vocabulary itself
+/// (which would otherwise look like a dense cluster of framework signals)
+/// without enumerating any concrete framework, language, or path.
+#[must_use]
+pub fn is_vocabulary_definition(content: &str) -> bool {
+    let embeds_table = content.contains("[[signal]]") && content.contains("category =");
+    let declares_taxonomy = content.contains("FrameworkCategory") && content.contains("as_str");
+    embeds_table || declares_taxonomy
+}
+
 /// 1-based line number of byte offset `at` in `content` (count of newlines
 /// before `at`, plus one). Saturates rather than panicking on an out-of-range
 /// offset.
@@ -508,6 +531,32 @@ patterns = ["MyCustomEntity("]
         std::fs::write(dir.join("frameworks.toml"), "this is = = not toml").unwrap();
         let err = FrameworkVocabulary::load(DEFAULT_FRAMEWORKS_NAME, tmp.path()).unwrap_err();
         assert!(matches!(err, VocabError::InvalidToml(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_vocabulary_definition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn vocabulary_definition_recognises_own_source() {
+        // This file's own content embeds the table markers and declares the
+        // category taxonomy, so it must read as a definition.
+        let own = include_str!("frameworks.rs");
+        assert!(is_vocabulary_definition(own));
+    }
+
+    #[test]
+    fn vocabulary_definition_recognises_table_shape() {
+        let toml = "[[signal]]\ncategory = \"orm\"\npatterns = [\"x(\"]\n";
+        assert!(is_vocabulary_definition(toml));
+    }
+
+    #[test]
+    fn vocabulary_definition_rejects_framework_usage() {
+        // A normal source file that merely uses a framework decorator is not a
+        // vocabulary definition.
+        let usage = "@Injectable()\nexport class UserService {}\n";
+        assert!(!is_vocabulary_definition(usage));
     }
 
     #[test]

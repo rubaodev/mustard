@@ -530,12 +530,6 @@ pub fn run(
         }
     }
 
-    // Wave 4 (project-profiler): delegate to the unified `context-resolve`
-    // walk. The spec's `## Entidades` / `## Entities` section drives the
-    // entity seeds; the resolver walks the concept-node graph and emits a
-    // one-line stderr summary of the closure. Stdout (the glossary slice)
-    // stays byte-stable for the legacy parser. Fail-open everywhere.
-    delegate_to_resolver(spec);
 }
 
 /// Slice a CLAUDE.md file against the spec-derived relevance terms.
@@ -594,33 +588,6 @@ fn slice_claude_md(claude_md_path: &str, spec_path: &str, max_lines: Option<usiz
     }
 }
 
-/// Pull entity names from the spec's `## Entidades`/`## Entities` section
-/// and feed them to the unified resolver. The resolver is invoked purely
-/// for its side-effect (a stderr summary + cache warm-up) — the stdout
-/// glossary slice produced above is the byte-stable contract.
-fn delegate_to_resolver(spec_path: &str) {
-    let Some(spec_text) = read_file_safe(Path::new(spec_path)) else {
-        return;
-    };
-    let section = extract_section(&spec_text, &["Entidades", "Entities"]);
-    let entities: Vec<String> = identifier_tokens(&section);
-    if entities.is_empty() {
-        return;
-    }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let scope = crate::commands::scan::resolve::ResolveScope {
-        entities,
-        ..crate::commands::scan::resolve::ResolveScope::default()
-    };
-    let out = crate::commands::scan::resolve::resolve_closure(&cwd, &scope);
-    if !out.closure.is_empty() {
-        eprintln!(
-            "[context-slice] context-resolve closure={} truncated={}",
-            out.closure.len(),
-            out.truncated,
-        );
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -26,7 +26,9 @@ use mustard_core::domain::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_SCOPE, EVENT_PIPELINE_STATUS,
     EVENT_PIPELINE_TASK_COMPLETE, EVENT_PIPELINE_TASK_DISPATCH, EVENT_PIPELINE_WAVE_COMPLETE,
 };
-use mustard_core::{Flags, Outcome, SpecState, Stage, read_meta, write_meta};
+use mustard_core::{
+    Flags, Outcome, SpecState, Stage, outcome_label, read_meta, stage_label, write_meta,
+};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -157,7 +159,14 @@ pub fn run(opts: EmitPipelineOpts) {
     }
 
     // --- Parse optional payload ---
+    //
+    // A missing `--payload` is normally `null`. For `pipeline.complete` that
+    // null breaks the projection (`serde_json::from_value::<PipelineComplete
+    // Payload>(null)` → "invalid type: null, expected struct"). Default a bare
+    // `pipeline.complete` to `{}` so a valid empty `PipelineCompletePayload` is
+    // emitted (the projection is also hardened to tolerate null — both ends).
     let payload: Value = match opts.payload.as_deref() {
+        None if opts.kind == EVENT_PIPELINE_COMPLETE => json!({}),
         None => Value::Null,
         Some(raw) => match serde_json::from_str(raw) {
             Ok(v) => v,
@@ -277,6 +286,27 @@ pub fn run(opts: EmitPipelineOpts) {
             }
             bump_parent_progress(&cwd, &spec_name, wave, &ts);
         }
+    }
+
+    // `pipeline.stage` / `pipeline.outcome`: patch the spec's `meta.json` so the
+    // sidecar tracks the canonical state-model transition. Without this the
+    // sidecar stays stuck at its last `pipeline.status`-synced value and
+    // `active-specs` shows a phantom active spec after CLOSE. Reuses the
+    // canonical `Meta` read-modify-write (no parallel writer). Fail-open.
+    if kind_str == EVENT_PIPELINE_STAGE || kind_str == EVENT_PIPELINE_OUTCOME {
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+        patch_meta_for_transition(&cwd, &spec_name, &kind_str, &payload_for_header, &ts);
+    }
+
+    // `pipeline.complete`: the spec is done. Set `outcome = Completed` +
+    // `stage = Close` (+ `phase = CLOSE`) in `meta.json` so `active-specs` no
+    // longer lists it. The QA gate above already guaranteed this transition is
+    // legitimate. Fail-open.
+    if kind_str == EVENT_PIPELINE_COMPLETE {
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from(project_dir()));
+        patch_meta_complete(&cwd, &spec_name, &ts);
     }
 
     // Cleanup: remove the `.pipeline-states/{spec}.json` file when a terminal
@@ -496,6 +526,115 @@ fn state_from_status_word(to: &str) -> SpecState {
     SpecState::new(stage, Outcome::Active, Flags::default()).unwrap_or(fallback)
 }
 
+
+/// Uppercase phase token (`ANALYZE`/`PLAN`/`EXECUTE`/`QA`/`CLOSE`) for a
+/// canonical [`Stage`]. This is the `meta.json#phase` spelling the dashboard
+/// and `bump_parent_progress` already emit; the canonical state machine remains
+/// `stage` + `outcome` + `flags`, but `phase` is kept in sync for the cards.
+const fn phase_token_for_stage(stage: Stage) -> &'static str {
+    match stage {
+        Stage::Analyze => "ANALYZE",
+        Stage::Plan => "PLAN",
+        Stage::Execute => "EXECUTE",
+        Stage::QaReview => "QA",
+        Stage::Close => "CLOSE",
+        // `Stage` is `#[non_exhaustive]`; a future variant falls back to the
+        // mid-pipeline phase rather than panicking (this token is advisory).
+        _ => "EXECUTE",
+    }
+}
+
+/// Resolve the `meta.json` path for a spec — the wave's sidecar when the payload
+/// carries a `wave` field, the top-level spec's sidecar otherwise. Returns
+/// `None` when the spec (or wave) directory does not exist.
+fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::PathBuf> {
+    let dir = if let Some(wave) = payload.get("wave").and_then(Value::as_u64) {
+        wave_spec_path(cwd, spec, wave)?
+    } else {
+        ClaudePaths::for_project(cwd)
+            .and_then(|p| p.for_spec(spec))
+            .ok()
+            .map(|sp| sp.dir().to_path_buf())?
+    };
+    dir.is_dir().then(|| dir.join("meta.json"))
+}
+
+/// Patch a spec's `meta.json` for a `pipeline.stage` / `pipeline.outcome`
+/// transition. Reuses the canonical [`Meta`](mustard_core::domain::meta::Meta)
+/// read-modify-write (atomic via `write_meta`), preserving every other field:
+///
+/// - `pipeline.stage {stage: <s>}` → `stage` + `phase` updated; `outcome`
+///   left as-is (a stage move keeps the spec Active).
+/// - `pipeline.outcome {outcome: <o>}` → `outcome` updated; a terminal outcome
+///   pins `stage = Close` + `phase = CLOSE` (matching [`SpecState::new`]).
+///
+/// `checkpoint` is always bumped to `ts`. Fail-open: a missing spec dir,
+/// unparseable sidecar, or write failure all warn on stderr and return.
+fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value, ts: &str) {
+    let Some(path) = meta_path_for(cwd, spec, payload) else {
+        return;
+    };
+    let mut meta = read_meta(&path).unwrap_or_default();
+
+    match kind {
+        EVENT_PIPELINE_STAGE => {
+            let Some(stage) = payload
+                .get("stage")
+                .and_then(Value::as_str)
+                .and_then(Stage::parse)
+            else {
+                return;
+            };
+            meta.stage = Some(stage_label(stage).to_string());
+            meta.phase = Some(phase_token_for_stage(stage).to_string());
+        }
+        EVENT_PIPELINE_OUTCOME => {
+            let Some(outcome) = payload
+                .get("outcome")
+                .and_then(Value::as_str)
+                .and_then(Outcome::parse)
+            else {
+                return;
+            };
+            meta.outcome = Some(outcome_label(outcome).to_string());
+            // A terminal outcome only ever pairs with Close (SpecState invariant).
+            if outcome != Outcome::Active {
+                meta.stage = Some(stage_label(Stage::Close).to_string());
+                meta.phase = Some(phase_token_for_stage(Stage::Close).to_string());
+            }
+        }
+        _ => return,
+    }
+
+    meta.checkpoint = Some(ts.to_string());
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); meta.json may be stale",
+            path.display()
+        );
+    }
+}
+
+/// Patch a spec's `meta.json` for a `pipeline.complete` event: the spec is done,
+/// so `outcome = Completed`, `stage = Close`, `phase = CLOSE`. Reuses the
+/// canonical [`Meta`](mustard_core::domain::meta::Meta) read-modify-write
+/// (atomic), preserving every other field. Fail-open.
+fn patch_meta_complete(cwd: &Path, spec: &str, ts: &str) {
+    let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
+        return;
+    };
+    let mut meta = read_meta(&path).unwrap_or_default();
+    meta.stage = Some(stage_label(Stage::Close).to_string());
+    meta.outcome = Some(outcome_label(Outcome::Completed).to_string());
+    meta.phase = Some(phase_token_for_stage(Stage::Close).to_string());
+    meta.checkpoint = Some(ts.to_string());
+    if let Err(e) = write_meta(&path, &meta) {
+        eprintln!(
+            "emit-pipeline: WARN: could not write {} ({e}); meta.json may be stale",
+            path.display()
+        );
+    }
+}
 
 /// Tactical-fix 2026-05-26: bump parent `meta.json` progress fields on a
 /// `pipeline.wave.complete` event. Sets:
@@ -950,5 +1089,106 @@ mod tests {
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
         assert_eq!(v["completedWaves"], json!([1, 4]), "{v}");
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG 1 (2026-06-01): emit-pipeline patches meta.json on canonical state
+    // transitions (pipeline.stage / pipeline.outcome / pipeline.complete).
+    // -----------------------------------------------------------------------
+
+    /// Seed a top-level spec dir with a `meta.json` and return both paths.
+    fn seed_spec_meta(root: &Path, spec: &str, body: &str) -> std::path::PathBuf {
+        let spec_dir = root.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let meta_path = spec_dir.join("meta.json");
+        std::fs::write(&meta_path, body.as_bytes()).unwrap();
+        meta_path
+    }
+
+    /// AC-a: a `pipeline.stage {stage: "execute"}` event patches `meta.json`
+    /// `stage` (+ `phase`), bumps `checkpoint`, and preserves other fields.
+    #[test]
+    fn stage_transition_patches_meta_stage() {
+        let dir = tempdir().unwrap();
+        let meta_path = seed_spec_meta(
+            dir.path(),
+            "demo",
+            r#"{"stage":"Plan","outcome":"Active","phase":"PLAN","scope":"full","lang":"pt-BR","checkpoint":null}"#,
+        );
+
+        let ts = "2026-06-01T10:00:00Z";
+        super::patch_meta_for_transition(
+            dir.path(),
+            "demo",
+            EVENT_PIPELINE_STAGE,
+            &json!({ "stage": "execute" }),
+            ts,
+        );
+
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["stage"], json!("Execute"), "{v}");
+        assert_eq!(v["phase"], json!("EXECUTE"), "{v}");
+        // Outcome stays Active through a stage move; other fields preserved.
+        assert_eq!(v["outcome"], json!("Active"), "{v}");
+        assert_eq!(v["scope"], json!("full"), "{v}");
+        assert_eq!(v["lang"], json!("pt-BR"), "{v}");
+        assert_eq!(v["checkpoint"], json!(ts), "{v}");
+    }
+
+    /// A `pipeline.outcome {outcome: "completed"}` event pins `stage = Close`
+    /// + `phase = CLOSE` alongside the terminal outcome.
+    #[test]
+    fn outcome_transition_pins_close_on_terminal() {
+        let dir = tempdir().unwrap();
+        let meta_path = seed_spec_meta(
+            dir.path(),
+            "demo",
+            r#"{"stage":"Execute","outcome":"Active","phase":"EXECUTE","scope":"full","lang":"en-US","checkpoint":null}"#,
+        );
+
+        super::patch_meta_for_transition(
+            dir.path(),
+            "demo",
+            EVENT_PIPELINE_OUTCOME,
+            &json!({ "outcome": "completed" }),
+            "2026-06-01T11:00:00Z",
+        );
+
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["outcome"], json!("Completed"), "{v}");
+        assert_eq!(v["stage"], json!("Close"), "{v}");
+        assert_eq!(v["phase"], json!("CLOSE"), "{v}");
+    }
+
+    /// AC-b: `pipeline.complete` sets `outcome = Completed`, `stage = Close`,
+    /// `phase = CLOSE` in `meta.json` and preserves scope/lang.
+    #[test]
+    fn complete_sets_outcome_completed_and_stage_close() {
+        let dir = tempdir().unwrap();
+        let meta_path = seed_spec_meta(
+            dir.path(),
+            "demo",
+            r#"{"stage":"QaReview","outcome":"Active","phase":"QA","scope":"light","lang":"pt-BR","checkpoint":null}"#,
+        );
+
+        let ts = "2026-06-01T12:00:00Z";
+        super::patch_meta_complete(dir.path(), "demo", ts);
+
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(v["outcome"], json!("Completed"), "{v}");
+        assert_eq!(v["stage"], json!("Close"), "{v}");
+        assert_eq!(v["phase"], json!("CLOSE"), "{v}");
+        assert_eq!(v["scope"], json!("light"), "{v}");
+        assert_eq!(v["lang"], json!("pt-BR"), "{v}");
+        assert_eq!(v["checkpoint"], json!(ts), "{v}");
+    }
+
+    /// Fail-open: a missing spec directory is a silent no-op (no panic, no
+    /// created file).
+    #[test]
+    fn patch_meta_complete_noop_when_spec_missing() {
+        let dir = tempdir().unwrap();
+        super::patch_meta_complete(dir.path(), "ghost", "2026-06-01T12:00:00Z");
+        assert!(!dir.path().join(".claude").join("spec").join("ghost").exists());
     }
 }

@@ -32,7 +32,7 @@
 //! Files that are dynamically generated at runtime (and must NOT be overwritten)
 //! are skipped unconditionally, regardless of hash difference:
 //!
-//! - `entity-registry.json`
+//! - `grain.model.json`
 //! - `.cluster-cache.json`
 //! - `.interpret-cache.json`
 //! - Any path whose final component starts with `.` inside `.agent-state/`,
@@ -108,7 +108,7 @@ const SYNCED_SUBDIRS: &[&str] = &["refs", "commands/mustard", "skills"];
 /// be overwritten by this command, even if their content drifts from the
 /// template source.
 const GENERATED_BASENAMES: &[&str] = &[
-    "entity-registry.json",
+    "grain.model.json",
     ".cluster-cache.json",
     ".interpret-cache.json",
 ];
@@ -471,7 +471,7 @@ mod tests {
         let templates = tmp.path().join("templates");
         let claude = tmp.path().join(".claude");
 
-        create_template_file(&templates, "refs", "entity-registry.json", r#"{"v":1}"#);
+        create_template_file(&templates, "refs", "grain.model.json", r#"{"v":1}"#);
 
         let mut report = RefreshReport::default();
         do_refresh(&templates, &claude, false, &mut report);
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(report.copied.len(), 0);
         assert_eq!(report.skipped.len(), 1);
         // Dest must not have been created.
-        assert!(!claude.join("refs/entity-registry.json").exists());
+        assert!(!claude.join("refs/grain.model.json").exists());
     }
 
     /// AC-4e: dry-run — reports copied but does not write.

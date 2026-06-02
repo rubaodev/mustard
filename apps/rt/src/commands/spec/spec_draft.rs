@@ -26,11 +26,13 @@
 //! ```text
 //! {output}/
 //!   spec.md              # PRD + (when scope=full) plan
-//!   meta.json            # canonical lifecycle metadata
+//!   meta.json            # canonical lifecycle metadata (scope/totalWaves/isWavePlan)
 //!   memory/_index.md     # T1.9 — stub memory index
-//!   wave-plan.md         # only when scope=full
-//!   wave-1-{role}/spec.md ... wave-N-{role}/spec.md  # only when scope=full
 //! ```
+//!
+//! Full-scope wave decomposition (`wave-plan.md` + `wave-N-{role}/spec.md` +
+//! review/qa scaffolds) is materialised separately by `wave-scaffold` from a
+//! plan JSON — `spec-draft` only writes the top-level spec.md + meta.json.
 //!
 //! Idempotent: if `output` already exists, the writer refuses to overwrite
 //! unless `--force` is passed. Fail-open per file write (a single failure is
@@ -42,12 +44,12 @@ use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
 use mustard_core::domain::meta::Meta;
 use mustard_core::domain::spec::contract::{
-    AcceptanceCriterion, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
+    AcceptanceCriterion, ChecklistItem, SectionBody, SpecInput, PLAN_SECTIONS, PRD_SECTIONS,
 };
 use mustard_core::{
     domain::model::view::Phase,
     platform::i18n::{translate, Locale, Tone},
-    Outcome, Scope, Stage,
+    Outcome, Scan, Scope, Stage,
 };
 use serde_json::json;
 use std::fmt::Write as _;
@@ -86,10 +88,9 @@ pub struct SpecDraftOpts {
     pub signals: Option<String>,
     /// Optional output directory. Defaults to `.claude/spec/{slug}/`.
     pub output: Option<PathBuf>,
-    /// Number of waves to scaffold under Full scope (default 1).
+    /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
+    /// The wave dirs themselves are materialised by `wave-scaffold`.
     pub waves: u32,
-    /// Role assigned to each scaffolded wave (default `mixed`).
-    pub role: String,
     /// Overwrite existing output directory.
     pub force: bool,
 }
@@ -104,7 +105,7 @@ pub fn run(opts: SpecDraftOpts) {
         emit_error("invalid --lang (expected BCP-47 `pt-BR` or `en-US`)", &opts.lang);
         return;
     };
-    let slug = slug_from_intent(&opts.intent);
+    let slug = slug_from_intent(&opts.intent, lang_locale);
     if slug.is_empty() {
         emit_error("intent did not yield a slug", &opts.intent);
         return;
@@ -138,6 +139,16 @@ pub fn run(opts: SpecDraftOpts) {
     let build_command =
         mustard_core::ProjectConfig::load(&project_root).build_command_or_fallback();
 
+    // ---- Enrich the Context section with the scan digest (the same insumos
+    // `feature::run` emits). Deterministic, token-free, fail-open: a missing
+    // model or empty match degrades to the plain placeholder. The same digest
+    // also seeds the trackable `## Checklist` (one item per scan anchor). ----
+    let digest = scan_digest(&opts.intent);
+    let context_block = digest
+        .as_ref()
+        .and_then(|d| render_context_block(&d.0, &d.1, lang_locale));
+    let anchors: &[String] = digest.as_ref().map_or(&[], |d| d.0.as_slice());
+
     // ---- Build the canonical input + validate before writing. ----
     let input = build_input(
         &slug,
@@ -147,6 +158,8 @@ pub fn run(opts: SpecDraftOpts) {
         opts.waves,
         lang_locale,
         &build_command,
+        context_block.as_deref(),
+        anchors,
     );
     if let Err(violations) = mustard_core::domain::spec::contract::validate(&input) {
         let detail = violations
@@ -182,14 +195,11 @@ pub fn run(opts: SpecDraftOpts) {
         written.push(output.join("memory").join("_index.md").display().to_string());
     }
 
-    if matches!(scope, Scope::Full) {
-        let wave_paths =
-            write_wave_plan(&output, &input, opts.waves, &opts.role, lang_locale, &build_command);
-        match wave_paths {
-            Ok(paths) => written.extend(paths),
-            Err(e) => emit_error("write wave-plan", &e),
-        }
-    }
+    // Full-scope wave decomposition is owned by `wave-scaffold` (plan-driven:
+    // per-wave roles/summaries/deps + review/qa scaffolds). `spec-draft` only
+    // materialises the top-level spec.md + meta.json — `meta.json` already
+    // records `scope=full` + `totalWaves` + `isWavePlan`, so consumers know a
+    // wave plan is expected before `wave-scaffold` fills it in.
 
     let report = json!({
         "ok": true,
@@ -222,6 +232,8 @@ fn build_input(
     waves: u32,
     lang_locale: Locale,
     build_command: &str,
+    context_block: Option<&str>,
+    anchors: &[String],
 ) -> SpecInput {
     SpecInput {
         slug: slug.to_string(),
@@ -240,7 +252,7 @@ fn build_input(
             .iter()
             .map(|n| SectionBody {
                 name: (*n).to_string(),
-                body: prd_section_default(n, intent, lang_locale),
+                body: prd_section_default(n, intent, lang_locale, context_block),
             })
             .collect(),
         plan_sections: if matches!(scope, Scope::Full) {
@@ -259,6 +271,45 @@ fn build_input(
             statement: "Pipeline build green".to_string(),
             command: build_command.to_string(),
         }],
+        checklist: build_checklist(scope, anchors, lang_locale),
+    }
+}
+
+/// Max trackable checklist items materialised at draft time. The scan digest
+/// already caps anchors at [`SCAN_ANCHOR_CAP`]; full scope mirrors that, light
+/// scope keeps the list short (a Light spec touches ≤5 files by definition).
+const CHECKLIST_LIGHT_CAP: usize = 5;
+
+/// Build the trackable `## Checklist` for a fresh draft. One item per scan
+/// anchor (the auto-mark hook keys off the ` → <path>` arrow), so a `Write` of
+/// that file flips the box automatically. Falls back to a single task item when
+/// the scan surfaced no anchors (fail-open: the checklist is never empty, so the
+/// contract's `ChecklistEmpty` rule and the close-gate checklist gate always
+/// have something to track). Full scope keeps every anchor; Light caps the list.
+fn build_checklist(scope: Scope, anchors: &[String], lang: Locale) -> Vec<ChecklistItem> {
+    let cap = if matches!(scope, Scope::Full) {
+        SCAN_ANCHOR_CAP
+    } else {
+        CHECKLIST_LIGHT_CAP
+    };
+    let items: Vec<ChecklistItem> = anchors
+        .iter()
+        .take(cap)
+        .map(|path| ChecklistItem {
+            label: translate("checklist.touch_file", lang).to_string(),
+            path: Some(path.clone()),
+        })
+        .collect();
+    if items.is_empty() {
+        // No precedent from the scan — seed a single hand-trackable task item
+        // mirroring the `tasks` plan placeholder (`T1`). No path ⇒ no auto-mark
+        // anchor, but the gate + `mark-checklist-item` still track it by text.
+        vec![ChecklistItem {
+            label: translate("checklist.first_task", lang).to_string(),
+            path: None,
+        }]
+    } else {
+        items
     }
 }
 
@@ -266,10 +317,18 @@ fn build_input(
 /// language-agnostic EN identifier from [`PRD_SECTIONS`] (`"context"`,
 /// `"users"`, …). The returned body is fully localised via the catalogue
 /// (the body is part of the spec-facing narrative; only the keys are EN).
-fn prd_section_default(name: &str, intent: &str, lang: Locale) -> String {
+fn prd_section_default(
+    name: &str,
+    intent: &str,
+    lang: Locale,
+    context_block: Option<&str>,
+) -> String {
     let fill_why_now = translate("placeholder.fill_why_now", lang);
     match name {
-        "context" => format!("{intent}.\n\n{fill_why_now}"),
+        "context" => match context_block {
+            Some(block) => format!("{intent}.\n\n{block}\n\n{fill_why_now}"),
+            None => format!("{intent}.\n\n{fill_why_now}"),
+        },
         "users" => translate("placeholder.fill_beneficiary", lang).to_string(),
         "metric" => translate("placeholder.fill_metric", lang).to_string(),
         "non-goals" => translate("placeholder.fill_excluded", lang).to_string(),
@@ -288,6 +347,60 @@ fn plan_section_default(name: &str, lang: Locale) -> String {
         "boundaries" => "IN: ...\nOUT: ...".to_string(),
         _ => translate("placeholder.fill", lang).to_string(),
     }
+}
+
+/// Max anchors / slices surfaced in the Context enrichment block. The digest
+/// already returns ~12 anchors; cap so a wide query does not inflate the spec.
+const SCAN_ANCHOR_CAP: usize = 12;
+const SCAN_SLICE_CAP: usize = 6;
+
+/// Query the scan digest for the intent — the same deterministic insumos
+/// `feature::run` emits, recomputed here. It costs no tokens (a local query
+/// against `grain.model.json`, not an AI call). Returns `(anchors, slice
+/// labels)`: the anchors seed both the Context enrichment block and the
+/// trackable `## Checklist`; the slice labels feed only the Context block.
+/// Returns `None` when the model is absent or the query failed (fail-open: both
+/// consumers degrade to their placeholder).
+fn scan_digest(intent: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let model = PathBuf::from(project_dir())
+        .join(".claude")
+        .join("grain.model.json");
+    let terms = crate::commands::feature::domain_terms(intent);
+    let q = Scan::locate().digest_query(&model, &terms).ok()?;
+    let slice_labels: Vec<String> = q
+        .slices
+        .iter()
+        .map(|s| format!("{} (×{})", s.label, s.recurrence))
+        .collect();
+    Some((q.files, slice_labels))
+}
+
+/// Render the Context enrichment markdown from already-extracted anchors +
+/// slice labels. Pure (no I/O) so it is unit-testable; the digest query lives
+/// in [`context_enrichment`]. Returns `None` when there is nothing to show.
+fn render_context_block(
+    anchors: &[String],
+    slice_labels: &[String],
+    lang: Locale,
+) -> Option<String> {
+    let mut block = String::new();
+    if !anchors.is_empty() {
+        let _ = writeln!(block, "{}:", translate("context.scan_anchors", lang));
+        for f in anchors.iter().take(SCAN_ANCHOR_CAP) {
+            let _ = writeln!(block, "- {f}");
+        }
+    }
+    if !slice_labels.is_empty() {
+        let joined = slice_labels
+            .iter()
+            .take(SCAN_SLICE_CAP)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(block, "\n{}: {}", translate("context.scan_slices", lang), joined);
+    }
+    let trimmed = block.trim_end().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 /// Build a [`Meta`] from a [`SpecInput`]. Used by [`run`] before delegating
@@ -327,126 +440,26 @@ fn write_memory_stub(output: &Path, input: &SpecInput, lang: Locale) -> Result<(
     mfs::write_atomic(dir.join("_index.md"), body.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// Materialise `wave-plan.md` + `wave-N-{role}/spec.md` directories. Headings
-/// and placeholder copy are localised; the AC ids (`AC-W1.1`) and the
-/// `Command:` keyword stay canonical so QA can grep them across locales.
-fn write_wave_plan(
-    output: &Path,
-    input: &SpecInput,
-    waves: u32,
-    role: &str,
-    lang: Locale,
-    build_command: &str,
-) -> Result<Vec<String>, String> {
-    let n = waves.max(1);
-    let mut written: Vec<String> = Vec::new();
-    let fill = translate("placeholder.fill", lang);
-
-    let mut plan = String::new();
-    let waveplan_title = translate("waveplan.title", lang).replace("{title}", &input.title);
-    let _ = write!(plan, "# {waveplan_title}\n\n");
-    // No lifecycle header block — lifecycle metadata lives only in meta.json.
-    let _ = write!(
-        plan,
-        "## {table_heading}\n\n| # | {spec_col} | {role_col} | {summary_col} |\n|---|---|---|---|\n",
-        table_heading = translate("waveplan.table_heading", lang),
-        spec_col = translate("waveplan.column.spec", lang),
-        role_col = translate("waveplan.column.role", lang),
-        summary_col = translate("waveplan.column.summary", lang),
-    );
-    for i in 1..=n {
-        let _ = writeln!(plan, "| {i} | [[wave-{i}-{role}]] | {role} | {fill} |");
-    }
-    mfs::write_atomic(output.join("wave-plan.md"), plan.as_bytes())
-        .map_err(|e| format!("wave-plan.md: {e}"))?;
-    written.push(output.join("wave-plan.md").display().to_string());
-
-    // The wave-plan's lifecycle metadata lives only in meta.json. The top-level
-    // spec dir already carries its own meta.json (written by `spec-draft::run`);
-    // mark it as the wave-plan owner so consumers can read `isWavePlan`.
-    let parent_name = output
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let wave_title_tpl = translate("wave.title_placeholder", lang);
-    let context_heading = translate("heading.spec.context", lang);
-    let tasks_heading = translate("heading.spec.tasks", lang);
-    let ac_heading = translate("heading.spec.ac", lang);
-    let limits_heading = translate("heading.spec.limits", lang);
-    for i in 1..=n {
-        let wave_dir = output.join(format!("wave-{i}-{role}"));
-        mfs::create_dir_all(&wave_dir).map_err(|e| format!("{}: {e}", wave_dir.display()))?;
-        let title = wave_title_tpl.replace("{n}", &i.to_string());
-        let mut body = String::new();
-        let _ = write!(body, "# {title}\n\n");
-        // No lifecycle header block — lifecycle metadata lives only in meta.json.
-        let _ = write!(
-            body,
-            "## {context_heading}\n\n{fill}\n\n## {tasks_heading}\n\n- [ ] T1 — ...\n\n## {ac_heading}\n\n"
-        );
-        let _ = write!(
-            body,
-            "- **AC-W{i}.1** — Build green. Command: `{build_command}`\n\n## {limits_heading}\n\nIN: ...\nOUT: ...\n"
-        );
-        let path = wave_dir.join("spec.md");
-        mfs::write_atomic(&path, body.as_bytes())
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        written.push(path.display().to_string());
-
-        // Lifecycle metadata for the wave lives only in meta.json (Plan/Active,
-        // parented to the wave-plan spec). Fail-soft: a meta write failure is
-        // reported but does not abort the rest of the layout.
-        let wave_meta = Meta {
-            stage: Some("Plan".into()),
-            outcome: Some("Active".into()),
-            phase: None,
-            scope: None,
-            lang: input.lang.clone(),
-            checkpoint: None,
-            parent: Some(parent_name.clone()),
-            is_wave_plan: None,
-            total_waves: None,
-            flags: mustard_core::MetaFlags::default(),
-            raw: serde_json::Value::Null,
-        };
-        if let Err(e) = spec_scaffold::write_meta_json(&wave_dir, &wave_meta) {
-            eprintln!("spec-draft: WARN: meta.json write failed for {} — {e}", wave_dir.display());
-        } else {
-            written.push(wave_dir.join("meta.json").display().to_string());
-        }
-    }
-    Ok(written)
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Derive a kebab-case slug from a free-text intent. Mirrors
-/// [`mustard_core::platform::i18n::slugify`] tolerances but stays local: no datestamp,
-/// no truncation beyond 60 chars.
-fn slug_from_intent(intent: &str) -> String {
-    let mut s: String = intent
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    // Collapse runs of `-` and trim leading/trailing.
-    while s.contains("--") {
-        s = s.replace("--", "-");
-    }
-    let trimmed = s.trim_matches('-').to_string();
-    if trimmed.len() > 60 {
-        trimmed.chars().take(60).collect()
-    } else {
-        trimmed
-    }
+/// Max number of words kept in a generated slug. A paragraph-length intent is
+/// cut here — on a word boundary, never mid-word (the old 60-char `.take`
+/// decapitated the final word, e.g. `…contas-a-r`).
+const SLUG_MAX_TOKENS: usize = 5;
+
+/// Derive a kebab-case slug from a free-text intent by delegating to the
+/// canonical [`mustard_core::slugify`] — per-locale accent fold + stopword
+/// drop — instead of a hand-rolled char map that kept stopwords (`em`, `a`,
+/// `de`) and mangled accents (`visão` → `vis-o`). Capped to the first
+/// [`SLUG_MAX_TOKENS`] words so the cut always lands on a boundary.
+fn slug_from_intent(intent: &str, lang: Locale) -> String {
+    mustard_core::slugify(intent, lang)
+        .split('-')
+        .take(SLUG_MAX_TOKENS)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Canonical lowercase string for the scope (matches `Scope` `serde` rename).
@@ -474,20 +487,70 @@ mod tests {
 
     #[test]
     fn slug_basic_kebab() {
-        assert_eq!(slug_from_intent("Add user CRUD"), "add-user-crud");
-        assert_eq!(slug_from_intent("  ---  Fix login   bug  "), "fix-login-bug");
+        assert_eq!(slug_from_intent("Add user CRUD", Locale::EnUs), "add-user-crud");
+        assert_eq!(
+            slug_from_intent("  ---  Fix login   bug  ", Locale::EnUs),
+            "fix-login-bug"
+        );
+    }
+
+    #[test]
+    fn slug_drops_stopwords_no_midword_cut() {
+        // Field report (sialia): the hand-rolled slug kept "em/a/de" and cut
+        // "receber" → "r". Delegating to slugify drops stopwords per-locale and
+        // the token cap lands on a word boundary.
+        let s = slug_from_intent(
+            "Espelhar em contas a pagar a visão de listagem de contas a receber",
+            Locale::PtBr,
+        );
+        assert_eq!(s, "espelhar-contas-pagar-visao-listagem");
+        assert!(!s.ends_with('-'));
+    }
+
+    #[test]
+    fn slug_caps_on_word_boundary() {
+        // 10 content words → first 5 kept, cut on a boundary (no partial word).
+        let s = slug_from_intent(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+            Locale::EnUs,
+        );
+        assert_eq!(s, "alpha-beta-gamma-delta-epsilon");
+    }
+
+    #[test]
+    fn render_context_block_lists_anchors_and_slices() {
+        let anchors = vec!["src/list.rs".to_string(), "src/view.rs".to_string()];
+        let slices = vec!["List (×3)".to_string()];
+        let s = render_context_block(&anchors, &slices, Locale::PtBr).unwrap();
+        assert!(s.contains("Âncoras (do scan):"));
+        assert!(s.contains("- src/list.rs"));
+        assert!(s.contains("Fatias recorrentes"));
+        assert!(s.contains("List (×3)"));
+    }
+
+    #[test]
+    fn render_context_block_none_when_empty() {
+        assert!(render_context_block(&[], &[], Locale::EnUs).is_none());
+    }
+
+    #[test]
+    fn render_context_block_caps_anchors_and_uses_en_heading() {
+        let anchors: Vec<String> = (0..20).map(|i| format!("f{i}.rs")).collect();
+        let s = render_context_block(&anchors, &[], Locale::EnUs).unwrap();
+        assert!(s.contains("Anchors (from scan):"));
+        assert_eq!(s.matches("- f").count(), SCAN_ANCHOR_CAP);
     }
 
     #[test]
     fn build_input_validates() {
-        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build");
+        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build", None, &[]);
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
     #[test]
     fn build_input_validates_in_en_us() {
         // Section *keys* are canonical EN identifiers; bodies are localised.
-        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build");
+        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build", None, &[]);
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
         // Body strings should be EN, not PT.
         let users = input
@@ -501,7 +564,7 @@ mod tests {
     #[test]
     fn build_input_ac_uses_build_command_not_hardcoded() {
         // AC command comes from the resolved build command, not `rtk cargo build`.
-        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build");
+        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build", None, &[]);
         assert_eq!(input.acceptance_criteria[0].command, "pnpm build");
         // Neutral fallback flows through verbatim when no buildCommand is set.
         let input2 = build_input(
@@ -512,11 +575,72 @@ mod tests {
             0,
             Locale::EnUs,
             mustard_core::BUILD_COMMAND_FALLBACK,
+            None,
+            &[],
         );
         assert_eq!(
             input2.acceptance_criteria[0].command,
             mustard_core::BUILD_COMMAND_FALLBACK
         );
+    }
+
+    #[test]
+    fn build_checklist_full_one_item_per_anchor() {
+        let anchors = vec!["src/list.rs".to_string(), "src/view.rs".to_string()];
+        let items = build_checklist(Scope::Full, &anchors, Locale::EnUs);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].path.as_deref(), Some("src/list.rs"));
+        assert!(!items[0].label.is_empty());
+    }
+
+    #[test]
+    fn build_checklist_light_caps_items() {
+        let anchors: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
+        let items = build_checklist(Scope::Light, &anchors, Locale::EnUs);
+        assert_eq!(items.len(), CHECKLIST_LIGHT_CAP);
+    }
+
+    #[test]
+    fn build_checklist_falls_back_to_single_task_when_no_anchors() {
+        // No scan precedent → never empty (contract requires ≥1 item).
+        let light = build_checklist(Scope::Light, &[], Locale::EnUs);
+        assert_eq!(light.len(), 1);
+        assert!(light[0].path.is_none());
+        let full = build_checklist(Scope::Full, &[], Locale::PtBr);
+        assert_eq!(full.len(), 1);
+    }
+
+    #[test]
+    fn drafted_spec_md_has_parseable_checklist_both_scopes() {
+        use mustard_core::domain::spec::contract::CHECKLIST_HEADING;
+        for (scope_str, scope) in [("light", Scope::Light), ("full", Scope::Full)] {
+            let dir = tempdir().unwrap();
+            let out = dir.path().join("specs").join(scope_str);
+            let opts = SpecDraftOpts {
+                intent: "Demo intent".into(),
+                scope: scope_str.into(),
+                lang: "pt-BR".into(),
+                signals: None,
+                output: Some(out.clone()),
+                waves: if matches!(scope, Scope::Full) { 2 } else { 0 },
+                force: false,
+            };
+            run(opts);
+            let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
+            // The `## Checklist` H2 is present, EN-only (language-agnostic).
+            let heading = format!("## {CHECKLIST_HEADING}");
+            assert!(
+                body.contains(&heading),
+                "{scope_str}: spec.md missing `{heading}`:\n{body}"
+            );
+            // At least one parseable `- [ ]` item lives under that heading.
+            let after = body.split_once(&heading).expect("checklist heading split").1;
+            let section = after.split("\n## ").next().unwrap_or(after);
+            assert!(
+                section.lines().any(|l| l.trim_start().starts_with("- [ ] ")),
+                "{scope_str}: no parseable `- [ ]` item in Checklist:\n{section}"
+            );
+        }
     }
 
     #[test]
@@ -539,7 +663,6 @@ mod tests {
             signals: None,
             output: Some(dir.path().join("specs").join("demo")),
             waves: 2,
-            role: "mixed".into(),
             force: false,
         };
         run(opts);
@@ -547,9 +670,9 @@ mod tests {
         assert!(root.join("spec.md").exists());
         assert!(root.join("meta.json").exists());
         assert!(root.join("memory").join("_index.md").exists());
-        assert!(root.join("wave-plan.md").exists());
-        assert!(root.join("wave-1-mixed").join("spec.md").exists());
-        assert!(root.join("wave-2-mixed").join("spec.md").exists());
+        // Wave dirs are NOT created by spec-draft — that is wave-scaffold's job.
+        assert!(!root.join("wave-plan.md").exists());
+        assert!(!root.join("wave-1-mixed").exists());
     }
 
     #[test]
@@ -562,7 +685,6 @@ mod tests {
             signals: None,
             output: Some(dir.path().join("out")),
             waves: 0,
-            role: "mixed".into(),
             force: false,
         };
         run(opts);
