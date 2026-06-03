@@ -35,7 +35,7 @@ Before building the wave plan in Full scope, check whether the work warrants mor
    Output cases:
    - `{error: "cyclic-dependency", cycle: [...]}` → warn user about cyclic imports (pre-existing architecture issue), fall back to a single-wave plan with note in `## Concerns`.
    - `{error: ...}` → fail-open: fall back to a single-wave plan.
-   - `{waves: [...]}` with only 1 wave → no real DAG depth, single-wave plan.
+   - `{waves: [...]}` with only 1 wave → a genuine single layer (or a lone generic `lib` bucket). Net-new features with no import edges yet are auto-split by architectural role (scheduled via `mustard.json#waveLayerOrder` — a documented, overridable default), so a real multi-layer feature no longer collapses to one wave here.
    - `{waves: [...]}` with 2+ waves → write a multi-wave **Wave Plan** (step 6).
 
 6. **Write Wave Plan structure:**

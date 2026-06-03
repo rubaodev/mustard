@@ -7,8 +7,10 @@
 //! JSON object on stdout. Fail-open: an unrecoverable error emits
 //! `{ "error": "error-fallback" }`.
 
-use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns};
-use mustard_core::io::fs;
+use crate::commands::wave::wave_lib::{
+    detect_role_with, load_role_patterns, load_wave_layer_order,
+};
+use mustard_core::{io::fs, RolePattern};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -263,6 +265,20 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
             json!({ "error": "cyclic-dependency", "cycle": cycle })
         }
         TopoResult::Waves(wave_files) => {
+            // Net-new features have no import edges yet, so the DAG flattens to a
+            // single level even when the files span multiple architectural
+            // layers. When that happens, derive the waves from the files' roles
+            // ordered by `mustard.json#waveLayerOrder` (documented default), so a
+            // backend->core->ui net-new feature still decomposes deterministically
+            // instead of collapsing to one wave.
+            if wave_files.len() == 1 {
+                let layer_order = load_wave_layer_order(project_root);
+                if let Some(fallback) =
+                    role_layered_fallback(&wave_files[0], project_root, &role_patterns, &layer_order)
+                {
+                    return fallback;
+                }
+            }
             let mut widest = 0usize;
             let waves: Vec<Value> = wave_files
                 .iter()
@@ -295,6 +311,80 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
             })
         }
     }
+}
+
+/// Deterministic role-layered decomposition for a flat (no-edge) DAG.
+///
+/// Returns `Some(wavesJson)` ONLY when the files span >= 2 architectural layers
+/// — applying the same lib-folding rule the scope decider uses (a lone `lib`
+/// bucket is one layer, never split). Otherwise `None` and the caller keeps the
+/// single import-DAG wave. Roles are scheduled in `layer_order` (case-insensitive
+/// match), each wave depending on the previous; roles absent from the order fall
+/// to the tail in lexical order. The emitted shape is byte-identical to the
+/// import-DAG path (`{wave, files, roles, dependsOn}` + `metadata`).
+fn role_layered_fallback(
+    files: &[PathBuf],
+    project_root: &Path,
+    role_patterns: &[RolePattern],
+    layer_order: &[String],
+) -> Option<Value> {
+    let mut by_role: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for f in files {
+        let rel = to_relative(f, project_root);
+        let role = detect_role_with(&rel, role_patterns);
+        by_role.entry(role).or_default().push(rel);
+    }
+    // Same lib-folding rule as scope_decompose::decide / exec_rewave_check: a
+    // lone "lib" bucket counts as one layer, so a purely-generic net-new slice
+    // is not split.
+    let layer_count = if by_role.len() == 1 && by_role.contains_key("lib") {
+        1
+    } else {
+        by_role.len()
+    };
+    if layer_count < 2 {
+        return None;
+    }
+    // Schedule the role buckets: ordered roles first (case-insensitive match
+    // against the config/default order), then any remainder in lexical order.
+    let mut ordered: Vec<String> = Vec::new();
+    for want in layer_order {
+        for key in by_role.keys() {
+            if key.eq_ignore_ascii_case(want) && !ordered.iter().any(|o| o == key) {
+                ordered.push(key.clone());
+            }
+        }
+    }
+    for key in by_role.keys() {
+        if !ordered.iter().any(|o| o == key) {
+            ordered.push(key.clone());
+        }
+    }
+    let mut widest = 0usize;
+    let mut total_files = 0usize;
+    let waves: Vec<Value> = ordered
+        .iter()
+        .enumerate()
+        .map(|(idx, role)| {
+            let wave_files = by_role.get(role).cloned().unwrap_or_default();
+            widest = widest.max(wave_files.len());
+            total_files += wave_files.len();
+            json!({
+                "wave": idx + 1,
+                "files": wave_files,
+                "roles": [role],
+                "dependsOn": if idx == 0 { json!([]) } else { json!([idx]) },
+            })
+        })
+        .collect();
+    Some(json!({
+        "waves": waves,
+        "metadata": {
+            "totalWaves": ordered.len(),
+            "totalFiles": total_files,
+            "widestWave": widest,
+        },
+    }))
 }
 
 /// Dispatch `mustard-rt run wave-dependency`.
@@ -341,6 +431,60 @@ pub fn run() {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn flat_dag_multi_role_falls_back_to_role_layers() {
+        // Net-new files with no imports → flat DAG. Three distinct roles →
+        // deterministic role-layered fallback, ordered by the default layer
+        // order (schema → api → ui), each wave depending on the previous.
+        let dir = tempdir().unwrap();
+        let files = vec![
+            "src/schema/user.sql".to_string(),
+            "src/api/handler.ts".to_string(),
+            "src/ui/page.tsx".to_string(),
+        ];
+        let out = compute_waves(&files, dir.path());
+        let waves = out["waves"].as_array().expect("waves array");
+        assert_eq!(waves.len(), 3, "flat 3-role net-new must split: {out}");
+        assert_eq!(waves[0]["roles"][0].as_str(), Some("schema"));
+        assert_eq!(waves[1]["roles"][0].as_str(), Some("api"));
+        assert_eq!(waves[2]["roles"][0].as_str(), Some("ui"));
+        assert_eq!(waves[0]["dependsOn"].as_array().map(Vec::len), Some(0));
+        assert_eq!(waves[1]["dependsOn"][0].as_u64(), Some(1));
+        assert_eq!(waves[2]["dependsOn"][0].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn flat_dag_lone_lib_stays_single_wave() {
+        // Two net-new files that both fall to the generic "lib" bucket: the
+        // lib-folding rule keeps them in one layer — no over-split.
+        let dir = tempdir().unwrap();
+        let files = vec!["src/util/a.ts".to_string(), "src/util/b.ts".to_string()];
+        let out = compute_waves(&files, dir.path());
+        assert_eq!(
+            out["waves"].as_array().map(Vec::len),
+            Some(1),
+            "lone-lib net-new must not split: {out}"
+        );
+    }
+
+    #[test]
+    fn import_dag_depth_is_not_overridden_by_fallback() {
+        // A real import edge gives the DAG depth, so the fallback (guarded on a
+        // single flat wave) never fires — the import topology wins.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/schema")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/api")).unwrap();
+        std::fs::write(dir.path().join("src/schema/m.ts"), "export const m = 1;").unwrap();
+        std::fs::write(dir.path().join("src/api/h.ts"), "import '../schema/m.ts';").unwrap();
+        let files = vec!["src/schema/m.ts".to_string(), "src/api/h.ts".to_string()];
+        let out = compute_waves(&files, dir.path());
+        assert_eq!(
+            out["waves"].as_array().map(Vec::len),
+            Some(2),
+            "import depth preserved: {out}"
+        );
+    }
 
     #[test]
     fn extract_imports_handles_es_and_cjs() {

@@ -72,19 +72,13 @@ fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
 /// recognizing the EN and PT headings via [`crate::commands::spec::spec_sections`].
 fn extract_ac_section(markdown: &str) -> Option<String> {
-    let lines: Vec<&str> = markdown.split('\n').collect();
-    let start = lines
-        .iter()
-        .position(|l| crate::commands::spec::spec_sections::is_heading(l, "acceptanceCriteria"))?;
-    let mut end = lines.len();
-    for (i, l) in lines.iter().enumerate().skip(start + 1) {
-        if l.starts_with("## ") {
-            end = i;
-            break;
-        }
-    }
+    // Reuse the shared, i18n-aware section extractor so this QA reader and the
+    // rewave producer (which carries this section verbatim into `wave-plan.md`)
+    // parse the heading identically and cannot drift.
+    let block =
+        crate::commands::spec::spec_sections::section_block(markdown, "acceptanceCriteria")?;
     // Body only — drop the heading line itself.
-    Some(lines[start + 1..end].join("\n"))
+    Some(block.split_once('\n').map_or("", |(_, body)| body).to_string())
 }
 
 /// Parse the `## Acceptance Criteria` body into `AcItem`s.

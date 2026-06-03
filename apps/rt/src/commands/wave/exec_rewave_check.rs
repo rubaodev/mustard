@@ -267,7 +267,16 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         let plan = dag_to_plan(&waves, &lang);
         let hd = headings();
 
-        let wave_plan_content = render_wave_plan(&plan, &hd);
+        // Carry the parent spec's `## Acceptance Criteria` into the wave-plan so
+        // the QA gate (which reads global ACs from `wave-plan.md` once `spec.md`
+        // is renamed to `spec.original.md` at step 9 below) still finds them,
+        // instead of orphaning them in the archived original.
+        let ac_block = crate::commands::spec::spec_sections::section_block(
+            &spec_text,
+            "acceptanceCriteria",
+        );
+
+        let wave_plan_content = render_wave_plan(&plan, &hd, ac_block.as_deref());
         if fs::write_atomic(&wave_plan_path, wave_plan_content.as_bytes()).is_err() {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "cannot-write-wave-plan" });
         }
@@ -384,7 +393,7 @@ mod tests {
         // Path A: the re-wave converter + canonical renderer.
         let plan_a = dag_to_plan(&waves, lang);
         let hd = headings();
-        let rendered_a = render_wave_plan(&plan_a, &hd);
+        let rendered_a = render_wave_plan(&plan_a, &hd, None);
         // Path B: a Plan built directly with the same canonical fields (what a
         // PLAN-time scaffold of the same shape would feed the renderer).
         let plan_b = Plan {
@@ -405,7 +414,7 @@ mod tests {
             total_waves: Some(2),
             lang: Some(lang.to_string()),
         };
-        let rendered_b = render_wave_plan(&plan_b, &hd);
+        let rendered_b = render_wave_plan(&plan_b, &hd, None);
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
         // The wave-plan.md is an internal artefact → EN heading regardless of
         // the spec's `lang`, plus the wikilinks.

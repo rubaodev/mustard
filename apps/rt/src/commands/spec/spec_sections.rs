@@ -93,6 +93,26 @@ pub fn is_heading(line: &str, key: &str) -> bool {
     false
 }
 
+/// The full `## <key>` section — from its heading line (inclusive) through the
+/// line before the next `## ` heading (or EOF) — or `None` when the section is
+/// absent. Heading recognition is i18n-aware via [`is_heading`], so the block
+/// preserves whatever heading text (EN or PT) the source used. Used to carry a
+/// section verbatim from one document into another (e.g. the parent spec's
+/// `## Acceptance Criteria` into a generated `wave-plan.md`).
+#[must_use]
+pub fn section_block(markdown: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let start = lines.iter().position(|l| is_heading(l, key))?;
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        if l.starts_with("## ") {
+            end = i;
+            break;
+        }
+    }
+    Some(lines[start..end].join("\n"))
+}
+
 /// Extracts the parent spec slug from a `### Parent: <slug>` header line.
 ///
 /// Case-insensitive on the `Parent` key; trims surrounding whitespace from

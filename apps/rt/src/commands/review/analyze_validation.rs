@@ -162,6 +162,16 @@ fn backtick_file_refs(text: &str) -> Vec<String> {
     refs
 }
 
+/// Whether a `## Files` ref resolves on disk: under the spec dir, the cwd, or
+/// any subproject root. The subproject roots quiet false "missing" WARNs for
+/// existing-but-extended files declared with a subproject-relative or
+/// abbreviated path (e.g. a git-submodule backend).
+fn ref_resolves(r: &str, spec_dir: &Path, project_roots: &[PathBuf]) -> bool {
+    fs::exists(spec_dir.join(r))
+        || fs::exists(Path::new(r))
+        || project_roots.iter().any(|root| fs::exists(root.join(r)))
+}
+
 /// Run the validation. Returns the issues list.
 fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     let lines: Vec<&str> = content.split('\n').collect();
@@ -189,13 +199,24 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
 
     // Validation 2: file refs resolvable.
     let spec_dir = abs_path.parent().unwrap_or_else(|| Path::new("."));
+    // Subproject roots from the scan model: resolve existing-but-extended files
+    // declared with a subproject-relative / abbreviated path so they are not
+    // reported as false "missing" WARNs. An absent model yields no extra roots,
+    // so resolution matches the historical two-path behaviour when no model is
+    // present.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let model = cwd.join(".claude").join("grain.model.json");
+    let project_roots: Vec<PathBuf> = mustard_core::read_projects(&model)
+        .into_iter()
+        .map(|p| cwd.join(p.dir))
+        .collect();
     for r in backtick_file_refs(&files_text) {
         let line_with_ref = file_lines
             .iter()
             .find(|l| l.contains(&format!("`{r}`")))
             .map_or("", String::as_str);
         let is_create = line_with_ref.to_lowercase().contains("(create)");
-        let resolved = fs::exists(spec_dir.join(&r)) || fs::exists(Path::new(&r));
+        let resolved = ref_resolves(&r, spec_dir, &project_roots);
         if !is_create && !resolved {
             issues.push(json!({
                 "severity": "WARN",
@@ -275,6 +296,27 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let issues = validate(&path, &content);
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn ref_resolves_against_subproject_root() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // An existing file under a subproject root, referenced with a path
+        // relative to the subproject (not the spec dir or cwd).
+        let backend = dir.path().join("backend");
+        std::fs::create_dir_all(backend.join("src")).unwrap();
+        std::fs::write(backend.join("src").join("Payable.cs"), "// existing").unwrap();
+        let roots = vec![backend.clone()];
+
+        // Resolves via the subproject root — no false "missing".
+        assert!(ref_resolves("src/Payable.cs", &spec_dir, &roots));
+        // A genuinely-absent file still does NOT resolve — the fix must not mask
+        // true misses/typos.
+        assert!(!ref_resolves("src/Ghost.cs", &spec_dir, &roots));
+        // With no subproject roots it falls back to the historical two paths.
+        assert!(!ref_resolves("src/Payable.cs", &spec_dir, &[]));
     }
 
     #[test]

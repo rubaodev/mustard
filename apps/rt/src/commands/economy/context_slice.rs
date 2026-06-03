@@ -28,7 +28,7 @@ const MAX_TOKEN_FREQUENCY: f64 = 0.04;
 
 /// One parsed term block: its heading/definition term and its full text.
 #[derive(Debug, Clone)]
-struct TermBlock {
+pub(crate) struct TermBlock {
     term: String,
     text: String,
 }
@@ -266,7 +266,7 @@ fn body_tokens(text: &str) -> Vec<String> {
 
 /// Parse a `CONTEXT.md` into term blocks. Content before the first recognised
 /// block start is dropped (it is preamble, not a term).
-fn parse_term_blocks(context_text: &str) -> Vec<TermBlock> {
+pub(crate) fn parse_term_blocks(context_text: &str) -> Vec<TermBlock> {
     let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
     let mut current: Option<(String, Vec<String>)> = None;
 
@@ -296,7 +296,7 @@ fn parse_term_blocks(context_text: &str) -> Vec<TermBlock> {
 
 /// `true` when a relevance term appears as a whole-word-ish substring of the
 /// block's term name or full text.
-fn block_matches(block: &TermBlock, terms: &BTreeSet<String>) -> bool {
+pub(crate) fn block_matches(block: &TermBlock, terms: &BTreeSet<String>) -> bool {
     let hay_term = block.term.to_lowercase();
     let hay_text = block.text.to_lowercase();
     for t in terms {
@@ -339,7 +339,7 @@ fn bounded_contains(haystack: &str, needle: &str) -> bool {
 /// Resolve `--context` inputs into `CONTEXT.md` paths, expanding a
 /// `CONTEXT-MAP.md` into the `*context.md` references it links. Missing files
 /// are skipped; the result is deduped.
-fn resolve_context_files(context_paths: &[String]) -> Vec<std::path::PathBuf> {
+pub(crate) fn resolve_context_files(context_paths: &[String]) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut seen: BTreeSet<std::path::PathBuf> = BTreeSet::new();
     let push = |p: std::path::PathBuf, out: &mut Vec<_>, seen: &mut BTreeSet<_>| {
@@ -376,6 +376,19 @@ fn resolve_context_files(context_paths: &[String]) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+/// Directly-requested context paths (the `--context` / `--context-claude-md`
+/// args) that do not exist on disk. A caller naming a path that is absent is a
+/// misconfiguration worth surfacing — distinct from the legitimate "no
+/// `CONTEXT.md` glossary authored" case, where no path is named at all. Empty
+/// strings are ignored (an unfilled placeholder, not a request).
+fn missing_requested_paths(paths: &[&str]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|p| !p.is_empty() && !Path::new(p).exists())
+        .map(|p| (*p).to_string())
+        .collect()
 }
 
 /// `[A-Za-z0-9_\-./\\]*context\.md` matches (case-insensitive) inside a map.
@@ -500,6 +513,17 @@ pub fn run(
         return;
     }
 
+    // Surface any directly-requested context path that is absent — a caller
+    // misconfiguration (e.g. a stale `guards.md` path), not the by-design "no
+    // glossary authored → blank" case where no path is named at all.
+    let mut requested: Vec<&str> = context.iter().map(String::as_str).collect();
+    if let Some(p) = context_claude_md {
+        requested.push(p);
+    }
+    for missing in missing_requested_paths(&requested) {
+        eprintln!("[context-slice] requested context file not found: {missing}");
+    }
+
     let mut emitted_anything = false;
 
     if !context.is_empty() {
@@ -616,6 +640,25 @@ mod tests {
         assert!(bounded_contains("the user account", "user"));
         assert!(!bounded_contains("superuser", "user"));
         assert!(bounded_contains("user", "user"));
+    }
+
+    #[test]
+    fn missing_requested_paths_reports_only_absent_named_paths() {
+        let dir = tempdir().unwrap();
+        let present = dir.path().join("CLAUDE.md");
+        std::fs::write(&present, "# c").unwrap();
+        let present_s = present.to_string_lossy().to_string();
+        let absent_s = dir.path().join("guards.md").to_string_lossy().to_string();
+
+        // A directly-named but absent path is reported; an existing one is not;
+        // an empty placeholder is ignored.
+        let missing =
+            missing_requested_paths(&[present_s.as_str(), absent_s.as_str(), ""]);
+        assert_eq!(missing, vec![absent_s.clone()]);
+
+        // No path named at all → nothing reported (the "no glossary authored,
+        // blank by design" case stays silent).
+        assert!(missing_requested_paths(&[]).is_empty());
     }
 
     #[test]

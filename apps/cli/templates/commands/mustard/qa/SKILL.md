@@ -16,6 +16,8 @@ source: manual
 
 `--spec` provided → use it. Else: `rtk mustard-rt run active-specs --format json` first entry. Spec needs an `## Acceptance Criteria` / `## Critérios de Aceitação` section with ≥1 `AC-N` that carries a `Command:`. Don't gate on the exact shape — `qa-run` parses BOTH the drafter multi-line form (`- **AC-1** — desc.` with `Command: \`cmd\`` on the next indented line, no checkbox) AND the historical one-line form (`- [ ] AC-N: desc — Command: \`cmd\``); a section with no `Command:` at all → `qa-run` returns `overall: skip`. No section → *"Spec has no Acceptance Criteria."* stop.
 
+**Operative AC file (post-decompose).** When a spec was re-waved at EXECUTE entry, the monolithic `spec.md` is renamed to `spec.original.md` and the global ACs are carried into `wave-plan.md`. So the operative AC file is `spec.md` when present, else `wave-plan.md` — `qa-run` resolves this for you. Any **manual** AC edit/re-scope must target that same operative file; never edit `spec.md` blindly, since after a decompose it no longer exists.
+
 ### 2. Run
 
 ```bash

@@ -87,7 +87,7 @@ Mustard does not select a model. Dispatched agents always inherit the main sessi
 | Anchors | files the `feature` insumos / `scan spec` point to | The ~12 real files the agent reads — never the repo |
 | Shared language | `CONTEXT.md` (built by `grill-with-docs`) | Relevance-sliced via `context-slice`, injected as `{context_md}` |
 
-`CONTEXT.md` is **never injected whole** — same anti-bloat rule as the `grain.model.json` (read only the anchors). Sliced by entities/file names/key-tokens of the active spec; snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md`. Capped at `MUSTARD_GLOSSARY_MAX_LINES` (default 250). No `CONTEXT.md` → empty slice, `{context_md}` blank (dispatches never block).
+`CONTEXT.md` is **never injected whole** — same anti-bloat rule as the `grain.model.json` (read only the anchors). Sliced by entities/file names/key-tokens of the active spec; snapshotted once per wave transition to `.claude/.pipeline-states/{specName}.context-md.md`. Capped at `MUSTARD_GLOSSARY_MAX_LINES` (default 250). No `CONTEXT.md` glossary authored (opt-in via `grill-with-docs`) → empty slice, `{context_md}` blank **by design** — dispatches never block. A `--context` path that is named but missing is reported on stderr (caller misconfiguration), distinct from this blank-by-design case.
 
 ## Token Budget per Agent
 

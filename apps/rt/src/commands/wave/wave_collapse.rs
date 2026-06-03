@@ -445,7 +445,7 @@ fn patch_wave_plan_single(spec_dir: &Path, wave1: &WaveDir) {
         total_waves: Some(1),
         lang: None,
     };
-    let md = render_wave_plan(&plan, &headings());
+    let md = render_wave_plan(&plan, &headings(), None);
     let path = spec_dir.join("wave-plan.md");
     if let Err(e) = fs::write_atomic(&path, md.as_bytes()) {
         eprintln!(

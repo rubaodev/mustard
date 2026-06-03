@@ -26,7 +26,9 @@ pub mod spec;
 pub mod maint;
 pub mod scan;
 pub mod scan_claude;
+pub mod scan_guards;
 pub mod feature;
+pub mod glossary_coverage;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -73,6 +75,25 @@ pub enum RunCmd {
         #[arg(long)]
         intent: String,
         /// Workspace root. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Deterministic check of how well a `CONTEXT.md` domain glossary covers the
+    /// repo-vocabulary terms a feature intent touches (the digest's matched
+    /// terms). Emits byte-stable JSON `{verdict, present, termsTotal,
+    /// termsCovered, coveragePct, uncovered}` for the `/feature` ANALYZE nudge —
+    /// it never grills inline and never blocks. Reuses the exact term matcher
+    /// `context-slice` uses. Fail-open: a missing model / unreadable glossary
+    /// degrades to `verdict: "na"` (no nudge), exit 0.
+    #[command(name = "glossary-coverage")]
+    GlossaryCoverage {
+        /// The free-text feature request whose domain terms are scored.
+        #[arg(long)]
+        intent: String,
+        /// A `CONTEXT.md` / `CONTEXT-MAP.md` glossary path. Repeatable.
+        #[arg(long)]
+        context: Vec<String>,
+        /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -660,6 +681,15 @@ pub enum RunCmd {
     /// until a shutdown signal — the harness spawns it as a long-lived child
     /// via [`crate::hooks::session::session_start_inject`].
     OtelCollector,
+    /// Stop the local OTEL collector for this project.
+    ///
+    /// Resolves the OTLP port from `MUSTARD_OTEL_PORT` (default 4318), kills
+    /// whatever process is listening on it, and deletes the stale
+    /// `.otel-collector.pid` file under `<project>/.claude/.harness/`. Killing
+    /// by port (not by the drift-prone PID file) is the reliable teardown. Used
+    /// by `install.ps1` before a reinstall so the previous daemon releases its
+    /// exclusive lock on `mustard-rt.exe`. Fully fail-open; never exits non-zero.
+    OtelStop,
     /// Watch `~/.claude/projects/**/*.jsonl` and re-ingest each session
     /// transcript into telemetry.db's `run_usage` table on every change.
     ///
@@ -874,7 +904,8 @@ pub enum RunCmd {
     /// Wave-routing face of the orchestrator. Reads the spec's `wave-plan.md`,
     /// builds the wave dependency DAG, and emits a deterministic JSON array
     /// ordered by dependency level — one item per agent, each carrying
-    /// `{wave, role, subproject, depends_on, level, prompt_cmd}`. `prompt_cmd`
+    /// `{wave, role, subproject, depends_on, level, prompt_cmd, subagent_type}`.
+    /// `prompt_cmd`
     /// is a ready `agent-prompt-render` invocation: the orchestrator runs it
     /// and relays the stdout to `Task`. Determines the dispatch order in Rust
     /// so the LLM stops interpreting the wave-plan by hand. Fail-open: a
@@ -894,9 +925,12 @@ pub enum RunCmd {
     /// stderr for any left unfilled. Stdout = raw prompt string ready for
     /// the Task tool (no JSON framing).
     AgentPromptRender {
-        /// Spec slug under `.claude/spec/`.
+        /// Spec slug under `.claude/spec/`. Optional: spec-less callers (the
+        /// `/scan` Guards enrich step, `/task` with no scope) omit it — the
+        /// renderer then derives the locale from `mustard.json#specLang` and
+        /// fail-opens every spec-keyed lookup to an empty value.
         #[arg(long)]
-        spec: String,
+        spec: Option<String>,
         /// Wave number (0-based, matching `wave-N-*` directories). Omitted for non-wave specs.
         #[arg(long)]
         wave: Option<u32>,
@@ -917,6 +951,12 @@ pub enum RunCmd {
         /// `(a|b)` alternation. Omit to include all tasks.
         #[arg(long = "task-filter")]
         task_filter: Option<String>,
+        /// Ad-hoc task text for spec-less dispatch (the `/scan` Guards enrich
+        /// step, `/task` with no scope). Fills the `## TASK` block when there is
+        /// no spec `## Tasks` to read, so the prompt stays self-contained and the
+        /// orchestrator never hand-appends the task after the render.
+        #[arg(long = "task-text")]
+        task_text: Option<String>,
         /// W8.T8.9 — soft token budget. When set, the renderer trims the
         /// bulky placeholders (`task_steps`, `context_md`, `prior_wave_diff`,
         /// `cross_wave_memory`, `recommended_skills`) to keep the prompt at
@@ -1036,6 +1076,37 @@ pub enum RunCmd {
         /// Workspace root (must contain `.claude/grain.model.json`).
         #[arg(long, default_value = ".")]
         root: PathBuf,
+    },
+    /// Enumerate every subproject `CLAUDE.md` whose `## Guards` block is still
+    /// `pending` (the Wave-2 enrich hand-off seeded by `scan --full`). Emits a
+    /// JSON array `[{path, subproject, kind, frameworks}]` parsed from each
+    /// block's facts comment. Excludes the workspace-root unit. Fail-open: any
+    /// IO error degrades to `[]` and exit 0.
+    #[command(name = "scan-guards-list")]
+    ScanGuardsList {
+        /// Workspace root to walk. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Splice the enrich agent's authored guards into a subproject
+    /// `CLAUDE.md`'s pending `## Guards` block: non-destructive (only the span
+    /// between the markers changes), line-capped, and idempotent (the marker
+    /// flips to its non-pending form so a re-run of `scan-guards-list` skips
+    /// it). Refuses the workspace-root `CLAUDE.md`.
+    #[command(name = "scan-guards-apply")]
+    ScanGuardsApply {
+        /// Path to the subproject `CLAUDE.md` to enrich.
+        #[arg(long)]
+        path: PathBuf,
+        /// Workspace root the scan ran from. Used to classify whether `path` is
+        /// the root unit (refused) or a nested subproject (spliced), via the
+        /// same `subproject_of` rule `scan-guards-list` uses. Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Authored guard text, or `-` to read it from stdin. `allow_hyphen_values`
+        /// so a body starting with a `-` bullet is not mistaken for a flag.
+        #[arg(long, default_value = "-", allow_hyphen_values = true)]
+        guards: String,
     },
     /// Validate a spec directory against the Wave 1 layout contract. Reads
     /// `meta.json` + `spec.md` and runs `mustard_core::domain::spec::contract::validate`.
@@ -1385,6 +1456,11 @@ pub fn dispatch(cmd: RunCmd) {
     match cmd {
         RunCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
         RunCmd::Feature { intent, root } => feature::run(&intent, &root),
+        RunCmd::GlossaryCoverage {
+            intent,
+            context,
+            root,
+        } => glossary_coverage::run(&intent, &context, &root),
         RunCmd::DiffContext {
             parent,
             subproject,
@@ -1628,6 +1704,7 @@ pub fn dispatch(cmd: RunCmd) {
         ),
         RunCmd::RtkGain => economy::rtk_gain::run(),
         RunCmd::OtelCollector => economy::otel::collector::run(),
+        RunCmd::OtelStop => economy::otel::stop::run(),
         RunCmd::TranscriptWatcher { once } => economy::transcript_watcher::run(once),
         RunCmd::DiagnoseOtel {
             json,
@@ -1695,15 +1772,17 @@ pub fn dispatch(cmd: RunCmd) {
             mode,
             retry_context_file,
             task_filter,
+            task_text,
             budget_tokens,
         } => agent::agent_prompt_render::run(
-            &spec,
+            spec.as_deref(),
             wave,
             &role,
             &subproject,
             agent::agent_prompt_render::RenderMode::parse(&mode),
             retry_context_file.as_deref(),
             task_filter.as_deref(),
+            task_text.as_deref(),
             budget_tokens,
         ),
         RunCmd::WorktreeGc {
@@ -1754,6 +1833,10 @@ pub fn dispatch(cmd: RunCmd) {
                 invariants: invariant,
                 root,
             });
+        }
+        RunCmd::ScanGuardsList { root } => scan_guards::list::run(&root),
+        RunCmd::ScanGuardsApply { path, root, guards } => {
+            scan_guards::apply::run(&path, &root, &guards)
         }
         RunCmd::SpecValidate { spec, json } => {
             let _ = json; // currently always emits JSON

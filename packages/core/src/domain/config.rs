@@ -222,6 +222,14 @@ pub struct ProjectConfig {
     pub max_active_specs: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub role_patterns: Vec<RolePattern>,
+    /// Optional architectural layer order for the deterministic wave fallback
+    /// used when the import DAG has no depth (all-net-new features, no edges to
+    /// order by). Roles are scheduled in this order — each wave depends on the
+    /// previous; roles not listed fall to the tail (lexically). Empty/absent → a
+    /// documented default. Project-overridable so a non-standard architecture
+    /// sets its own dependency direction (keeps the wave engine agnostic).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wave_layer_order: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Subprojects::is_empty")]
     pub subprojects: Subprojects,
