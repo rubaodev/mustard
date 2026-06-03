@@ -6,6 +6,10 @@
 //!   receiver (port of `scripts/otel-collector.js`).
 //! - [`diagnose`] — `mustard-rt run diagnose-otel`, the pipeline health check
 //!   (port of `scripts/diagnose-otel.js`).
+//! - [`stop`] — `mustard-rt run otel-stop`, the teardown counterpart: kills the
+//!   listener on the resolved OTLP port and clears the stale PID file (invoked
+//!   by `install.ps1` before a reinstall so the previous daemon releases the
+//!   binary lock).
 //!
 //! ## Persistence model (post-W5A)
 //!
@@ -23,6 +27,7 @@
 pub mod collector;
 pub mod diagnose;
 pub mod project;
+pub mod stop;
 
 use mustard_core::ClaudePaths;
 use std::path::PathBuf;
