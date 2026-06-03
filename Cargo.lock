@@ -1356,20 +1356,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "mustard-mcp"
+version = "0.1.0"
+dependencies = [
+ "mustard-core",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "mustard-rt"
 version = "0.1.0"
 dependencies = [
  "clap",
  "mustard-core",
+ "mustard-mcp",
  "notify",
  "rayon",
- "rmcp",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tiny_http",
- "tokio",
  "ureq",
 ]
 

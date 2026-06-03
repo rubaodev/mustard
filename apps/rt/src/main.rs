@@ -53,7 +53,6 @@
 //! stdout write, exit code `0`.
 
 mod dispatch;
-mod mcp;
 mod registry;
 mod hooks;
 mod report;
@@ -118,7 +117,10 @@ fn main() {
             return;
         }
         Command::Mcp => {
-            mcp::run();
+            // Compat alias: the MCP face now lives in the `mustard-mcp` crate.
+            // Settings still pointing at `mustard-rt mcp` keep working — this
+            // arm delegates to the same entry the `mustard-mcp` binary calls.
+            mustard_mcp::run();
             return;
         }
         _ => {}

@@ -6,7 +6,7 @@
 //! `run/` submodules reference via `crate::` paths.
 //!
 //! Only `dead_code` is suppressed at crate level, and only because the
-//! `hooks`/`report`/`registry`/`dispatch`/`mcp` modules are reached **only**
+//! `hooks`/`report`/`registry`/`dispatch` modules are reached **only**
 //! from the binary face (`main.rs`), so the lib build sees them as unused —
 //! false positives inherent to this test-only re-export face. The real
 //! dead-code signal is the bin build (`cargo build --bin mustard-rt`), which
@@ -35,6 +35,5 @@ pub mod shared;
 pub mod util;
 mod dispatch;
 mod hooks;
-mod mcp;
 mod registry;
 mod report;

@@ -1,4 +1,23 @@
-//! The `mcp` face of `mustard-rt` — the Rust re-port of `mustard-memory`.
+#![forbid(unsafe_code)]
+// `clippy::unwrap_used` / `expect_used` are `deny` workspace-wide so the
+// fail-open server can never panic on the protocol path. Clippy does not exempt
+// `#[cfg(test)]` code, so — matching `mustard-rt`'s `main.rs` and
+// `mustard-core`'s `lib.rs` — the carve-out is applied explicitly: under
+// `cfg(test)`, `.unwrap()` / `.expect()` are allowed (a panicking assertion
+// *is* a test failure). Non-test code keeps the `deny`.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+    )
+)]
+//! The `mustard-mcp` binary — the Rust re-port of `mustard-memory`.
+//!
+//! Extracted from `mustard-rt` into its own crate so the long-lived MCP server
+//! Claude Code spawns holds `mustard-mcp.exe`, not `mustard-rt.exe` — decoupling
+//! it from `mustard-rt` rebuilds. `mustard-rt mcp` is kept as a thin compat
+//! alias that delegates to [`run`].
 //!
 //! `mustard-rt on` / `check` are the enforcement faces (stdin-driven), and
 //! `mustard-rt run` ports the standalone utility scripts. This fourth face,
@@ -397,7 +416,7 @@ impl MustardMemory {
         }
 
         // Chronological sort so the lexical `since` comparison stays correct.
-        events.sort_by(|a, b| event_ts(a).cmp(&event_ts(b)));
+        events.sort_by_key(event_ts);
 
         let rows: Vec<EventOut> = events
             .into_iter()
