@@ -3,7 +3,7 @@
 //! Runs build/test verification for the active pipeline: discovers the
 //! subprojects from grain's repo model (`grain.model.json` `projects[]`, via
 //! the scan tool), runs each subproject's
-//! build + test command in **parallel** via `rayon`, and reports per-subproject
+//! build + test command **sequentially** (see [`verify_targets`] for why), and reports per-subproject
 //! status with the new JSON shape introduced in W10.T10.1:
 //!
 //! ```json
@@ -41,7 +41,6 @@ use crate::util::platform;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use rayon::prelude::*;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -418,16 +417,23 @@ fn verify(cwd: &Path) -> VerifyResult {
     verify_targets(&discover_targets(cwd))
 }
 
-/// W10.T10.1 — Run verification across the target list **in parallel** via
-/// rayon. Each subproject becomes one rayon task; build + test inside a
-/// subproject still run sequentially (test depends on a green build, by
-/// convention).
+/// W10.T10.1 — Run verification across the target list **sequentially**.
+///
+/// Subprojects run one at a time on purpose. In a single cargo workspace every
+/// member (`apps/rt`, `packages/core`, …) resolves to the *same* `target/`
+/// directory, so running their `cargo build`/`cargo test` concurrently makes
+/// them contend on cargo's build-directory lock — on Windows that wedges
+/// indefinitely (one process cannot relink an `.exe` another holds open), which
+/// is exactly the deadlock this replaces. Serial execution sidesteps the lock
+/// and is no slower for a shared workspace: the first build warms `target/` and
+/// the rest are incremental. Build + test within a subproject already run in
+/// order (test depends on a green build, by convention).
 fn verify_targets(targets: &[VerifyTarget]) -> VerifyResult {
     let started = std::time::Instant::now();
     let timestamp = now_iso8601();
 
     let per_subproject: Vec<SubprojectResult> = targets
-        .par_iter()
+        .iter()
         .map(|target| {
             let sub_started = std::time::Instant::now();
             let cmds: Vec<&String> = [&target.build, &target.test]
