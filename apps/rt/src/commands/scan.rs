@@ -49,6 +49,21 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
 
         if full {
             result["regenerated"] = json!(pass.regenerated);
+            if !pass.over_cap.is_empty() {
+                for entry in &pass.over_cap {
+                    eprintln!(
+                        "scan: CLAUDE.md over hard cap ({} bytes > {} ceiling): {} — not written; trim curated prose",
+                        entry.bytes,
+                        scan_claude::CLAUDE_MD_HARD_CAP_BYTES,
+                        entry.path,
+                    );
+                }
+                let over_cap_json: Vec<Value> = pass.over_cap.iter().map(|e| {
+                    json!({ "path": e.path, "bytes": e.bytes })
+                }).collect();
+                result["over_cap"] = json!(over_cap_json);
+                result["ok"] = json!(false);
+            }
         } else {
             if !pass.oversized.is_empty() {
                 for entry in &pass.oversized {

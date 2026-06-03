@@ -321,21 +321,37 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
 ///
 /// MCP servers belong in `.mcp.json` at the project root — Claude Code does not
 /// read `mcpServers` from `settings.json`. The entry is **merged in** (an
-/// existing `.mcp.json` and any user-declared servers are preserved), and only
-/// added when absent so a hand-edited `mustard-memory` is left untouched. The
-/// server carries no env: the `mcp` subcommand reads NDJSON from the filesystem
-/// (no SQLite, no `MUSTARD_DB_PATH`).
+/// existing `.mcp.json` and any user-declared servers are preserved). The
+/// server is the standalone `mustard-mcp` binary (`{ "command": "mustard-mcp",
+/// "args": [] }`) — split out of `mustard-rt` so the long-lived MCP process no
+/// longer holds `mustard-rt.exe` open across a reinstall. It carries no env:
+/// the server reads NDJSON from the filesystem (no SQLite, no `MUSTARD_DB_PATH`).
 ///
-/// Shared with `update`, which re-asserts it so an existing project that
-/// predates the `.mcp.json` split picks it up.
+/// Added when absent; the **legacy** mustard-managed entry (`mustard-rt mcp`,
+/// the only shape this ever wrote pre-split) is migrated to `mustard-mcp`, but
+/// a hand-edited `mustard-memory` (any other command/args) is left untouched.
+/// Shared with `update`, which re-asserts it — and because `install.ps1`
+/// installs `mustard-mcp` before running init, that migration never opens a
+/// broken-binary window.
 pub(crate) fn install_mcp_json(project_path: &Path) -> Result<()> {
     let path = project_path.join(".mcp.json");
     let mut root = crate::fs_ops::read_json_object(&path);
     let servers = root.entry("mcpServers").or_insert_with(|| json!({}));
     if let Some(servers) = servers.as_object_mut() {
-        servers
-            .entry("mustard-memory")
-            .or_insert_with(|| json!({ "command": "mustard-rt", "args": ["mcp"] }));
+        // Write the standalone-binary entry when absent, or when the existing
+        // entry is the legacy `mustard-rt mcp` default we used to write (so a
+        // reinstall migrates it). A hand-edited entry is preserved. Computed as
+        // a bool first so the immutable `get` borrow ends before the `insert`.
+        let write_default = match servers.get("mustard-memory") {
+            None => true,
+            Some(existing) => is_legacy_memory_entry(existing),
+        };
+        if write_default {
+            servers.insert(
+                "mustard-memory".to_string(),
+                json!({ "command": "mustard-mcp", "args": [] }),
+            );
+        }
     }
     let mut serialized = serde_json::to_string_pretty(&serde_json::Value::Object(root))
         .context("serializing .mcp.json")?;
@@ -344,6 +360,19 @@ pub(crate) fn install_mcp_json(project_path: &Path) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))?;
     println!("  wrote .mcp.json (mustard-memory)");
     Ok(())
+}
+
+/// `true` when `entry` is exactly the legacy mustard-managed `mustard-memory`
+/// server (`{ "command": "mustard-rt", "args": ["mcp"] }`) — the only shape
+/// [`install_mcp_json`] ever wrote before the `mustard-mcp` split. Only that
+/// entry is migrated to the standalone binary; any other (hand-edited) shape is
+/// left untouched.
+fn is_legacy_memory_entry(entry: &serde_json::Value) -> bool {
+    entry.get("command").and_then(|c| c.as_str()) == Some("mustard-rt")
+        && entry
+            .get("args")
+            .and_then(|a| a.as_array())
+            .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("mcp"))
 }
 
 /// Ensure `~/.claude/settings.json` grants `Read`/`Write`/`Edit` and sets the
@@ -732,12 +761,62 @@ mod tests {
             .get("mcpServers")
             .and_then(|s| s.get("mustard-memory"))
             .expect(".mcp.json declares the mustard-memory server");
-        assert_eq!(memory.get("command").and_then(|c| c.as_str()), Some("mustard-rt"));
+        assert_eq!(memory.get("command").and_then(|c| c.as_str()), Some("mustard-mcp"));
         assert!(memory.get("env").is_none(), "no MUSTARD_DB_PATH / SQLite env");
 
         // init no longer seeds any entity-registry — the repo model is grain's
         // `.claude/grain.model.json`, produced on demand by `mustard-rt run scan`.
         assert!(!claude.join("entity-registry.json").exists());
+    }
+
+    #[test]
+    fn install_mcp_json_seeds_and_migrates_but_preserves_handedits() {
+        // (1) Absent → seeds the standalone `mustard-mcp` entry (no env, empty args).
+        let fresh = tempdir().unwrap();
+        super::install_mcp_json(fresh.path()).unwrap();
+        let m = crate::fs_ops::read_json_object(&fresh.path().join(".mcp.json"));
+        let e = m.get("mcpServers").and_then(|s| s.get("mustard-memory")).unwrap();
+        assert_eq!(e.get("command").and_then(|c| c.as_str()), Some("mustard-mcp"));
+        assert_eq!(e.get("args").and_then(|a| a.as_array()).map(Vec::len), Some(0));
+        assert!(e.get("env").is_none());
+
+        // (2) Legacy `mustard-rt mcp` default → migrated to `mustard-mcp`.
+        let legacy = tempdir().unwrap();
+        std::fs::write(
+            legacy.path().join(".mcp.json"),
+            serde_json::json!({ "mcpServers": { "mustard-memory": {
+                "command": "mustard-rt", "args": ["mcp"]
+            } } })
+            .to_string(),
+        )
+        .unwrap();
+        super::install_mcp_json(legacy.path()).unwrap();
+        let m = crate::fs_ops::read_json_object(&legacy.path().join(".mcp.json"));
+        let e = m.get("mcpServers").and_then(|s| s.get("mustard-memory")).unwrap();
+        assert_eq!(
+            e.get("command").and_then(|c| c.as_str()),
+            Some("mustard-mcp"),
+            "legacy mustard-rt mcp entry must migrate"
+        );
+
+        // (3) A hand-edited entry (different command) is left untouched.
+        let custom = tempdir().unwrap();
+        std::fs::write(
+            custom.path().join(".mcp.json"),
+            serde_json::json!({ "mcpServers": { "mustard-memory": {
+                "command": "my-wrapper", "args": ["x"]
+            } } })
+            .to_string(),
+        )
+        .unwrap();
+        super::install_mcp_json(custom.path()).unwrap();
+        let m = crate::fs_ops::read_json_object(&custom.path().join(".mcp.json"));
+        let e = m.get("mcpServers").and_then(|s| s.get("mustard-memory")).unwrap();
+        assert_eq!(
+            e.get("command").and_then(|c| c.as_str()),
+            Some("my-wrapper"),
+            "hand-edited entry must be preserved"
+        );
     }
 
     #[test]

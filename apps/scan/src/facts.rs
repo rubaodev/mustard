@@ -41,14 +41,28 @@ pub fn build(model: &ProjectModel) -> ModelFacts {
     entities.dedup();
 
     let mut projects = model.projects.clone();
-    for project in &mut projects {
-        let owned: Vec<&Manifest> = owned_manifests(project, &model.projects, &model.manifests);
+    enrich_projects(&mut projects, &model.projects, &model.manifests);
+
+    ModelFacts { projects, entities }
+}
+
+/// Enrich each unit in `projects` with the frameworks/dependencies/scripts
+/// aggregated from the manifests it owns. `all` is the full (immutable) project
+/// list used for the longest-prefix ownership test (`owned_manifests`), passed
+/// separately so the caller can mutate `projects` while reading `all`.
+///
+/// Single source of the manifest→project projection: `build_projects` calls it
+/// so the grain `projects[]` carry the fields (`scan_claude` reads `scripts` for
+/// `## Commands` and `frameworks` for the Guards facts), and [`build`] calls it
+/// for the facts view. Idempotent — re-running over already-enriched units
+/// reproduces the same values.
+pub(crate) fn enrich_projects(projects: &mut [ProjectUnit], all: &[ProjectUnit], manifests: &[Manifest]) {
+    for project in projects.iter_mut() {
+        let owned: Vec<&Manifest> = owned_manifests(project, all, manifests);
         project.dependencies = aggregate_field(owned.iter().flat_map(|m| m.dependencies.iter()));
         project.scripts = aggregate_field(owned.iter().flat_map(|m| m.scripts.iter()));
         project.frameworks = rank_by_frequency(owned.iter().flat_map(|m| m.dependencies.iter()));
     }
-
-    ModelFacts { projects, entities }
 }
 
 /// The manifests owned by `project`: those whose path sits under `project.dir`

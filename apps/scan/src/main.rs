@@ -298,8 +298,46 @@ fn build_projects(manifests: &[model::Manifest], modules: &[Module]) -> Vec<mode
             projects[i].code_files += 1;
         }
     }
+    let mut projects = dedup_by_dir(projects);
     projects.sort_by(|a, b| b.code_files.cmp(&a.code_files).then(a.name.cmp(&b.name)));
+    // Enrich each unit with the frameworks/dependencies/scripts mined from the
+    // manifests it owns — the SAME projection the facts view uses, so the grain
+    // `projects[]` carry the data. `scan_claude` reads `scripts` (for `## Commands`)
+    // and `frameworks` (for the Guards facts) straight off `projects[]`; without
+    // this they were left at `..Default` (empty), so `## Commands` stayed dormant.
+    let snapshot = projects.clone();
+    facts::enrich_projects(&mut projects, &snapshot, manifests);
     projects
+}
+
+/// Collapse units that resolve to the same directory into one, keeping the entry
+/// with the most `code_files` (ties: first occurrence, which is the model's
+/// manifest order). Several manifests can map to one dir — most visibly a Cargo
+/// workspace whose root `Cargo.toml` yields an empty-dir root unit alongside
+/// another root manifest — and the duplicate steals part of the file attribution,
+/// surfacing as a "0 arquivos" root. Merging by dir gives one honest count.
+fn dedup_by_dir(projects: Vec<model::ProjectUnit>) -> Vec<model::ProjectUnit> {
+    use std::collections::HashMap;
+    // dir -> index into `out` of the winning unit so far.
+    let mut winner: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<model::ProjectUnit> = Vec::with_capacity(projects.len());
+    for p in projects {
+        match winner.get(&p.dir).copied() {
+            Some(idx) if p.code_files <= out[idx].code_files => {
+                // An earlier unit on this dir already counts at least as many
+                // files — keep it (stable: first occurrence wins ties).
+            }
+            Some(idx) => {
+                // This unit attributed more files; promote it as the survivor.
+                out[idx] = p;
+            }
+            None => {
+                winner.insert(p.dir.clone(), out.len());
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 fn print_summary(model: &ProjectModel) {
@@ -336,5 +374,63 @@ fn print_summary(model: &ProjectModel) {
     if !cov.unsupported_exts.is_empty() {
         let top: Vec<String> = cov.unsupported_exts.iter().take(10).map(|e| format!("{} {}", e.ext, e.count)).collect();
         println!("seen but not mined (non-code): {}", top.join(", "));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(path: &str, kind: &str, name: &str) -> model::Manifest {
+        model::Manifest { path: path.into(), kind: kind.into(), name: name.into(), ..Default::default() }
+    }
+
+    fn module(path: &str) -> Module {
+        Module { path: path.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn root_dedup() {
+        // Two manifests resolve to the SAME (root) dir — the classic Cargo
+        // workspace shape where a virtual root `Cargo.toml` produces a root unit
+        // and a second root-level manifest produces another. Without dedup the
+        // file attribution is split across the twins, surfacing a "0 arquivos"
+        // root. After dedup there is exactly one root unit carrying the count.
+        let manifests = vec![
+            manifest("Cargo.toml", "cargo", "workspace"),
+            manifest("rust-toolchain.toml", "cargo", "(root)"),
+            manifest("apps/rt/Cargo.toml", "cargo", "rt"),
+        ];
+        let modules = vec![
+            module("src/main.rs"),
+            module("build.rs"),
+            module("apps/rt/src/lib.rs"),
+        ];
+        let projects = build_projects(&manifests, &modules);
+
+        // Exactly one unit per distinct dir — the two root manifests collapse.
+        let root_units: Vec<&model::ProjectUnit> =
+            projects.iter().filter(|p| p.dir.is_empty()).collect();
+        assert_eq!(root_units.len(), 1, "root must be deduped to one unit: {projects:?}");
+        // The surviving root keeps its real file count, never 0.
+        assert_eq!(root_units[0].code_files, 2, "root file count merged, not split");
+        // The nested subproject is untouched.
+        let rt = projects.iter().find(|p| p.dir == "apps/rt").unwrap();
+        assert_eq!(rt.code_files, 1, "nested unit keeps its own files");
+    }
+
+    #[test]
+    fn dedup_keeps_unit_with_most_files() {
+        // When two units share a dir, the survivor is the one that attributed the
+        // most files (ties → first occurrence).
+        let mut a = model::ProjectUnit { name: "a".into(), dir: "pkg".into(), code_files: 1, ..Default::default() };
+        let b = model::ProjectUnit { name: "b".into(), dir: "pkg".into(), code_files: 5, ..Default::default() };
+        let c = model::ProjectUnit { name: "c".into(), dir: "other".into(), code_files: 2, ..Default::default() };
+        a.kind = "x".into();
+        let out = dedup_by_dir(vec![a, b, c]);
+        assert_eq!(out.len(), 2, "one per dir: {out:?}");
+        let pkg = out.iter().find(|p| p.dir == "pkg").unwrap();
+        assert_eq!(pkg.name, "b", "the higher-count unit wins");
+        assert_eq!(pkg.code_files, 5);
     }
 }

@@ -255,17 +255,6 @@ impl ClaudePaths {
         self.claude_dir().join(".harness")
     }
 
-    /// `<root>/.claude/.harness/mustard.db` — shared harness SQLite DB.
-    ///
-    /// One file: the projection target for every harness event (`events`,
-    /// `specs`, `knowledge_patterns`, …). Dashboard, rt, and cli all open this
-    /// path through `ClaudePaths` so a future relocation only touches the
-    /// accessor.
-    #[must_use]
-    pub fn mustard_db_path(&self) -> PathBuf {
-        self.harness_dir().join("mustard.db")
-    }
-
     /// `<root>/.claude/.metrics/` — telemetry rollups.
     #[must_use]
     pub fn metrics_dir(&self) -> PathBuf {

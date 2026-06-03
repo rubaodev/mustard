@@ -69,14 +69,19 @@ pub fn detect_commands_for_unit(
     dir: &Path,
     workspace_root: &Path,
     scripts: &[String],
-) -> Commands {
+) -> (Commands, bool) {
+    // The `bool` marks a NON-DEFAULT command set worth surfacing in a lean
+    // CLAUDE.md: a native toolchain (cargo/go/make) yields the conventional
+    // defaults (`custom = false` — auto-inferable, the render drops them), while
+    // mined JS scripts are the unit's own (`custom = true`). An empty set is not
+    // custom. The render uses this to omit the obvious-default `## Commands`.
     if let Some(c) = detect_native(dir) {
-        return c;
+        return (c, false);
     }
     if let Some((_, pm)) = ascend_to_js_root(dir, workspace_root) {
-        return js_commands(&pm, scripts);
+        return (js_commands(&pm, scripts), !scripts.is_empty());
     }
-    Commands::default()
+    (Commands::default(), false)
 }
 
 /// Probe a single directory for a native (non-JS) toolchain manifest. Returns
@@ -304,9 +309,10 @@ mod tests {
         // No native manifest, no JS signal anywhere up to the root → empty set,
         // never the placeholder. The caller drops the `## Commands` section.
         let d = tempdir().unwrap();
-        let c = detect_commands_for_unit(d.path(), d.path(), &no_scripts());
+        let (c, custom) = detect_commands_for_unit(d.path(), d.path(), &no_scripts());
         assert!(c.build.is_none(), "build must be omitted (no signal)");
         assert!(c.test.is_none() && c.lint.is_none() && c.type_check.is_none());
+        assert!(!custom, "no signal → not custom");
     }
 
     #[test]
@@ -315,8 +321,9 @@ mod tests {
         let leaf = root.path().join("crates").join("inner");
         std::fs::create_dir_all(&leaf).unwrap();
         touch(&leaf, "Cargo.toml", "[package]");
-        let c = detect_commands_for_unit(&leaf, root.path(), &no_scripts());
+        let (c, custom) = detect_commands_for_unit(&leaf, root.path(), &no_scripts());
         assert_eq!(c.build.as_deref(), Some("cargo build"));
+        assert!(!custom, "native cargo defaults are not custom");
     }
 
     #[test]
@@ -329,9 +336,10 @@ mod tests {
         std::fs::create_dir_all(&leaf).unwrap();
         touch(&leaf, "package.json", "{}");
         let scripts = vec!["build".to_string(), "test".to_string()];
-        let c = detect_commands_for_unit(&leaf, root.path(), &scripts);
+        let (c, custom) = detect_commands_for_unit(&leaf, root.path(), &scripts);
         assert_eq!(c.build.as_deref(), Some("pnpm run build"), "leaf must resolve pnpm");
         assert_eq!(c.test.as_deref(), Some("pnpm test"));
+        assert!(custom, "mined JS scripts are custom");
     }
 
     #[test]
@@ -345,7 +353,7 @@ mod tests {
         std::fs::create_dir_all(&leaf).unwrap();
         touch(&leaf, "package.json", "{}");
         // stop_at = scan_root; the lockfile is outside it → no JS signal.
-        let c = detect_commands_for_unit(&leaf, &scan_root, &no_scripts());
+        let (c, _custom) = detect_commands_for_unit(&leaf, &scan_root, &no_scripts());
         assert!(c.build.is_none(), "must not climb past the scan root: {c:?}");
     }
 
@@ -360,8 +368,9 @@ mod tests {
             "typecheck".to_string(),
             // no `test`, no `lint` script declared
         ];
-        let c = detect_commands_for_unit(root.path(), root.path(), &scripts);
+        let (c, custom) = detect_commands_for_unit(root.path(), root.path(), &scripts);
         assert_eq!(c.build.as_deref(), Some("pnpm run build"));
+        assert!(custom, "mined scripts → custom");
         assert_eq!(c.type_check.as_deref(), Some("pnpm run typecheck"), "real script name used");
         assert!(c.test.is_none(), "no test script → no test command (not guessed)");
         assert!(c.lint.is_none(), "no lint script → no lint command (not guessed)");

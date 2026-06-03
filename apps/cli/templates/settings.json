@@ -26,9 +26,8 @@
 
   "mcpServers": {
     "mustard-memory": {
-      "command": "mustard-rt",
-      "args": ["mcp"],
-      "env": { "MUSTARD_DB_PATH": ".claude/.harness/mustard.db" }
+      "command": "mustard-mcp",
+      "args": []
     }
   },
 

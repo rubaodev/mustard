@@ -62,7 +62,7 @@ Create `.claude/.pipeline-states/{spec-name}.json`.
 **1. Skills Auto-Loading:**
 
 Agents auto-load relevant skills from `{subproject}/.claude/skills/` based on task description.
-Orchestrator may hint specific skills via `{recommended_skills}` in the agent prompt.
+The subproject's curated Guards are injected inline by the renderer (`## GUARDS`); there is no `{recommended_skills}` hint block (generated skills were removed).
 
 **2. Plan Waves — routed by Rust, the LLM relays:**
 
@@ -72,7 +72,7 @@ Do NOT read `wave-plan.md` or decide the wave order by hand. Run:
 mustard-rt run dispatch-plan --spec {specName}
 ```
 
-It returns a deterministic JSON array ordered by dependency level. Each item is `{wave, role, subproject, depends_on, level, prompt_cmd}`:
+It returns a deterministic JSON array ordered by dependency level. Each item is `{wave, role, subproject, depends_on, level, prompt_cmd, subagent_type}`:
 
 - **`level`** = dispatch round. Items sharing a `level` have no dependency between them → dispatch them together in ONE message (multiple `<invoke>` blocks). A higher `level` starts ONLY after every lower-level wave completes.
 - NEVER nest dispatch — nesting breaks parallel execution.
@@ -80,7 +80,7 @@ It returns a deterministic JSON array ordered by dependency level. Each item is 
 
 **3. Dispatch Agent:**
 
-For each item, run its `prompt_cmd` (a ready `mustard-rt run agent-prompt-render` invocation — never hand-assembled) and pass the **stdout** to the Task `prompt` with `subagent_type: "general-purpose"`. The rendered template carries role/boundary/return inline, plus the spec's project section + its anchors — there are no generated per-project agents to dispatch natively.
+For each item, run its `prompt_cmd` (a ready `mustard-rt run agent-prompt-render` invocation — never hand-assembled) and pass the **stdout** to the Task `prompt` with the item's **`subagent_type`** (the tool picks it per role: read-only roles run tool-restricted — `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`, so they physically cannot write; writing roles → `general-purpose`). Never pick the agent by hand. The rendered template carries the role contract + boundary + return cap inline, plus the spec's project section + its anchors.
 
 **4. Validate:**
 
