@@ -6,14 +6,12 @@
 //! hook to merge, kept as its own module so the registry wiring is one-to-one.
 //! It triggers on `SessionEnd` and:
 //!
-//! 1. Archives stale `closed-followup` specs (best-effort, via the B4 script
-//!    `complete-spec.js --archive-stale`).
-//! 2. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
+//! 1. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
 //!    states whose spec is already done.
-//! 3. Removes the statusline git cache from the temp dir.
-//! 4. Removes `.compact-state` files older than 24h.
-//! 5. Removes a stale OTEL collector PID file.
-//! 6. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
+//! 2. Removes the statusline git cache from the temp dir.
+//! 3. Removes `.compact-state` files older than 24h.
+//! 4. Removes a stale OTEL collector PID file.
+//! 5. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
 //!    `.claude/.session/*/.events/*.ndjson`) older than the retention window.
 //!
 //! ## Contract shape
@@ -63,33 +61,6 @@ pub struct SessionCleanupObserver;
 
 
 /// Current time as milliseconds since the Unix epoch.
-
-/// Archive stale `closed-followup` specs via the B4 script `complete-spec.js`.
-/// Best-effort: a missing script or a spawn error is silently ignored — parity
-/// with the JS `if (fs.existsSync(...))` guard.
-fn archive_stale_followups(cwd: &str) {
-    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
-        return;
-    };
-    let script = paths.claude_dir().join("scripts").join("complete-spec.js");
-    if !script.exists() {
-        return;
-    }
-    for runtime in ["bun", "node"] {
-        let spawned = Command::new(runtime)
-            .arg(&script)
-            .arg("--archive-stale")
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        if let Ok(mut child) = spawned {
-            let _ = child.wait();
-            return;
-        }
-    }
-}
 
 /// Read the `status` field of a pipeline-state JSON file.
 fn state_status(path: &Path) -> Option<String> {
@@ -525,7 +496,6 @@ impl Observer for SessionCleanupObserver {
         // window so telemetry.db does not grow without bound. Fail-open.
         prune_telemetry(&cwd);
 
-        archive_stale_followups(&cwd);
         clean_pipeline_states(&claude);
         clean_statusline_cache();
         clean_compact_state(&claude);

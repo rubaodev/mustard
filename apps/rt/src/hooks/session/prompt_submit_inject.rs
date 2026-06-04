@@ -5,27 +5,24 @@
 //! Ports `followup-cancel-gate.js` **alone** — a single concern with no
 //! sibling hook to merge. It triggers on `UserPromptSubmit` and, when the
 //! prompt invokes `/mustard:feature`, `/mustard:bugfix`, or `/mustard:task`,
-//! archives any pending `closed-followup` pipeline-state — the previous
-//! follow-up window is over, so subsequent edits belong to a new context.
+//! closes any open per-session amendment window — the previous follow-up
+//! window is over, so subsequent edits belong to a new context.
 //!
 //! ## Contract shape
 //!
-//! `followup-cancel-gate.js` never blocks — it always `process.exit(0)`. Its
-//! one job is the archival *side effect*. The b3 spec classes `prompt_gate` as
-//! a [`Check`]; this port honours that — `evaluate` performs the archival and
-//! always returns [`Verdict::Allow`]. (It is a `Check`, not an `Observer`,
-//! because `UserPromptSubmit` is the seam where a future prompt gate *could*
-//! deny; modelling it as a `Check` keeps that extension point open without
-//! changing today's always-allow verdict.)
+//! `followup-cancel-gate.js` never blocks — it always `process.exit(0)`. The
+//! b3 spec classes `prompt_gate` as a [`Check`]; this port honours that —
+//! `evaluate` performs the side effects and always returns [`Verdict::Allow`].
+//! (It is a `Check`, not an `Observer`, because `UserPromptSubmit` is the seam
+//! where a future prompt gate *could* deny; modelling it as a `Check` keeps
+//! that extension point open without changing today's always-allow verdict.)
 //!
-//! ## Archival mechanism
+//! ## Single-stage close
 //!
-//! The archival itself is done by the B4 script
-//! `.claude/scripts/complete-spec.js --archive-followups` — a JavaScript
-//! script that is out of bounds for b3 and intentionally still JS. This port
-//! shells out to it exactly as the JS hook's `spawnSync` did. When the script
-//! is absent the gate is a silent no-op — parity with the JS
-//! `if (!fs.existsSync(script)) process.exit(0)`.
+//! The old `closed-followup` archival sweep was removed with the single-stage
+//! close (a spec now goes straight to `completed`, with no follow-up grace
+//! window to archive). What remains on a new-pipeline prompt is closing the
+//! session's amendment window.
 //!
 //! ## W3C migration
 //!
@@ -38,9 +35,6 @@ use crate::shared::events::economy;
 use crate::hooks::observe::amend_window_inject::close_amend_windows_for_session;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::ClaudePaths;
-use std::path::Path;
-use std::process::{Command, Stdio};
 
 /// W8.T8.2 — pipeline-in-flight reminder: surfaced when the user's prompt is
 /// NOT a `/mustard:*` invocation AND a spec is active. Keeps the agent aware
@@ -82,37 +76,8 @@ fn is_mustard_command(prompt: &str) -> bool {
     t.starts_with("/mustard:")
 }
 
-/// Shell out to `complete-spec.js --archive-followups`. Best-effort — a
-/// missing script or a spawn error is silently ignored. Port of the JS
-/// `spawnSync` call.
-fn archive_followups(cwd: &str) {
-    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
-        return;
-    };
-    let script = paths.claude_dir().join("scripts").join("complete-spec.js");
-    if !script.exists() {
-        return;
-    }
-    // The JS uses `process.execPath` (the node/bun runtime); the Rust port has
-    // no such handle, so it invokes the runtime by name — `bun` then `node`.
-    for runtime in ["bun", "node"] {
-        let spawned = Command::new(runtime)
-            .arg(&script)
-            .arg("--archive-followups")
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        if let Ok(mut child) = spawned {
-            let _ = child.wait();
-            return;
-        }
-    }
-}
-
 impl Check for PromptSubmitInject {
-    /// On `UserPromptSubmit`, archive pending `closed-followup` specs when the
+    /// On `UserPromptSubmit`, close the session's amendment window when the
     /// prompt starts a new pipeline. The verdict is `Inject` when a pipeline
     /// is active and the prompt is not itself a `/mustard:*` slash command
     /// (W8.T8.2 reminder), else `Allow`. Any non-`UserPromptSubmit` trigger
@@ -128,7 +93,6 @@ impl Check for PromptSubmitInject {
             .unwrap_or_default();
         let cwd = ctx.project_dir_or_cwd(input);
         if is_pipeline_prompt(prompt) {
-            archive_followups(&cwd);
             // Close any open amendment windows for this session — the user is
             // starting a new pipeline, so the window's context is done.
             if let Some(session_id) = input.session_id.as_deref() {
@@ -162,6 +126,7 @@ impl Check for PromptSubmitInject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::ClaudePaths;
 
     /// Build a [`Ctx`] with a unique tempdir project path so the W8.T8.2 active-spec
     /// resolver (`current_spec`) cannot accidentally find a real pipeline-state.
@@ -211,7 +176,7 @@ mod tests {
 
     #[test]
     fn pipeline_prompt_allows() {
-        // The archival side effect is a no-op without complete-spec.js; the
+        // The amendment-window close is a no-op without an open window; the
         // verdict is Allow when no spec is active (and the prompt itself is a
         // `/mustard:*` command, so the W8.T8.2 banner is suppressed either way).
         let (_dir, c) = ctx();
