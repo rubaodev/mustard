@@ -1,8 +1,9 @@
-//! Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three new
+//! Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three Overview
 //! aggregations live at the bottom of this file (`dashboard_token_summary`,
-//! `dashboard_month_activity`, `dashboard_events_feed`). They read the
-//! `events` table directly via `db::with_db` and follow the fail-open
-//! contract of the rest of the module (missing DB → empty payload).
+//! `dashboard_month_activity`, `dashboard_events_feed`). Onda 1
+//! (`dashboard-sqlite-out-telemetria-ndjson`) deleted the SQLite source they
+//! read; they now return their empty/scaffold payloads (NDJSON-backed rebuild
+//! is Onda 2). The live spec views come from the `*_v2` adapter family below.
 //!
 //! `*_v2` adapter family that delegates to `mustard-core`.
 //!
@@ -18,13 +19,12 @@
 //! `2026-05-20-sdd-domain-finalization`; the Tauri commands in `lib.rs`
 //! already delegated to the `*_v2` adapters since Wave 4 of the audit.
 
-// Wave 6A of [[2026-05-26-no-sqlite-git-source-of-truth]]: the SQLite reader
-// was retired and `crate::db` now exposes only an opaque [`Connection`]
-// placeholder. Functions in this module preserve their `&Connection` signature
-// so call sites in `lib.rs` compile unchanged, but the bodies of the
-// SQL-backed aggregations have been stubbed to fail-open defaults — the
-// closures are never actually invoked since `db::with_db` returns `None`.
-use crate::db::Connection;
+// Onda 1 (spec `dashboard-sqlite-out-telemetria-ndjson`): the dead SQLite
+// `db.rs` facade was deleted. The aggregations that depended on it (spec
+// events, hygiene health, top-files, overview token/month/events) now resolve
+// to their fail-open empty payloads directly; rebuilding them over the
+// per-spec NDJSON sink is Onda 2. The `*_v2` adapter family below already
+// reads NDJSON via `mustard_core::view::projection`.
 use mustard_core::io::fs;
 use serde::{Deserialize, Serialize};
 
@@ -292,232 +292,15 @@ pub struct WorkspaceHealth {
     pub suspect_specs: Vec<String>,
 }
 
-/// Aggregate hygiene health data from the project's `mustard.db`.
-///
-/// Opens via `db::with_db` (the same helper used by all other aggregation
-/// commands in this file). Fail-open: returns an all-zeros `WorkspaceHealth`
-/// when the DB is absent, unreadable, or its schema is unexpected.
-pub fn workspace_health_impl(_conn: &Connection) -> Result<WorkspaceHealth, String> {
-    // Wave 6A no-sqlite stub: the SQLite event store was retired and
-    // `db::with_db` never invokes this closure. Returns the fail-open
-    // all-zeros struct the legacy aggregation produced on a missing DB.
-    Ok(WorkspaceHealth::default())
-}
-
-// ── spec_events ───────────────────────────────────────────────────────────────
-
-pub fn spec_events(
-    _conn: &Connection,
-    _spec: &str,
-    _filter: Option<EventFilter>,
-) -> Result<Vec<TimelineEvent>, String> {
-    // Wave 6A no-sqlite stub: the SQLite-backed timeline join was retired;
-    // closure never fires. Returns empty list per the fail-open contract.
-    Ok(Vec::new())
-}
-
-// ── 6. spec_action ───────────────────────────────────────────────────────────
-
-/// Wave-3 (2026-05-21-flatten-spec-layout-and-multi-collab): Close / Reopen
-/// no longer move directories between `spec/active/` and `spec/completed/`.
-/// The spec dir stays at `.claude/spec/{name}/` for its entire lifecycle;
-/// the canonical status lives in the SQLite event store and in the
-/// `### Status:` header of `spec.md` (kept in sync by
-/// [`sync_spec_status_header`]).
-///
-/// `Close` emits `pipeline.status: completed`. `Reopen` emits
-/// `pipeline.status: implementing` when prior events exist for this spec
-/// (i.e. the pipeline already ran at least one EXECUTE wave), or
-/// `pipeline.status: planning` when the store has no events for the spec
-/// (treat as never-implemented). `Remove` deletes only `.claude/spec/{name}/`
-/// — no multi-bucket search.
-pub fn spec_action(
-    _conn: &Connection,
-    repo_path: &str,
-    spec: &str,
-    action: SpecActionKind,
-) -> Result<SpecAction, String> {
-    use std::path::Path;
-
-    let spec_dir = Path::new(repo_path).join(".claude").join("spec").join(spec);
-
-    match action {
-        SpecActionKind::Reopen => {
-            if !spec_dir.exists() {
-                return Ok(SpecAction {
-                    action:  "reopen".into(),
-                    spec:    spec.into(),
-                    result:  "error".into(),
-                    message: Some("spec não encontrada".into()),
-                });
-            }
-            let to = reopen_target_status(repo_path, spec);
-            emit_pipeline_status(repo_path, spec, to);
-            // Header sync is fail-open inside emit_pipeline_status; mirror
-            // here so a stale store still gets a coherent on-disk header.
-            sync_spec_status_header(repo_path, spec, to);
-            Ok(SpecAction {
-                action:  "reopen".into(),
-                spec:    spec.into(),
-                result:  "ok".into(),
-                message: None,
-            })
-        }
-        SpecActionKind::Close => {
-            if !spec_dir.exists() {
-                return Ok(SpecAction {
-                    action:  "close".into(),
-                    spec:    spec.into(),
-                    result:  "error".into(),
-                    message: Some("spec não encontrada".into()),
-                });
-            }
-            emit_pipeline_status(repo_path, spec, "completed");
-            sync_spec_status_header(repo_path, spec, "completed");
-            Ok(SpecAction {
-                action:  "close".into(),
-                spec:    spec.into(),
-                result:  "ok".into(),
-                message: None,
-            })
-        }
-        SpecActionKind::Remove => {
-            if !spec_dir.exists() {
-                return Ok(SpecAction {
-                    action:  "remove".into(),
-                    spec:    spec.into(),
-                    result:  "error".into(),
-                    message: Some("spec não encontrada".into()),
-                });
-            }
-            fs::remove_dir_all(&spec_dir).map_err(|e| e.to_string())?;
-            emit_pipeline_removed(repo_path, spec);
-            Ok(SpecAction {
-                action:  "remove".into(),
-                spec:    spec.into(),
-                result:  "ok".into(),
-                message: None,
-            })
-        }
-    }
-}
-
-/// Pick the `pipeline.status` value Reopen should emit. If the event store
-/// already has events for this spec, the pipeline previously reached at least
-/// EXECUTE — reopen back to `implementing`. Otherwise treat as a fresh spec
-/// and emit `planning`. Fail-open: a missing/unwritable store falls back to
-/// `implementing` (the historically expected value).
-fn reopen_target_status(repo_path: &str, spec: &str) -> &'static str {
-    // Wave 6A no-sqlite: the SQLite event log was retired. Fall back to the
-    // filesystem signal — a spec dir with any prior NDJSON event under
-    // `.claude/spec/{name}/.events/` means the pipeline already executed at
-    // least one wave; reopen as `implementing`. An empty events directory
-    // (or no spec dir at all) reopens as `planning`. Fail-open: any IO error
-    // collapses to `implementing` (the historically expected default).
-    let events_dir = std::path::Path::new(repo_path)
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join(".events");
-    match std::fs::read_dir(&events_dir) {
-        Ok(mut it) => {
-            if it.next().is_some() {
-                "implementing"
-            } else {
-                "planning"
-            }
-        }
-        Err(_) => "implementing",
-    }
-}
-
-// ── spec_action helpers ───────────────────────────────────────────────────────
-//
-// Wave 6A of `2026-05-26-no-sqlite-git-source-of-truth` retired the SQLite
-// event store. `pipeline.status` / `pipeline.removed` are now emitted to the
-// per-spec NDJSON sink via `crate::lib_emit_ndjson` (defined in `lib.rs`).
-// A small fail-open header rewriter still mirrors
-// `apps/rt/src/run/emit_pipeline.rs::sync_spec_status_header` so the
-// canonical `### Status:` line in `spec.md` stays consistent with the event
-// stream even when the dashboard does the writing.
-
-/// Emit `pipeline.status: <to>` via the SQLite event store. Fail-open: any
-/// error during store open / append is logged to stderr and swallowed —
-/// telemetry is never load-bearing per the harness contract.
-fn emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
-    let payload = serde_json::json!({ "from": serde_json::Value::Null, "to": to });
-    crate::lib_emit_ndjson(repo_path, spec, "pipeline.status", payload);
-}
-
-/// Emit `pipeline.removed` via the per-spec NDJSON sink. Fail-open mirror of
-/// [`emit_pipeline_status`].
-fn emit_pipeline_removed(repo_path: &str, spec: &str) {
-    crate::lib_emit_ndjson(
-        repo_path,
-        spec,
-        "pipeline.removed",
-        serde_json::json!({ "removed": true }),
-    );
-}
-
-/// Rewrite the `### Status:` line of `.claude/spec/{spec}/spec.md` to match
-/// the freshly emitted `pipeline.status` value. Mirrors
-/// `apps/rt/src/run/emit_pipeline.rs::sync_spec_status_header` — duplicated
-/// here (15 lines) instead of importing because pulling `mustard-rt` into
-/// the dashboard would create a workspace dependency cycle.
-///
-/// Fail-open contract: every failure path (missing file, missing header,
-/// unwritable target) is a warn-and-return — the event has already been
-/// recorded and is the authoritative source. We intentionally do NOT insert
-/// a header when one is missing: that's a `spec.md` shape mutation and the
-/// close-gate is the right place to enforce it.
-fn sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
-    let path = std::path::Path::new(repo_path)
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join("spec.md");
-
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "sync_spec_status_header: read {} failed: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
-    let mut rewrote = false;
-    for line in lines.iter_mut() {
-        if line.trim_start().to_lowercase().starts_with("### status:") {
-            *line = format!("### Status: {to}");
-            rewrote = true;
-            break;
-        }
-    }
-    if !rewrote {
-        eprintln!(
-            "sync_spec_status_header: no `### Status:` header in {}",
-            path.display()
-        );
-        return;
-    }
-
-    // Preserve trailing newline if the original had one.
-    let mut out = lines.join("\n");
-    if content.ends_with('\n') {
-        out.push('\n');
-    }
-    if let Err(e) = fs::write_atomic(&path, out.as_bytes()) {
-        eprintln!(
-            "sync_spec_status_header: write {} failed: {e}",
-            path.display()
-        );
-    }
-}
+// Onda 1: `workspace_health_impl`, `spec_events`, and the entire `spec_action`
+// family (`spec_action` + `reopen_target_status` + `emit_pipeline_status` +
+// `emit_pipeline_removed` + `sync_spec_status_header`) were reachable only
+// through the deleted SQLite `with_db` gate, which always short-circuited.
+// They are removed here; the corresponding Tauri commands in `lib.rs` resolve
+// to their fail-open empty/error payloads directly. The live status writes the
+// dashboard still performs go through `lib.rs::dashboard_spec_complete` /
+// `_cancel` / `_reactivate`, which call `crate::lib_emit_ndjson`. Rebuilding
+// the spec-event timeline + reopen/close/remove over NDJSON is Onda 2.
 
 // ===========================================================================
 // Wave 4 adapters (2026-05-20) — `*_v2` family backed by `mustard-core`.
@@ -793,13 +576,11 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
         .retain(|track| !is_terminal_status(track.status.as_str()));
     out.specs_active_count = i64::try_from(out.spec_tracks.len()).unwrap_or(i64::MAX);
 
-    // Override the file ranking with a session-agnostic SQL aggregation so
-    // post-CLOSE the list does not empty out. Fail-soft: keep the mustard-core
-    // value when the DB is unavailable.
-    let base = std::path::PathBuf::from(repo_path);
-    if let Some(Ok(files)) = crate::db::with_db(&base, top_files_today_impl) {
-        out.top_files_today = files;
-    }
+    // Onda 1: the legacy session-agnostic SQLite override of `top_files_today`
+    // is gone (it short-circuited to a no-op once `db.rs` became a facade).
+    // `out.top_files_today` keeps the value from the mustard-core NDJSON
+    // projection (`project_workspace`) above. A faithful session-agnostic
+    // NDJSON ranking is Onda 2.
     Ok(out)
 }
 
@@ -809,23 +590,6 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
 /// the same predicate. Kebab-case strings mirror `spec_status_string`.
 fn is_terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "closed-followup" | "cancelled")
-}
-
-/// Maximum entries in `top_files_today`. Mirrors the cap used by mustard-core
-/// so the API contract is identical regardless of which path produced the list.
-pub const TOP_FILES_CAP: usize = 10;
-
-/// Aggregate `tool.use` events from today (UTC) by their target file path.
-///
-/// The query intentionally does **not** filter by `session_id` or by the
-/// owning spec's status — every `tool.use` row from today contributes,
-/// including those whose spec has already moved into `completed/`. We try the
-/// modern payload shape (`$.file_path` / `$.tool_input.file_path`) plus the
-/// legacy `$.target.file` to stay aligned with the projection in
-/// `mustard-core::project_workspace`.
-pub fn top_files_today_impl(_conn: &Connection) -> Result<Vec<FileCount>, String> {
-    // Wave 6A no-sqlite stub: closure unreachable post-SQLite-removal.
-    Ok(Vec::new())
 }
 
 // ── View → legacy JSON shape mappers ─────────────────────────────────────────
@@ -1465,13 +1229,13 @@ pub fn spec_children_tree_run(repo_path: &str, spec: &str) -> Result<ChildrenTre
 
 // ===========================================================================
 // Wave 1a (2026-05-20, spec `dashboard-visual-overview`) — three aggregations
-// for the redesigned Overview page. Each command opens the project's
-// `mustard.db` via `crate::db::with_db`, falls back to an empty payload when
-// the harness store is missing/empty, and only returns `Err` for genuinely
-// unrecoverable conditions (currently: invalid month, prepare/query failures
-// are coerced to empty results so the UI renders an empty state).
+// for the redesigned Overview page. Onda 1
+// (`dashboard-sqlite-out-telemetria-ndjson`) removed the SQLite reader these
+// opened; each command now returns its empty/scaffold payload directly and
+// only returns `Err` for argument-validation failures (e.g. invalid month).
+// The NDJSON-backed rebuild of these projections is Onda 2.
 //
-// Schema notes (events table):
+// Schema notes (legacy events table — kept for the Onda 2 rebuild reference):
 //   * the "kind" referenced in the spec maps to column `event`
 //   * payload is a JSON column; sub-fields are extracted via
 //     `json_extract(payload, '$.<name>')`
@@ -1514,36 +1278,28 @@ pub struct FeedEvent {
     pub payload_summary: String,
 }
 
-/// `dashboard_token_summary` — aggregate `events` where `event = 'token.saved'`,
-/// sum `payload.saved`, group top 5 by `spec`.
+/// `dashboard_token_summary` — Onda 1: the SQLite `events` aggregation is gone.
+/// Token savings are tracked via NDJSON `pipeline.economy.savings.*`; an
+/// NDJSON-backed rollup here is Onda 2. Returns the empty default for now.
 #[tauri::command]
-pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, String> {
-    let base = std::path::PathBuf::from(&project_path);
-    match crate::db::with_db(&base, token_summary_impl) {
-        Some(r) => r,
-        None => Ok(TokenSummary::default()),
-    }
-}
-
-fn token_summary_impl(_conn: &Connection) -> Result<TokenSummary, String> {
-    // Wave 6A no-sqlite stub: closure unreachable; token savings are read
-    // from NDJSON `pipeline.economy.savings.*` directly by other commands.
+pub fn dashboard_token_summary(_project_path: String) -> Result<TokenSummary, String> {
     Ok(TokenSummary::default())
 }
 
 /// `dashboard_month_activity` — emit one entry per day of the given month
-/// (1..N) even with 0 events; `top_phase` is the phase with the most events
-/// that day, derived from `pipeline.phase` events' `payload.phase`.
+/// (1..N) with 0 events. Onda 1: the SQLite per-day aggregation was retired;
+/// the per-day `event_count` / `top_phase` rebuild over NDJSON `pipeline.phase`
+/// events is Onda 2. The zero-count day scaffold matches the prior "missing
+/// DB → scaffold" fallback exactly.
 #[tauri::command]
 pub fn dashboard_month_activity(
-    project_path: String,
+    _project_path: String,
     year: i32,
     month: u32,
 ) -> Result<Vec<DayActivity>, String> {
     if !(1..=12).contains(&month) {
         return Err(format!("invalid month: {month}"));
     }
-    let base = std::path::PathBuf::from(&project_path);
     let days_in_month = days_in_month(year, month);
     let scaffold: Vec<DayActivity> = (1..=days_in_month)
         .map(|d| DayActivity {
@@ -1552,46 +1308,19 @@ pub fn dashboard_month_activity(
             top_phase: None,
         })
         .collect();
-
-    match crate::db::with_db(&base, |conn| month_activity_impl(conn, year, month, scaffold.clone())) {
-        Some(r) => r,
-        None => Ok(scaffold),
-    }
+    Ok(scaffold)
 }
 
-fn month_activity_impl(
-    _conn: &Connection,
-    _year: i32,
-    _month: u32,
-    out: Vec<DayActivity>,
-) -> Result<Vec<DayActivity>, String> {
-    // Wave 6A no-sqlite stub: returns the pre-built day scaffold with zero
-    // counts. Closure unreachable post-SQLite-removal; callers should rebuild
-    // this projection from NDJSON `pipeline.phase` events when needed.
-    Ok(out)
-}
-
-/// `dashboard_events_feed` — chronological-reverse feed, `ORDER BY ts DESC`
-/// with the caller-supplied `LIMIT`. `payload_summary` is a ≤120-char humanised
-/// rendering of the payload (e.g. `"draft → implementing"` for
-/// `pipeline.status`).
+/// `dashboard_events_feed` — Onda 1: the SQLite `events` feed is gone; the
+/// NDJSON-backed chronological feed is Onda 2. Returns an empty list (the prior
+/// "missing DB → empty" fallback). `limit` is validated for shape parity.
 #[tauri::command]
 pub fn dashboard_events_feed(
-    project_path: String,
+    _project_path: String,
     limit: u32,
 ) -> Result<Vec<FeedEvent>, String> {
-    let base = std::path::PathBuf::from(&project_path);
-    let cap = limit.clamp(1, 1000); // defensive cap; UI typically asks ≤200
-    match crate::db::with_db(&base, |conn| events_feed_impl(conn, cap)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
-}
-
-fn events_feed_impl(_conn: &Connection, _limit: u32) -> Result<Vec<FeedEvent>, String> {
-    // Wave 6A no-sqlite stub: closure unreachable; the events feed should be
-    // derived from NDJSON in a follow-up sub-spec.
-    Ok(Vec::new())
+    let _ = limit.clamp(1, 1000); // defensive cap retained for contract parity
+    Ok(vec![])
 }
 
 /// Number of days in `month` for the given `year` (Gregorian).

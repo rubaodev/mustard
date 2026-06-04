@@ -97,9 +97,8 @@ fn repo_root(repo_path: &str) -> Result<PathBuf, String> {
 /// Emit one `pipeline.economy.operation.invoked` event for an i18n write.
 /// Fail-open: a telemetry write failure must never block the settings write.
 ///
-/// Wave 6A migration: the legacy `db::with_store(...).store.append(...)` route
-/// retired with the SQLite event store. Settings events now land in a
-/// project-scoped NDJSON channel at
+/// The legacy SQLite event-store append route is gone. Settings events land
+/// in a project-scoped NDJSON channel at
 /// `.claude/.events/dashboard-settings.ndjson` — same atomic-append shape used
 /// by every other dashboard emitter post-W6A. Any IO failure is swallowed so
 /// the settings write itself never gets blocked.

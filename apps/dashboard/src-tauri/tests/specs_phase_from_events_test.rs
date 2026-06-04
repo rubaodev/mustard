@@ -1,30 +1,11 @@
-//! Wave 6B fixture-mode rewrite of `specs_phase_from_events_test.rs`.
-//!
-//! Legacy: inserted `pipeline.phase` events into the SQLite `events` table
-//! and asserted that `specs_from_db` derived the right phase per spec.
-//! Wave 6A retired the SQLite reader; specs now come from `.claude/spec/*/`
-//! filesystem walks. This rewrite verifies the public `SpecRow` shape
-//! survives the migration and that a clean repo yields no rows.
+//! Onda 1 (spec `dashboard-sqlite-out-telemetria-ndjson`): the dead SQLite
+//! `db.rs` facade was deleted. The Wave-6B variant of this suite asserted that
+//! `db::with_db` always returned `None`; with the facade gone, only the public
+//! `SpecRow` shape contract remains to verify. Specs are derived from the
+//! `.claude/spec/*/` filesystem walk (`dashboard_specs`); the NDJSON-backed
+//! phase merge is Onda 2.
 
 use mustard_dashboard_lib::SpecRow;
-use std::path::PathBuf;
-use tempfile::TempDir;
-
-fn empty_repo_with_one_spec(name: &str, phase: &str) -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    let spec_dir = tmp.path().join(".claude").join("spec").join(name);
-    std::fs::create_dir_all(&spec_dir).unwrap();
-    std::fs::write(
-        spec_dir.join("spec.md"),
-        format!(
-            "# {name}\n\n### Stage: {phase}\n### Outcome: Active\n### Scope: light\n",
-            name = name,
-            phase = phase
-        ),
-    )
-    .unwrap();
-    tmp
-}
 
 #[test]
 fn spec_row_default_shape() {
@@ -40,12 +21,4 @@ fn spec_row_default_shape() {
     };
     assert_eq!(row.name, "spec-x");
     assert_eq!(row.phase.as_deref(), Some("plan"));
-}
-
-#[test]
-fn with_db_returns_none_even_when_repo_has_specs() {
-    let tmp = empty_repo_with_one_spec("alpha", "Plan");
-    let none: Option<Result<u32, String>> =
-        mustard_dashboard_lib::db::with_db(&PathBuf::from(tmp.path()), |_c| Ok(0));
-    assert!(none.is_none(), "with_db facade must always return None");
 }

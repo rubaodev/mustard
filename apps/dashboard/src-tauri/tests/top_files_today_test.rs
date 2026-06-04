@@ -1,25 +1,19 @@
-//! Wave 6B fixture-mode rewrite of `top_files_today_test.rs`.
-//!
-//! Legacy: built an `events` SQLite table with `pipeline.tool_use` rows and
-//! asserted that `aggregate_activity_from_db` returned the right "top
-//! files" buckets. Wave 6A retired that path — `aggregate_activity_from_db`
-//! is now a facade stub returning `Ok(vec![])`. This rewrite exercises the
-//! public signature on a clean repo and asserts the empty contract.
+//! Onda 1 (spec `dashboard-sqlite-out-telemetria-ndjson`): the dead SQLite
+//! `db.rs` facade was deleted. The Wave-6B variant of this suite exercised
+//! `db::with_db` + `aggregate_activity_from_db`; both are gone. The live
+//! `dashboard_workspace_summary` path keeps `top_files_today` from the
+//! mustard-core NDJSON projection. Here we just assert the public `FileCount`
+//! shape survives the migration. A session-agnostic NDJSON file ranking is
+//! Onda 2.
 
-use mustard_dashboard_lib::db;
-use std::path::PathBuf;
-use tempfile::TempDir;
+use mustard_dashboard_lib::telemetry_agg::FileCount;
 
 #[test]
-fn aggregate_activity_signature_compiles_against_facade() {
-    let tmp = TempDir::new().unwrap();
-    std::fs::create_dir_all(tmp.path().join(".claude").join("spec")).unwrap();
-    let base = PathBuf::from(tmp.path());
-
-    // The facade's `with_db` returns None pre-emptively, so the closure is
-    // never invoked. The test guards against the closure's *type* drifting —
-    // a future signature change would surface here as a compile error.
-    let outcome: Option<Result<usize, String>> =
-        db::with_db(&base, |conn| db::aggregate_activity_from_db(conn, None, 10).map(|v| v.len()));
-    assert!(outcome.is_none(), "facade must short-circuit before closure runs");
+fn file_count_shape() {
+    let f = FileCount {
+        path: String::from("src/lib.rs"),
+        count: 3,
+    };
+    assert_eq!(f.path, "src/lib.rs");
+    assert_eq!(f.count, 3);
 }

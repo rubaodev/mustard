@@ -1,13 +1,14 @@
-//! Telemetry aggregation functions.
+//! Telemetry aggregation shapes.
 //!
-//! Wave 6A of [[2026-05-26-no-sqlite-git-source-of-truth]] retired the
-//! SQLite query plane that fed these aggregations. The public function
-//! signatures are preserved so call sites in `lib.rs` continue to type-check,
-//! but the bodies fail-open to empty / zero-valued payloads. Faithful
-//! NDJSON-backed reimplementations are tracked in the W6B sub-spec
-//! (wave-20-dashboard) where the dedicated telemetry rewrite lives.
+//! Onda 1 (spec `dashboard-sqlite-out-telemetria-ndjson`): the dead SQLite
+//! `db.rs` facade was deleted. The aggregator functions that took a
+//! `&db::Connection` were reachable only through the retired `with_db` gate,
+//! so they are gone; the `dashboard_telemetry_*` commands in `lib.rs` now
+//! resolve to their fail-open empty/default payloads directly. Only the JSON
+//! shapes consumed by those commands' return types remain here. Faithful
+//! NDJSON-backed reimplementations land in Onda 2 (the dedicated telemetry
+//! rewrite).
 
-use crate::db::Connection;
 use serde::{Deserialize, Serialize};
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
@@ -112,55 +113,6 @@ pub struct AgentDispatch {
     pub last_dispatched_at: Option<String>,
 }
 
-// ── Stubs (closures unreachable post-Wave-6A) ───────────────────────────────
-
-pub fn telemetry_phases(
-    _conn: &Connection,
-    _time_range: &str,
-) -> Result<Vec<PhaseSummary>, String> {
-    Ok(Vec::new())
-}
-
-pub fn telemetry_timeline(
-    _conn: &Connection,
-    _time_range: &str,
-    _limit: usize,
-) -> Result<Vec<TimelineEvent>, String> {
-    Ok(Vec::new())
-}
-
-pub fn telemetry_heatmap(
-    _conn: &Connection,
-    _time_range: &str,
-) -> Result<Vec<HeatmapCell>, String> {
-    Ok(Vec::new())
-}
-
-pub fn telemetry_history(
-    _conn: &Connection,
-    _time_range: &str,
-    _limit: usize,
-) -> Result<Vec<HistoryEntry>, String> {
-    Ok(Vec::new())
-}
-
-pub fn telemetry_criteria(
-    _conn: &Connection,
-    _time_range: &str,
-) -> Result<Vec<AcceptanceCriterion>, String> {
-    Ok(Vec::new())
-}
-
-pub fn telemetry_effort(
-    _conn: &Connection,
-    _time_range: &str,
-) -> Result<EffortBreakdown, String> {
-    Ok(EffortBreakdown::default())
-}
-
-pub fn telemetry_agents(
-    _conn: &Connection,
-    _time_range: &str,
-) -> Result<Vec<AgentDispatch>, String> {
-    Ok(Vec::new())
-}
+// Onda 1: the `telemetry_*(&Connection, ...)` aggregators were removed — they
+// were dead behind the retired SQLite `with_db` gate. The `dashboard_telemetry_*`
+// Tauri commands in `lib.rs` return the empty/default payloads directly.

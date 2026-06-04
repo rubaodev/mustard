@@ -72,9 +72,8 @@ pub fn read_spec_meta(repo_path: String, spec_name: String) -> Result<Meta, Stri
 /// Append `pipeline.economy.operation.invoked` for one `read_spec_meta` call.
 /// Fail-open: any sink error is silently swallowed.
 ///
-/// Wave 6A migration: the legacy `db::with_store(...).store.append(...)` path
-/// died with the SQLite event store. We now write the event to the NDJSON
-/// spec channel at `.claude/spec/{spec_name}/.events/dashboard.ndjson` via
+/// The legacy SQLite event-store append path is gone. We write the event to
+/// the NDJSON spec channel at `.claude/spec/{spec_name}/.events/dashboard.ndjson` via
 /// best-effort append. A missing parent directory is created on demand; any
 /// IO failure is swallowed so the read path stays uninterrupted.
 fn emit_meta_sidecar_read(repo_path: &str, spec_name: &str, duration_ms: u128) {

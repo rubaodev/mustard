@@ -2,7 +2,6 @@ mod artifact_update;
 pub mod amend_queries;
 pub mod commands;
 mod discovery;
-pub mod db;
 pub mod doctor;
 pub mod economy;
 mod prd_lapidator;
@@ -161,39 +160,24 @@ pub struct GlobalConsumption {
 }
 
 #[tauri::command]
-fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
-    // DB wins: status, scope, phase, updated_at — all derived from the pipeline.*
-    // event stream via `db::pipelines_from_db`. FS pipeline-states JSON walk is
-    // removed; the event log is canonical (spec 2026-05-19-pipeline-state-from-sqlite).
-    let base = PathBuf::from(&repo_path);
-    if let Some(conn) = db::with_db(&base, |conn| Ok(db::pipelines_from_db(conn))) {
-        return conn;
-    }
+fn dashboard_pipelines(_repo_path: String) -> Result<Vec<PipelineSummary>, String> {
+    // No SQLite reader post-W6A — the relational pipeline projection was retired
+    // and not yet rebuilt over NDJSON (Onda 2). Returns empty; the dashboard
+    // renders its empty state. Active pipelines come from `dashboard_active_pipelines`.
     Ok(vec![])
 }
 
 #[tauri::command]
-fn dashboard_metrics(repo_path: String) -> Result<MetricsSummary, String> {
-    let base = PathBuf::from(&repo_path);
-    // Open the dedicated telemetry store ONCE, OUTSIDE the mustard.db cache
-    // mutex held by `with_db` (avoids the per-call re-open + latent deadlock).
-    let tele = db::telemetry_store_for(&base);
-    if let Some(r) = db::with_db(&base, |conn| db::metrics_from_db(conn, tele.as_ref())) {
-        return r;
-    }
+fn dashboard_metrics(_repo_path: String) -> Result<MetricsSummary, String> {
+    // No SQLite reader post-W6A; metrics aggregation over NDJSON is Onda 2.
+    // Zeroed summary keeps the shape contract — the card renders empty.
     Ok(MetricsSummary { total_events: 0, sessions_recent: 0, agents_dispatched: 0, last_event_at: None, tokens_total: 0, tokens_today: 0 })
 }
 
 #[tauri::command]
-fn dashboard_knowledge(repo_path: String) -> Result<KnowledgeSummary, String> {
-    // Wave 6c: DB is the only source — knowledge.json no longer written by rt.
-    // db::knowledge_from_db queries knowledge_patterns (Wave 6a) with fallback
-    // to the legacy `knowledge` table for pre-Wave-6a DBs.
-    let base = PathBuf::from(&repo_path);
-    match db::with_db(&base, db::knowledge_from_db) {
-        Some(r) => r,
-        None => Ok(KnowledgeSummary { patterns_count: 0, conventions_count: 0, high_confidence_count: 0 }),
-    }
+fn dashboard_knowledge(_repo_path: String) -> Result<KnowledgeSummary, String> {
+    // No SQLite reader post-W6A; knowledge aggregation over NDJSON is Onda 2.
+    Ok(KnowledgeSummary { patterns_count: 0, conventions_count: 0, high_confidence_count: 0 })
 }
 
 #[derive(Serialize)]
@@ -359,71 +343,25 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
 }
 
 #[tauri::command]
-fn dashboard_recent_events(repo_path: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
-    let base = PathBuf::from(&repo_path);
-    let cap = limit.unwrap_or(20);
-    match db::with_db(&base, |c| db::recent_events_from_db(c, cap)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+fn dashboard_recent_events(_repo_path: String, _limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
+    // No SQLite reader post-W6A; recent-events feed over NDJSON is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
 fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
     let base = PathBuf::from(&repo_path);
-    let spec_root = base.join(".claude").join("spec");
 
-    // The filesystem is the source of truth for *existence* — DB rows may be
-    // stale (specs renamed/moved/migrated away). Walk FS first; this also
-    // walks wave-plan children and emits them with parent set. The `phase`
-    // field, however, comes from the SQLite event log (`pipeline.phase` events)
-    // — see the merge below — because the FS pipeline-state JSON no longer
-    // carries phase (spec 2026-05-19-dashboard-phase-from-sqlite).
+    // The filesystem is the source of truth for spec existence. The walk also
+    // covers wave-plan children, emitting them with parent set. Post-W6A there
+    // is no SQLite event-log merge — phase/timestamps that the legacy DB
+    // enriched here come back unset until the NDJSON projection lands (Onda 2);
+    // `phase` falls back to the value parsed from spec.md/wave-plan.md frontmatter.
     let fs_rows = specs_from_fs(&base);
 
-    // Build a presence map keyed by spec name (across all buckets), so we can
-    // filter DB rows that no longer have a backing directory.
     let mut by_name: HashMap<String, SpecRow> = HashMap::new();
     for row in fs_rows {
         by_name.insert(row.name.clone(), row);
-    }
-
-    // Pull DB rows but ONLY merge them into specs that exist on disk. Specs
-    // present in DB but missing from FS are historical (migrated, renamed) —
-    // we deliberately drop them rather than show them as ghosts.
-    if let Some(Ok(db_rows)) = db::with_db(&base, db::specs_from_db) {
-        for mut row in db_rows {
-            let bucket = detect_spec_existence(&spec_root, &row.name);
-            if bucket.is_none() {
-                // Historical: do not surface in the dashboard.
-                continue;
-            }
-            row.bucket = bucket;
-            // Enrich FS row with DB-only fields (timestamps, affected_files,
-            // and `phase`) when both sides have the spec. Preserve parent from
-            // FS row. `phase` is the one field where DB *wins* over FS: the
-            // event log is the canonical source for the current phase.
-            if let Some(existing) = by_name.get_mut(&row.name) {
-                if existing.started_at.is_none() {
-                    existing.started_at = row.started_at;
-                }
-                if existing.completed_at.is_none() {
-                    existing.completed_at = row.completed_at;
-                }
-                if existing.affected_files.is_empty() {
-                    existing.affected_files = row.affected_files;
-                }
-                // DB wins on phase. Only fall back to the FS-derived value
-                // (parsed from spec.md/wave-plan.md frontmatter) when the DB
-                // has no pipeline.phase event recorded yet.
-                if row.phase.is_some() {
-                    existing.phase = row.phase;
-                }
-            } else {
-                // DB row backed by FS but FS walk missed it — extremely rare.
-                by_name.insert(row.name.clone(), row);
-            }
-        }
     }
 
     let mut rows: Vec<SpecRow> = by_name.into_values().collect();
@@ -539,26 +477,6 @@ fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
         _ => b.0.name.cmp(&a.0.name),
     });
     rows.into_iter().map(|(r, _)| r).collect()
-}
-
-/// Check whether a spec directory still exists on disk under the flat layout
-/// .claude/spec/{name}/ or as a wave child under any parent spec dir.
-/// Returns Some("flat") when found, None when historical/missing.
-fn detect_spec_existence(spec_root: &PathBuf, name: &str) -> Option<String> {
-    // Flat layout: spec lives directly at .claude/spec/{name}/
-    if spec_root.join(name).is_dir() {
-        return Some("flat".to_string());
-    }
-    // Could also be a wave child — scan one level for parent dirs that contain
-    // a {name}/ subdir (wave-N-something under a wave-plan parent).
-    if let Ok(rd) = fs::read_dir(spec_root) {
-        for entry in rd {
-            if entry.is_dir && entry.path.join(name).is_dir() {
-                return Some("flat".to_string());
-            }
-        }
-    }
-    None
 }
 
 // Returns (phase, status) parsed from a spec.md or wave-plan.md.
@@ -893,54 +811,33 @@ fn dashboard_spec_reactivate(repo_path: String, spec_name: String) -> Result<Str
 }
 
 #[tauri::command]
-fn dashboard_search_events(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
-    let base = PathBuf::from(&repo_path);
-    let cap = limit.unwrap_or(50);
-    match db::with_db(&base, |c| db::search_events_from_db(c, &query, cap)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+fn dashboard_search_events(_repo_path: String, _query: String, _limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
+    // No SQLite FTS5 search post-W6A; NDJSON-backed search is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
-fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
-    let base = PathBuf::from(&repo_path);
-    let cap = limit.unwrap_or(50);
-    match db::with_db(&base, |c| db::search_knowledge_from_db(c, &query, cap)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+fn dashboard_search_knowledge(_repo_path: String, _query: String, _limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
+    // No SQLite knowledge search post-W6A; NDJSON-backed search is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
-fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Result<Vec<ActivityGroup>, String> {
-    let lim = limit.unwrap_or(200);
-    let base = PathBuf::from(&repo_path);
-    let tele = db::telemetry_store_for(&base);
-    match db::with_db(&base, |conn| db::aggregate_activity_from_db(conn, tele.as_ref(), lim)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+fn dashboard_activity_aggregated(_repo_path: String, _limit: Option<usize>) -> Result<Vec<ActivityGroup>, String> {
+    // No SQLite activity aggregation post-W6A; NDJSON rollup is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
-fn dashboard_quality_metrics(repo_path: String) -> Result<QualityMetrics, String> {
-    let base = PathBuf::from(&repo_path);
-    let tele = db::telemetry_store_for(&base);
-    match db::with_db(&base, |conn| db::quality_metrics_from_db(conn, tele.as_ref())) {
-        Some(r) => r,
-        None => Ok(QualityMetrics::default()),
-    }
+fn dashboard_quality_metrics(_repo_path: String) -> Result<QualityMetrics, String> {
+    // No SQLite quality aggregation post-W6A; NDJSON rollup is Onda 2.
+    Ok(QualityMetrics::default())
 }
 
 #[tauri::command]
-fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
-    let lim = limit.unwrap_or(500);
-    let base = PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| db::knowledge_browse_from_db(conn, lim)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+fn dashboard_knowledge_browse(_repo_path: String, _limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
+    // No SQLite knowledge browse post-W6A; NDJSON projection is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -984,13 +881,10 @@ fn dashboard_live_activity(repo_path: String) -> Result<telemetry::LiveActivity,
 /// Per-workspace consumption + cost summary. Returns zeros when the spans
 /// table is empty or the DB hasn't been initialised yet.
 #[tauri::command]
-fn dashboard_consumption(repo_path: String) -> Result<ConsumptionSummary, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    // Consumption reads only telemetry.db's `run_usage` — open it once here,
-    // never under the mustard.db cache mutex. A missing telemetry store yields
-    // an all-zero summary, matching the prior "uninitialised → defaults".
-    let tele = db::telemetry_store_for(&base);
-    db::consumption_summary_from_db(tele.as_ref())
+fn dashboard_consumption(_repo_path: String) -> Result<ConsumptionSummary, String> {
+    // No SQLite telemetry store post-W6A; consumption from NDJSON run_usage is
+    // Onda 2. All-zero summary keeps the shape contract.
+    Ok(ConsumptionSummary::default())
 }
 
 /// Cross-project (global) consumption: walks every project discovered under
@@ -1002,12 +896,13 @@ fn dashboard_consumption_global(projects_root: String) -> Result<GlobalConsumpti
     let projects = discovery::discover(&root)?;
 
     let mut out = GlobalConsumption::default();
-    let mut model_acc: std::collections::HashMap<String, ModelUsage> = std::collections::HashMap::new();
-    let mut daily_acc: std::collections::HashMap<String, DailyPoint> = std::collections::HashMap::new();
 
     for p in projects {
-        let project_path = std::path::PathBuf::from(&p.path);
-        let mut row = ProjectUsage {
+        // No SQLite telemetry store post-W6A — every project contributes a
+        // zeroed consumption row (NDJSON-backed per-project consumption is
+        // Onda 2). The global token/cost totals, `by_model` and `daily_series`
+        // all stay empty, matching the prior "uninitialised store → defaults".
+        let row = ProjectUsage {
             id: p.id.clone(),
             name: p.name.clone(),
             path: p.path.clone(),
@@ -1017,63 +912,8 @@ fn dashboard_consumption_global(projects_root: String) -> Result<GlobalConsumpti
             cost_today_usd: 0.0,
             last_activity_ms: p.last_activity_ms,
         };
-
-        // Per-project telemetry store, opened once (no mustard.db mutex). A
-        // missing store yields an all-zero summary that contributes nothing.
-        let tele = db::telemetry_store_for(&project_path);
-        if let Ok(summary) = db::consumption_summary_from_db(tele.as_ref()) {
-            row.tokens_total = summary.tokens_total;
-            row.tokens_today = summary.tokens_today;
-            row.cost_total_usd = summary.cost_total_usd;
-            row.cost_today_usd = summary.cost_today_usd;
-
-            out.tokens_total += summary.tokens_total;
-            out.tokens_today += summary.tokens_today;
-            out.cost_total_usd += summary.cost_total_usd;
-            out.cost_today_usd += summary.cost_today_usd;
-
-            for m in summary.by_model {
-                let entry = model_acc.entry(m.model.clone()).or_insert_with(|| ModelUsage {
-                    model: m.model.clone(),
-                    ..Default::default()
-                });
-                entry.calls += m.calls;
-                entry.input_tokens += m.input_tokens;
-                entry.output_tokens += m.output_tokens;
-                entry.total_tokens += m.total_tokens;
-                entry.cost_usd += m.cost_usd;
-            }
-
-            for d in summary.daily_series {
-                let entry = daily_acc.entry(d.date.clone()).or_insert_with(|| DailyPoint {
-                    date: d.date.clone(),
-                    ..Default::default()
-                });
-                entry.calls += d.calls;
-                entry.input_tokens += d.input_tokens;
-                entry.output_tokens += d.output_tokens;
-                entry.total_tokens += d.total_tokens;
-                entry.cost_usd += d.cost_usd;
-            }
-        }
-
         out.by_project.push(row);
     }
-
-    // Finalize aggregates.
-    let grand_total: u64 = model_acc.values().map(|m| m.total_tokens).sum();
-    let mut models: Vec<ModelUsage> = model_acc.into_values().collect();
-    if grand_total > 0 {
-        for m in &mut models {
-            m.pct_tokens = m.total_tokens as f64 / grand_total as f64;
-        }
-    }
-    models.sort_by_key(|a| std::cmp::Reverse(a.total_tokens));
-    out.by_model = models;
-
-    let mut series: Vec<DailyPoint> = daily_acc.into_values().collect();
-    series.sort_by(|a, b| a.date.cmp(&b.date));
-    out.daily_series = series;
 
     out.by_project.sort_by(|a, b| {
         b.cost_total_usd
@@ -1159,30 +999,10 @@ fn dashboard_watch_repos(
 }
 
 #[tauri::command]
-fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
-    // DB wins: all pipeline fields — status, phase, wave counts, tasks, dispatch
-    // failure — derived from the pipeline.* event stream. FS walk removed (Wave 3b
-    // of spec 2026-05-19-pipeline-state-from-sqlite).
-    let base = std::path::PathBuf::from(&repo_path);
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut results = match db::with_db(&base, |conn| {
-        Ok(db::active_pipelines_from_db(conn, now_secs))
-    }) {
-        Some(Ok(r)) => r,
-        _ => return Ok(vec![]),
-    };
-    // Filter out completed/closed (same semantics as the old FS-based reader).
-    results.retain(|p| p.status != "completed" && p.status != "closed");
-    // Sort descending by updated_at.
-    results.sort_by(|a, b| {
-        let ta = a.updated_at.as_deref().unwrap_or("");
-        let tb = b.updated_at.as_deref().unwrap_or("");
-        tb.cmp(ta)
-    });
-    Ok(results)
+fn dashboard_active_pipelines(_repo_path: String) -> Result<Vec<ActivePipeline>, String> {
+    // No SQLite pipeline projection post-W6A; the active-pipelines reader over
+    // NDJSON is Onda 2. Empty list keeps the "PIPELINES ATIVOS" card renderable.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -1317,30 +1137,29 @@ fn dashboard_spec_events(
     spec: String,
     filter: Option<spec_views::EventFilter>,
 ) -> Result<Vec<spec_views::TimelineEvent>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| spec_views::spec_events(conn, &spec, filter)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &spec, &filter);
+    // No SQLite event timeline post-W6A; per-spec NDJSON timeline is served by
+    // `dashboard_spec_timeline` (spec_timeline_v2). Empty list here.
+    Ok(vec![])
 }
 
 #[tauri::command]
-fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Result<spec_views::SpecAction, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    let action_kind = match action.to_lowercase().as_str() {
-        "reopen" => spec_views::SpecActionKind::Reopen,
-        "close"  => spec_views::SpecActionKind::Close,
-        "remove" => spec_views::SpecActionKind::Remove,
-        other    => return Err(format!("unknown action: {}", other)),
-    };
-    match db::with_db(&base, |conn| spec_views::spec_action(conn, &repo_path, &spec, action_kind)) {
-        Some(r) => r,
-        None => Ok(spec_views::SpecAction {
+fn dashboard_spec_action(_repo_path: String, spec: String, action: String) -> Result<spec_views::SpecAction, String> {
+    // Validate the action verb (unknown verbs still surface as `Err`, matching
+    // the prior contract). The reopen/close/remove implementation in
+    // `spec_views::spec_action` was reached only through the retired SQLite
+    // `with_db` gate, which always short-circuited to this error fallback even
+    // pre-removal — so behaviour is unchanged. Rebuilding spec actions over the
+    // NDJSON sink is Onda 2 (use `dashboard_spec_complete`/`_cancel`/`_reactivate`
+    // for the live status writes in the meantime).
+    match action.to_lowercase().as_str() {
+        "reopen" | "close" | "remove" => Ok(spec_views::SpecAction {
             action,
             spec,
             result: "error".to_string(),
             message: Some("banco de dados indisponível".to_string()),
         }),
+        other => Err(format!("unknown action: {}", other)),
     }
 }
 
@@ -1445,15 +1264,11 @@ fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::Workspac
 
 // ── Wave-6 hygiene observability ─────────────────────────────────────────────
 
-/// Return hygiene health roll-up for a project's mustard.db. Fail-open:
-/// returns an all-zeros `WorkspaceHealth` when the DB is absent.
+/// Return hygiene health roll-up. No SQLite source post-W6A; the NDJSON-backed
+/// hygiene rollup is Onda 2. All-zeros keeps the card renderable.
 #[tauri::command]
-fn workspace_health(repo_path: String) -> spec_views::WorkspaceHealth {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, spec_views::workspace_health_impl) {
-        Some(Ok(h)) => h,
-        _ => spec_views::WorkspaceHealth::default(),
-    }
+fn workspace_health(_repo_path: String) -> spec_views::WorkspaceHealth {
+    spec_views::WorkspaceHealth::default()
 }
 
 // ── Wave-7 telemetry aggregation commands ────────────────────────────────────
@@ -1463,11 +1278,9 @@ fn dashboard_telemetry_phases(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::PhaseSummary>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_phases(conn, &time_range)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &time_range);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -1476,12 +1289,9 @@ fn dashboard_telemetry_timeline(
     time_range: String,
     limit: Option<usize>,
 ) -> Result<Vec<telemetry_agg::TimelineEvent>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    let cap = limit.unwrap_or(50);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_timeline(conn, &time_range, cap)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &time_range, limit);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -1489,11 +1299,9 @@ fn dashboard_telemetry_heatmap(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::HeatmapCell>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_heatmap(conn, &time_range)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &time_range);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -1502,12 +1310,9 @@ fn dashboard_telemetry_history(
     time_range: String,
     limit: Option<usize>,
 ) -> Result<Vec<telemetry_agg::HistoryEntry>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    let cap = limit.unwrap_or(50);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_history(conn, &time_range, cap)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &time_range, limit);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -1515,11 +1320,9 @@ fn dashboard_telemetry_criteria(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::AcceptanceCriterion>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_criteria(conn, &time_range)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &time_range);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(vec![])
 }
 
 #[tauri::command]
@@ -1527,16 +1330,9 @@ fn dashboard_telemetry_effort(
     repo_path: String,
     time_range: String,
 ) -> Result<telemetry_agg::EffortBreakdown, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_effort(conn, &time_range)) {
-        Some(r) => r,
-        None => Ok(telemetry_agg::EffortBreakdown {
-            top_files: vec![],
-            top_tools: vec![],
-            top_phases: vec![],
-            top_agents: vec![],
-        }),
-    }
+    let _ = (&repo_path, &time_range);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(telemetry_agg::EffortBreakdown::default())
 }
 
 #[tauri::command]
@@ -1544,11 +1340,9 @@ fn dashboard_telemetry_agents(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::AgentDispatch>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    match db::with_db(&base, |conn| telemetry_agg::telemetry_agents(conn, &time_range)) {
-        Some(r) => r,
-        None => Ok(vec![]),
-    }
+    let _ = (&repo_path, &time_range);
+    // No SQLite telemetry plane post-W6A; NDJSON aggregation is Onda 2.
+    Ok(vec![])
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
