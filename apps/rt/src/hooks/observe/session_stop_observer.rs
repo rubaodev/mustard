@@ -129,17 +129,18 @@ fn newest_event_write(paths: &ClaudePaths) -> Option<SystemTime> {
     newest
 }
 
-/// Build the `interrupted at wave N` summary line for a given wave token.
-/// Empty / missing → `"?"`.
+/// Build the interrupted-summary line for a given wave token. A real wave token
+/// yields `"interrupted at wave {w}"`; an empty or missing wave yields
+/// `"interrupted mid-task"` (no bogus `"?"`).
 fn format_summary(wave: Option<&str>) -> String {
-    let w = wave
-        .filter(|s| !s.is_empty())
-        .unwrap_or("?");
-    format!("interrupted at wave {w}")
+    match wave.filter(|s| !s.is_empty()) {
+        Some(w) => format!("interrupted at wave {w}"),
+        None => "interrupted mid-task".to_string(),
+    }
 }
 
 /// Resolve the active wave from `MUSTARD_ACTIVE_WAVE` and build the summary.
-/// Falls back to `"?"` when unset.
+/// Falls back to `"interrupted mid-task"` when unset.
 fn build_summary() -> String {
     let wave = std::env::var("MUSTARD_ACTIVE_WAVE").ok();
     format_summary(wave.as_deref())
@@ -257,7 +258,7 @@ mod tests {
     #[test]
     fn format_summary_uses_wave_when_present() {
         assert_eq!(format_summary(Some("9")), "interrupted at wave 9");
-        assert_eq!(format_summary(None), "interrupted at wave ?");
-        assert_eq!(format_summary(Some("")), "interrupted at wave ?");
+        assert_eq!(format_summary(None), "interrupted mid-task");
+        assert_eq!(format_summary(Some("")), "interrupted mid-task");
     }
 }

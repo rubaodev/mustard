@@ -5,16 +5,17 @@
 //! Ports `pre-compact.js` **alone** — a single concern with no sibling hook
 //! to merge. It triggers on `PreCompact` and builds a compact snapshot of the
 //! working state (git branch, uncommitted-changes summary, recent commits,
-//! active pipelines, persistent-memory counts, the compaction reason), saves
-//! it to `.claude/.compact-state/` for debugging, and surfaces it as
-//! `additionalContext` so the agent keeps the state across the compaction.
+//! active pipelines, persistent-memory counts, the compaction reason) and
+//! persists it to `.claude/.compact-state/` for debugging. The snapshot is
+//! **not** injected: the harness has no `PreCompact` context slot, so the
+//! on-disk `.txt` is the only place it lands.
 //!
 //! ## Contract shape
 //!
-//! `pre-compact.js` produced an `additionalContext` payload via `console.log`.
-//! Under the consolidated binary that becomes a [`Verdict::Inject`] so the
-//! single `emit_outcome` owns the only stdout write. `PreCompact` is a
-//! [`Check`].
+//! `pre-compact.js` produced an `additionalContext` payload via `console.log`,
+//! but the harness rejects a `hookSpecificOutput` for `PreCompact` and discards
+//! its context. So this module returns [`Verdict::Allow`] and keeps only the
+//! disk-side snapshot as a debugging buffer. `PreCompact` is a [`Check`].
 //!
 //! ## Parity note — the "no active pipeline" early exit
 //!
@@ -202,9 +203,12 @@ fn save_snapshot(cwd: &str, summary: &str) {
 }
 
 impl Check for PreCompactInject {
-    /// On `PreCompact`, build and persist a working-state snapshot and inject
-    /// it as advisory context. Returns `Verdict::Allow` (the JS silent path)
-    /// when no active pipeline exists; any non-`PreCompact` trigger self-allows.
+    /// On `PreCompact`, build and persist a working-state snapshot to
+    /// `.claude/.compact-state/` for debugging, then return `Verdict::Allow`.
+    /// The snapshot is only saved when an active pipeline exists (the JS gate);
+    /// otherwise — and for any non-`PreCompact` trigger — this self-allows
+    /// without writing. The verdict is always `Allow`: the harness has no
+    /// `PreCompact` context slot, so there is nothing to inject.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PreCompact) {
             return Ok(Verdict::Allow);
@@ -214,14 +218,11 @@ impl Check for PreCompactInject {
             return Ok(Verdict::Allow);
         };
         let claude = paths.claude_dir();
-        if !has_active_pipeline(&claude) {
-            return Ok(Verdict::Allow);
+        if has_active_pipeline(&claude) {
+            let summary = build_snapshot(input, &cwd);
+            save_snapshot(&cwd, &summary);
         }
-        let summary = build_snapshot(input, &cwd);
-        save_snapshot(&cwd, &summary);
-        Ok(Verdict::Inject {
-            context: format!("[Pre-compact snapshot]\n{summary}"),
-        })
+        Ok(Verdict::Allow)
     }
 }
 
@@ -259,22 +260,31 @@ mod tests {
         );
     }
 
+    /// Read the single `.txt` saved under `.compact-state/`, or panic.
+    fn read_only_snapshot(paths: &ClaudePaths) -> String {
+        let compact = paths.claude_dir().join(".compact-state");
+        let entry = std::fs::read_dir(&compact)
+            .unwrap()
+            .next()
+            .expect("a snapshot file was written")
+            .unwrap();
+        std::fs::read_to_string(entry.path()).unwrap()
+    }
+
     #[test]
-    fn snapshot_is_injected_when_no_states_dir() {
+    fn snapshot_is_saved_when_no_states_dir() {
         // No .pipeline-states dir → the JS validation block is skipped → the
-        // snapshot is still produced.
+        // snapshot is still produced and persisted to .compact-state/. The
+        // verdict is Allow (the harness drops PreCompact context).
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        std::fs::create_dir_all(paths.claude_dir()).unwrap();
         let verdict = PreCompactInject
             .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        match verdict {
-            Verdict::Inject { context } => {
-                assert!(context.contains("Pre-compact snapshot"));
-                assert!(context.contains("Compact trigger:"));
-            }
-            other => panic!("expected Inject, got {other:?}"),
-        }
+        assert_eq!(verdict, Verdict::Allow);
+        let saved = read_only_snapshot(&paths);
+        assert!(saved.contains("Compact trigger:"));
     }
 
     #[test]
@@ -327,35 +337,35 @@ mod tests {
         let verdict = PreCompactInject
             .evaluate(&pre_compact_input(), &ctx(dir.path().to_str().unwrap()))
             .unwrap();
-        match verdict {
-            Verdict::Inject { context } => {
-                assert!(context.contains("Active pipelines: live"));
-            }
-            other => panic!("expected Inject, got {other:?}"),
-        }
-        // The snapshot is also persisted to .compact-state/.
+        assert_eq!(verdict, Verdict::Allow);
+        // The snapshot is persisted to .compact-state/ and names the pipeline.
         let compact = paths.claude_dir().join(".compact-state");
         let saved = std::fs::read_dir(&compact).unwrap().count();
         assert_eq!(saved, 1, "snapshot file written");
+        assert!(read_only_snapshot(&paths).contains("Active pipelines: live"));
     }
 
     #[test]
     fn compact_reason_is_carried_into_snapshot() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        // An active pipeline is required for the snapshot to be saved.
+        let states = paths.pipeline_states_dir();
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(
+            paths.pipeline_state_file("live"),
+            json!({ "status": "implementing" }).to_string(),
+        )
+        .unwrap();
         let input = HookInput {
             hook_event_name: Some("PreCompact".to_string()),
             raw: json!({ "compact_reason": "manual" }),
             ..HookInput::default()
         };
-        match PreCompactInject
+        let verdict = PreCompactInject
             .evaluate(&input, &ctx(dir.path().to_str().unwrap()))
-            .unwrap()
-        {
-            Verdict::Inject { context } => {
-                assert!(context.contains("Compact trigger: manual"));
-            }
-            other => panic!("expected Inject, got {other:?}"),
-        }
+            .unwrap();
+        assert_eq!(verdict, Verdict::Allow);
+        assert!(read_only_snapshot(&paths).contains("Compact trigger: manual"));
     }
 }

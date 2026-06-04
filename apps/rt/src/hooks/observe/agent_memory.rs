@@ -1,9 +1,8 @@
 //! Shared path helper for the agent-memory observers.
 //!
-//! [`super::subagent_stop_observer`], [`super::memory_promote_observer`], and
-//! [`super::pre_compact_memory_inject`] all walk `.claude/memory/agent/*.md`.
-//! The directory resolution is the one thing they share — it lives here so
-//! none of them re-implements it.
+//! [`super::subagent_stop_observer`] and [`super::memory_promote_observer`]
+//! both walk `.claude/memory/agent/*.md`. The directory resolution is the one
+//! thing they share — it lives here so neither re-implements it.
 
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};

@@ -32,7 +32,6 @@ use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
 use crate::hooks::observe::session_stop_observer::SessionStopObserver;
 use crate::hooks::observe::subagent_stop_observer::SubagentStopObserver;
 use crate::hooks::observe::memory_promote_observer::MemoryPromoteObserver;
-use crate::hooks::observe::pre_compact_memory_inject::PreCompactMemoryInject;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
@@ -459,14 +458,6 @@ impl Registry {
                 applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(MemoryPromoteObserver)),
-            },
-            Module {
-                id: "pre_compact_memory_inject",
-                // T8.7 — add up to 3 recent agent_memory entries to the
-                // PreCompact snapshot (in addition to the pre_compact_inject module).
-                applies_to: &[(Trigger::PreCompact, ToolMatch::Any)],
-                check: Some(Box::new(PreCompactMemoryInject)),
-                observer: None,
             },
             // ── W9 deep-refactor: Stop + Notification triggers ───────────────
             Module {

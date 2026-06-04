@@ -4,7 +4,6 @@ pub mod agent_summary_observer;
 pub mod amend_window_inject;
 pub mod memory_promote_observer;
 pub mod notification_observer;
-pub mod pre_compact_memory_inject;
 pub mod rewave_observer;
 pub mod session_stop_observer;
 pub mod subagent_stop_observer;

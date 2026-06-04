@@ -235,6 +235,27 @@ fn emit_outcome(event_name: &str, outcome: &Outcome) {
     std::process::exit(0);
 }
 
+/// `true` when the harness accepts a `hookSpecificOutput` object for
+/// `event_name`. The harness models `hookSpecificOutput` as a discriminated
+/// union keyed by `hookEventName`; these seven events carry an
+/// `additionalContext` (or `permissionDecision`) slot. `SessionStart` is one of
+/// them — it injects persistent memory at the top of a session. The
+/// context-free lifecycle events (`PreCompact`, `SessionEnd`, `Notification`,
+/// …) have no slot, so the harness rejects the whole response when an object is
+/// emitted for them.
+fn event_accepts_hook_output(event_name: &str) -> bool {
+    matches!(
+        event_name,
+        "PreToolUse"
+            | "UserPromptSubmit"
+            | "PostToolUse"
+            | "PostToolBatch"
+            | "Stop"
+            | "SubagentStop"
+            | "SessionStart"
+    )
+}
+
 /// Build the `hookSpecificOutput` JSON for an outcome, or `None` for a bare
 /// `Allow` with no warnings (the JS hooks stay silent in that case).
 ///
@@ -242,7 +263,16 @@ fn emit_outcome(event_name: &str, outcome: &Outcome) {
 /// the harness event that was dispatched (e.g. `UserPromptSubmit`,
 /// `PostToolUse`). Claude Code rejects the response when this disagrees
 /// with the dispatched event.
+///
+/// Events outside [`event_accepts_hook_output`] get no output at all: the
+/// harness has no `hookSpecificOutput` member for them and rejects the whole
+/// response when one is present, dropping the hook's `additionalContext`. The
+/// hook's side-effects have already run by this point, so the binary writes
+/// nothing for those events and exits clean.
 fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Option<String> {
+    if !event_accepts_hook_output(event_name) {
+        return None;
+    }
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
@@ -307,4 +337,45 @@ fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Option<String> {
         serde_json::Value::Object(hook_output),
     );
     Some(serde_json::Value::Object(root).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inject_outcome() -> Outcome {
+        Outcome {
+            verdict: Verdict::Inject {
+                context: "remember this".to_string(),
+            },
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pre_compact_emits_no_hook_output() {
+        // The harness has no `hookSpecificOutput` slot for `PreCompact`, so the
+        // builder stays silent even for an injecting outcome.
+        assert!(hook_specific_output("PreCompact", &inject_outcome()).is_none());
+    }
+
+    #[test]
+    fn user_prompt_submit_emits_additional_context() {
+        // `UserPromptSubmit` is an accepted event, so an injecting outcome
+        // serialises its context into `additionalContext`.
+        let json = hook_specific_output("UserPromptSubmit", &inject_outcome())
+            .expect("accepted event must emit output");
+        assert!(json.contains("additionalContext"));
+    }
+
+    #[test]
+    fn session_start_emits_additional_context() {
+        // `SessionStart` carries an `additionalContext` slot (it injects
+        // persistent memory at the top of a session), so an injecting outcome
+        // must serialise rather than stay silent — dropping it would lose the
+        // session-start memory injection.
+        let json = hook_specific_output("SessionStart", &inject_outcome())
+            .expect("SessionStart must emit output");
+        assert!(json.contains("additionalContext"));
+    }
 }
