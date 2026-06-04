@@ -24,26 +24,36 @@ struct FsChangePayload {
 
 pub fn classify_kind(path: &Path) -> Option<&'static str> {
     let s = path.to_string_lossy();
-    // mustard.db / telemetry.db and their WAL/SHM companions all trigger a
-    // data-change refresh. telemetry.db (run_usage / usage_totals) is written
-    // by the OTEL collector; its writes must refresh the economy/telemetry
-    // views just like a mustard.db write does.
-    if s.contains(".harness") && (s.contains("mustard.db") || s.contains("telemetry.db")) {
+    // Per-spec / per-session NDJSON event logs are the canonical data source
+    // after the SQLite→NDJSON migration: `.claude/spec/{name}/.events/*.ndjson`,
+    // `.claude/spec/{name}/wave-N-*/.events/*.ndjson`, and
+    // `.claude/.session/{id}/.events/*.ndjson`. Any write to one of these is a
+    // data-change event and must refresh the rebuilt views (recent-events /
+    // metrics / activity / telemetry / spec-timeline / sessions / knowledge).
+    // This MUST run before the generic `/spec/` branch below so a spec event
+    // log is classified `events` rather than `spec`. Note `is_events_log` keys
+    // off the `.events` segment, so a plain `spec.md` write (not under
+    // `.events/`) falls through to the spec branch unchanged.
+    if is_events_log(&s) {
+        Some("events")
+    } else if s.contains("telemetry.db") {
+        // The OTEL collector still writes `telemetry.db` (run_usage /
+        // usage_totals) and its WAL/SHM companions; those writes refresh the
+        // economy/telemetry views via the same `events` channel.
         Some("events")
     } else if s.contains(".pipeline-states") {
         Some("pipeline-state")
     } else if (s.contains("/spec/") || s.contains("\\spec\\")) && !s.contains(".pipeline-states") {
-        // Flat layout: .claude/spec/{name}/spec.md — any write inside the
-        // spec directory (regardless of bucket) is a spec-change event.
+        // Flat layout: .claude/spec/{name}/spec.md — any non-`.events` write
+        // inside the spec directory (regardless of bucket) is a spec-change
+        // event (event-log writes were already captured above).
         Some("spec")
     } else if is_knowledge_path(&s) {
-        // Wave 3 (2026-05-22): re-enable event-driven knowledge refresh. The
-        // knowledge base now lives in `mustard.db` (tables
-        // `knowledge_patterns` / `memory_decisions` / `memory_lessons`), so a DB
-        // write is the primary trigger — the frontend `events` branch also
-        // invalidates the knowledge query keys for that reason. This branch
-        // additionally classifies any legacy/file-based knowledge or memory
-        // path (`knowledge.json`, `memory/decisions.json`,
+        // Wave 3 (2026-05-22): event-driven knowledge refresh. The knowledge
+        // base now derives from the per-spec/.session NDJSON event log (the
+        // `events` branch above invalidates the knowledge query keys for that
+        // reason). This branch additionally classifies any legacy/file-based
+        // knowledge or memory path (`knowledge.json`, `memory/decisions.json`,
         // `memory/lessons.json`) as `knowledge` so a file writer is covered too,
         // letting the Knowledge page stop relying on a 10s `refetchInterval`.
         Some("knowledge")
@@ -52,8 +62,17 @@ pub fn classify_kind(path: &Path) -> Option<&'static str> {
     }
 }
 
+/// Recognise the per-spec / per-session NDJSON event-log writes that back every
+/// rebuilt dashboard view. Matches any path whose normalized form contains the
+/// `.events` segment and ends with `.ndjson` — covering
+/// `.claude/spec/{name}/.events/`, `wave-N-*/.events/`, and
+/// `.claude/.session/{id}/.events/` on both `/` and `\` separators.
+fn is_events_log(s: &str) -> bool {
+    s.contains(".events") && s.ends_with(".ndjson")
+}
+
 /// Recognise file paths that back the knowledge base (file-based variants).
-/// SQLite-backed knowledge changes arrive via the `mustard.db` → `events`
+/// NDJSON-backed knowledge changes arrive via the `is_events_log` → `events`
 /// branch; this covers the JSON fallbacks that some installs still write.
 fn is_knowledge_path(s: &str) -> bool {
     let has_knowledge_json = s.contains("knowledge.json");
@@ -140,4 +159,115 @@ pub fn ensure_watching(
     let mut s = state.lock().map_err(|e| e.to_string())?;
     s.watchers.insert(repo_path, debouncer);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_kind;
+    use std::path::Path;
+
+    fn kind(p: &str) -> Option<&'static str> {
+        classify_kind(Path::new(p))
+    }
+
+    #[test]
+    fn spec_event_log_classifies_as_events() {
+        // Per-spec NDJSON event log — the canonical data source post-migration.
+        assert_eq!(
+            kind(r"C:\repo\.claude\spec\my-feature\.events\1780376456486066300-r45196.ndjson"),
+            Some("events"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/spec/my-feature/.events/1780376456486066300-r45196.ndjson"),
+            Some("events"),
+        );
+    }
+
+    #[test]
+    fn wave_event_log_classifies_as_events() {
+        // wave-N-{role}/.events/*.ndjson must also refresh the rebuilt views.
+        assert_eq!(
+            kind(r"C:\repo\.claude\spec\my-feature\wave-1-impl\.events\x.ndjson"),
+            Some("events"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/spec/my-feature/wave-1-impl/.events/x.ndjson"),
+            Some("events"),
+        );
+    }
+
+    #[test]
+    fn session_event_log_classifies_as_events() {
+        // `.claude/.session/{id}/.events/*.ndjson` matched nothing before the
+        // fix (→ None → no refresh); it must now be an `events` change.
+        assert_eq!(
+            kind(r"C:\repo\.claude\.session\19a1f60b-edc3\.events\x.ndjson"),
+            Some("events"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/.session/19a1f60b-edc3/.events/x.ndjson"),
+            Some("events"),
+        );
+        // The `unknown` attribution bucket is just another session dir.
+        assert_eq!(
+            kind("/repo/.claude/.session/unknown/.events/x.ndjson"),
+            Some("events"),
+        );
+    }
+
+    #[test]
+    fn spec_md_still_classifies_as_spec() {
+        // A spec.md write (NOT under `.events/`) must remain a `spec` change.
+        assert_eq!(
+            kind(r"C:\repo\.claude\spec\my-feature\spec.md"),
+            Some("spec"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/spec/my-feature/spec.md"),
+            Some("spec"),
+        );
+        // wave plan markdown inside the spec dir is also a spec change.
+        assert_eq!(
+            kind("/repo/.claude/spec/my-feature/wave-1-impl/spec.md"),
+            Some("spec"),
+        );
+    }
+
+    #[test]
+    fn telemetry_db_classifies_as_events() {
+        // The OTEL collector still writes telemetry.db (+ WAL/SHM companions).
+        assert_eq!(
+            kind(r"C:\repo\.claude\.harness\telemetry.db"),
+            Some("events"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/.harness/telemetry.db-wal"),
+            Some("events"),
+        );
+    }
+
+    #[test]
+    fn pipeline_states_classifies_as_pipeline_state() {
+        assert_eq!(
+            kind("/repo/.claude/.pipeline-states/abc.json"),
+            Some("pipeline-state"),
+        );
+    }
+
+    #[test]
+    fn knowledge_json_classifies_as_knowledge() {
+        assert_eq!(
+            kind("/repo/.claude/knowledge.json"),
+            Some("knowledge"),
+        );
+        assert_eq!(
+            kind("/repo/.claude/memory/decisions.json"),
+            Some("knowledge"),
+        );
+    }
+
+    #[test]
+    fn unrelated_path_classifies_as_none() {
+        assert_eq!(kind("/repo/src/main.rs"), None);
+    }
 }

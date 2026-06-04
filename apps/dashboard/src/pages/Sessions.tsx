@@ -1,8 +1,8 @@
 // Sessions — list of Claude Code sessions the harness has seen.
 //
-// W5 (`2026-05-24-mustard-unification`, T5.4). Reads the `sessions` table
-// from the active project's `mustard.db` via the new `dashboard_sessions`
-// Tauri command. Lives next to the rest of the dashboard pages and follows
+// Aggregates one row per session from the active project's
+// `.claude/.session/{id}/.events/*.ndjson` event logs via the
+// `dashboard_sessions` Tauri command. Lives next to the rest of the dashboard pages and follows
 // the same primitives (`PageSurface`, `EditorialBand`, `DataCard`,
 // `EmptyState`, `StatusDot`) so it inherits the design-system rhythm.
 //
@@ -11,9 +11,9 @@
 //
 // The Tauri command is wrapped in `lib/dashboard.ts::fetchSessions`. Live
 // tailing is handled by the existing `subscribeFsChange()` listener in
-// `lib/watcher.ts` — it now invalidates `["sessions", repoPath]` on every
-// `mustard.db` write, so a new SessionStart row appears without the page
-// polling.
+// `lib/watcher.ts` — it invalidates `["sessions", repoPath]` on every
+// `.session/{id}/.events/*.ndjson` write, so a new SessionStart row appears
+// without the page polling.
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -127,7 +127,8 @@ export function Sessions() {
     queryFn: () => fetchSessions(projectsRoot!),
     enabled: !!projectsRoot,
     // Watcher-driven (`subscribeFsChange` invalidates this key on every
-    // mustard.db write), so a long staleTime is safe. The page never polls.
+    // `.session/.events/*.ndjson` write), so a long staleTime is safe. The
+    // page never polls.
     staleTime: 30_000,
   });
 
