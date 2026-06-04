@@ -412,9 +412,62 @@ fn discover_targets(cwd: &Path) -> Vec<VerifyTarget> {
     targets
 }
 
+/// Walk `start` and its ancestors, returning the first directory whose
+/// `Cargo.toml` declares a `[workspace]` table. `None` when no ancestor has one.
+///
+/// This is the cheap, spawn-free probe used to collapse cargo targets that share
+/// a workspace: a plain `read_to_string` + substring test is enough here (no
+/// need to parse TOML or spawn `cargo metadata`). Fail-open — an unreadable or
+/// absent `Cargo.toml` simply skips that ancestor.
+fn cargo_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let manifest = d.join("Cargo.toml");
+        if let Ok(text) = fs::read_to_string(&manifest) {
+            if text.contains("[workspace]") {
+                return Some(d.to_path_buf());
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// Collapse targets that resolve to the same cargo workspace into one run.
+///
+/// `discover_via_grain` emits one `VerifyTarget` per grain project, all carrying
+/// the SAME global cargo build/test command — in a single Cargo workspace that
+/// is ~N redundant full-workspace builds (one per member), which on a large
+/// workspace times out. Key each target by its cargo workspace root (when either
+/// command is a `cargo` invocation) and keep the FIRST per key.
+///
+/// Fail-open on the merge: a non-cargo command, or a cargo command whose
+/// workspace root can't be resolved, keys on the target's own `cwd`, so distinct
+/// subprojects are never wrongly merged.
+fn dedup_targets(targets: Vec<VerifyTarget>) -> Vec<VerifyTarget> {
+    let is_cargo = |cmd: &Option<String>| {
+        cmd.as_deref()
+            .and_then(|c| c.split_whitespace().next())
+            .is_some_and(|head| head == "cargo")
+    };
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(targets.len());
+    for target in targets {
+        let key = if is_cargo(&target.build) || is_cargo(&target.test) {
+            cargo_workspace_root(&target.cwd).unwrap_or_else(|| target.cwd.clone())
+        } else {
+            target.cwd.clone()
+        };
+        if seen.insert(key) {
+            out.push(target);
+        }
+    }
+    out
+}
+
 /// Run verification across all discovered targets.
 fn verify(cwd: &Path) -> VerifyResult {
-    verify_targets(&discover_targets(cwd))
+    verify_targets(&dedup_targets(discover_targets(cwd)))
 }
 
 /// W10.T10.1 — Run verification across the target list **sequentially**.
@@ -628,6 +681,68 @@ mod tests {
         assert!(html.starts_with("<!doctype html>"));
         assert!(!html.contains("href=") && !html.contains("src="));
         assert!(html.contains("api"));
+    }
+
+    #[test]
+    fn verify_pipeline_dedups_shared_cargo_workspace() {
+        // AC-1 — two targets in the same cargo workspace (root + member) both
+        // carrying `cargo build` collapse to ONE run. Drives `dedup_targets`
+        // directly — `verify()` would spawn cargo.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate-a\"]\n",
+        )
+        .unwrap();
+        let member = root.join("crate-a");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(member.join("Cargo.toml"), "[package]\nname = \"crate-a\"\n").unwrap();
+
+        let targets = vec![
+            VerifyTarget {
+                name: "root".to_string(),
+                cwd: root.to_path_buf(),
+                build: Some("cargo build".to_string()),
+                test: None,
+            },
+            VerifyTarget {
+                name: "crate-a".to_string(),
+                cwd: member,
+                build: Some("cargo build".to_string()),
+                test: None,
+            },
+        ];
+        let deduped = dedup_targets(targets);
+        assert_eq!(deduped.len(), 1, "shared-workspace cargo targets must collapse to one");
+        // First target per key is kept.
+        assert_eq!(deduped[0].name, "root");
+    }
+
+    #[test]
+    fn dedup_keeps_distinct_subprojects() {
+        // Fail-open: a target whose command is non-cargo, or whose workspace
+        // can't be resolved, keys on its own cwd and is never merged away.
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let targets = vec![
+            VerifyTarget {
+                name: "a".to_string(),
+                cwd: a,
+                build: Some("pnpm build".to_string()),
+                test: None,
+            },
+            VerifyTarget {
+                name: "b".to_string(),
+                cwd: b,
+                build: Some("cargo build".to_string()),
+                test: None,
+            },
+        ];
+        assert_eq!(dedup_targets(targets).len(), 2);
     }
 
     #[test]

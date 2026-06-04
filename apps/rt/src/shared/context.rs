@@ -81,16 +81,67 @@ pub fn project_dir() -> String {
         .unwrap_or_else(|| ".".to_string())
 }
 
-/// Resolve the current session id from the environment, defaulting to
-/// `"unknown"` — matching the JS scripts' `MUSTARD_SESSION_ID` /
-/// `CLAUDE_SESSION_ID` lookup.
+/// Resolve the current session id, defaulting to `"unknown"`.
+///
+/// Resolution order:
+///
+/// 1. `MUSTARD_SESSION_ID` env var — matching the JS scripts' lookup.
+/// 2. `CLAUDE_SESSION_ID` env var.
+/// 3. Newest `.claude/.session/<id>/` directory by mtime — the filesystem
+///    fallback. `run`-face emitters never receive a `HookInput`, so when neither
+///    env var is set they used to land on `"unknown"`; the `SessionStart` hook
+///    has already created `.claude/.session/<id>/`, so mirror
+///    [`current_spec`]'s newest-by-mtime fallback to recover the real id.
+/// 4. `"unknown"` as a last resort.
 #[must_use]
 pub fn session_id() -> String {
-    std::env::var("MUSTARD_SESSION_ID")
+    if let Some(id) = std::env::var("MUSTARD_SESSION_ID").ok().filter(|s| !s.is_empty()) {
+        return id;
+    }
+    if let Some(id) = std::env::var("CLAUDE_SESSION_ID").ok().filter(|s| !s.is_empty()) {
+        return id;
+    }
+    // Filesystem fallback: newest `.claude/.session/<id>/` dir. The `.session/`
+    // base is not exposed via `ClaudePaths` (it is the events writer's consumer,
+    // not Mustard-owned), so compose it from `claude_dir()` the same way the
+    // writer does (see `events::writer_ndjson::event_dir`).
+    if let Some(id) = ClaudePaths::for_project(Path::new(&project_dir()))
         .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("CLAUDE_SESSION_ID").ok().filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| "unknown".to_string())
+        .map(|p| p.claude_dir().join(".session"))
+        .and_then(|session_base| newest_session_dir(&session_base))
+    {
+        return id;
+    }
+    "unknown".to_string()
+}
+
+/// Newest directory name under `session_dir`, skipping the `"unknown"` bucket.
+///
+/// Reads the entries of `<.claude>/.session/`, keeps directories whose name is
+/// not `"unknown"`, and returns the name of the one with the newest mtime.
+/// Returns `None` on any IO error or when no eligible directory exists — never
+/// panics. Co-located with [`current_spec`], which uses the same
+/// newest-by-mtime strategy over a sibling directory.
+#[must_use]
+fn newest_session_dir(session_dir: &Path) -> Option<String> {
+    let entries = fs::read_dir(session_dir).ok()?;
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in entries {
+        if !entry.path.is_dir() {
+            continue;
+        }
+        let name = &entry.file_name;
+        if name == "unknown" {
+            continue;
+        }
+        let Ok(mtime) = fs::modified(&entry.path) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+            best = Some((mtime, name.clone()));
+        }
+    }
+    best.map(|(_, name)| name)
 }
 
 /// Resolve the name of the currently active spec, fail-open `None`.
@@ -185,5 +236,32 @@ mod tests {
         let result = current_spec(dir.path().to_str().unwrap());
         // Either Some("my-feature-xyzzy") or Some(env-var) — never None here.
         assert!(result.is_some(), "expected Some(_) when a state file exists");
+    }
+
+    // -----------------------------------------------------------------------
+    // session_id — filesystem fallback (no env mutation needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn session_id_falls_back_to_newest_session_dir() {
+        // AC-2 — `newest_session_dir` returns the newest real session id and
+        // never the `"unknown"` bucket. Exercised directly (the crate forbids
+        // `unsafe`, so a test cannot unset the env to reach this branch via
+        // `session_id()`); mirrors `current_spec`'s FS-branch unit tests.
+        let dir = tempdir().unwrap();
+        let session_base = dir.path().join(".claude").join(".session");
+        std::fs::create_dir_all(session_base.join("unknown")).unwrap();
+        // Create `sess-A` last so it has the newest mtime.
+        std::fs::create_dir_all(session_base.join("sess-A")).unwrap();
+
+        let result = newest_session_dir(&session_base);
+        assert_eq!(result.as_deref(), Some("sess-A"));
+        assert_ne!(result.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn newest_session_dir_returns_none_on_missing_dir() {
+        // Fail-open: a nonexistent `.session/` base degrades to None.
+        assert!(newest_session_dir(Path::new("/nonexistent-mustard-session-xyzzy")).is_none());
     }
 }
