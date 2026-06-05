@@ -28,7 +28,7 @@ pub struct PipelineSummary {
     pub updated_at: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct MetricsSummary {
     pub total_events: usize,
@@ -178,20 +178,32 @@ fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String
         .collect())
 }
 
+/// Off-main-thread wrapper for [`dashboard_metrics_impl`]. The body does a full
+/// workspace walk; running it on the main thread froze the UI under the live
+/// refresh burst. `spawn_blocking` moves the work off the UI thread so commands
+/// for different projects run concurrently. A join error (panic in the closure)
+/// degrades to a zeroed summary — never an Err toast (the failure-tolerant
+/// contract). The sync `_impl` is kept so unit tests call it directly.
 #[tauri::command]
-fn dashboard_metrics(repo_path: String) -> Result<MetricsSummary, String> {
+async fn dashboard_metrics(repo_path: String) -> Result<MetricsSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_metrics_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(MetricsSummary::default()))
+}
+
+fn dashboard_metrics_impl(repo_path: String) -> Result<MetricsSummary, String> {
     // Onda 2: NDJSON-backed metrics. total_events = count over the complete
     // walker; last_event_at = max ts; agents_dispatched = agent_activity
     // total; tokens = measured() sum. sessions_recent = distinct session_ids
     // active within the open-session window.
     let base = PathBuf::from(&repo_path);
-    let events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     let mut total_events = 0usize;
     let mut last_event_at: Option<String> = None;
     let mut recent_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
     let now_ms = chrono::Utc::now().timestamp_millis();
     const RECENT_WINDOW_MS: i64 = 15 * 60 * 1000;
-    for ev in &events {
+    for ev in events.iter() {
         total_events += 1;
         if let Some(ts) = ev.get("ts").and_then(|t| t.as_str()) {
             if last_event_at.as_deref().map_or(true, |cur| ts > cur) {
@@ -502,25 +514,40 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
     Ok(results)
 }
 
+/// Off-main-thread wrapper for [`dashboard_recent_events_impl`] (full workspace
+/// walk + sort). A join error degrades to an empty feed. See
+/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_recent_events(repo_path: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
+async fn dashboard_recent_events(
+    repo_path: String,
+    limit: Option<usize>,
+) -> Result<Vec<RecentEvent>, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_recent_events_impl(repo_path, limit))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_recent_events_impl(repo_path: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
     // Onda 2 (HIGH-VALUE): chronological tail over the complete walker
     // (spec `.events/` + wave subdirs + `.session/`). Newest first.
     let base = PathBuf::from(&repo_path);
-    let mut events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     // Read-time attribution: resolve spec-less session events to their
     // time-ordered session→spec binding so per-spec slices of this feed surface
     // them. Built once over the full slice.
     let timeline = telemetry::build_session_spec_timeline_from(&events);
-    // Sort by ts desc (ISO-8601 is lexically chronological); ts-less rows sink.
-    events.sort_by(|a, b| {
+    // Sort a reference view by ts desc (ISO-8601 is lexically chronological);
+    // ts-less rows sink. We sort `&Value` refs rather than the shared cached
+    // slice itself — the cache hands out immutable data.
+    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
+    ordered.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         tb.cmp(ta)
     });
     let cap = limit.unwrap_or(100).min(2000);
-    Ok(events
-        .iter()
+    Ok(ordered
+        .into_iter()
         .take(cap)
         .map(|v| recent_event_from_value_attributed(v, Some(&timeline)))
         .collect())
@@ -1136,23 +1163,39 @@ fn dashboard_spec_reactivate(repo_path: String, spec_name: String) -> Result<Str
     Ok("implementing".to_string())
 }
 
+/// Off-main-thread wrapper for [`dashboard_search_events_impl`] (full workspace
+/// walk + sort + filter). A join error degrades to an empty result. See
+/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_search_events(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
+async fn dashboard_search_events(
+    repo_path: String,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<RecentEvent>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_search_events_impl(repo_path, query, limit)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_search_events_impl(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
     // Onda 2: case-insensitive substring filter over the same complete-walker
     // fold as `dashboard_recent_events`. Matches against the serialized record
     // (event name, spec, summary, tool, target). Newest first.
     let base = PathBuf::from(&repo_path);
     let needle = query.trim().to_lowercase();
-    let mut events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     let timeline = telemetry::build_session_spec_timeline_from(&events);
-    events.sort_by(|a, b| {
+    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
+    ordered.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         tb.cmp(ta)
     });
     let cap = limit.unwrap_or(100).min(2000);
-    let rows: Vec<RecentEvent> = events
-        .iter()
+    let rows: Vec<RecentEvent> = ordered
+        .into_iter()
         .map(|v| recent_event_from_value_attributed(v, Some(&timeline)))
         .filter(|r| {
             if needle.is_empty() {
@@ -1193,14 +1236,28 @@ fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<us
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_activity_aggregated_impl`] (full
+/// workspace walk + group fold). A join error degrades to an empty result. See
+/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Result<Vec<ActivityGroup>, String> {
+async fn dashboard_activity_aggregated(
+    repo_path: String,
+    limit: Option<usize>,
+) -> Result<Vec<ActivityGroup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_activity_aggregated_impl(repo_path, limit)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_activity_aggregated_impl(repo_path: String, limit: Option<usize>) -> Result<Vec<ActivityGroup>, String> {
     // Onda 2: group `tool.use` / `agent.*` events by (spec, wave, action_kind)
     // over the complete walker. action_kind = tool name for `tool.use`, the
     // agent subtype for `agent.*`. Tracks count, min/max ts, token sums, and a
     // distinct-file count (from `tool.use` target.file_path).
     let base = PathBuf::from(&repo_path);
-    let events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     // Read-time attribution so spec-less session `tool.use` / `agent.*` events
     // group under the spec their session was bound to at the time.
     let timeline = telemetry::build_session_spec_timeline_from(&events);
@@ -1217,7 +1274,7 @@ fn dashboard_activity_aggregated(repo_path: String, limit: Option<usize>) -> Res
     }
     let mut groups: HashMap<(String, i64, String), Acc> = HashMap::new();
 
-    for v in &events {
+    for v in events.iter() {
         let name = telemetry::event_name_of(v);
         let payload = v.get("payload");
         let action_kind: Option<String> = match name {
@@ -1387,8 +1444,18 @@ fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_impl`] (several full spec
+/// walks + an `rtk gain` subprocess). The heaviest single command — running it
+/// on the main thread is the dominant freeze. A join error degrades to a zeroed
+/// summary. See [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_telemetry(repo_path: String) -> Result<telemetry::TelemetrySummary, String> {
+async fn dashboard_telemetry(repo_path: String) -> Result<telemetry::TelemetrySummary, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_telemetry_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(telemetry::TelemetrySummary::default()))
+}
+
+fn dashboard_telemetry_impl(repo_path: String) -> Result<telemetry::TelemetrySummary, String> {
     let base = std::path::PathBuf::from(&repo_path);
     // Derive the current session cut-off once and feed it into the
     // accumulator readers so they can report "+N this session" alongside the
@@ -1499,10 +1566,10 @@ fn consumption_for_root(root: &std::path::Path) -> ConsumptionSummary {
 /// tokens, `claude_code.cost.usage` for USD) filtered to the UTC day prefix.
 fn consumption_today(root: &std::path::Path) -> (u64, f64) {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let events = telemetry::walk_ndjson_events(root);
+    let events = telemetry::walk_ndjson_events_cached(root);
     let mut tokens = 0u64;
     let mut cost = 0.0f64;
-    for v in &events {
+    for v in events.iter() {
         if telemetry::event_name_of(v) != "pipeline.telemetry.metric" {
             continue;
         }
@@ -2068,11 +2135,11 @@ fn workspace_health(repo_path: String) -> spec_views::WorkspaceHealth {
     // Hygiene signals from the NDJSON stream.
     let now_ms = chrono::Utc::now().timestamp_millis();
     const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-    let events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     let mut suspect_specs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut autoclose_today = 0i64;
     let mut last_hygiene_run_at: Option<String> = None;
-    for v in &events {
+    for v in events.iter() {
         let name = telemetry::event_name_of(v);
         if !name.starts_with("hygiene.") {
             continue;
@@ -2142,7 +2209,7 @@ fn dashboard_telemetry_phases(
     let floor = time_range_floor_ms(&time_range);
     let now = chrono::Utc::now().timestamp_millis();
     let day = 24 * 60 * 60 * 1000;
-    let events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
 
     struct Acc {
         count: i64,
@@ -2150,7 +2217,7 @@ fn dashboard_telemetry_phases(
         spark: [i64; 7],
     }
     let mut by_phase: HashMap<String, Acc> = HashMap::new();
-    for v in &events {
+    for v in events.iter() {
         if telemetry::event_name_of(v) != "pipeline.phase" {
             continue;
         }
@@ -2204,16 +2271,17 @@ fn dashboard_telemetry_timeline(
     // over the complete walker, reshaped into the `TimelineEvent` shape.
     let base = PathBuf::from(&repo_path);
     let floor = time_range_floor_ms(&time_range);
-    let mut events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     let timeline = telemetry::build_session_spec_timeline_from(&events);
-    events.sort_by(|a, b| {
+    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
+    ordered.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         tb.cmp(ta)
     });
     let cap = limit.unwrap_or(200).min(5000);
-    let rows: Vec<telemetry_agg::TimelineEvent> = events
-        .iter()
+    let rows: Vec<telemetry_agg::TimelineEvent> = ordered
+        .into_iter()
         .filter(|v| {
             v.get("ts")
                 .and_then(|t| t.as_str())
@@ -2245,9 +2313,9 @@ fn dashboard_telemetry_heatmap(
     // Onda 2 (HIGH-VALUE): bucket every event's ts by weekday (0=Sun) × hour.
     let base = PathBuf::from(&repo_path);
     let floor = time_range_floor_ms(&time_range);
-    let events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
     let mut cells: HashMap<(i64, i64), i64> = HashMap::new();
-    for v in &events {
+    for v in events.iter() {
         let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let ms = match telemetry::iso_to_ms_crate(ts) {
             Some(m) if m >= floor => m,
@@ -2403,11 +2471,11 @@ fn dashboard_telemetry_effort(
     // proxy), top_agents (`agent_activity`).
     let base = PathBuf::from(&repo_path);
     let floor = time_range_floor_ms(&time_range);
-    let events = telemetry::walk_ndjson_events(&base);
+    let events = telemetry::walk_ndjson_events_cached(&base);
 
     let mut files: HashMap<String, i64> = HashMap::new();
     let mut phases: HashMap<String, i64> = HashMap::new();
-    for v in &events {
+    for v in events.iter() {
         let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         if telemetry::iso_to_ms_crate(ts).map_or(true, |ms| ms < floor) {
             continue;
@@ -2673,7 +2741,7 @@ mod onda2_tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:05:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
         );
         write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = dashboard_recent_events(tmp.path().to_string_lossy().into_owned(), None).unwrap();
+        let rows = dashboard_recent_events_impl(tmp.path().to_string_lossy().into_owned(), None).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].ts.as_deref(), Some("2026-05-27T09:05:00.000Z"));
         assert_eq!(rows[0].tool_name.as_deref(), Some("Edit"));
@@ -2687,7 +2755,7 @@ mod onda2_tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:05:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
         );
         write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = dashboard_search_events(
+        let rows = dashboard_search_events_impl(
             tmp.path().to_string_lossy().into_owned(),
             "edit".to_string(),
             None,
@@ -2706,7 +2774,7 @@ mod onda2_tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:02:00.000Z","spec":"a","wave":1,"payload":{"tool":"Edit","target":{"file_path":"x.rs"}}}"#, "\n",
         );
         write_event(tmp.path(), "a", "events.ndjson", lines);
-        let rows = dashboard_activity_aggregated(tmp.path().to_string_lossy().into_owned(), None).unwrap();
+        let rows = dashboard_activity_aggregated_impl(tmp.path().to_string_lossy().into_owned(), None).unwrap();
         let read = rows
             .iter()
             .find(|g| g.action_kind.as_deref() == Some("Read"))
@@ -2747,7 +2815,7 @@ mod onda2_tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:01:00.000Z","spec":"a","payload":{"tool":"Read"}}"#, "\n",
         );
         write_event(tmp.path(), "a", "events.ndjson", lines);
-        let m = dashboard_metrics(tmp.path().to_string_lossy().into_owned()).unwrap();
+        let m = dashboard_metrics_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
         assert_eq!(m.total_events, 2);
         assert_eq!(m.tokens_total, 1500);
         assert_eq!(m.last_event_at.as_deref(), Some("2026-05-27T09:01:00.000Z"));

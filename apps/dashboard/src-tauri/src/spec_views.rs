@@ -1846,9 +1846,9 @@ pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, Str
 
     // Per-spec savings ranking from the raw savings events (the core breakdown
     // carries no spec dimension at project scope).
-    let events = crate::telemetry::walk_ndjson_events(&root);
+    let events = crate::telemetry::walk_ndjson_events_cached(&root);
     let mut by_spec: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for v in &events {
+    for v in events.iter() {
         if !crate::telemetry::event_name_of(v).starts_with("pipeline.economy.savings.") {
             continue;
         }
@@ -1894,12 +1894,12 @@ pub fn dashboard_month_activity(
     }
     let root = std::path::PathBuf::from(&project_path);
     let month_prefix = format!("{year:04}-{month:02}-");
-    let events = crate::telemetry::walk_ndjson_events(&root);
+    let events = crate::telemetry::walk_ndjson_events_cached(&root);
 
     // date -> (event_count, phase -> count)
     let mut per_day: std::collections::HashMap<String, (i32, std::collections::HashMap<String, i32>)> =
         std::collections::HashMap::new();
-    for v in &events {
+    for v in events.iter() {
         let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         if !ts.starts_with(&month_prefix) || ts.len() < 10 {
             continue;
@@ -1952,14 +1952,15 @@ pub fn dashboard_events_feed(
 ) -> Result<Vec<FeedEvent>, String> {
     let cap = limit.clamp(1, 1000) as usize;
     let root = std::path::PathBuf::from(&project_path);
-    let mut events = crate::telemetry::walk_ndjson_events(&root);
-    events.sort_by(|a, b| {
+    let events = crate::telemetry::walk_ndjson_events_cached(&root);
+    let mut ordered: Vec<&serde_json::Value> = events.iter().collect();
+    ordered.sort_by(|a, b| {
         let ta = a.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         let tb = b.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         tb.cmp(ta)
     });
-    let rows: Vec<FeedEvent> = events
-        .iter()
+    let rows: Vec<FeedEvent> = ordered
+        .into_iter()
         .filter(|v| v.get("ts").and_then(|t| t.as_str()).is_some())
         .take(cap)
         .enumerate()

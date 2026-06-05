@@ -133,6 +133,15 @@ pub fn ensure_watching(
                 }
                 guard.last_emit.insert(key, now);
                 drop(guard);
+                // Invalidate the per-project parsed-events cache BEFORE notifying
+                // the frontend, so the first command in the refresh burst
+                // re-parses fresh and the rest hit the warm slice. Only the kinds
+                // that change the parsed NDJSON event set matter (events / spec /
+                // pipeline-state); a `knowledge` change reads on-disk files, not
+                // the cached event vec, so it never needs to drop the cache.
+                if matches!(kind, "events" | "spec" | "pipeline-state") {
+                    crate::telemetry::invalidate_events_cache(&repo_clone);
+                }
                 let _ = app_clone.emit(
                     "dashboard:fs-change",
                     FsChangePayload {

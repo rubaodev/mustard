@@ -422,7 +422,7 @@ impl SessionSpecTimeline {
 /// so attribution simply degrades to "honour the record's own spec".
 #[must_use]
 pub fn build_session_spec_timeline(repo_path: &Path) -> SessionSpecTimeline {
-    build_session_spec_timeline_from(&walk_ndjson_events(repo_path))
+    build_session_spec_timeline_from(&walk_ndjson_events_cached(repo_path))
 }
 
 /// Binding-source event names — the lifecycle events that carry both
@@ -513,7 +513,7 @@ pub(crate) struct AttributedSpecCounts {
 pub(crate) fn attributed_spec_counts(
     repo_path: &Path,
 ) -> HashMap<String, AttributedSpecCounts> {
-    let events = walk_ndjson_events(repo_path);
+    let events = walk_ndjson_events_cached(repo_path);
     attributed_spec_counts_from(&events)
 }
 
@@ -1610,6 +1610,59 @@ pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
     out
 }
 
+/// Process-global, per-project parsed-events cache.
+///
+/// Keyed by the repo path (the same `String` the commands receive), the value is
+/// a shared `Arc<Vec<Value>>` of the fully-parsed workspace event slice. The
+/// dashboard's live refresh fans every page query out within a single
+/// `dashboard:fs-change` burst, so without this cache every burst re-walked and
+/// re-parsed the WHOLE workspace NDJSON once *per command*, synchronously — the
+/// freeze this whole change fixes. The watcher invalidates a repo's entry the
+/// instant a relevant file changes (see `watcher.rs`), so the first command
+/// after a write re-parses fresh and the rest of the burst hits the warm slice.
+///
+/// Lock discipline: the `Mutex` is held only for the O(1) map probe / insert —
+/// never across the parse. On a cold miss we drop the lock, parse outside it,
+/// then briefly re-lock to insert. A rare double-parse on two simultaneous cold
+/// misses for the same repo is acceptable (both produce identical slices); it is
+/// strictly cheaper than serialising parallel projects behind one lock.
+static EVENTS_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, std::sync::Arc<Vec<Value>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Cached counterpart of [`walk_ndjson_events`]: returns the shared parsed event
+/// slice for `repo`, parsing (and caching) only on a miss. See [`EVENTS_CACHE`]
+/// for the lock discipline. Callers read it as `&[Value]` via deref.
+#[must_use]
+pub(crate) fn walk_ndjson_events_cached(repo: &Path) -> std::sync::Arc<Vec<Value>> {
+    let key = repo.to_string_lossy().into_owned();
+    // Fast path: short lock, clone the Arc, release.
+    if let Ok(guard) = EVENTS_CACHE.lock() {
+        if let Some(hit) = guard.get(&key) {
+            return std::sync::Arc::clone(hit);
+        }
+    }
+    // Cold miss: parse OUTSIDE the lock so parallel projects never serialise.
+    let parsed = std::sync::Arc::new(walk_ndjson_events(repo));
+    // Re-lock briefly to insert. If another thread inserted meanwhile, its Arc
+    // and ours hold identical data — keep the one already in the map so every
+    // caller observing this key shares a single allocation.
+    if let Ok(mut guard) = EVENTS_CACHE.lock() {
+        return std::sync::Arc::clone(guard.entry(key).or_insert(parsed));
+    }
+    parsed
+}
+
+/// Drop `repo`'s cached event slice so the next [`walk_ndjson_events_cached`]
+/// re-parses from disk. Called by the watcher on a relevant fs-change before it
+/// notifies the frontend. A no-op when the entry is absent or the lock is
+/// poisoned (fail-open — a stale cache is corrected on the next change).
+pub fn invalidate_events_cache(repo: &str) {
+    if let Ok(mut guard) = EVENTS_CACHE.lock() {
+        guard.remove(repo);
+    }
+}
+
 /// Canonical harness event NAME for a raw record (`"event"` ?? `"kind"`).
 /// Re-exported `pub(crate)` for the Onda-2 aggregators in `lib.rs` /
 /// `spec_views.rs` so every cross-spec fold matches the harness NAME, never the
@@ -1666,7 +1719,7 @@ fn collect_one_dir(dir: &Path, out: &mut Vec<Value>) {
 #[must_use]
 pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
     let (root, _core_scope) = scope.to_core();
-    let events = walk_ndjson_events(&root);
+    let events = walk_ndjson_events_cached(&root);
 
     // ── cost block ──
     let mut usd_total = 0.0f64;
@@ -1676,7 +1729,7 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
     let mut sessions_seen: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut active_seconds = 0.0f64;
-    for ev in &events {
+    for ev in events.iter() {
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if ev_name != "pipeline.telemetry.metric" {
             continue;
@@ -1716,7 +1769,7 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
     let mut subtractions_event_count = 0i64;
     let mut subtractions_by_wave: HashMap<String, (i64, i64)> = HashMap::new();
     let mut last_subtraction_ts: Option<String> = None;
-    for ev in &events {
+    for ev in events.iter() {
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if !ev_name.starts_with("pipeline.economy.savings.") {
             continue;
@@ -2005,9 +2058,19 @@ impl ResultPairing {
 /// record-level `actor`). Real `tool.use` records carry neither `wave_id` nor
 /// `tool_use_id`, so a tool with no wave AND no agent attaches directly under
 /// the spec root instead of collapsing into synthetic `root`/`main` branches.
+/// Off-main-thread wrapper for [`dashboard_spec_trace_impl`] (full workspace
+/// walk + per-agent cost projection + tree build). A join error degrades to an
+/// empty `{}` object — never an Err toast (the trace renderer tolerates an empty
+/// tree). The sync `_impl` is kept so unit tests call it directly.
 #[tauri::command]
+pub async fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
+    tauri::async_runtime::spawn_blocking(move || dashboard_spec_trace_impl(project_path, spec_name))
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}))
+}
+
 #[must_use]
-pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
+pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Value {
     use mustard_core::domain::economy::scope::{ProjectPath as CoreProjectPath, SpecId as CoreSpecId};
     use mustard_core::domain::economy::EconomyScope as CoreScope;
 
@@ -2060,7 +2123,7 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
     // workspace log and pull in every session event that attributes to THIS spec
     // (its session was bound here at the event's ts). Fail-open: an empty
     // workspace log leaves `all_events` as the spec-dir-only set (today's behavior).
-    let workspace = walk_ndjson_events(&base);
+    let workspace = walk_ndjson_events_cached(&base);
     let timeline = build_session_spec_timeline_from(&workspace);
     let session_root = base.join(".claude").join(".session");
     if let Ok(session_dirs) = std::fs::read_dir(&session_root) {
@@ -2474,7 +2537,7 @@ mod tests {
             r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-05-27T09:02:00.000Z","spec":"alpha","payload":{"to":"PLAN"}}"#, "\n",
         );
         write_event(tmp.path(), "alpha", "events.ndjson", lines);
-        let trace = dashboard_spec_trace(tmp.path().to_string_lossy().into_owned(), "alpha".to_string());
+        let trace = dashboard_spec_trace_impl(tmp.path().to_string_lossy().into_owned(), "alpha".to_string());
         assert_eq!(trace["kind"], "spec");
         assert_eq!(trace["label"], "alpha");
         let children = trace["children"].as_array().expect("children array");
@@ -2605,7 +2668,7 @@ mod tests {
         let tool = r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:30:00.000Z","session_id":"sess-1","spec":null,"payload":{"tool":"Edit","target":{"file_path":"src/live.rs"}}}"#;
         write_session_event(tmp.path(), "sess-1", "work.ndjson", &format!("{tool}\n"));
 
-        let trace = dashboard_spec_trace(
+        let trace = dashboard_spec_trace_impl(
             tmp.path().to_string_lossy().into_owned(),
             "alpha".to_string(),
         );
@@ -2767,7 +2830,7 @@ mod tests {
         );
         write_event(tmp.path(), "alpha", "events.ndjson", &lines);
 
-        let tree = dashboard_spec_trace(
+        let tree = dashboard_spec_trace_impl(
             tmp.path().to_string_lossy().to_string(),
             "alpha".to_string(),
         );
@@ -2794,5 +2857,41 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn events_cache_hit_reuses_arc_then_invalidate_reparses() {
+        // Each test gets a fresh TempDir, so its path is a unique cache key —
+        // no contamination from the process-global `EVENTS_CACHE` across tests.
+        let tmp = TempDir::new().unwrap();
+        let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
+        write_event(tmp.path(), "a", "events.ndjson", &format!("{line}\n"));
+
+        // First call parses + caches; the slice has the one event.
+        let first = walk_ndjson_events_cached(tmp.path());
+        assert_eq!(first.len(), 1);
+
+        // Second call is a hit: the SAME Arc allocation, not a re-parse.
+        let second = walk_ndjson_events_cached(tmp.path());
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "a cache hit must hand back the same Arc, not re-parse"
+        );
+
+        // A fresh event lands on disk but the cache still serves the stale slice.
+        let line2 = r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:01:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#;
+        write_event(tmp.path(), "a", "events2.ndjson", &format!("{line2}\n"));
+        let stale = walk_ndjson_events_cached(tmp.path());
+        assert_eq!(stale.len(), 1, "without invalidation the cache stays warm");
+        assert!(std::sync::Arc::ptr_eq(&first, &stale));
+
+        // Invalidate → the next call re-parses (new Arc) and sees BOTH events.
+        invalidate_events_cache(&tmp.path().to_string_lossy());
+        let fresh = walk_ndjson_events_cached(tmp.path());
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &fresh),
+            "after invalidation the slice must be a fresh allocation"
+        );
+        assert_eq!(fresh.len(), 2, "the re-parse must pick up the new event");
     }
 }
