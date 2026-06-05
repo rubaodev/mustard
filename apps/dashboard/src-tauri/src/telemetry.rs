@@ -2153,6 +2153,116 @@ fn parse_wave(description: &str) -> Option<u32> {
     None
 }
 
+/// One wave-plan role: its normalised token sequence (lowercase, split on
+/// non-alphanumerics) plus the wave number its directory carried.
+type RoleWave = (Vec<String>, u32);
+
+/// Lowercase a free-text string and split it into alphanumeric tokens, dropping
+/// empties. `"App: desdobrar-dialog"` → `["app", "desdobrar", "dialog"]`. Used to
+/// match a dispatch description against a wave-plan role name without caring about
+/// the separator (`-`, `:`, space) the writer happened to use.
+fn tokenize(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+        .collect()
+}
+
+/// Read the `role → wave_number` map from a spec's `wave-{N}-{role}` subdirectories.
+///
+/// A wave plan materialises its waves as directories
+/// `<spec>/wave-{N}-{role}/` (e.g. `wave-1-backend-ledger`, `wave-3-core`), so the
+/// role→N binding is knowable from disk. Each entry's role is stored as its token
+/// sequence (see [`tokenize`]) so the later match is separator-insensitive.
+///
+/// Fail-soft: an unreadable / absent dir (a non-wave Light spec) yields an empty
+/// map, and the per-interval resolution falls back to wave-less exactly as before.
+fn read_wave_role_map(spec_dir: &Path) -> Vec<RoleWave> {
+    let Ok(entries) = std::fs::read_dir(spec_dir) else {
+        return Vec::new();
+    };
+    let mut map: Vec<RoleWave> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        // `wave-{N}-{role}` → (N, role). Strip the `wave-` prefix, take the leading
+        // digit run as N, then the remainder (after the separating `-`) as the role.
+        let Some(rest) = name.strip_prefix("wave-") else {
+            continue;
+        };
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let Ok(wave) = digits.parse::<u32>() else {
+            continue;
+        };
+        let role = &rest[digits.len()..];
+        let role = role.strip_prefix('-').unwrap_or(role);
+        let role_tokens = tokenize(role);
+        if role_tokens.is_empty() {
+            continue;
+        }
+        map.push((role_tokens, wave));
+    }
+    map
+}
+
+/// `true` when `needle` appears as a contiguous run inside `haystack`.
+fn contains_subslice(haystack: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Resolve a wave for a dispatch that carried no `wave N` token, by matching its
+/// description (and subagent type) against the wave-plan `role → wave` map.
+///
+/// A description's tokens must CONTAIN a role's token sequence contiguously — so
+/// `"Review backend-ledger"` (tokens `[review, backend, ledger]`) matches the
+/// `backend-ledger` role (`[backend, ledger]`) → its wave. The subagent type is
+/// tried as a secondary haystack (a bare role name dispatched as the type).
+///
+/// Guards against weak matches: a single-token role of length 1 (e.g. a role
+/// literally named `"a"`) never matches — too coarse. When several roles match,
+/// the one with the most tokens wins (the most specific role); ties keep the
+/// lowest wave for determinism. `None` when nothing matches — the interval stays
+/// wave-less, nesting straight under the spec as today.
+fn match_role_wave(description: &str, subagent_type: &str, role_map: &[RoleWave]) -> Option<u32> {
+    if role_map.is_empty() {
+        return None;
+    }
+    let desc_tokens = tokenize(description);
+    let type_tokens = tokenize(subagent_type);
+    let mut best: Option<(usize, u32)> = None; // (role token count, wave)
+    for (role_tokens, wave) in role_map {
+        // Reject a trivially-coarse role: a lone 1-char token would match noise.
+        if role_tokens.len() == 1 && role_tokens[0].len() < 2 {
+            continue;
+        }
+        if contains_subslice(&desc_tokens, role_tokens)
+            || contains_subslice(&type_tokens, role_tokens)
+        {
+            let specificity = role_tokens.len();
+            let take = match best {
+                None => true,
+                Some((best_len, best_wave)) => {
+                    specificity > best_len || (specificity == best_len && *wave < best_wave)
+                }
+            };
+            if take {
+                best = Some((specificity, *wave));
+            }
+        }
+    }
+    best.map(|(_, wave)| wave)
+}
+
 /// Build the per-session subagent intervals from the event slice.
 ///
 /// Groups `agent.start`/`agent.stop` by their genuine `session_id`, orders by
@@ -2167,7 +2277,14 @@ fn parse_wave(description: &str) -> Option<u32> {
 /// identity and are dropped here — a session-less `agent.start`/`agent.stop`
 /// neither opens nor closes an interval, so it cannot capture tools from an
 /// unrelated run. See [`real_session_id`].
-fn build_agent_intervals(all_events: &[Value]) -> Vec<AgentInterval> {
+///
+/// Each interval's wave is resolved from its dispatch description: a literal
+/// `wave N` / `onda N` token wins ([`parse_wave`]); failing that, the description
+/// is matched against the wave-plan `role → wave` map (`role_map`, read from the
+/// `wave-{N}-{role}` dirs) so a role-named dispatch with no wave number still
+/// attributes ([`match_role_wave`]). Pass an empty `role_map` to disable the
+/// fallback (a non-wave spec).
+fn build_agent_intervals(all_events: &[Value], role_map: &[RoleWave]) -> Vec<AgentInterval> {
     // (ts_ms, is_start, session, name, subagent_type, agent_id, wave) per event.
     struct Marker {
         ts_ms: u64,
@@ -2222,7 +2339,13 @@ fn build_agent_intervals(all_events: &[Value]) -> Vec<AgentInterval> {
             .filter(|s| !s.is_empty())
             .unwrap_or(subagent_type.as_str())
             .to_string();
-        let wave = parse_wave(&description);
+        // Wave resolution, in priority order: (1) an explicit `wave N` / `onda N`
+        // token in the description; (2) failing that, match the description (and
+        // subagent type) against the wave-plan `role → wave` map read from the
+        // `wave-{N}-{role}` dirs — so a `mustard-review` dispatch named
+        // "Review backend-ledger" lands on its wave even with no wave number.
+        let wave = parse_wave(&description)
+            .or_else(|| match_role_wave(&description, &subagent_type, role_map));
         markers.push(Marker {
             ts_ms,
             is_start,
@@ -2468,7 +2591,13 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
     // its matching `agent.stop` within the same `session_id` belong to that
     // subagent; tools outside every interval belong to the orchestrator. See
     // [`build_agent_intervals`].
-    let intervals = build_agent_intervals(&all_events);
+    //
+    // The `role → wave` map (read from this spec's `wave-{N}-{role}` dirs) lets a
+    // dispatch whose description carries a role name but no `wave N` token (e.g. a
+    // `Review backend-ledger` review pass) still attribute to its wave. Empty for a
+    // non-wave spec, in which case the resolution falls back to `parse_wave` only.
+    let role_map = read_wave_role_map(&spec_dir);
+    let intervals = build_agent_intervals(&all_events, &role_map);
 
     // Pass 1.5: pair every `tool.result` event with its originating `tool.use`.
     //
@@ -2999,7 +3128,7 @@ mod tests {
             start_line("s", 300, "general-purpose", "Wave 1 impl — backend"),
             stop_line("s", 400),
         ];
-        let mut ivs = build_agent_intervals(&events);
+        let mut ivs = build_agent_intervals(&events, &[]);
         ivs.sort_by_key(|iv| iv.start_ms);
         assert_eq!(ivs.len(), 2);
         assert_eq!(ivs[0].name, "Trace blast radius");
@@ -3015,7 +3144,7 @@ mod tests {
         // An `agent.start` with no matching stop (subagent still running) gets an
         // open-ended interval so its in-flight tools still attribute.
         let events = vec![start_line("s", 100, "Explore", "Investigate")];
-        let ivs = build_agent_intervals(&events);
+        let ivs = build_agent_intervals(&events, &[]);
         assert_eq!(ivs.len(), 1);
         assert_eq!(ivs[0].end_ms, u64::MAX);
         assert_eq!(ivs[0].name, "Investigate");
@@ -3030,7 +3159,7 @@ mod tests {
             start_line("s", 110, "Explore", "real work"),
             stop_line("s", 200),
         ];
-        let ivs = build_agent_intervals(&events);
+        let ivs = build_agent_intervals(&events, &[]);
         assert_eq!(ivs.len(), 1, "only the typed start opens an interval");
         assert_eq!(ivs[0].name, "real work");
         assert_eq!((ivs[0].start_ms, ivs[0].end_ms), (110, 200));
@@ -3046,7 +3175,7 @@ mod tests {
             stop_line("s", 180),
             stop_line("s", 220),
         ];
-        let ivs = build_agent_intervals(&events);
+        let ivs = build_agent_intervals(&events, &[]);
         let inner = use_line("s", 150, "Read");
         let attr = attribute_tool(&inner, &ivs);
         assert_eq!(attr.agent, "Inner");
@@ -3064,7 +3193,7 @@ mod tests {
             start_line("s", 100, "Explore", "Trace payable"),
             stop_line("s", 200),
         ];
-        let ivs = build_agent_intervals(&events);
+        let ivs = build_agent_intervals(&events, &[]);
         let inside = use_line("s", 150, "Grep");
         let a = attribute_tool(&inside, &ivs);
         assert_eq!(a.agent, "Trace payable");
@@ -3096,7 +3225,7 @@ mod tests {
             "event": "tool.use", "kind": "tool", "ts_ms": 160u64,
             "session_id": Value::Null, "payload": { "tool": "Grep" }
         });
-        let ivs = build_agent_intervals(&[sessionless_start.clone()]);
+        let ivs = build_agent_intervals(&[sessionless_start.clone()], &[]);
         assert!(ivs.is_empty(), "a session-less start opens no interval");
         assert_eq!(attribute_tool(&empty_session_use, &ivs).agent, ORCHESTRATOR);
         assert_eq!(attribute_tool(&null_session_use, &ivs).agent, ORCHESTRATOR);
@@ -3112,7 +3241,7 @@ mod tests {
             start_line("s", 100, "Explore", "Trace payable"),
             stop_line("s", 200),
         ];
-        let ivs = build_agent_intervals(&events);
+        let ivs = build_agent_intervals(&events, &[]);
         // Exactly at start → inside.
         assert_eq!(attribute_tool(&use_line("s", 100, "Read"), &ivs).agent, "Trace payable");
         // Exactly at stop → orchestrator (interval closed at this ms).
@@ -3124,7 +3253,7 @@ mod tests {
             stop_line("s", 180),
             stop_line("s", 220),
         ];
-        let nivs = build_agent_intervals(&nested);
+        let nivs = build_agent_intervals(&nested, &[]);
         assert_eq!(attribute_tool(&use_line("s", 180, "Edit"), &nivs).agent, "Outer");
     }
 
@@ -3143,7 +3272,7 @@ mod tests {
                 "agent_id": "general-purpose"
             }
         });
-        let ivs = build_agent_intervals(&[start, stop_line("s", 300)]);
+        let ivs = build_agent_intervals(&[start, stop_line("s", 300)], &[]);
         assert_eq!(ivs.len(), 1);
         assert_eq!(ivs[0].agent_id, "general-purpose");
         let attr = attribute_tool(&use_line("s", 150, "Edit"), &ivs);
@@ -3207,6 +3336,174 @@ mod tests {
         assert_eq!(parse_wave("software 1 release"), None);
         assert_eq!(parse_wave("wavelength 5"), None);
         assert_eq!(parse_wave("just a description"), None);
+    }
+
+    /// Create the `wave-{N}-{role}` subdirs for a spec, mirroring a materialised
+    /// wave plan on disk (the real painel-financeiro layout).
+    fn make_wave_dirs(tmp: &Path, spec: &str, waves: &[(&str, u32)]) {
+        for (role, n) in waves {
+            std::fs::create_dir_all(
+                tmp.join(".claude")
+                    .join("spec")
+                    .join(spec)
+                    .join(format!("wave-{n}-{role}")),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn read_wave_role_map_parses_dir_names() {
+        // The real painel-financeiro wave layout: wave-1-backend-ledger …
+        // wave-5-app-caixa. Each dir name yields (role tokens, N).
+        let tmp = TempDir::new().unwrap();
+        let spec_dir = tmp.path().join(".claude").join("spec").join("pf");
+        make_wave_dirs(
+            tmp.path(),
+            "pf",
+            &[
+                ("backend-ledger", 1),
+                ("backend-cashflow", 2),
+                ("core", 3),
+                ("app-baixa", 4),
+                ("app-caixa", 5),
+            ],
+        );
+        // A noise dir (no `wave-` prefix) and a `.events` dir must be ignored.
+        std::fs::create_dir_all(spec_dir.join(".events")).unwrap();
+        std::fs::create_dir_all(spec_dir.join("notes")).unwrap();
+
+        let mut map = read_wave_role_map(&spec_dir);
+        map.sort_by_key(|(_, w)| *w);
+        assert_eq!(
+            map,
+            vec![
+                (vec!["backend".to_string(), "ledger".to_string()], 1),
+                (vec!["backend".to_string(), "cashflow".to_string()], 2),
+                (vec!["core".to_string()], 3),
+                (vec!["app".to_string(), "baixa".to_string()], 4),
+                (vec!["app".to_string(), "caixa".to_string()], 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn read_wave_role_map_failsoft_on_missing_dir() {
+        // A non-wave (Light) spec whose dir doesn't exist → empty map, no panic.
+        let tmp = TempDir::new().unwrap();
+        assert!(read_wave_role_map(&tmp.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn match_role_wave_resolves_role_token_description() {
+        // The role map mirrors the real painel-financeiro dirs.
+        let map: Vec<RoleWave> = vec![
+            (vec!["backend".to_string(), "ledger".to_string()], 1),
+            (vec!["backend".to_string(), "cashflow".to_string()], 2),
+            (vec!["core".to_string()], 3),
+            (vec!["app".to_string(), "baixa".to_string()], 4),
+            (vec!["app".to_string(), "caixa".to_string()], 5),
+        ];
+        // Real mustard-review dispatches that carry NO "wave N" — they name the role.
+        assert_eq!(match_role_wave("Review backend-ledger", "mustard-review", &map), Some(1));
+        assert_eq!(match_role_wave("Review backend-cashflow", "mustard-review", &map), Some(2));
+        assert_eq!(match_role_wave("Review core", "mustard-review", &map), Some(3));
+        assert_eq!(match_role_wave("Review app-baixa", "mustard-review", &map), Some(4));
+        assert_eq!(match_role_wave("Review app-caixa", "mustard-review", &map), Some(5));
+        // Separator-insensitive: "backend ledger impl" (spaces) matches the role.
+        assert_eq!(match_role_wave("backend ledger impl", "general-purpose", &map), Some(1));
+        // A bare role name dispatched as the subagent type also resolves.
+        assert_eq!(match_role_wave("", "core", &map), Some(3));
+        // Most-specific role wins: "backend-cashflow" must not collapse to a
+        // hypothetical lone "backend" role — the 2-token role is matched whole.
+        assert_eq!(match_role_wave("Review backend-cashflow ledger", "x", &map), Some(2));
+    }
+
+    #[test]
+    fn match_role_wave_no_match_stays_waveless() {
+        let map: Vec<RoleWave> = vec![
+            (vec!["backend".to_string(), "ledger".to_string()], 1),
+            (vec!["app".to_string(), "caixa".to_string()], 5),
+        ];
+        // The real orchestrator setup dispatch — names no role token.
+        assert_eq!(match_role_wave("Build Painel Financeiro tabbed shell", "general-purpose", &map), None);
+        assert_eq!(match_role_wave("Fix settle atomicity", "general-purpose", &map), None);
+        // An empty role map (non-wave spec) never matches.
+        assert_eq!(match_role_wave("Review backend-ledger", "mustard-review", &[]), None);
+    }
+
+    #[test]
+    fn build_intervals_resolves_wave_via_role_when_no_wave_token() {
+        // A role-named dispatch (no "wave N") gets its wave from the role map; a
+        // "Wave 2" dispatch still wins via parse_wave even when its description
+        // ALSO contains a role token (parse_wave is the first signal).
+        let role_map: Vec<RoleWave> = vec![
+            (vec!["backend".to_string(), "ledger".to_string()], 1),
+            (vec!["core".to_string()], 3),
+        ];
+        let events = vec![
+            start_line("s", 100, "mustard-review", "Review backend-ledger"),
+            stop_line("s", 200),
+            // parse_wave wins: "Wave 2" beats the "core" role token in the same text.
+            start_line("s", 300, "general-purpose", "Wave 2 core regen"),
+            stop_line("s", 400),
+            // No wave token, no role token → stays wave-less.
+            start_line("s", 500, "general-purpose", "Build tabbed shell"),
+            stop_line("s", 600),
+        ];
+        let mut ivs = build_agent_intervals(&events, &role_map);
+        ivs.sort_by_key(|iv| iv.start_ms);
+        assert_eq!(ivs[0].wave, Some(1), "role token 'backend-ledger' → wave 1");
+        assert_eq!(ivs[1].wave, Some(2), "explicit 'Wave 2' wins over role token");
+        assert_eq!(ivs[2].wave, None, "no wave token, no role token → wave-less");
+        // With an empty role map the role-named dispatch falls back to wave-less.
+        let ivs_norole = build_agent_intervals(&events, &[]);
+        let review = ivs_norole.iter().find(|iv| iv.name == "Review backend-ledger").unwrap();
+        assert_eq!(review.wave, None, "no role map → role-named dispatch stays wave-less");
+    }
+
+    #[test]
+    fn trace_attributes_role_named_review_to_wave_via_disk_map() {
+        // End-to-end through `dashboard_spec_trace_impl`: the spec has real
+        // `wave-{N}-{role}` dirs on disk, so a `Review backend-ledger` dispatch
+        // (no "wave N" token) attributes to the `wave-1` node, while an
+        // unmatched orchestrator dispatch hangs straight off the spec.
+        let tmp = TempDir::new().unwrap();
+        make_wave_dirs(tmp.path(), "pf", &[("backend-ledger", 1), ("core", 3)]);
+        let lines: Vec<String> = vec![
+            serde_json::to_string(&start_with_spec("s", 100, "mustard-review", "Review backend-ledger", "pf")).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 120, "Read", "pf")).unwrap(),
+            serde_json::to_string(&stop_with_spec("s", 200, "pf")).unwrap(),
+            serde_json::to_string(&start_with_spec("s", 300, "general-purpose", "Build tabbed shell", "pf")).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 320, "Edit", "pf")).unwrap(),
+            serde_json::to_string(&stop_with_spec("s", 400, "pf")).unwrap(),
+        ];
+        write_event(tmp.path(), "pf", "events.ndjson", &format!("{}\n", lines.join("\n")));
+
+        let trace = dashboard_spec_trace_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "pf".to_string(),
+        );
+        let children = trace["children"].as_array().expect("children");
+
+        // The review nests under a wave-1 node (its tool Read is inside).
+        let wave1 = children
+            .iter()
+            .find(|c| c["kind"] == "wave" && c["label"] == "wave-1")
+            .expect("wave-1 node for the role-matched review");
+        let review = wave1["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["label"] == "Review backend-ledger")
+            .expect("review agent under wave-1");
+        assert_eq!(review["children"].as_array().unwrap().len(), 1, "the Read tool");
+
+        // The unmatched orchestrator-style dispatch hangs off the spec, not a wave.
+        assert!(
+            children.iter().any(|c| c["kind"] == "agent" && c["label"] == "Build tabbed shell"),
+            "the role-less dispatch attaches straight under the spec"
+        );
     }
 
     #[test]
