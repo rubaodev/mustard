@@ -313,6 +313,18 @@ const TraceNodeRow = memo(function TraceNodeRow({
       <span className="font-medium text-[13px] text-[--ds-text-primary] truncate flex-1 min-w-0">
         {node.label}
       </span>
+      {node.kind === "agent" && node.subagent_type ? (
+        <span
+          className={cn(
+            "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+            "text-[10px] font-mono text-[--ds-text-tertiary]",
+            "bg-[--ds-surface-sunken]",
+          )}
+          title="subagent type"
+        >
+          {node.subagent_type}
+        </span>
+      ) : null}
       {nodeHasError ? (
         <AlertCircle
           size={14}

@@ -61,6 +61,13 @@ export interface ToolUsePayload {
 export interface TraceNode {
   kind: TraceKind;
   label: string;
+  /**
+   * Only populated for `kind === "agent"`. The dispatch's subagent type
+   * (`Explore` / `general-purpose` / `mustard-review` / …), rendered as a small
+   * muted badge beside the agent label. `null`/absent for the orchestrator and
+   * every non-agent node.
+   */
+  subagent_type?: string | null;
   tokens: TokenBreakdown | null;
   duration_ms: number | null;
   ts: string | null;

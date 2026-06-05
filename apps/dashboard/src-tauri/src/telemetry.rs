@@ -2048,16 +2048,323 @@ impl ResultPairing {
     }
 }
 
-/// Spec trace — up to a 4-level tree (spec → wave → agent → tool).
+/// A subagent's active span, derived from a paired `agent.start`/`agent.stop`.
 ///
-/// W7D restored the full tree shape. Roll-up tokens per agent come from
-/// [`mustard_core::domain::economy::per_agent_costs`] (scope-filtered to the spec).
-/// `tool.use` events are bucketed by `wave` (record-level int/string, legacy
-/// `payload.wave_id` fallback) then by `agent` (the dispatch that owned the
-/// `tool_use_id`, resolved via the `agent.start` correlation; else the
-/// record-level `actor`). Real `tool.use` records carry neither `wave_id` nor
-/// `tool_use_id`, so a tool with no wave AND no agent attaches directly under
-/// the spec root instead of collapsing into synthetic `root`/`main` branches.
+/// Tools are attributed to a subagent purely by *time*: a `tool.use` whose
+/// timestamp falls in `[start_ms, end_ms)` (same real `session_id`) ran inside
+/// this dispatch. `end_ms == u64::MAX` marks a still-running subagent (an
+/// `agent.start` with no matching stop yet). Only events sharing a genuine
+/// session id correlate — see [`real_session_id`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentInterval {
+    session_id: String,
+    start_ms: u64,
+    end_ms: u64,
+    /// Human label (the `agent.start.description`, else the subagent type).
+    name: String,
+    /// `agent.start.subagentType` (e.g. `Explore` / `general-purpose`).
+    subagent_type: String,
+    /// `agent.start.payload.agent_id` — the economy's per-agent cost key (e.g.
+    /// `Explore` / `general-purpose` / `mustard-review`). Used to look up the
+    /// agent's roll-up tokens/cost; the human `name` (the description) is a
+    /// display label and never the cost key.
+    agent_id: String,
+    /// Wave number parsed from the description (`Wave 1 …` / `Onda 2 …`), if any.
+    wave: Option<u32>,
+}
+
+/// Resolved attribution for one `tool.use`: the owning agent's display name,
+/// the economy cost key (`agent_id`), its subagent type, and the wave it belongs
+/// to. The orchestrator (a tool outside every interval) resolves to
+/// `agent = "orquestrador"`, no `agent_id`, no type, no wave.
+struct ToolAttribution {
+    agent: String,
+    /// The matched interval's `agent_id` — the key the per-agent token/cost map
+    /// is built on. `None` for the orchestrator (which has no economy row).
+    agent_id: Option<String>,
+    subagent_type: Option<String>,
+    wave: Option<u32>,
+}
+
+/// The orchestrator label for tools that ran outside every subagent interval.
+const ORCHESTRATOR: &str = "orquestrador";
+
+/// The genuine `session_id` of an event, or `None` when the wire carries no
+/// real session.
+///
+/// Hooks stamp `"unknown"` (see `build_harness_event` in apps/rt) when the
+/// harness threads no session id, and some session-less records carry an
+/// empty/absent field. Such ids are NOT identities — collapsing them into one
+/// bucket would interleave the intervals of unrelated runs (real data holds
+/// ~1331 session-less `tool.use` events). Only a present, non-empty, non-
+/// `"unknown"` id participates in interval correlation.
+fn real_session_id(ev: &Value) -> Option<&str> {
+    ev.get("session_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && *s != "unknown")
+}
+
+/// Read a record's epoch-millis timestamp — record-level `ts_ms` (the int the
+/// hooks write), else the ISO `ts` parsed to ms. `None` when neither is present.
+fn ts_ms_of(record: &Value) -> Option<u64> {
+    record
+        .get("ts_ms")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            record
+                .get("ts")
+                .and_then(Value::as_str)
+                .and_then(iso_to_ms)
+                .and_then(|ms| u64::try_from(ms).ok())
+        })
+}
+
+/// Parse a wave number from a free-text description: case-insensitive
+/// `wave 1` / `onda 2`. `None` when no such token is present.
+fn parse_wave(description: &str) -> Option<u32> {
+    let lower = description.to_ascii_lowercase();
+    // Hand-rolled scan (no regex dep): find "wave"/"onda", skip whitespace, read
+    // the digit run, and require a word boundary before the keyword so e.g.
+    // "software 1" never matches.
+    for kw in ["wave", "onda"] {
+        let mut from = 0;
+        while let Some(rel) = lower[from..].find(kw) {
+            let at = from + rel;
+            let before_ok = at == 0
+                || !lower.as_bytes()[at - 1].is_ascii_alphanumeric();
+            let after = at + kw.len();
+            if before_ok {
+                let rest = &lower[after..];
+                let trimmed = rest.trim_start();
+                // Only count whitespace as the separator (a `\b...\s+` shape).
+                if rest.len() != trimmed.len() || rest.is_empty() {
+                    let digits: String =
+                        trimmed.chars().take_while(char::is_ascii_digit).collect();
+                    if !digits.is_empty() {
+                        if let Ok(n) = digits.parse::<u32>() {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
+            from = at + kw.len();
+        }
+    }
+    None
+}
+
+/// Build the per-session subagent intervals from the event slice.
+///
+/// Groups `agent.start`/`agent.stop` by their genuine `session_id`, orders by
+/// `ts_ms`, and pairs them with a per-session **stack** (LIFO) so nested
+/// dispatches close in the right order. Each `agent.start` with a non-empty
+/// `subagentType` pushes a frame; each `agent.stop` pops the top and closes its
+/// interval. `agent.start` events with an empty/missing `subagentType` are
+/// ignored as noise. A frame left on the stack at the end (a subagent still
+/// running) closes at `u64::MAX`.
+///
+/// Events without a real session id (missing / empty / `"unknown"`) carry no
+/// identity and are dropped here — a session-less `agent.start`/`agent.stop`
+/// neither opens nor closes an interval, so it cannot capture tools from an
+/// unrelated run. See [`real_session_id`].
+fn build_agent_intervals(all_events: &[Value]) -> Vec<AgentInterval> {
+    // (ts_ms, is_start, session, name, subagent_type, agent_id, wave) per event.
+    struct Marker {
+        ts_ms: u64,
+        is_start: bool,
+        session: String,
+        name: String,
+        subagent_type: String,
+        agent_id: String,
+        wave: Option<u32>,
+    }
+    let mut markers: Vec<Marker> = Vec::new();
+    for ev in all_events {
+        let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
+        let is_start = ev_name == "agent.start";
+        let is_stop = ev_name == "agent.stop";
+        if !is_start && !is_stop {
+            continue;
+        }
+        let Some(ts_ms) = ts_ms_of(ev) else { continue };
+        // Only genuinely-sessioned events correlate; a session-less marker would
+        // collapse unrelated runs into one pseudo-session and mis-bucket tools.
+        let Some(session) = real_session_id(ev).map(str::to_string) else {
+            continue;
+        };
+        let payload = ev.get("payload");
+        let subagent_type = payload
+            .and_then(|p| p.get("subagentType"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        // An `agent.start` is only a real dispatch when it names a subagent type;
+        // the alternating empty-type starts are observer noise.
+        if is_start && subagent_type.is_empty() {
+            continue;
+        }
+        let description = payload
+            .and_then(|p| p.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let name = if description.is_empty() {
+            subagent_type.clone()
+        } else {
+            description.clone()
+        };
+        // The economy keys per-agent cost on `agent.start.payload.agent_id`
+        // (`tool_input.agent_id` ?? `subagentType`); fall back to the type when
+        // the field is absent so the lookup key matches the run event's.
+        let agent_id = payload
+            .and_then(|p| p.get("agent_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(subagent_type.as_str())
+            .to_string();
+        let wave = parse_wave(&description);
+        markers.push(Marker {
+            ts_ms,
+            is_start,
+            session,
+            name,
+            subagent_type,
+            agent_id,
+            wave,
+        });
+    }
+    // Stable sort by ts so a start and stop sharing a ms keep emit order (start
+    // before stop is the natural write order; the stack tolerates either).
+    markers.sort_by_key(|m| m.ts_ms);
+
+    // Per-session stack of open frames.
+    struct Frame {
+        start_ms: u64,
+        name: String,
+        subagent_type: String,
+        agent_id: String,
+        wave: Option<u32>,
+    }
+    let mut stacks: HashMap<String, Vec<Frame>> = HashMap::new();
+    let mut intervals: Vec<AgentInterval> = Vec::new();
+    for m in markers {
+        let stack = stacks.entry(m.session.clone()).or_default();
+        if m.is_start {
+            stack.push(Frame {
+                start_ms: m.ts_ms,
+                name: m.name,
+                subagent_type: m.subagent_type,
+                agent_id: m.agent_id,
+                wave: m.wave,
+            });
+        } else if let Some(frame) = stack.pop() {
+            intervals.push(AgentInterval {
+                session_id: m.session,
+                start_ms: frame.start_ms,
+                end_ms: m.ts_ms,
+                name: frame.name,
+                subagent_type: frame.subagent_type,
+                agent_id: frame.agent_id,
+                wave: frame.wave,
+            });
+        }
+        // A stray `agent.stop` with an empty stack is dropped (no open frame).
+    }
+    // Close any still-running subagents at +∞ so their in-flight tools attribute.
+    for (session, stack) in stacks {
+        for frame in stack {
+            intervals.push(AgentInterval {
+                session_id: session.clone(),
+                start_ms: frame.start_ms,
+                end_ms: u64::MAX,
+                name: frame.name,
+                subagent_type: frame.subagent_type,
+                agent_id: frame.agent_id,
+                wave: frame.wave,
+            });
+        }
+    }
+    intervals
+}
+
+/// Attribute one `tool.use` record to its owning agent. Picks the **innermost**
+/// interval (smallest window) whose half-open `[start_ms, end_ms)` contains the
+/// tool's `ts_ms` in the same real session; falls back to the orchestrator when
+/// no interval matches (the tool ran between dispatches, or its ts/session is
+/// unreadable).
+///
+/// The end bound is EXCLUSIVE: a tool logged at the exact `agent.stop`
+/// millisecond ran after the dispatch closed, so it attributes to the enclosing
+/// interval (or the orchestrator), not the just-popped one. The start bound
+/// stays inclusive, and `end_ms == u64::MAX` (a still-running subagent) keeps
+/// capturing every later tool.
+///
+/// A tool with no real session id attributes to the ORCHESTRATOR: it shares no
+/// identity with any interval, so it must not borrow a session-less agent's
+/// window (the null/empty-session collapse FIX 1 guards against).
+fn attribute_tool(ev: &Value, intervals: &[AgentInterval]) -> ToolAttribution {
+    let owner = real_session_id(ev).zip(ts_ms_of(ev)).and_then(|(session, ts)| {
+        intervals
+            .iter()
+            .filter(|iv| iv.session_id == session && ts >= iv.start_ms && ts < iv.end_ms)
+            // Innermost = smallest window (deepest nesting).
+            .min_by_key(|iv| iv.end_ms.saturating_sub(iv.start_ms))
+    });
+    match owner {
+        Some(iv) => ToolAttribution {
+            agent: iv.name.clone(),
+            agent_id: Some(iv.agent_id.clone()),
+            subagent_type: Some(iv.subagent_type.clone()),
+            wave: iv.wave,
+        },
+        None => ToolAttribution {
+            agent: ORCHESTRATOR.to_string(),
+            agent_id: None,
+            subagent_type: None,
+            wave: None,
+        },
+    }
+}
+
+/// Look up an agent's economy roll-up value (tokens or cost) by its `agent_id`.
+///
+/// The per-agent map is keyed on the economy's `agent_id`
+/// ([`mustard_core::domain::economy::per_agent_costs`], grouped on
+/// `payload.agent_id`). The `agent.start` and the finalising run event carry the
+/// SAME `agent_id`, so an exact hit is the normal path. When a writer suffixes
+/// the run-event id (e.g. `Explore-1` while the start said `Explore`), fall back
+/// to the unique key that has `id` as a `-`-delimited prefix. A prefix that
+/// matches more than one economy row is ambiguous and yields `None` — never
+/// attach another agent's cost; the node then simply omits the value.
+fn lookup_agent_metric(map: &HashMap<String, i64>, id: &str) -> Option<i64> {
+    if let Some(v) = map.get(id) {
+        return Some(*v);
+    }
+    let prefix = format!("{id}-");
+    let mut hit: Option<i64> = None;
+    for (k, v) in map {
+        if k.starts_with(&prefix) {
+            if hit.is_some() {
+                return None; // ambiguous — refuse to guess
+            }
+            hit = Some(*v);
+        }
+    }
+    hit
+}
+
+/// Spec trace — a tree of `spec → [wave] → agent → tool`.
+///
+/// W7D restored the full tree shape; the agent attribution was later rebuilt on
+/// time intervals (the wire carries no per-tool agent identity — every
+/// `tool.use` has `actor="metrics-tracker"`, empty `wave`, and no matching
+/// `tool_use_id`). [`build_agent_intervals`] pairs `agent.start`/`agent.stop`
+/// per session; [`attribute_tool`] assigns each `tool.use` to the innermost
+/// interval that brackets its timestamp, else the orchestrator. Wave numbers
+/// come from the dispatch description (`Wave 1 …`). Roll-up tokens per agent
+/// come from [`mustard_core::domain::economy::per_agent_costs`] (scope-filtered
+/// to the spec). Tools without a wave (orchestrator / unparsed) hang straight
+/// off the spec rather than under a synthetic wave node.
 /// Off-main-thread wrapper for [`dashboard_spec_trace_impl`] (full workspace
 /// walk + per-agent cost projection + tree build). A join error degrades to an
 /// empty `{}` object — never an Err toast (the trace renderer tolerates an empty
@@ -2151,31 +2458,17 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
         }
     }
 
-    // Pass 1: build `tool_use_id -> agent_id` map from `agent.start` events.
-    let mut tool_to_agent: HashMap<String, String> = HashMap::new();
-    for ev in &all_events {
-        let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
-        if ev_name != "agent.start" {
-            continue;
-        }
-        let payload = match ev.get("payload") {
-            Some(p) => p,
-            None => continue,
-        };
-        let tool_use_id = payload
-            .get("tool_use_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let agent_id = payload
-            .get("agent_id")
-            .or_else(|| payload.get("subagentType"))
-            .and_then(Value::as_str)
-            .unwrap_or("unattributed")
-            .to_string();
-        if let Some(tu) = tool_use_id {
-            tool_to_agent.insert(tu, agent_id);
-        }
-    }
+    // Pass 1: build subagent intervals from `agent.start`/`agent.stop` events.
+    //
+    // A subagent's tools are NOT tagged with its identity on the wire — every
+    // `tool.use` carries `actor="metrics-tracker"`, an empty `wave`, and no
+    // `tool_use_id` that matches the inner tools (the `agent.start.tool_use_id`
+    // is the *Task spawn* id, not the inner tools' ids). The only honest signal
+    // is *time*: the `tool.use` events that fall between an `agent.start` and
+    // its matching `agent.stop` within the same `session_id` belong to that
+    // subagent; tools outside every interval belong to the orchestrator. See
+    // [`build_agent_intervals`].
+    let intervals = build_agent_intervals(&all_events);
 
     // Pass 1.5: pair every `tool.result` event with its originating `tool.use`.
     //
@@ -2189,66 +2482,34 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
     // chronologically-sorted fallback queue) to stay linear in the event count.
     let mut pairing = ResultPairing::build(&all_events);
 
-    // Pass 2: bucket `tool.use` events by (wave, agent).
-    //
-    // wave: record-level `wave` (real harness shape — int or string), falling
-    //       back to legacy `payload.wave_id`. `None` when neither is present.
-    // agent: the dispatch that owned the event's `tool_use_id` (resolved via the
-    //        `agent.start` correlation in pass 1), else the record-level `actor`,
-    //        else legacy `payload.agent_id`. `None` when unattributable.
-    //
-    // When BOTH are `None`, the tool attaches directly under the spec root
-    // rather than under synthetic `wave="root"`/`agent="main"` nodes (real
-    // `tool.use` records carry neither `wave_id` nor `tool_use_id`, so the old
-    // synthetic buckets collapsed every tool into one fake branch). Tools that
-    // DO carry attribution still nest spec → wave → agent → tool.
+    // Pass 2: attribute every `tool.use` to the subagent whose interval contains
+    // it (the innermost when nested), else the orchestrator. The attribution
+    // yields `(agent label, subagent_type, wave)`; the tree then nests
+    // spec → [wave] → agent → tool. A tool with a wave gets the wave level; a
+    // tool without one (orchestrator, or a subagent whose description carried no
+    // wave number) is bucketed under the synthetic `NO_WAVE` key so the agent
+    // node hangs straight off the spec — the renderer collapses that bucket.
+    const NO_WAVE: &str = "\u{0}__no_wave__";
+    // wave-key → agent-key → (AgentNodeMeta, ordered tool nodes). The agent key
+    // is `(name, subagent_type)` so two distinct dispatches with the same
+    // description but different types don't merge; the orchestrator is its own
+    // key.
     #[derive(Default)]
-    struct WaveBucket {
-        agents: BTreeMap<String, Vec<Value>>,
+    struct AgentBucket {
+        subagent_type: Option<String>,
+        /// Economy cost key for this agent (`agent_id`); `None` for the
+        /// orchestrator. Token/cost roll-up is looked up by this, not the label.
+        agent_id: Option<String>,
+        tools: Vec<(Option<u64>, Value)>,
     }
-    let mut by_wave: BTreeMap<String, WaveBucket> = BTreeMap::new();
-    let mut loose_tools: Vec<Value> = Vec::new();
+    let mut by_wave: BTreeMap<String, BTreeMap<String, AgentBucket>> = BTreeMap::new();
     for ev in &all_events {
         let ev_name = ev.get("event").and_then(Value::as_str).unwrap_or("");
         if ev_name != "tool.use" {
             continue;
         }
         let payload = ev.get("payload").cloned().unwrap_or_default();
-        // Record-level `wave` may be an int or a string; normalise to a label.
-        let wave_id = ev
-            .get("wave")
-            .and_then(|w| match w {
-                Value::Number(n) => Some(format!("wave-{n}")),
-                Value::String(s) if !s.is_empty() => Some(s.clone()),
-                _ => None,
-            })
-            .or_else(|| {
-                payload
-                    .get("wave_id")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            });
-        let tool_use_id = payload
-            .get("tool_use_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let agent_id = tool_use_id
-            .as_deref()
-            .and_then(|tu| tool_to_agent.get(tu).cloned())
-            .or_else(|| {
-                ev.get("actor")
-                    .and_then(Value::as_str)
-                    .filter(|a| !a.is_empty())
-                    .map(str::to_string)
-            })
-            .or_else(|| {
-                payload
-                    .get("agent_id")
-                    .and_then(Value::as_str)
-                    .filter(|a| !a.is_empty())
-                    .map(str::to_string)
-            });
+        let attr = attribute_tool(ev, &intervals);
 
         let tool_name = payload
             .get("tool")
@@ -2295,57 +2556,77 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
             "payload": payload,
             "children": [],
         });
-        match (wave_id, agent_id) {
-            (None, None) => loose_tools.push(tool_node),
-            (wave, agent) => {
-                by_wave
-                    .entry(wave.unwrap_or_else(|| "root".to_string()))
-                    .or_default()
-                    .agents
-                    .entry(agent.unwrap_or_else(|| "main".to_string()))
-                    .or_default()
-                    .push(tool_node);
-            }
+
+        let wave_key = attr
+            .wave
+            .map(|w| format!("wave-{w}"))
+            .unwrap_or_else(|| NO_WAVE.to_string());
+        let agent_bucket = by_wave
+            .entry(wave_key)
+            .or_default()
+            .entry(attr.agent)
+            .or_default();
+        if agent_bucket.subagent_type.is_none() {
+            agent_bucket.subagent_type = attr.subagent_type;
         }
+        if agent_bucket.agent_id.is_none() {
+            agent_bucket.agent_id = attr.agent_id;
+        }
+        agent_bucket.tools.push((ts_ms_of(ev), tool_node));
     }
 
-    // Build the tree. Attributed tools nest spec → wave → agent → tool;
-    // unattributed tools (`loose_tools`) attach as direct children of the spec,
-    // after the wave branches. The frontend `<ExecutionTrace>` recurses over
-    // `children` regardless of depth, so a spec → tool leaf renders correctly.
-    let mut children: Vec<Value> = by_wave
-        .into_iter()
-        .map(|(wave_id, bucket)| {
-            let agent_nodes: Vec<Value> = bucket
-                .agents
-                .into_iter()
-                .map(|(agent_id, tool_nodes)| {
-                    let tokens = agent_tokens.get(&agent_id).copied();
-                    let cost_micros = agent_cost_micros.get(&agent_id).copied();
-                    serde_json::json!({
-                        "kind": "agent",
-                        "label": agent_id,
-                        "tokens": tokens,
-                        "cost_usd_micros": cost_micros,
-                        "duration_ms": null,
-                        "ts": null,
-                        "payload": null,
-                        "children": tool_nodes,
+    // Build the tree. Tools with a wave nest spec → wave → agent → tool; the
+    // synthetic `NO_WAVE` bucket's agents (orchestrator + unparsed subagents)
+    // attach straight under the spec, so the frontend `<ExecutionTrace>` (which
+    // recurses over `children` at any depth) never shows a spurious wave node.
+    let mut children: Vec<Value> = Vec::new();
+    for (wave_key, agents) in by_wave {
+        let agent_nodes: Vec<Value> = agents
+            .into_iter()
+            .map(|(agent_name, mut bucket)| {
+                // Order each agent's tools by timestamp (ts_ms; None sorts first).
+                bucket.tools.sort_by_key(|(ts, _)| *ts);
+                let tool_nodes: Vec<Value> =
+                    bucket.tools.into_iter().map(|(_, node)| node).collect();
+                // Roll-up tokens/cost are keyed on the economy `agent_id`, not the
+                // display label — the orchestrator (no `agent_id`) carries neither.
+                let (tokens, cost_micros) = bucket
+                    .agent_id
+                    .as_deref()
+                    .map(|id| {
+                        (
+                            lookup_agent_metric(&agent_tokens, id),
+                            lookup_agent_metric(&agent_cost_micros, id),
+                        )
                     })
+                    .unwrap_or((None, None));
+                serde_json::json!({
+                    "kind": "agent",
+                    "label": agent_name,
+                    "subagent_type": bucket.subagent_type,
+                    "tokens": tokens,
+                    "cost_usd_micros": cost_micros,
+                    "duration_ms": null,
+                    "ts": null,
+                    "payload": null,
+                    "children": tool_nodes,
                 })
-                .collect();
-            serde_json::json!({
+            })
+            .collect();
+        if wave_key == NO_WAVE {
+            children.extend(agent_nodes);
+        } else {
+            children.push(serde_json::json!({
                 "kind": "wave",
-                "label": wave_id,
+                "label": wave_key,
                 "tokens": null,
                 "duration_ms": null,
                 "ts": null,
                 "payload": null,
                 "children": agent_nodes,
-            })
-        })
-        .collect();
-    children.extend(loose_tools);
+            }));
+        }
+    }
 
     serde_json::json!({
         "kind": "spec",
@@ -2540,10 +2821,16 @@ mod tests {
         let trace = dashboard_spec_trace_impl(tmp.path().to_string_lossy().into_owned(), "alpha".to_string());
         assert_eq!(trace["kind"], "spec");
         assert_eq!(trace["label"], "alpha");
+        // No `agent.start`/`agent.stop` bracket these tools, so both attribute to
+        // the orchestrator: spec → orchestrator agent (no wave) → the two tools.
         let children = trace["children"].as_array().expect("children array");
-        assert_eq!(children.len(), 2);
-        assert!(children.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Read")));
-        assert!(children.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Edit")));
+        assert_eq!(children.len(), 1, "single orchestrator agent under the spec");
+        let orch = &children[0];
+        assert_eq!(orch["kind"], "agent");
+        assert_eq!(orch["label"], "orquestrador");
+        let tools = orch["children"].as_array().expect("tool children");
+        assert!(tools.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Read")));
+        assert!(tools.iter().any(|c| c["label"].as_str().unwrap_or("").contains("Edit")));
     }
 
     fn write_session_event(dir: &Path, session: &str, name: &str, body: &str) {
@@ -2677,6 +2964,322 @@ mod tests {
             flat.contains("src/live.rs"),
             "attributed session tool.use must appear in spec alpha's trace; got: {flat}"
         );
+    }
+
+    // ── Time-interval agent attribution ──────────────────────────────────────
+
+    fn start_line(session: &str, ts_ms: u64, subagent_type: &str, description: &str) -> Value {
+        serde_json::json!({
+            "event": "agent.start", "kind": "agent", "ts_ms": ts_ms,
+            "session_id": session,
+            "payload": { "description": description, "subagentType": subagent_type }
+        })
+    }
+    fn stop_line(session: &str, ts_ms: u64) -> Value {
+        serde_json::json!({
+            "event": "agent.stop", "kind": "agent", "ts_ms": ts_ms,
+            "session_id": session, "payload": { "summary": "{}" }
+        })
+    }
+    fn use_line(session: &str, ts_ms: u64, tool: &str) -> Value {
+        serde_json::json!({
+            "event": "tool.use", "kind": "tool", "ts_ms": ts_ms,
+            "session_id": session, "actor": "metrics-tracker",
+            "payload": { "tool": tool }
+        })
+    }
+
+    #[test]
+    fn intervals_pair_sequential_starts_and_stops() {
+        // Two sequential dispatches in one session — each start/stop closes a
+        // distinct interval carrying its own description + type.
+        let events = vec![
+            start_line("s", 100, "Explore", "Trace blast radius"),
+            stop_line("s", 200),
+            start_line("s", 300, "general-purpose", "Wave 1 impl — backend"),
+            stop_line("s", 400),
+        ];
+        let mut ivs = build_agent_intervals(&events);
+        ivs.sort_by_key(|iv| iv.start_ms);
+        assert_eq!(ivs.len(), 2);
+        assert_eq!(ivs[0].name, "Trace blast radius");
+        assert_eq!(ivs[0].subagent_type, "Explore");
+        assert_eq!((ivs[0].start_ms, ivs[0].end_ms), (100, 200));
+        assert_eq!(ivs[1].name, "Wave 1 impl — backend");
+        assert_eq!(ivs[1].subagent_type, "general-purpose");
+        assert_eq!(ivs[1].wave, Some(1));
+    }
+
+    #[test]
+    fn interval_unclosed_start_closes_at_max() {
+        // An `agent.start` with no matching stop (subagent still running) gets an
+        // open-ended interval so its in-flight tools still attribute.
+        let events = vec![start_line("s", 100, "Explore", "Investigate")];
+        let ivs = build_agent_intervals(&events);
+        assert_eq!(ivs.len(), 1);
+        assert_eq!(ivs[0].end_ms, u64::MAX);
+        assert_eq!(ivs[0].name, "Investigate");
+    }
+
+    #[test]
+    fn interval_ignores_empty_subagent_type_start() {
+        // An `agent.start` with an empty subagentType is observer noise — it must
+        // not open a frame (and so its paired stop pops nothing).
+        let events = vec![
+            start_line("s", 100, "", "noise"),
+            start_line("s", 110, "Explore", "real work"),
+            stop_line("s", 200),
+        ];
+        let ivs = build_agent_intervals(&events);
+        assert_eq!(ivs.len(), 1, "only the typed start opens an interval");
+        assert_eq!(ivs[0].name, "real work");
+        assert_eq!((ivs[0].start_ms, ivs[0].end_ms), (110, 200));
+    }
+
+    #[test]
+    fn interval_nesting_picks_innermost() {
+        // A nested dispatch: the inner subagent's tools must attribute to it, not
+        // the outer one. Both intervals bracket ts=150, innermost wins.
+        let events = vec![
+            start_line("s", 100, "general-purpose", "Outer"),
+            start_line("s", 120, "Explore", "Inner"),
+            stop_line("s", 180),
+            stop_line("s", 220),
+        ];
+        let ivs = build_agent_intervals(&events);
+        let inner = use_line("s", 150, "Read");
+        let attr = attribute_tool(&inner, &ivs);
+        assert_eq!(attr.agent, "Inner");
+        assert_eq!(attr.subagent_type.as_deref(), Some("Explore"));
+        // A tool after the inner stop but before the outer stop → the outer one.
+        let outer = use_line("s", 200, "Edit");
+        assert_eq!(attribute_tool(&outer, &ivs).agent, "Outer");
+    }
+
+    #[test]
+    fn attribute_tool_orchestrator_vs_subagent() {
+        // A tool inside an interval attributes to that subagent; one outside every
+        // interval (and one in a different session) falls back to the orchestrator.
+        let events = vec![
+            start_line("s", 100, "Explore", "Trace payable"),
+            stop_line("s", 200),
+        ];
+        let ivs = build_agent_intervals(&events);
+        let inside = use_line("s", 150, "Grep");
+        let a = attribute_tool(&inside, &ivs);
+        assert_eq!(a.agent, "Trace payable");
+        assert_eq!(a.subagent_type.as_deref(), Some("Explore"));
+        assert_eq!(a.wave, None);
+
+        let after = use_line("s", 250, "Bash");
+        assert_eq!(attribute_tool(&after, &ivs).agent, ORCHESTRATOR);
+        let other_session = use_line("other", 150, "Bash");
+        assert_eq!(attribute_tool(&other_session, &ivs).agent, ORCHESTRATOR);
+    }
+
+    #[test]
+    fn sessionless_events_do_not_correlate() {
+        // FIX 1: a session-less `agent.start` (id "unknown") must NOT open an
+        // interval, and a later session-less `tool.use` must NOT bucket under it —
+        // collapsing both to one "" pseudo-session is exactly the cross-run
+        // interleave the fix forbids. The tool stays with the orchestrator.
+        let sessionless_start = serde_json::json!({
+            "event": "agent.start", "kind": "agent", "ts_ms": 100u64,
+            "session_id": "unknown",
+            "payload": { "description": "Explore blast radius", "subagentType": "Explore" }
+        });
+        let empty_session_use = serde_json::json!({
+            "event": "tool.use", "kind": "tool", "ts_ms": 150u64,
+            "session_id": "", "payload": { "tool": "Read" }
+        });
+        let null_session_use = serde_json::json!({
+            "event": "tool.use", "kind": "tool", "ts_ms": 160u64,
+            "session_id": Value::Null, "payload": { "tool": "Grep" }
+        });
+        let ivs = build_agent_intervals(&[sessionless_start.clone()]);
+        assert!(ivs.is_empty(), "a session-less start opens no interval");
+        assert_eq!(attribute_tool(&empty_session_use, &ivs).agent, ORCHESTRATOR);
+        assert_eq!(attribute_tool(&null_session_use, &ivs).agent, ORCHESTRATOR);
+    }
+
+    #[test]
+    fn attribute_tool_end_is_exclusive_at_stop_ms() {
+        // FIX 3: a tool logged at the exact `agent.stop` ms ran after the dispatch
+        // closed — it must NOT fall inside the just-popped interval. With no
+        // enclosing interval it lands on the orchestrator; the start ms stays
+        // inclusive, and an open (`u64::MAX`) interval keeps capturing later tools.
+        let events = vec![
+            start_line("s", 100, "Explore", "Trace payable"),
+            stop_line("s", 200),
+        ];
+        let ivs = build_agent_intervals(&events);
+        // Exactly at start → inside.
+        assert_eq!(attribute_tool(&use_line("s", 100, "Read"), &ivs).agent, "Trace payable");
+        // Exactly at stop → orchestrator (interval closed at this ms).
+        assert_eq!(attribute_tool(&use_line("s", 200, "Bash"), &ivs).agent, ORCHESTRATOR);
+        // Nested: the inner stop ms hands the tool back to the still-open outer.
+        let nested = vec![
+            start_line("s", 100, "general-purpose", "Outer"),
+            start_line("s", 120, "Explore", "Inner"),
+            stop_line("s", 180),
+            stop_line("s", 220),
+        ];
+        let nivs = build_agent_intervals(&nested);
+        assert_eq!(attribute_tool(&use_line("s", 180, "Edit"), &nivs).agent, "Outer");
+    }
+
+    #[test]
+    fn agent_id_carries_through_to_token_lookup() {
+        // FIX 2: the agent node's tokens come from the economy map keyed on
+        // `agent_id` (the `agent.start.payload.agent_id`), not the description
+        // label. A start carrying `agent_id` propagates it onto the interval and
+        // the attribution so the lookup hits.
+        let start = serde_json::json!({
+            "event": "agent.start", "kind": "agent", "ts_ms": 100u64,
+            "session_id": "s",
+            "payload": {
+                "description": "Wave 1 impl — backend",
+                "subagentType": "general-purpose",
+                "agent_id": "general-purpose"
+            }
+        });
+        let ivs = build_agent_intervals(&[start, stop_line("s", 300)]);
+        assert_eq!(ivs.len(), 1);
+        assert_eq!(ivs[0].agent_id, "general-purpose");
+        let attr = attribute_tool(&use_line("s", 150, "Edit"), &ivs);
+        assert_eq!(attr.agent, "Wave 1 impl — backend");
+        assert_eq!(attr.agent_id.as_deref(), Some("general-purpose"));
+
+        // The lookup keys on `agent_id`: an exact economy key hits; a label-keyed
+        // map would miss. Prefix fallback resolves a suffixed run-event id.
+        let mut tokens: HashMap<String, i64> = HashMap::new();
+        tokens.insert("general-purpose".to_string(), 4242);
+        assert_eq!(lookup_agent_metric(&tokens, "general-purpose"), Some(4242));
+
+        let mut suffixed: HashMap<String, i64> = HashMap::new();
+        suffixed.insert("Explore-1".to_string(), 777);
+        assert_eq!(lookup_agent_metric(&suffixed, "Explore"), Some(777));
+        // Ambiguous prefix (two runs of the same role) refuses to guess.
+        suffixed.insert("Explore-2".to_string(), 888);
+        assert_eq!(lookup_agent_metric(&suffixed, "Explore"), None);
+        // No match → None (node omits tokens, never fabricates).
+        assert_eq!(lookup_agent_metric(&tokens, "mustard-review"), None);
+    }
+
+    #[test]
+    fn trace_surfaces_agent_tokens_keyed_by_agent_id() {
+        // End-to-end: a sessioned Explore dispatch (carrying agent_id "Explore")
+        // brackets a tool, and a run event books that agent's tokens under the
+        // economy `agent_id` key. The agent node must surface those tokens —
+        // proving the lookup keys on agent_id, not the description label.
+        let tmp = TempDir::new().unwrap();
+        let mut start = start_with_spec("s", 100, "Explore", "Trace blast radius", "alpha");
+        start["session_id"] = Value::String("s".to_string());
+        start["payload"]["agent_id"] = Value::String("Explore".to_string());
+        let lines: Vec<String> = vec![
+            serde_json::to_string(&start).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 120, "Grep", "alpha")).unwrap(),
+            serde_json::to_string(&stop_with_spec("s", 200, "alpha")).unwrap(),
+            // The economy run event for this agent (per_agent_costs keys on agent_id).
+            r#"{"event":"pipeline.economy.run","kind":"pipeline.economy.run","ts":"2026-06-05T00:00:00.200Z","spec":"alpha","session_id":"s","payload":{"spec":"alpha","agent_id":"Explore","input_tokens":1000,"output_tokens":500,"cost_usd_micros":1234}}"#.to_string(),
+        ];
+        write_event(tmp.path(), "alpha", "events.ndjson", &format!("{}\n", lines.join("\n")));
+
+        let trace = dashboard_spec_trace_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "alpha".to_string(),
+        );
+        let children = trace["children"].as_array().expect("children");
+        let explore = children
+            .iter()
+            .find(|c| c["label"] == "Trace blast radius")
+            .expect("Explore agent node");
+        assert_eq!(explore["tokens"].as_i64(), Some(1500), "tokens keyed by agent_id surface");
+        assert_eq!(explore["cost_usd_micros"].as_i64(), Some(1234));
+    }
+
+    #[test]
+    fn parse_wave_reads_wave_and_onda() {
+        assert_eq!(parse_wave("Wave 2 — backend optional FK"), Some(2));
+        assert_eq!(parse_wave("onda 10 frontend"), Some(10));
+        assert_eq!(parse_wave("WAVE 3"), Some(3));
+        // No bare-word match: "software 1" / "wavelength" must not match.
+        assert_eq!(parse_wave("software 1 release"), None);
+        assert_eq!(parse_wave("wavelength 5"), None);
+        assert_eq!(parse_wave("just a description"), None);
+    }
+
+    #[test]
+    fn trace_groups_tools_under_named_subagent_then_wave() {
+        // End-to-end on the validated real shape: an Explore dispatch brackets two
+        // tools, and a `Wave 2` general-purpose dispatch brackets one more. The
+        // Explore tools nest under its description (NOT "metrics-tracker") with no
+        // wave; the Wave 2 tool nests under a `wave-2` node.
+        let tmp = TempDir::new().unwrap();
+        let lines: Vec<String> = vec![
+            serde_json::to_string(&use_with_spec("s", 50, "Read", "alpha")).unwrap(),
+            serde_json::to_string(&start_with_spec("s", 100, "Explore", "Trace payable blast radius", "alpha")).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 120, "Grep", "alpha")).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 140, "Read", "alpha")).unwrap(),
+            serde_json::to_string(&stop_with_spec("s", 200, "alpha")).unwrap(),
+            serde_json::to_string(&start_with_spec("s", 300, "general-purpose", "Wave 2 impl — frontend", "alpha")).unwrap(),
+            serde_json::to_string(&use_with_spec("s", 320, "Edit", "alpha")).unwrap(),
+            serde_json::to_string(&stop_with_spec("s", 400, "alpha")).unwrap(),
+        ];
+        write_event(tmp.path(), "alpha", "events.ndjson", &format!("{}\n", lines.join("\n")));
+
+        let trace = dashboard_spec_trace_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "alpha".to_string(),
+        );
+        let children = trace["children"].as_array().expect("children");
+
+        // The Explore subagent node hangs off the spec (no wave), labelled by its
+        // description and carrying the type badge.
+        let explore = children
+            .iter()
+            .find(|c| c["label"] == "Trace payable blast radius")
+            .expect("Explore agent node under spec");
+        assert_eq!(explore["kind"], "agent");
+        assert_eq!(explore["subagent_type"], "Explore");
+        let explore_tools = explore["children"].as_array().unwrap();
+        assert_eq!(explore_tools.len(), 2, "Grep + Read inside Explore");
+        // NOT attributed to the hardcoded observer name.
+        assert!(children.iter().all(|c| c["label"] != "metrics-tracker"));
+
+        // The orchestrator's pre-dispatch Read (ts=50) hangs off the spec too.
+        let orch = children
+            .iter()
+            .find(|c| c["label"] == ORCHESTRATOR)
+            .expect("orchestrator node");
+        assert_eq!(orch["children"].as_array().unwrap().len(), 1);
+
+        // The Wave 2 dispatch lives under a `wave-2` node.
+        let wave2 = children
+            .iter()
+            .find(|c| c["kind"] == "wave" && c["label"] == "wave-2")
+            .expect("wave-2 node");
+        let agent = &wave2["children"].as_array().unwrap()[0];
+        assert_eq!(agent["label"], "Wave 2 impl — frontend");
+        assert_eq!(agent["subagent_type"], "general-purpose");
+        assert_eq!(agent["children"].as_array().unwrap().len(), 1);
+    }
+
+    fn use_with_spec(session: &str, ts_ms: u64, tool: &str, spec: &str) -> Value {
+        let mut v = use_line(session, ts_ms, tool);
+        v["spec"] = Value::String(spec.to_string());
+        v["ts"] = Value::String(format!("2026-06-05T00:00:{ts_ms:03}Z"));
+        v
+    }
+    fn start_with_spec(session: &str, ts_ms: u64, ty: &str, desc: &str, spec: &str) -> Value {
+        let mut v = start_line(session, ts_ms, ty, desc);
+        v["spec"] = Value::String(spec.to_string());
+        v
+    }
+    fn stop_with_spec(session: &str, ts_ms: u64, spec: &str) -> Value {
+        let mut v = stop_line(session, ts_ms);
+        v["spec"] = Value::String(spec.to_string());
+        v
     }
 
     #[test]
