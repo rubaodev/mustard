@@ -1855,6 +1855,146 @@ pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
     serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
 }
 
+/// Pairs `tool.result` NDJSON events back onto their originating `tool.use`
+/// trace node so the frontend `<ToolEventRow>` can render the captured output
+/// (`payload.result.stdout_excerpt` / `content_excerpt` / file diff).
+///
+/// Two correlation strategies, in order — mirroring the rt
+/// `tool_result_observer` contract ("by `tool_use_id` when forwarded by Claude
+/// Code, else by chronological order"):
+///
+/// 1. **By id.** When a `tool.use` node carries a `tool_use_id` that a
+///    `tool.result` echoes, pair them exactly. Robust to interleaving.
+/// 2. **Chronological fallback.** Real `tool.use` heartbeats (the
+///    `metrics_observer` shape) carry no `tool_use_id`, so we match the next
+///    unconsumed `tool.result` whose timestamp is `>=` the use's and whose
+///    `tool` name agrees. A `tool.result` immediately follows its `tool.use`,
+///    so position order is correct.
+///
+/// Each result is consumed at most once (`pair_for` removes it), so two
+/// identical commands never alias the same captured output.
+///
+/// All results live in a single timestamp-ordered `chrono` queue. Id-bearing
+/// results ALSO register their slot index in `id_index` for an O(1) tier-1
+/// hit. Crucially, a result that carries a `tool_use_id` is still reachable by
+/// the tier-2 chronological scan — the common real-world case is the *result*
+/// carrying an id while the *use* heartbeat (the `metrics_observer` shape) does
+/// not, so the use can only ever pair via tier-2.
+struct ResultPairing {
+    /// `tool_use_id → index into `chrono``. Points at the slot to claim on an
+    /// exact id hit; the slot is tombstoned (`None`) once any tier consumes it.
+    id_index: HashMap<String, usize>,
+    /// Timestamp-ordered result slots. Tombstoned to `None` once paired.
+    chrono: Vec<Option<ChronoResult>>,
+    /// Cursor into `chrono`: every entry before it is consumed, so the tier-2
+    /// scan stays amortised-linear across the whole `tool.use` stream.
+    cursor: usize,
+}
+
+/// One `tool.result` awaiting pairing.
+struct ChronoResult {
+    ts_ms: i64,
+    tool: String,
+    payload: Value,
+}
+
+impl ResultPairing {
+    /// Build the pairing index from the full event slice in one linear pass,
+    /// then sort the result queue by timestamp.
+    fn build(all_events: &[Value]) -> Self {
+        let mut chrono: Vec<ChronoResult> = Vec::new();
+        let mut ids: Vec<Option<String>> = Vec::new();
+        for ev in all_events {
+            if ev.get("event").and_then(Value::as_str) != Some("tool.result") {
+                continue;
+            }
+            let Some(payload) = ev.get("payload").filter(|p| p.is_object()).cloned() else {
+                continue;
+            };
+            // Prefer record-level `ts_ms` (an int the hooks write), else the ISO `ts`.
+            let ts_ms = ev
+                .get("ts_ms")
+                .and_then(Value::as_i64)
+                .or_else(|| ev.get("ts").and_then(Value::as_str).and_then(iso_to_ms))
+                .unwrap_or(0);
+            let tool = payload
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let id = payload
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            ids.push(id);
+            chrono.push(ChronoResult { ts_ms, tool, payload });
+        }
+        // Sort by ts, carrying the parallel `ids` vec along so `id_index` stays
+        // correct against the final slot positions.
+        let mut order: Vec<usize> = (0..chrono.len()).collect();
+        order.sort_by_key(|&i| chrono[i].ts_ms);
+        let mut sorted: Vec<Option<ChronoResult>> = Vec::with_capacity(chrono.len());
+        let mut id_index: HashMap<String, usize> = HashMap::new();
+        // Drain in sorted order. `Option::take` lets us move each owned
+        // `ChronoResult` out of the source vec exactly once.
+        let mut chrono_opt: Vec<Option<ChronoResult>> = chrono.into_iter().map(Some).collect();
+        for (new_idx, &src) in order.iter().enumerate() {
+            if let Some(id) = ids[src].clone() {
+                // Last write wins on duplicate ids (later result supersedes).
+                id_index.insert(id, new_idx);
+            }
+            sorted.push(chrono_opt[src].take());
+        }
+        Self { id_index, chrono: sorted, cursor: 0 }
+    }
+
+    /// Take the `tool.result` payload paired with the `tool.use` record `ev`
+    /// (whose resolved `tool_name` is supplied by the caller), or `None` when no
+    /// result was captured for it. The result is removed so it is never reused.
+    fn pair_for(&mut self, ev: &Value, tool_name: &str) -> Option<Value> {
+        // Tier 1 — exact id match (only when the *use* itself carries an id).
+        if let Some(id) = ev
+            .get("payload")
+            .and_then(|p| p.get("tool_use_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(&idx) = self.id_index.get(id) {
+                if let Some(slot) = self.chrono.get_mut(idx) {
+                    if let Some(result) = slot.take() {
+                        return Some(result.payload);
+                    }
+                }
+            }
+        }
+        // Tier 2 — chronological fallback. Claim the earliest unconsumed result
+        // at-or-after this use's timestamp whose tool name agrees (an empty name
+        // on either side is a wildcard so older / unlabelled events still pair).
+        let use_ms = ev
+            .get("ts_ms")
+            .and_then(Value::as_i64)
+            .or_else(|| ev.get("ts").and_then(Value::as_str).and_then(iso_to_ms))
+            .unwrap_or(0);
+        while self.cursor < self.chrono.len() && self.chrono[self.cursor].is_none() {
+            self.cursor += 1;
+        }
+        for slot in self.chrono.iter_mut().skip(self.cursor) {
+            let Some(candidate) = slot.as_ref() else { continue };
+            if candidate.ts_ms < use_ms {
+                continue;
+            }
+            let tool_ok = candidate.tool.is_empty()
+                || tool_name.is_empty()
+                || candidate.tool == tool_name;
+            if tool_ok {
+                return slot.take().map(|c| c.payload);
+            }
+        }
+        None
+    }
+}
+
 /// Spec trace — up to a 4-level tree (spec → wave → agent → tool).
 ///
 /// W7D restored the full tree shape. Roll-up tokens per agent come from
@@ -1974,6 +2114,18 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
         }
     }
 
+    // Pass 1.5: pair every `tool.result` event with its originating `tool.use`.
+    //
+    // The PostToolUse `tool_result_observer` (apps/rt) emits a separate
+    // `tool.result` NDJSON record carrying the captured side-effects
+    // (`stdout_excerpt` / `stderr_excerpt` / `content_excerpt` / file diff). The
+    // frontend `<ToolEventRow>` reads them off `payload.result` on the tool node,
+    // so we splice the matching result payload into each `tool.use` node here —
+    // without it the renderer always shows "tool_result pendente". The pairing
+    // is built once into a `ResultPairing` (a `tool_use_id → result` map plus a
+    // chronologically-sorted fallback queue) to stay linear in the event count.
+    let mut pairing = ResultPairing::build(&all_events);
+
     // Pass 2: bucket `tool.use` events by (wave, agent).
     //
     // wave: record-level `wave` (real harness shape — int or string), falling
@@ -2053,6 +2205,18 @@ pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        // Splice the paired `tool.result` payload onto `payload.result` so the
+        // frontend renders the captured stdout/diff/content instead of the
+        // "tool_result pendente" placeholder. `pair_for` consumes the matched
+        // result (id hit, else next chronological one for this tool) so two
+        // identical commands never share a single result. Done before `label`
+        // (which moves `tool_name`) so the borrow is still valid.
+        let mut payload = payload;
+        if let Some(result) = pairing.pair_for(ev, &tool_name) {
+            if let Value::Object(map) = &mut payload {
+                map.insert("result".to_string(), result);
+            }
+        }
         let label = if target_label.is_empty() {
             tool_name
         } else {
@@ -2487,5 +2651,148 @@ mod tests {
         // beta only sees its own binding event; the pre-binding tool.use is dropped.
         assert_eq!(pre_counts.get("beta").map(|c| c.tools_used), Some(0));
         assert_eq!(pre_counts.get("beta").map(|c| c.events), Some(1));
+    }
+
+    // ── DEFECT 5a: tool.result → tool.use pairing ────────────────────────────
+
+    fn ev_line(value: serde_json::Value) -> Value {
+        value
+    }
+
+    #[test]
+    fn pairing_matches_by_tool_use_id() {
+        // When the `tool.use` carries a `tool_use_id` the result echoes, the
+        // pairing is exact regardless of ordering / interleaving.
+        let events = vec![
+            ev_line(serde_json::json!({
+                "event": "tool.result", "ts_ms": 200,
+                "payload": { "tool_use_id": "tu-1", "tool": "Bash", "stdout_excerpt": "hi" }
+            })),
+            ev_line(serde_json::json!({
+                "event": "tool.use", "ts_ms": 100,
+                "payload": { "tool": "Bash", "tool_use_id": "tu-1", "target": { "command": "echo hi" } }
+            })),
+        ];
+        let mut pairing = ResultPairing::build(&events);
+        let use_ev = &events[1];
+        let result = pairing.pair_for(use_ev, "Bash").expect("paired by id");
+        assert_eq!(result.get("stdout_excerpt").and_then(Value::as_str), Some("hi"));
+    }
+
+    #[test]
+    fn pairing_id_match_wins_over_chronological() {
+        // Parallel-agent interleave: the use heartbeat now carries a
+        // `tool_use_id`, and its result is NOT the chronologically-nearest one.
+        // Tier-1 must pick the id-matched result, not the earlier-by-time slot
+        // that a pure chronological match (tier-2) would have grabbed. This is
+        // the precise misattribution the heartbeat `tool_use_id` propagation
+        // fixes.
+        let events = vec![
+            ev_line(serde_json::json!({
+                // Other agent's result lands first chronologically.
+                "event": "tool.result", "ts_ms": 150,
+                "payload": { "tool_use_id": "other", "tool": "Bash", "stdout_excerpt": "WRONG" }
+            })),
+            ev_line(serde_json::json!({
+                // This use's own result lands later.
+                "event": "tool.result", "ts_ms": 250,
+                "payload": { "tool_use_id": "mine", "tool": "Bash", "stdout_excerpt": "RIGHT" }
+            })),
+            ev_line(serde_json::json!({
+                "event": "tool.use", "ts_ms": 100,
+                "payload": { "tool": "Bash", "tool_use_id": "mine", "target": { "command": "echo x" } }
+            })),
+        ];
+        let mut pairing = ResultPairing::build(&events);
+        let use_ev = &events[2];
+        let result = pairing.pair_for(use_ev, "Bash").expect("paired by id");
+        assert_eq!(
+            result.get("stdout_excerpt").and_then(Value::as_str),
+            Some("RIGHT"),
+            "tier-1 id match must beat the chronologically-earlier result"
+        );
+    }
+
+    #[test]
+    fn pairing_falls_back_to_chronological_order() {
+        // The real-world case: `tool.use` heartbeats carry NO `tool_use_id`,
+        // while each `tool.result` DOES. Tier-1 can't fire (the use has no id),
+        // so pairing must go by timestamp order + tool name. Two Bash calls must
+        // not alias — the first use gets the first result, the second the second.
+        let events = vec![
+            ev_line(serde_json::json!({
+                "event": "tool.use", "ts_ms": 100,
+                "payload": { "tool": "Bash", "target": { "command": "first" } }
+            })),
+            ev_line(serde_json::json!({
+                "event": "tool.result", "ts_ms": 101,
+                "payload": { "tool_use_id": "x1", "tool": "Bash", "stdout_excerpt": "out-first" }
+            })),
+            ev_line(serde_json::json!({
+                "event": "tool.use", "ts_ms": 200,
+                "payload": { "tool": "Bash", "target": { "command": "second" } }
+            })),
+            ev_line(serde_json::json!({
+                "event": "tool.result", "ts_ms": 201,
+                "payload": { "tool_use_id": "x2", "tool": "Bash", "stdout_excerpt": "out-second" }
+            })),
+        ];
+        let mut pairing = ResultPairing::build(&events);
+        let first = pairing.pair_for(&events[0], "Bash").expect("first paired");
+        assert_eq!(first.get("stdout_excerpt").and_then(Value::as_str), Some("out-first"));
+        let second = pairing.pair_for(&events[2], "Bash").expect("second paired");
+        assert_eq!(second.get("stdout_excerpt").and_then(Value::as_str), Some("out-second"));
+    }
+
+    #[test]
+    fn pairing_returns_none_when_no_result() {
+        let events = vec![ev_line(serde_json::json!({
+            "event": "tool.use", "ts_ms": 100,
+            "payload": { "tool": "Read", "target": { "file_path": "/x" } }
+        }))];
+        let mut pairing = ResultPairing::build(&events);
+        assert!(pairing.pair_for(&events[0], "Read").is_none());
+    }
+
+    #[test]
+    fn trace_splices_result_payload_onto_tool_node() {
+        // End-to-end: a spec dir with a paired tool.use + tool.result must
+        // surface `payload.result.content_excerpt` on the tool node so the
+        // frontend stops rendering "tool_result pendente".
+        let tmp = TempDir::new().unwrap();
+        let lines = format!(
+            "{}\n{}\n",
+            r##"{"event":"tool.use","kind":"tool","ts":"2026-06-05T10:00:00.000Z","ts_ms":1000,"session_id":"s","spec":"alpha","wave":1,"actor":"metrics-tracker","payload":{"tool":"Read","target":{"file_path":"/tmp/r.md"}}}"##,
+            r##"{"event":"tool.result","kind":"tool","ts":"2026-06-05T10:00:00.100Z","ts_ms":1001,"session_id":"s","spec":"alpha","actor":"tool_result","payload":{"tool_use_id":"tu","tool":"Read","content_excerpt":"# hi"}}"##,
+        );
+        write_event(tmp.path(), "alpha", "events.ndjson", &lines);
+
+        let tree = dashboard_spec_trace(
+            tmp.path().to_string_lossy().to_string(),
+            "alpha".to_string(),
+        );
+        // Walk to the first tool node and assert the spliced result.
+        let found = find_tool_node(&tree).expect("a tool node exists");
+        let result = found
+            .get("payload")
+            .and_then(|p| p.get("result"))
+            .expect("result spliced onto payload");
+        assert_eq!(
+            result.get("content_excerpt").and_then(Value::as_str),
+            Some("# hi")
+        );
+    }
+
+    /// Depth-first search for the first `kind == "tool"` node in a trace tree.
+    fn find_tool_node(node: &Value) -> Option<Value> {
+        if node.get("kind").and_then(Value::as_str) == Some("tool") {
+            return Some(node.clone());
+        }
+        for child in node.get("children").and_then(Value::as_array)? {
+            if let Some(hit) = find_tool_node(child) {
+                return Some(hit);
+            }
+        }
+        None
     }
 }

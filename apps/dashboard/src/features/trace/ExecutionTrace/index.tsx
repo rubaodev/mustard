@@ -29,6 +29,7 @@ import type { TraceKind, TraceNode, TokenBreakdown } from "@/lib/types/trace";
 import { StatPill } from "@/components/page";
 import { formatTokens } from "@/lib/types/economy";
 import { ToolEventRow } from "../ToolEventRow";
+import { toolIconColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 
 interface ExecutionTraceProps {
@@ -203,6 +204,19 @@ const KIND_ICON_COLOR: Record<TraceKind, string> = {
   tool: "text-[--ds-status-draft]",
 };
 
+/** Pick the icon colour for a trace node: tool nodes colour by tool TYPE
+ *  (Bash/Read/Edit/…) via `toolIconColorClass`, falling back to the kind
+ *  colour for unknown tools and all non-tool kinds. The tool name comes from
+ *  `payload.tool` (the rt hook emits `{ tool, target, … }` for `tool.use`). */
+function iconColorFor(node: TraceNode): string {
+  if (node.kind !== "tool") return KIND_ICON_COLOR[node.kind];
+  const tool = (node.payload as Record<string, unknown> | null)?.["tool"];
+  return toolIconColorClass(
+    typeof tool === "string" ? tool : null,
+    KIND_ICON_COLOR.tool,
+  );
+}
+
 const KIND_LABEL: Record<TraceKind, string> = {
   spec: "SPEC",
   wave: "WAVE",
@@ -220,7 +234,9 @@ const TraceNodeRow = memo(function TraceNodeRow({
   setExpanded,
 }: TraceNodeRowProps) {
   const Icon = KIND_ICON[node.kind];
-  const iconColor = KIND_ICON_COLOR[node.kind];
+  // Tool nodes colour by tool TYPE (Bash/Read/Edit/…); everything else keeps
+  // the per-kind colour. Falls back to the kind colour for unknown tools.
+  const iconColor = iconColorFor(node);
   const hasChildren = node.children.length > 0;
   // Specs and waves stay open by default; agents/tools collapse so the
   // initial view doesn't drown the reader.

@@ -28,6 +28,7 @@ import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
+import { toolPillColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
 import type {
@@ -237,7 +238,12 @@ function PayloadCard({
           className={cn(
             "px-1.5 py-0.5 rounded-[--ds-radius-sm]",
             "text-[10px] font-medium tracking-wide uppercase",
-            "bg-[--ds-accent-primary]/15 text-[--ds-accent-primary]",
+            // Colour the pill by tool TYPE (Bash/Read/Edit/…); unknown tools
+            // keep the legacy accent pill.
+            toolPillColorClass(
+              toolName,
+              "bg-[--ds-accent-primary]/15 text-[--ds-accent-primary]",
+            ),
           )}
         >
           {toolName}

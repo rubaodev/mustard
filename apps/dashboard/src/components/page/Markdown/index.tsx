@@ -67,6 +67,30 @@ function transformChildren(children: ReactNode, vaultName: string): ReactNode {
   return children;
 }
 
+type MdNode = { type: string; value?: string; children?: MdNode[] };
+
+/**
+ * Remark plugin that drops HTML-comment nodes (`<!-- … -->`) from the tree.
+ * Drafter directives like `<!-- drafter:tone=didactic … -->` and `<!-- PRD -->`
+ * live in spec.md as machine-readable metadata; ReactMarkdown otherwise leaks
+ * them as literal visible text.
+ *
+ * Operating on the mdast tree (not a raw-text regex) preserves comments INSIDE
+ * fenced or inline code: there `<!-- … -->` parses as a `code`/`inlineCode`
+ * node, never `html`, so the filter never touches it — a code example or config
+ * snippet containing `<!-- … -->` keeps that line intact.
+ */
+function remarkStripComments() {
+  const isComment = (n: MdNode) =>
+    n.type === "html" && /^\s*<!--[\s\S]*-->\s*$/.test(n.value ?? "");
+  const prune = (node: MdNode): void => {
+    if (!node.children) return;
+    node.children = node.children.filter((c) => !isComment(c));
+    node.children.forEach(prune);
+  };
+  return (tree: MdNode) => prune(tree);
+}
+
 export interface MarkdownProps {
   content: string;
   /**
@@ -75,17 +99,25 @@ export interface MarkdownProps {
    * `mustard.json#obsidianVault`.
    */
   obsidianVaultPath?: string;
+  /**
+   * Optional max line-length for the prose measure. Defaults to `"none"` so the
+   * markdown fills the available panel width (spec narrative on a wide panel
+   * should not wrap at a fixed 720px). Callers wanting a narrow measure can
+   * pass e.g. `"720px"`.
+   */
+  maxWidth?: string;
 }
 
 export function Markdown({
   content,
   obsidianVaultPath = DEFAULT_OBSIDIAN_VAULT_PATH,
+  maxWidth = "none",
 }: MarkdownProps) {
   const vaultName = vaultNameFromPath(obsidianVaultPath);
   return (
-    <div className="max-w-[720px] leading-relaxed text-foreground">
+    <div className="leading-relaxed text-foreground" style={{ maxWidth }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkStripComments]}
         components={{
           pre: ({ children, ...props }) => {
             // Extract raw text from nested code element for copy

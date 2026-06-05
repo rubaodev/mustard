@@ -6,6 +6,7 @@ import { relativeTime } from "@/lib/time";
 import type { SpecChild, SpecWave } from "@/lib/types/specs";
 import { useSpecWaveFiles } from "@/hooks/useSpecWaveFiles";
 import { useSpecWavesPlanned } from "@/hooks/useSpecWavesPlanned";
+import { mergeWaves } from "../_shared/merge-waves";
 import { WaveMarkdownDrawer } from "../WaveMarkdownDrawer";
 import { StatusPill } from "../_shared/spec-status";
 import { useT } from "@/lib/i18n";
@@ -428,23 +429,10 @@ export function SpecWavesTab({
   // user always sees the declared structure. Events-derived rows take
   // precedence (they have timestamps); plan-only rows render as queued.
   const plannedQ = useSpecWavesPlanned(repoPath ?? null, spec ?? null);
-  const merged = useMemo<SpecWave[]>(() => {
-    const byWave = new Map<number, SpecWave>();
-    for (const w of waves) byWave.set(w.wave, w);
-    for (const p of plannedQ.data ?? []) {
-      if (byWave.has(p.wave)) continue;
-      byWave.set(p.wave, {
-        wave: p.wave,
-        role: p.role,
-        status: "queued",
-        started_at: null,
-        completed_at: null,
-        agent_type: null,
-        files_changed: p.declared_files_count,
-      });
-    }
-    return Array.from(byWave.values()).sort((a, b) => a.wave - b.wave);
-  }, [waves, plannedQ.data]);
+  const merged = useMemo<SpecWave[]>(
+    () => mergeWaves(waves, plannedQ.data),
+    [waves, plannedQ.data],
+  );
 
   // Wave 2 (spec polish): bucket children by their correlated wave. Each
   // entry maps wave number → SpecChild[]; the leftover (`wave == null` /

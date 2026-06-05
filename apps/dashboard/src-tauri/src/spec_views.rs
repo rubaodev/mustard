@@ -402,11 +402,92 @@ pub(crate) fn spec_card_v2_with_counts(
 fn meta_status_word(spec_md: &std::path::Path) -> Option<String> {
     let meta = mustard_core::domain::meta::read_meta_beside(spec_md)?;
     let word = mustard_core::domain::meta::status_word(&meta);
-    if word.is_empty() {
+    let reconciled = reconcile_status_with_phase(&meta, word);
+    if reconciled.is_empty() {
         return None;
     }
-    Some(word.to_string())
+    Some(reconciled.to_string())
 }
+
+/// Forward-only reconciliation of the lifecycle `stage` against the `phase`
+/// token both carried by `meta.json` (DEFECT 1 relief).
+///
+/// The rt writer can advance `meta.phase` to `"EXECUTE"` while leaving
+/// `meta.stage` at `"Plan"` (the phase/stage write are not atomic; the stage
+/// fix lands in rt separately). `mustard_core::status_word` keys off `stage`
+/// alone, so a spec mid-execution renders "PLANEJANDO". Here we promote the
+/// displayed status when `phase` is strictly MORE ADVANCED than `stage`, never
+/// regressing a later stage.
+///
+/// Authoritative cases are left untouched: any terminal / qualifier word
+/// (`completed`, `blocked`, `wave-failed`, `rejected`, `closed-followup`) wins
+/// — those come from `outcome`/`flags`, not the in-flight `phase`. Only the
+/// non-terminal words (`""` = queued/Plan, `"implementing"` = Execute) are
+/// eligible for promotion, and only ever upward in the pipeline order.
+fn reconcile_status_with_phase(
+    meta: &mustard_core::domain::meta::Meta,
+    word: &str,
+) -> String {
+    // Only the two non-terminal status words may be promoted; a terminal /
+    // qualifier word is authoritative and returned verbatim.
+    if !matches!(word, "" | "implementing") {
+        return word.to_string();
+    }
+    // Rank the stage word the `status_word` reflects vs. the phase token. Both
+    // map onto the same pipeline order so we can take the more-advanced one.
+    let Some(phase_rank) = meta.phase.as_deref().and_then(phase_rank) else {
+        return word.to_string();
+    };
+    // `word == "implementing"` already implies stage==Execute; `""` is anything
+    // up to Plan. Derive the stage rank from the canonical `stage` field so a
+    // future stage spelling stays correct.
+    let stage_rank = meta
+        .stage
+        .as_deref()
+        .and_then(stage_rank)
+        .unwrap_or(0);
+    if phase_rank <= stage_rank {
+        return word.to_string();
+    }
+    // Phase is ahead of stage — render the phase's stage word. We only promote
+    // up to Execute ("implementing"); QA/Close phases keep the event-/outcome-
+    // derived terminal handling rather than inventing a non-terminal label.
+    match phase_rank {
+        r if r >= EXECUTE_RANK => "implementing".to_string(),
+        _ => word.to_string(),
+    }
+}
+
+/// Pipeline order rank for a canonical `stage` word (case-insensitive). Mirrors
+/// `mustard_core::Stage::parse`'s legacy synonyms so a stage carrying
+/// `"implementing"`/`"reviewing"` still ranks correctly. `None` for unknowns.
+fn stage_rank(stage: &str) -> Option<u8> {
+    match stage.trim().to_ascii_lowercase().as_str() {
+        "analyze" => Some(1),
+        "plan" | "planning" | "draft" | "approved" => Some(2),
+        "execute" | "implementing" | "in-progress" | "in_progress" => Some(EXECUTE_RANK),
+        "qa-review" | "qa_review" | "qareview" | "review" | "reviewing" | "qa" => Some(4),
+        "close" => Some(5),
+        _ => None,
+    }
+}
+
+/// Pipeline order rank for a `phase` token (`ANALYZE`/`PLAN`/`EXECUTE`/`QA`/
+/// `CLOSE`, case-insensitive). Aligned with [`stage_rank`] so the two are
+/// directly comparable.
+fn phase_rank(phase: &str) -> Option<u8> {
+    match phase.trim().to_ascii_lowercase().as_str() {
+        "analyze" => Some(1),
+        "plan" => Some(2),
+        "execute" => Some(EXECUTE_RANK),
+        "qa" | "qa-review" | "review" => Some(4),
+        "close" => Some(5),
+        _ => None,
+    }
+}
+
+/// Rank of the EXECUTE stage/phase — the promotion floor for "implementing".
+const EXECUTE_RANK: u8 = 3;
 
 /// Merge the attributed per-spec activity counts into a [`SpecCard`] built from
 /// the `mustard_core` projection. The core fold keys on `event.spec` and so
@@ -458,6 +539,13 @@ pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, Strin
     let events = mustard_core::view::projection::read_workspace_events(&project);
     let waves = mustard_core::view::projection::project_waves(spec, &events);
     let meta = wave_plan_meta(&project, spec);
+    // DEFECT 2 relief: which wave numbers are running but not yet completed.
+    // The core `project_waves` only promotes a wave to `InProgress` from a
+    // `pipeline.task.dispatch`; a wave that surfaces solely through activity
+    // events (`tool.use` / `agent.start` attributed to it) — or an explicit
+    // `pipeline.wave.start` the core fold doesn't yet consume — stays `Queued`,
+    // so the UI can't tell which wave is live. Derive the set here and promote.
+    let running = running_wave_numbers(spec, &events);
     Ok(waves
         .iter()
         .map(|w| {
@@ -470,9 +558,70 @@ pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, Strin
                     row.summary = info.summary.clone();
                 }
             }
+            // Promote a still-queued wave to in_progress when it has live
+            // activity. Never downgrade completed/failed/already-in_progress.
+            if row.status == "queued"
+                && u32::try_from(row.wave).is_ok_and(|n| running.contains(&n))
+            {
+                row.status = "in_progress".into();
+            }
             row
         })
         .collect())
+}
+
+/// Wave numbers with live activity but no terminal `pipeline.wave.complete` /
+/// `pipeline.wave.failed` event for this spec (DEFECT 2 relief).
+///
+/// A wave counts as "running" when, for this spec, the event stream carries an
+/// explicit `pipeline.wave.start` for it, OR any activity event attributable to
+/// the wave number — a `tool.use` / `agent.start` (`HarnessEvent.wave`), or a
+/// `pipeline.task.dispatch` / `pipeline.task.complete` whose `payload.wave`
+/// matches — and there is NO `pipeline.wave.complete` / `pipeline.wave.failed`
+/// for that number. Terminal waves are excluded so a completed wave never
+/// flickers back to in_progress.
+///
+/// `wave == 0` is the "outside a wave plan" sentinel and is ignored; only
+/// real (1-based) wave numbers are returned.
+fn running_wave_numbers(
+    spec: &str,
+    events: &[mustard_core::domain::model::event::HarnessEvent],
+) -> std::collections::HashSet<u32> {
+    use std::collections::HashSet;
+    let mut active: HashSet<u32> = HashSet::new();
+    let mut terminal: HashSet<u32> = HashSet::new();
+    for ev in events.iter().filter(|e| e.spec.as_deref() == Some(spec)) {
+        // Wave number: prefer the typed `payload.wave` of pipeline events,
+        // else the record-level `HarnessEvent.wave` carried by work events.
+        let payload_wave = ev
+            .payload
+            .get("wave")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|w| u32::try_from(w).ok());
+        let record_wave = (ev.wave != 0).then_some(ev.wave);
+        match ev.event.as_str() {
+            "pipeline.wave.complete" | "pipeline.wave.failed" => {
+                if let Some(w) = payload_wave.or(record_wave) {
+                    terminal.insert(w);
+                }
+            }
+            "pipeline.wave.start"
+            | "pipeline.task.dispatch"
+            | "pipeline.task.complete" => {
+                if let Some(w) = payload_wave.or(record_wave) {
+                    active.insert(w);
+                }
+            }
+            "tool.use" | "agent.start" => {
+                if let Some(w) = record_wave.or(payload_wave) {
+                    active.insert(w);
+                }
+            }
+            _ => {}
+        }
+    }
+    active.retain(|w| *w != 0 && !terminal.contains(w));
+    active
 }
 
 /// W8A-2 adapter: AC roll-up via `mustard-core` projections.
@@ -1887,5 +2036,125 @@ const fn days_in_month(year: i32, month: u32) -> u32 {
             }
         }
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mustard_core::domain::meta::Meta;
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    use serde_json::json;
+
+    // ── DEFECT 1: stage ⨯ phase reconciliation ───────────────────────────────
+
+    fn meta(stage: Option<&str>, phase: Option<&str>, outcome: Option<&str>) -> Meta {
+        Meta {
+            stage: stage.map(str::to_string),
+            phase: phase.map(str::to_string),
+            outcome: outcome.map(str::to_string),
+            ..Meta::default()
+        }
+    }
+
+    #[test]
+    fn phase_execute_promotes_plan_stage_to_implementing() {
+        // The exact defect: rt advanced phase to EXECUTE but left stage=Plan.
+        let m = meta(Some("Plan"), Some("EXECUTE"), Some("Active"));
+        let word = mustard_core::domain::meta::status_word(&m); // "" for Plan
+        assert_eq!(reconcile_status_with_phase(&m, word), "implementing");
+    }
+
+    #[test]
+    fn phase_never_regresses_a_later_stage() {
+        // stage already at QaReview, phase only PLAN → keep the later stage
+        // (status_word("qa-review") = "" today, so reconciliation must NOT
+        // invent "implementing" from the earlier phase).
+        let m = meta(Some("QaReview"), Some("PLAN"), Some("Active"));
+        let word = mustard_core::domain::meta::status_word(&m);
+        assert_eq!(reconcile_status_with_phase(&m, word), word);
+    }
+
+    #[test]
+    fn terminal_completed_is_authoritative_over_phase() {
+        // A closed spec must stay "completed" even if a stale phase says EXECUTE.
+        let m = meta(Some("Close"), Some("EXECUTE"), Some("Completed"));
+        let word = mustard_core::domain::meta::status_word(&m); // "completed"
+        assert_eq!(word, "completed");
+        assert_eq!(reconcile_status_with_phase(&m, word), "completed");
+    }
+
+    #[test]
+    fn blocked_flag_is_authoritative_over_phase() {
+        let mut m = meta(Some("Plan"), Some("EXECUTE"), Some("Active"));
+        m.flags = mustard_core::domain::meta::MetaFlags(mustard_core::Flags {
+            blocked: true,
+            ..mustard_core::Flags::default()
+        });
+        let word = mustard_core::domain::meta::status_word(&m); // "blocked"
+        assert_eq!(reconcile_status_with_phase(&m, word), "blocked");
+    }
+
+    #[test]
+    fn matching_phase_and_stage_is_unchanged() {
+        // phase == stage (both Execute) → already "implementing", no change.
+        let m = meta(Some("Execute"), Some("EXECUTE"), Some("Active"));
+        let word = mustard_core::domain::meta::status_word(&m); // "implementing"
+        assert_eq!(reconcile_status_with_phase(&m, word), "implementing");
+    }
+
+    // ── DEFECT 2: in-progress wave derivation ────────────────────────────────
+
+    fn ev(spec: &str, kind: &str, wave: u32, payload: serde_json::Value) -> HarnessEvent {
+        HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-06-05T10:00:00Z".into(),
+            session_id: "s".into(),
+            wave,
+            actor: Actor { kind: ActorKind::Hook, id: None, actor_type: None },
+            event: kind.into(),
+            payload,
+            spec: Some(spec.into()),
+        }
+    }
+
+    #[test]
+    fn wave_with_activity_no_complete_is_running() {
+        // A tool.use attributed to wave 2 (record-level), no completion → running.
+        let events = vec![ev("alpha", "tool.use", 2, json!({ "tool": "Bash" }))];
+        let running = running_wave_numbers("alpha", &events);
+        assert!(running.contains(&2));
+    }
+
+    #[test]
+    fn explicit_wave_start_marks_running() {
+        let events = vec![ev("alpha", "pipeline.wave.start", 0, json!({ "wave": 3 }))];
+        let running = running_wave_numbers("alpha", &events);
+        assert!(running.contains(&3));
+    }
+
+    #[test]
+    fn completed_wave_is_not_running() {
+        let events = vec![
+            ev("alpha", "tool.use", 1, json!({ "tool": "Read" })),
+            ev("alpha", "pipeline.wave.complete", 0, json!({ "wave": 1 })),
+        ];
+        let running = running_wave_numbers("alpha", &events);
+        assert!(!running.contains(&1), "a completed wave must not be running");
+    }
+
+    #[test]
+    fn other_specs_activity_is_ignored() {
+        let events = vec![ev("beta", "tool.use", 4, json!({ "tool": "Bash" }))];
+        let running = running_wave_numbers("alpha", &events);
+        assert!(running.is_empty());
+    }
+
+    #[test]
+    fn wave_zero_sentinel_is_ignored() {
+        // wave==0 means "outside a wave plan" — never a real wave row.
+        let events = vec![ev("alpha", "tool.use", 0, json!({ "tool": "Bash" }))];
+        let running = running_wave_numbers("alpha", &events);
+        assert!(running.is_empty());
     }
 }

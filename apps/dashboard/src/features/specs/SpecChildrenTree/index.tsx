@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchSpecChildrenTree } from "@/lib/dashboard";
 import { useSpecWaves } from "@/hooks/useSpecWaves";
+import { useSpecWavesPlanned } from "@/hooks/useSpecWavesPlanned";
 import { useSpecQuality } from "@/hooks/useSpecQuality";
+import { mergeWaves } from "../_shared/merge-waves";
 import { SpecChildRow } from "../SpecChildRow";
 import { useT } from "@/lib/i18n";
 
@@ -41,6 +43,11 @@ export function SpecChildrenTree({
 }: SpecChildrenTreeProps) {
   const t = useT();
   const wavesQ = useSpecWaves(projectPath, spec);
+  // Merge event-derived waves with the on-disk wave plan (same union the
+  // "Ondas" detail tab does via `mergeWaves`) so plan-only waves the event
+  // log hasn't reached yet appear here as queued/AGUARDANDO. Without this the
+  // inline expand only showed completed waves while the Ondas tab showed all.
+  const plannedQ = useSpecWavesPlanned(projectPath, spec);
   const qualityQ = useSpecQuality(projectPath, spec);
   const childrenQ = useQuery({
     queryKey: ["spec-children-tree", spec, projectPath],
@@ -70,7 +77,7 @@ export function SpecChildrenTree({
     );
   }
 
-  const waves = wavesQ.data ?? [];
+  const waves = mergeWaves(wavesQ.data ?? [], plannedQ.data);
   const acs = qualityQ.data ?? [];
   const subspecs = childrenQ.data?.subspecs ?? [];
 
