@@ -114,14 +114,47 @@ pub struct ChecklistItem {
     pub path: Option<String>,
 }
 
+/// Strip any pre-existing markdown checkbox/bullet prefix (`- [ ]`, `- [x]`,
+/// `- `) from a task label, returning the bare text a renderer can prefix
+/// `- [ ] ` onto exactly once.
+///
+/// Plan-authored tasks sometimes arrive already formatted as checkbox lines
+/// (the planner emitted markdown instead of bare labels); prefixing those
+/// verbatim produced `- [ ] - [ ]` lines in real wave specs (defect measured
+/// in 3 specs, 2026-06-09). Stripping repeats until no prefix remains, so an
+/// already-doubled label from a previous bad scaffold also collapses to the
+/// bare text. A checked `- [x]`/`- [X]` prefix is stripped the same way: plan
+/// input is always a fresh draft, so any checked state in it is noise —
+/// materialisation always starts unchecked.
+///
+/// Callers that prefix `- [ ] ` themselves (the rt-side `wave_scaffold`
+/// `## Tasks` writer) must route task strings through this helper first;
+/// [`render_checklist_item`] already does.
+#[must_use]
+pub fn normalize_task_label(raw: &str) -> String {
+    let mut label = raw.trim();
+    while let Some(rest) = label
+        .strip_prefix("- [ ]")
+        .or_else(|| label.strip_prefix("- [x]"))
+        .or_else(|| label.strip_prefix("- [X]"))
+        .or_else(|| label.strip_prefix("- "))
+    {
+        label = rest.trim_start();
+    }
+    label.to_string()
+}
+
 /// Render one [`ChecklistItem`] as a canonical `- [ ]` markdown line. The shape
 /// is exactly what the three consumers parse: dash, space, `[ ]`, space, label,
 /// then (when a path is set) ` → <path>` so the auto-mark hook can flip it.
+/// The label is routed through [`normalize_task_label`] so an input that
+/// already carries a checkbox/bullet prefix never renders doubled.
 #[must_use]
 pub fn render_checklist_item(item: &ChecklistItem) -> String {
+    let label = normalize_task_label(&item.label);
     match item.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-        Some(path) => format!("- [ ] {} → {path}", item.label.trim()),
-        None => format!("- [ ] {}", item.label.trim()),
+        Some(path) => format!("- [ ] {label} → {path}"),
+        None => format!("- [ ] {label}"),
     }
 }
 
@@ -584,5 +617,63 @@ mod tests {
         // An empty/whitespace path degrades to the plain form (no dangling arrow).
         let item2 = ChecklistItem { label: "X".into(), path: Some("  ".into()) };
         assert_eq!(render_checklist_item(&item2), "- [ ] X");
+    }
+
+    #[test]
+    fn checkbox_normalize_bare_label_is_untouched() {
+        assert_eq!(normalize_task_label("wire the handler"), "wire the handler");
+        // A leading dash without a space is part of the label, not a bullet.
+        assert_eq!(normalize_task_label("-v flag support"), "-v flag support");
+        // Surrounding whitespace is trimmed like the old render path did.
+        assert_eq!(normalize_task_label("  add the route  "), "add the route");
+    }
+
+    #[test]
+    fn checkbox_normalize_strips_existing_prefixes() {
+        // Unchecked checkbox, plain bullet, and an indented variant all
+        // collapse to the bare label.
+        assert_eq!(normalize_task_label("- [ ] wire the handler"), "wire the handler");
+        assert_eq!(normalize_task_label("- add the route"), "add the route");
+        assert_eq!(normalize_task_label("  - [ ] add the route"), "add the route");
+    }
+
+    #[test]
+    fn checkbox_normalize_strips_checked_prefix_too() {
+        // Decision: plan input is always a fresh draft — nothing has executed
+        // yet, so a `- [x]` arriving from a plan carries no real progress
+        // state. It is stripped like any other prefix and the item
+        // re-renders unchecked (`- [ ]`); progress is only ever recorded by
+        // the auto-mark hook / mark-checklist-item on the materialised spec.
+        assert_eq!(normalize_task_label("- [x] add the route"), "add the route");
+        assert_eq!(normalize_task_label("- [X] add the route"), "add the route");
+        let item = ChecklistItem { label: "- [x] add the route".into(), path: None };
+        assert_eq!(render_checklist_item(&item), "- [ ] add the route");
+    }
+
+    #[test]
+    fn checkbox_normalize_collapses_doubled_prefix() {
+        // The measured defect shape (3 real specs, 2026-06-09): a task that
+        // already arrived checkbox-formatted was prefixed again. Stripping
+        // repeats until stable, so the doubled form also recovers.
+        assert_eq!(
+            normalize_task_label("- [ ] - [ ] wire the handler"),
+            "wire the handler"
+        );
+    }
+
+    #[test]
+    fn checkbox_normalize_render_emits_exactly_one_prefix() {
+        // Pre-checkboxed label must not render `- [ ] - [ ]`...
+        let pre = ChecklistItem {
+            label: "- [ ] wire the handler".into(),
+            path: Some("src/handler.rs".into()),
+        };
+        assert_eq!(
+            render_checklist_item(&pre),
+            "- [ ] wire the handler → src/handler.rs"
+        );
+        // ...and a bare label still gains exactly one.
+        let bare = ChecklistItem { label: "wire the handler".into(), path: None };
+        assert_eq!(render_checklist_item(&bare), "- [ ] wire the handler");
     }
 }

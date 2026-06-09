@@ -444,9 +444,9 @@ mod tests {
     #[test]
     fn stacks_registry_parses() {
         let reg = StackRegistry::builtin().expect("built-in stack registry parses");
-        // The base seeds at least three stacks of distinct ecosystems
-        // (composer/php, pip/python, npm/javascript).
-        assert!(reg.stacks().len() >= 3);
+        // The base seeds at least four stacks of distinct ecosystems
+        // (composer/php, pip/python, npm/javascript, nuget-dotnet/csharp).
+        assert!(reg.stacks().len() >= 4);
         let langs: Vec<_> = reg
             .stacks()
             .iter()
@@ -455,6 +455,7 @@ mod tests {
         assert!(langs.contains(&"php"));
         assert!(langs.contains(&"python"));
         assert!(langs.contains(&"javascript"));
+        assert!(langs.contains(&"csharp"));
         // Every seeded stack carries all three signal classes.
         for s in reg.stacks() {
             assert!(!s.name.is_empty());

@@ -38,3 +38,26 @@ language = "javascript"
 manifest_deps = ["next"]
 path_markers = ["next.config.js", "next.config.mjs", "next.config.ts"]
 code_signatures = ["next/router", "next/navigation", "next/link", "next/server"]
+
+# dotnet/nuget ecosystem. NuGet ids arrive verbatim from the csproj/fsproj
+# `PackageReference Include="..."` attribute (xml-attr format, see
+# apps/scan/manifests.toml), so each term is a full package id — the
+# boundary-aware dep match treats `.` as part of the name, never a boundary,
+# which is why the common EF Core flavors are listed individually.
+# `Program.cs` is deliberately NOT a path marker: every C# project type
+# (console, worker, WPF) ships one, so it is not web-distinctive. A bare
+# `Controllers` marker is avoided too: it would fire on Laravel's
+# `app/Http/Controllers` at a path-component boundary.
+[[stack]]
+name = "aspnet"
+language = "csharp"
+# EF Core packages are deliberately NOT listed: EF is an ORM usable from any
+# host (console, worker), so it is not web evidence — a console+EF app must not
+# converge to the two-class tier on ORM deps alone.
+manifest_deps = [
+    "Microsoft.AspNetCore.OpenApi",
+    "Swashbuckle.AspNetCore",
+    "Microsoft.AspNetCore.Authentication.JwtBearer",
+]
+path_markers = ["appsettings.json", "appsettings.Development.json", "wwwroot", "Properties/launchSettings.json"]
+code_signatures = ["Microsoft.AspNetCore", "WebApplication.CreateBuilder(", "[ApiController]"]
