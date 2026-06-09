@@ -16,7 +16,8 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// Lifecycle status word + spec name + language for the summary header line.
-struct Header {
+/// `pub(crate)` so `close-pipeline` can drive [`build_for_dir`] in-process.
+pub(crate) struct Header {
     status: String,
     name: String,
     lang: String,
@@ -246,8 +247,9 @@ fn follow_ups_from_files(files: &[String], pt: bool) -> Vec<String> {
     hits
 }
 
-/// The rendered model.
-struct Model {
+/// The rendered model. `pub(crate)` so `close-pipeline` folds the summary into
+/// its composite report via [`build_for_dir`] + [`model_json`].
+pub(crate) struct Model {
     done: Vec<String>,
     left: Vec<String>,
     next_steps: Vec<String>,
@@ -453,26 +455,43 @@ pub fn run(spec_dir: Option<&str>, format: &str, self_test: bool) {
         eprintln!("pipeline-summary: missing --spec-dir flag");
         std::process::exit(1);
     };
-    let spec_file = Path::new(spec_dir).join("spec.md");
-    let text = match fs::read_to_string(&spec_file) {
-        Ok(t) => t,
-        Err(err) => {
-            eprintln!("pipeline-summary: cannot read {}: {err}", spec_file.display());
+    let (model, header) = match build_for_dir(Path::new(spec_dir)) {
+        Ok(pair) => pair,
+        Err(msg) => {
+            eprintln!("{msg}");
             std::process::exit(1);
         }
     };
+    if format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&model_json(&model)).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        print!("{}", render(&model, header.lang == "pt-BR"));
+    }
+}
+
+/// Build the summary [`Model`] (+ [`Header`]) for a spec directory — the
+/// non-printing miolo of [`run`], reused in-process by `close-pipeline`.
+/// `Err` carries the stderr message for an unreadable `spec.md`.
+pub(crate) fn build_for_dir(spec_dir: &Path) -> Result<(Model, Header), String> {
+    let spec_file = spec_dir.join("spec.md");
+    let text = fs::read_to_string(&spec_file).map_err(|err| {
+        format!("pipeline-summary: cannot read {}: {err}", spec_file.display())
+    })?;
     // `meta.json` is the single source of truth for `status` + `lang`; the
     // `.md` header parsed by `parse_header` is the legacy fallback.
     let header = apply_meta_override(parse_header(&text), &spec_file);
 
     // pipeline-state (fail-open).
     let mut state = json!({});
-    let spec_base = Path::new(spec_dir)
+    let spec_base = spec_dir
         .canonicalize()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| {
-            Path::new(spec_dir)
+            spec_dir
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default()
@@ -488,17 +507,18 @@ pub fn run(spec_dir: Option<&str>, format: &str, self_test: bool) {
     }
 
     let model = build_model(&header, &text, &state);
-    if format == "json" {
-        let out = json!({
-            "done": model.done,
-            "left": model.left,
-            "nextSteps": model.next_steps,
-            "followUps": model.follow_ups,
-        });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
-    } else {
-        print!("{}", render(&model, header.lang == "pt-BR"));
-    }
+    Ok((model, header))
+}
+
+/// The `--format json` shape (`{done,left,nextSteps,followUps}`) — shared by
+/// the CLI entry and the `close-pipeline` composite report.
+pub(crate) fn model_json(model: &Model) -> Value {
+    json!({
+        "done": model.done,
+        "left": model.left,
+        "nextSteps": model.next_steps,
+        "followUps": model.follow_ups,
+    })
 }
 
 #[cfg(test)]

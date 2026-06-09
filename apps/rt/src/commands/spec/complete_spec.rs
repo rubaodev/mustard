@@ -291,6 +291,15 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
 /// idempotent on phase/status and short-circuit an already-terminal spec).
 pub fn run_complete(cwd: &Path, spec: &str) -> Value {
     run_qa_fail_open(cwd, spec);
+    finalize(cwd, spec)
+}
+
+/// The QA-less tail of [`run_complete`]: the coupled terminal complete
+/// ([`mark_complete`]) plus the fail-open registry rebuild. Reused by
+/// `close-pipeline`, which has ALREADY run QA itself (and gated on
+/// `overall == pass`) — calling `run_complete` there would re-execute every AC
+/// command a second time.
+pub(crate) fn finalize(cwd: &Path, spec: &str) -> Value {
     let complete_value = mark_complete(cwd, spec);
     rebuild_one_fail_open(cwd, spec);
     complete_value

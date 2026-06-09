@@ -33,13 +33,21 @@ use std::time::Instant;
 const AC_TIMEOUT_SECS: u64 = 120;
 
 /// A parsed AC item: `- [ ] AC-N: description — Command: `cmd``.
-struct AcItem {
+///
+/// `pub(crate)` (not `pub`) because `analyze_validation` reuses the exact
+/// qa-run parser to flag AC sections that would later degrade to
+/// `overall: skip` — single parser source, no drift.
+pub(crate) struct AcItem {
     id: String,
     command: String,
 }
 
 /// One AC execution outcome.
-struct AcResult {
+///
+/// `pub(crate)` so `close-pipeline` can carry the criteria of its in-process
+/// QA run into the composite report (fields stay private — consumers go
+/// through [`criteria_json`]).
+pub(crate) struct AcResult {
     id: String,
     status: String,
     exit: Option<i64>,
@@ -71,7 +79,10 @@ fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
 
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
 /// recognizing the EN and PT headings via [`crate::commands::spec::spec_sections`].
-fn extract_ac_section(markdown: &str) -> Option<String> {
+///
+/// `pub(crate)`: shared with `analyze_validation` so section detection and AC
+/// parsing cannot drift from what qa-run actually executes.
+pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
     // Reuse the shared, i18n-aware section extractor so this QA reader and the
     // rewave producer (which carries this section verbatim into `wave-plan.md`)
     // parse the heading identically and cannot drift.
@@ -102,7 +113,10 @@ fn extract_ac_section(markdown: &str) -> Option<String> {
 /// header (`- **AC-` / `- [ ] AC-` …), a blank-line gap, or a `## ` heading —
 /// so a header with no command anywhere yields no item (and never bleeds into
 /// the next AC's command). Fail-open: a malformed block produces no item.
-fn parse_ac_items(section: &str) -> Vec<AcItem> {
+///
+/// `pub(crate)`: `analyze_validation` calls this same parser at ANALYZE time
+/// to warn about sections qa-run would later skip (zero parseable items).
+pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
     let lines: Vec<&str> = section.split('\n').collect();
     let mut items = Vec::new();
     let mut i = 0;
@@ -476,7 +490,7 @@ fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) 
 }
 
 /// The criteria array, as the JSON payload shape.
-fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
+pub(crate) fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
     criteria
         .iter()
         .map(|c| {
@@ -595,9 +609,12 @@ fn write_html_report(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult
 }
 
 /// Result of a QA run — `overall` plus the criteria.
-struct QaResult {
-    overall: String,
-    criteria: Vec<AcResult>,
+///
+/// `pub(crate)` so `close-pipeline` reads the per-criterion detail (which AC
+/// failed) that the count-only [`QaSpecOutcome`] does not carry.
+pub(crate) struct QaResult {
+    pub(crate) overall: String,
+    pub(crate) criteria: Vec<AcResult>,
 }
 
 /// Public outcome type returned by [`run_for_spec`].
@@ -643,31 +660,11 @@ pub fn run_for_spec(spec: &str) -> QaSpecOutcome {
 /// Like [`run_for_spec`] but lets the caller flip [`QaRunOptions::self_invoked`]
 /// to enable the cargo-self-build rewrite.
 pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
-    QA_OPTIONS.with(|cell| cell.set(opts));
-    let outcome = run_for_spec_inner(spec);
-    QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
-    outcome
-}
-
-thread_local! {
-    /// Active [`QaRunOptions`] for the current thread's qa-run.
-    ///
-    /// Set by [`run_for_spec_with_options`] and read by
-    /// [`rewrite_self_invoked_cargo`]. A `thread_local!` Cell — not an env
-    /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
-    /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
-    /// is plain safe Rust.
-    static QA_OPTIONS: std::cell::Cell<QaRunOptions> = const {
-        std::cell::Cell::new(QaRunOptions { self_invoked: false })
-    };
-}
-
-fn run_for_spec_inner(spec: &str) -> QaSpecOutcome {
     let cwd = std::env::current_dir()
         .ok()
         .or_else(|| Some(std::path::PathBuf::from(crate::shared::context::project_dir())))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let result = run_qa(&cwd, spec);
+    let result = run_qa_with_options(&cwd, spec, opts);
     let (mut passed, mut failed, mut skipped) = (0u32, 0u32, 0u32);
     for c in &result.criteria {
         match c.status.as_str() {
@@ -685,6 +682,30 @@ fn run_for_spec_inner(spec: &str) -> QaSpecOutcome {
         skipped,
         total,
     }
+}
+
+/// Cwd-aware QA run returning the full per-criterion [`QaResult`] (not the
+/// count-only outcome). The `close-pipeline` composite uses this so its report
+/// can name the failed ACs. Sets/resets the thread-local [`QaRunOptions`]
+/// around the run exactly like [`run_for_spec_with_options`].
+pub(crate) fn run_qa_with_options(cwd: &Path, spec: &str, opts: QaRunOptions) -> QaResult {
+    QA_OPTIONS.with(|cell| cell.set(opts));
+    let result = run_qa(cwd, spec);
+    QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
+    result
+}
+
+thread_local! {
+    /// Active [`QaRunOptions`] for the current thread's qa-run.
+    ///
+    /// Set by [`run_for_spec_with_options`] and read by
+    /// [`rewrite_self_invoked_cargo`]. A `thread_local!` Cell — not an env
+    /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
+    /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
+    /// is plain safe Rust.
+    static QA_OPTIONS: std::cell::Cell<QaRunOptions> = const {
+        std::cell::Cell::new(QaRunOptions { self_invoked: false })
+    };
 }
 
 /// Run QA for `spec` under `cwd`. Always emits the event + metric.

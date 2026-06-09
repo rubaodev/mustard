@@ -39,9 +39,12 @@
 //!
 //! A missing / unparseable `wave-plan.md`, a non-wave spec, or a single-wave
 //! spec all degrade coherently: the process never panics, always exits 0, and
-//! emits a (possibly empty or single-item) JSON array. A dependency cycle
-//! degrades to source order (every item keeps `level: 0`) rather than dropping
-//! waves.
+//! emits a (possibly empty or single-item) JSON array. A **non-wave spec with
+//! a `spec.md`** (tactical fix / Light scope) emits a one-item plan
+//! (`wave: 0`, role `impl`, no `--wave` in the `prompt_cmd` — see
+//! [`single_spec_plan`]); a spec with no `spec.md` at all still emits `[]`. A
+//! dependency cycle degrades to source order (every item keeps `level: 0`)
+//! rather than dropping waves.
 
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::wave::wave_lib::parse_files_section;
@@ -107,8 +110,9 @@ pub fn run(spec: &str, wave_filter: Option<u32>) {
 }
 
 /// Resolve the spec directory through the canonical accessor, fail-open to the
-/// unchecked composition (mirrors `resume_bootstrap`).
-fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
+/// unchecked composition (mirrors `resume_bootstrap`). `pub(crate)` so
+/// `wave-advance` resolves the same directory the dispatch plan was built from.
+pub(crate) fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
     ClaudePaths::for_project(project)
         .and_then(|p| p.for_spec(spec))
         .map(|sp| sp.dir().to_path_buf())
@@ -118,8 +122,9 @@ fn resolve_spec_dir(project: &Path, spec: &str) -> PathBuf {
 /// Assemble the ordered dispatch items for `spec`.
 ///
 /// Pure aside from filesystem reads; extracted so the tests can drive it with a
-/// temp spec dir.
-fn build_plan(
+/// temp spec dir. `pub(crate)` so `wave-advance` composes the same routing
+/// in-process (single DAG source — no subprocess, no reimplementation).
+pub(crate) fn build_plan(
     project: &Path,
     spec_dir: &Path,
     spec: &str,
@@ -129,7 +134,17 @@ fn build_plan(
     //    `wave-N-{role}/` directories are the fallback when the table is absent.
     let rows = read_wave_rows(spec_dir);
     if rows.is_empty() {
-        return Vec::new();
+        // Non-wave spec (no plan table, no wave dirs): degrade to the
+        // single-spec one-item plan instead of an empty array, so tactical
+        // fixes / Light-scope specs dispatch through the same relay. A spec
+        // with no `spec.md` still yields `[]` (the historical contract for an
+        // unknown spec). The `--wave` filter applies here too: a non-zero
+        // filter against the wave-less item (wave 0) empties the plan.
+        let mut items = single_spec_plan(project, spec_dir, spec);
+        if let Some(w) = wave_filter {
+            items.retain(|it| it.wave == w);
+        }
+        return items;
     }
 
     // 2. Topological level assignment over the wave-number DAG.
@@ -174,6 +189,47 @@ fn render_prompt_cmd(spec: &str, wave: u32, role: &str, subproject: &str) -> Str
         "mustard-rt run agent-prompt-render --spec {spec} --wave {wave} --role {role} \
          --subproject {subproject} --mode first"
     )
+}
+
+/// Single-spec (non-wave) fallback: a spec dir carrying a `spec.md` but no
+/// `wave-plan.md` / `wave-N-{role}/` dirs (tactical fixes, Light scope) emits
+/// a one-item plan.
+///
+/// Shape decisions:
+/// - `wave: 0` — real waves are 1-based, so `0` marks "wave-less" while the
+///   field keeps the numeric shape every consumer already parses.
+/// - `role: "impl"` — the writing role; `recommended_subagent_type` resolves
+///   it to `general-purpose` (never hand-picked).
+/// - `prompt_cmd` carries **no** `--wave` flag (`agent-prompt-render` renders
+///   the spec's own `spec.md` in that case).
+/// - The subproject comes from the spec's `## Files` / `## Arquivos` section
+///   through the same `parse_files_section` + `detect_subproject` pair the
+///   wave path uses; no convergence → `"."`.
+///
+/// A missing `spec.md` (unknown spec) still degrades to the empty array — the
+/// historical contract is untouched.
+fn single_spec_plan(project: &Path, spec_dir: &Path, spec: &str) -> Vec<DispatchItem> {
+    let Ok(text) = mfs::read_to_string(spec_dir.join("spec.md")) else {
+        return Vec::new();
+    };
+    let role = "impl";
+    let files = parse_files_section(&text).unwrap_or_default();
+    let subproject = files_to_subproject(project, &files);
+    vec![DispatchItem {
+        wave: 0,
+        role: role.to_string(),
+        subproject: subproject.clone(),
+        depends_on: Vec::new(),
+        level: 0,
+        prompt_cmd: format!(
+            "mustard-rt run agent-prompt-render --spec {spec} --role {role} \
+             --subproject {subproject} --mode first"
+        ),
+        subagent_type: crate::commands::agent::agent_prompt_render::recommended_subagent_type(
+            role,
+        )
+        .to_string(),
+    }]
 }
 
 // ---------------------------------------------------------------------------
@@ -497,10 +553,18 @@ fn derive_subproject(project: &Path, spec_dir: &Path, wave: u32, role: &str) -> 
         return ".".to_string();
     };
     let files = parse_files_section(&text).unwrap_or_default();
+    files_to_subproject(project, &files)
+}
+
+/// Convert a parsed `## Files` list into the project-relative subproject
+/// string (`apps/<name>` / `packages/<name>`), or `"."` when the files are
+/// empty or do not converge on a single subproject (fail-open). Shared by the
+/// per-wave derivation and the single-spec fallback.
+fn files_to_subproject(project: &Path, files: &[String]) -> String {
     if files.is_empty() {
         return ".".to_string();
     }
-    match detect_subproject(&files, project) {
+    match detect_subproject(files, project) {
         Some(abs) => abs
             .strip_prefix(project)
             .unwrap_or(&abs)
@@ -812,9 +876,11 @@ mod tests {
         assert_eq!(items[0].level, 0);
     }
 
-    /// Non-wave spec (no plan, no wave dirs) → empty array, fail-open.
+    /// Non-wave spec with a `spec.md` (TF-like / Light scope) → exactly one
+    /// `impl` item: wave 0, no deps, subproject inferred from `## Files`, and
+    /// a `prompt_cmd` WITHOUT `--wave`.
     #[test]
-    fn build_plan_non_wave_is_empty() {
+    fn dispatch_single_spec_tf_like_emits_one_item() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
         let project = dir.path();
@@ -825,8 +891,108 @@ mod tests {
             .dir()
             .to_path_buf();
         std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# Flat\n## Tasks\n- x\n").unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Flat\n\n## Files\n- apps/rt/src/foo.rs\n- apps/rt/src/bar.rs\n",
+        )
+        .unwrap();
         let items = build_plan(project, &spec_dir, "flat", None);
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.wave, 0, "wave 0 marks the wave-less single spec");
+        assert_eq!(item.role, "impl");
+        assert_eq!(item.subproject, "apps/rt");
+        assert!(item.depends_on.is_empty());
+        assert_eq!(item.level, 0);
+        assert_eq!(item.subagent_type, "general-purpose");
+        assert!(item.prompt_cmd.starts_with("mustard-rt run agent-prompt-render "));
+        assert!(item.prompt_cmd.contains("--spec flat"));
+        assert!(item.prompt_cmd.contains("--role impl"));
+        assert!(item.prompt_cmd.contains("--subproject apps/rt"));
+        assert!(item.prompt_cmd.contains("--mode first"));
+        assert!(
+            !item.prompt_cmd.contains("--wave"),
+            "single-spec render must not carry --wave: {}",
+            item.prompt_cmd
+        );
+    }
+
+    /// Single-spec fallback with no `## Files` convergence → subproject `"."`.
+    #[test]
+    fn dispatch_single_spec_no_files_falls_back_to_dot() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("dotty")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Dotty\n## Tasks\n- x\n").unwrap();
+        let items = build_plan(project, &spec_dir, "dotty", None);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subproject, ".");
+        assert!(items[0].prompt_cmd.contains("--subproject ."));
+    }
+
+    /// The wave-plan path is untouched by the single-spec fallback: a spec
+    /// WITH a `wave-plan.md` keeps emitting the same multi-item plan (1-based
+    /// waves, deps, per-wave `--wave` flags).
+    #[test]
+    fn dispatch_single_spec_wave_plan_path_unchanged() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("waved")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // A spec.md ALSO exists — the wave plan must still win.
+        std::fs::write(spec_dir.join("spec.md"), "# Waved\n## Files\n- apps/rt/x.rs\n").unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "\
+| Wave | Role | Depende de | Summary |
+|------|------|------------|---------|
+| 1 | a | — | x |
+| 2 | b | [[1]] | y |
+",
+        )
+        .unwrap();
+        let items = build_plan(project, &spec_dir, "waved", None);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].wave, 1);
+        assert!(items[0].prompt_cmd.contains("--wave 1"));
+        assert_eq!(items[1].wave, 2);
+        assert_eq!(items[1].depends_on, vec![1]);
+        assert!(items[1].prompt_cmd.contains("--wave 2"));
+    }
+
+    /// Unknown spec (no dir / no `spec.md`) keeps degrading to `[]` — the
+    /// single-spec fallback never invents an item for a spec that does not
+    /// exist on disk.
+    #[test]
+    fn dispatch_single_spec_missing_spec_degrades_empty() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        let spec_dir = ClaudePaths::for_project(project)
+            .unwrap()
+            .for_spec("ghost")
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        // Dir absent entirely.
+        let items = build_plan(project, &spec_dir, "ghost", None);
+        assert!(items.is_empty());
+        // Dir present but no spec.md → still empty.
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let items = build_plan(project, &spec_dir, "ghost", None);
         assert!(items.is_empty());
     }
 

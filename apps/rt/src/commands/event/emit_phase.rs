@@ -67,21 +67,28 @@ pub fn last_phase_for_spec(cwd: impl AsRef<Path>, spec: &str) -> Option<String> 
 /// behavior as the legacy `close_gate` hook that fired on a pipeline-state
 /// Write/Edit (the trigger that no longer exists post-Wave 2).
 pub fn run(spec: &str, to: &str, from: Option<&str>) {
-    let cwd = project_dir();
+    if let Err(reason) = run_at(Path::new(&project_dir()), spec, to, from) {
+        eprintln!("{reason}");
+        std::process::exit(1);
+    }
+}
 
+/// Cwd-aware miolo of [`run`]: record the `pipeline.phase` transition against
+/// an explicit `cwd` instead of the process-global project dir. Reused by
+/// `plan-materialize` (composing PLAN entry in-process). `Err` carries the
+/// close-gate reason for a blocked `--to CLOSE`; the CLI entry turns that into
+/// the legacy stderr + exit 1, composite callers fold it into their report.
+pub(crate) fn run_at(cwd: &Path, spec: &str, to: &str, from: Option<&str>) -> Result<(), String> {
     // Idempotency: skip when the spec's latest phase already lands on `to`.
-    let last = last_phase_for_spec(&cwd, spec);
+    let last = last_phase_for_spec(cwd, spec);
     if last.as_deref() == Some(to) {
-        return;
+        return Ok(());
     }
 
     // CLOSE transition: run the close-gate sub-gates inline. A strict failure
-    // blocks the transition (exit 1); fail-open on any infrastructure error.
+    // blocks the transition; fail-open on any infrastructure error.
     if to.eq_ignore_ascii_case("CLOSE") {
-        if let Err(reason) = crate::hooks::write::close_gate::gate_close_for_spec(&cwd, spec) {
-            eprintln!("{reason}");
-            std::process::exit(1);
-        }
+        crate::hooks::write::close_gate::gate_close_for_spec(&cwd.to_string_lossy(), spec)?;
     }
 
     // `from` defaults to the spec's last known phase (null when none).
@@ -113,10 +120,9 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
     // Write directly to the NDJSON sink. `pipeline.phase` was previously routed
     // to SQLite via `route::emit` (the `pipeline.*` prefix match), but
     // this sub-spec migrates all phase emission to the pure-NDJSON path.
-    let project = Path::new(&cwd);
     let kind = crate::shared::events::route::classify_kind(&event.event);
     let _ = writer_ndjson::write_event_with_ts(
-        project,
+        cwd,
         Some(spec),
         None,
         &sid,
@@ -129,6 +135,7 @@ pub fn run(spec: &str, to: &str, from: Option<&str>) {
         &event.payload,
         Some(&ts),
     );
+    Ok(())
 }
 
 

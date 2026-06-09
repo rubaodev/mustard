@@ -315,7 +315,15 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
     if !w.tasks.is_empty() {
         let _ = write!(out, "\n{}\n\n", hd.tasks);
         for task in &w.tasks {
-            let _ = writeln!(out, "- [ ] {task}", task = task.trim());
+            // Strip any checkbox/bullet prefix the Plan agent already authored
+            // (`- [ ] foo` → `foo`) via the canonical normaliser, so a
+            // pre-prefixed plan never renders the doubled `- [ ] - [ ]` form
+            // (measured in 3 real specs).
+            let _ = writeln!(
+                out,
+                "- [ ] {task}",
+                task = mustard_core::domain::spec::contract::normalize_task_label(task)
+            );
         }
     }
     if !w.files.is_empty() {
@@ -370,6 +378,20 @@ fn write_if_absent(path: &Path, content: &str) -> bool {
     fs::write_atomic(path, content.as_bytes()).is_ok()
 }
 
+/// Outcome of one scaffold pass — the miolo result [`run`] prints and
+/// `plan-materialize` folds into its composite report.
+pub(crate) enum ScaffoldOutcome {
+    /// The layout was materialised (idempotently).
+    Created {
+        created: Vec<String>,
+        skipped: Vec<String>,
+    },
+    /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
+    EmptyPlan,
+    /// The plan file could not be read or parsed; carries the stderr message.
+    Unreadable(String),
+}
+
 /// Run `mustard-rt run wave-scaffold --spec-dir <dir> --plan <json-file>`.
 ///
 /// Idempotent and fail-open. Stdout is `{"created_files":[...],"skipped":[...]}`.
@@ -397,48 +419,73 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
             .join(plan_arg)
     };
 
-    let raw = match fs::read_to_string(&plan_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("[wave-scaffold] cannot read plan {}: {e}", plan_path.display());
+    match scaffold(&spec_dir, &plan_path) {
+        ScaffoldOutcome::Unreadable(msg) => {
+            eprintln!("{msg}");
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({ "created_files": [], "skipped": [] }))
                     .unwrap_or_else(|_| "{}".to_string())
             );
-            return;
+        }
+        // W10.T10.3 — hard gate: an empty plan is operator error, not "scaffold
+        // nothing". Print to stderr and exit non-zero so the orchestrator notices.
+        ScaffoldOutcome::EmptyPlan => {
+            eprintln!(
+                "[wave-scaffold] ERROR: plan.waves is empty — nothing to scaffold ({})",
+                plan_path.display()
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "created_files": [],
+                    "skipped": [],
+                    "error": "plan.waves is empty",
+                }))
+                .unwrap_or_else(|_| "{}".to_string())
+            );
+            std::process::exit(2);
+        }
+        ScaffoldOutcome::Created { created, skipped } => {
+            let out: Value = json!({
+                "created_files": created,
+                "skipped": skipped,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
+            );
+        }
+    }
+}
+
+/// Materialise the wave layout for an already-resolved `spec_dir` + `plan_path`.
+///
+/// The non-printing miolo of [`run`], reused in-process by
+/// [`crate::commands::pipeline::plan_materialize`] (no subprocess). Warnings
+/// (declared-total mismatch, empty-tasks waves) still go to stderr; the result
+/// is returned typed instead of printed.
+pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
+    let raw = match fs::read_to_string(plan_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return ScaffoldOutcome::Unreadable(format!(
+                "[wave-scaffold] cannot read plan {}: {e}",
+                plan_path.display()
+            ));
         }
     };
     let plan: Plan = match serde_json::from_str::<Plan>(&raw) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[wave-scaffold] plan JSON parse error: {e}");
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({ "created_files": [], "skipped": [] }))
-                    .unwrap_or_else(|_| "{}".to_string())
-            );
-            return;
+            return ScaffoldOutcome::Unreadable(format!(
+                "[wave-scaffold] plan JSON parse error: {e}"
+            ));
         }
     };
 
-    // W10.T10.3 — hard gate: an empty plan is operator error, not "scaffold
-    // nothing". Print to stderr and exit non-zero so the orchestrator notices.
     if plan.waves.is_empty() {
-        eprintln!(
-            "[wave-scaffold] ERROR: plan.waves is empty — nothing to scaffold ({})",
-            plan_path.display()
-        );
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "created_files": [],
-                "skipped": [],
-                "error": "plan.waves is empty",
-            }))
-            .unwrap_or_else(|_| "{}".to_string())
-        );
-        std::process::exit(2);
+        return ScaffoldOutcome::EmptyPlan;
     }
     // W10.T10.3 — mismatch is operator typo, not fatal: warn and continue
     // using the actual length so the table matches the directories on disk.
@@ -462,16 +509,16 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     // plan's `lang` as the standalone fallback. Every generated artefact follows
     // that effective language.
     let lang = plan.lang.as_deref().unwrap_or("pt-BR");
-    let locale = effective_locale(&spec_dir, plan.lang.as_deref());
+    let locale = effective_locale(spec_dir, plan.lang.as_deref());
     let hd = headings(locale);
 
-    let _ = fs::create_dir_all(&spec_dir);
+    let _ = fs::create_dir_all(spec_dir);
 
     let mut created: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut emit = |path: &Path, body: String| {
         let rel = path
-            .strip_prefix(&spec_dir)
+            .strip_prefix(spec_dir)
             .map_or_else(
                 |_| path.to_string_lossy().to_string(),
                 |p| p.to_string_lossy().replace('\\', "/"),
@@ -521,7 +568,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     // and `status` render the wave count from.
     let total_waves = plan.waves.len() as u32;
     write_parent_meta(
-        &spec_dir,
+        spec_dir,
         Meta {
             stage: Some("Plan".into()),
             outcome: Some("Active".into()),
@@ -561,14 +608,7 @@ pub fn run(spec_dir_arg: Option<&str>, plan_arg: Option<&str>) {
     // phase is materialised by code into `qa/report.md` / `review/verdict.md`
     // (D4), not tracked through a dead sidecar.
 
-    let out: Value = json!({
-        "created_files": created,
-        "skipped": skipped,
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
-    );
+    ScaffoldOutcome::Created { created, skipped }
 }
 
 /// Write a per-wave `meta.json` beside a scaffolded wave `spec.md`, only when
@@ -1117,6 +1157,71 @@ mod tests {
         );
         assert!(en.contains("## Tasks"), "en-US → ## Tasks: {en}");
         assert!(!en.contains("## Tarefas"), "en-US must not emit PT heading: {en}");
+    }
+
+    /// Onda-1 fio pendente: a plan whose `tasks` already carry the checkbox
+    /// prefix (`- [ ] foo` / `- [x] bar` / `- baz`) must render a SINGLE
+    /// `- [ ]` per line in the wave spec — never the doubled `- [ ] - [ ]`
+    /// form (measured in 3 real specs). The label is routed through the
+    /// canonical `normalize_task_label` strip.
+    #[test]
+    fn checkbox_normalize_scaffold_prefixed_tasks_render_single_checkbox() {
+        let w = WavePlanEntry {
+            n: 1,
+            role: "rt".to_string(),
+            summary: "s".to_string(),
+            depends_on: vec![],
+            tasks: vec![
+                "- [ ] wire the handler".to_string(),
+                "- [x] already done item".to_string(),
+                "- plain bullet item".to_string(),
+                "bare label".to_string(),
+            ],
+            files: vec![],
+            acceptance: vec![],
+        };
+        let spec = render_wave_spec("epic", &w, &headings(SupportedLocale::EnUs));
+        assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
+        assert!(!spec.contains("- [ ] - [x]"), "doubled checkbox: {spec}");
+        assert!(!spec.contains("- [ ] - plain"), "doubled bullet: {spec}");
+        assert!(spec.contains("- [ ] wire the handler"), "{spec}");
+        assert!(spec.contains("- [ ] already done item"), "{spec}");
+        assert!(spec.contains("- [ ] plain bullet item"), "{spec}");
+        assert!(spec.contains("- [ ] bare label"), "{spec}");
+    }
+
+    /// Same invariant through the REAL plan-JSON path (`run` → deserialize →
+    /// scaffold to disk): pre-prefixed tasks in plan.json never materialise the
+    /// doubled `- [ ] - [ ]` form in the wave spec on disk.
+    #[test]
+    fn checkbox_normalize_scaffold_end_to_end_plan_json() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-prefixed");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan_path = dir.path().join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "s", "depends_on": [],
+                      "tasks": ["- [ ] do the thing", "clean label"] }
+                ],
+                "total_waves": 1,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(
+            Some(spec_dir.to_str().unwrap()),
+            Some(plan_path.to_str().unwrap()),
+        );
+
+        let s1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        assert!(!s1.contains("- [ ] - [ ]"), "doubled checkbox on disk: {s1}");
+        assert!(s1.contains("- [ ] do the thing"), "{s1}");
+        assert!(s1.contains("- [ ] clean label"), "{s1}");
     }
 
     /// The empty-`tasks` retrocompat path: a wave with no checklist materialises

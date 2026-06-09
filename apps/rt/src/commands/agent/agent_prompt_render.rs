@@ -76,6 +76,43 @@ pub fn run(
     budget_tokens: Option<usize>,
 ) {
     let project = PathBuf::from(project_dir());
+    let rendered = render_prompt_at(
+        &project,
+        spec,
+        wave,
+        role,
+        subproject,
+        mode,
+        retry_context_file,
+        task_filter,
+        task_text,
+        budget_tokens,
+    );
+    // stdout = prompt string (raw, no JSON framing).
+    print!("{rendered}");
+}
+
+/// Render the dispatch/retry prompt against an explicit `project` root and
+/// return the String instead of printing it — the miolo of [`run`], reused
+/// in-process by `wave-advance` (which inlines the rendered prompt per
+/// dispatch item instead of handing the orchestrator a `prompt_cmd` to shell).
+///
+/// Fail-open: a missing template block warns on stderr and yields an empty
+/// String (the CLI entry then prints nothing, the historical behaviour).
+#[allow(clippy::too_many_arguments)] // mirrors the CLI flag surface 1:1
+pub(crate) fn render_prompt_at(
+    project: &Path,
+    spec: Option<&str>,
+    wave: Option<u32>,
+    role: &str,
+    subproject: &Path,
+    mode: RenderMode,
+    retry_context_file: Option<&Path>,
+    task_filter: Option<&str>,
+    task_text: Option<&str>,
+    budget_tokens: Option<usize>,
+) -> String {
+    let project = project.to_path_buf();
     // Spec-less paths (the `/scan` guards enrich, `/task` with no scope) pass no
     // `--spec`. They carry no spec directory, no spec memory, and no spec-derived
     // locale — every spec-keyed step below degrades to a project-root fallback.
@@ -98,7 +135,7 @@ pub fn run(
     };
     let Some(mut rendered) = block else {
         eprintln!("agent-prompt-render: WARN: template block missing — emitting empty prompt");
-        return;
+        return String::new();
     };
 
     // ---- Collect placeholder values (fail-open per field). ----
@@ -257,8 +294,7 @@ pub fn run(
         rendered = rendered.replace(&token, "");
     }
 
-    // stdout = prompt string (raw, no JSON framing).
-    print!("{rendered}");
+    rendered
 }
 
 // ---------------------------------------------------------------------------

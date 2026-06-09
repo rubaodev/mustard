@@ -173,7 +173,11 @@ fn ref_resolves(r: &str, spec_dir: &Path, project_roots: &[PathBuf]) -> bool {
 }
 
 /// Run the validation. Returns the issues list.
-fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
+///
+/// `pub(crate)` so `plan-materialize` composes the same checks in-process
+/// (single validator source — no subprocess, no drift) while the CLI entry
+/// [`run`] keeps the stdout/exit contract.
+pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut issues: Vec<Value> = Vec::new();
 
@@ -260,6 +264,25 @@ fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
         }
     }
 
+    // Validation 5: AC format parseability. The AC section heading resolves
+    // (EN `## Acceptance Criteria` / PT `## Critérios de Aceitação`, via the
+    // shared i18n-aware extractor) but ZERO items survive the exact parser
+    // qa-run executes — qa-run would later degrade to `overall: skip`, so the
+    // format problem is surfaced here, at ANALYZE time. An absent section is
+    // deliberately NOT flagged: behaviour stays unchanged for specs that carry
+    // no ACs at this stage.
+    if let Some(section) = crate::commands::review::qa_run::extract_ac_section(content) {
+        if crate::commands::review::qa_run::parse_ac_items(&section).is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "unparseable-ac",
+                "message": "Acceptance Criteria section found but no parseable AC items. \
+                            Expected format: `**AC-N** — title` followed by a line \
+                            `Command: `<runnable command>``.",
+            }));
+        }
+    }
+
     issues
 }
 
@@ -327,6 +350,61 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let issues = validate(&path, &content);
         assert!(issues.iter().any(|i| i["type"] == json!("task-count")));
+    }
+
+    /// A well-formed AC section (the drafter shape: `- **AC-N** — title` +
+    /// indented `Command:` line) must NOT raise `unparseable-ac`.
+    #[test]
+    fn ac_format_validation_parseable_section_is_clean() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — workspace builds green.\n  Command: `cargo build`\n\
+                    - **AC-2** — tests pass.\n  Command: `cargo test`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
+            "{issues:?}"
+        );
+    }
+
+    /// An AC section whose items the qa-run parser cannot read (no `Command:`
+    /// anywhere) yields a WARN `unparseable-ac` with the format hint — the
+    /// exact situation where qa-run later degrades to `overall: skip`.
+    #[test]
+    fn ac_format_validation_malformed_section_warns() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - AC um: roda os testes sem comando declarado\n\
+                    - criterio solto sem id\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        let issue = issues
+            .iter()
+            .find(|i| i["type"] == json!("unparseable-ac"))
+            .unwrap_or_else(|| panic!("expected unparseable-ac WARN: {issues:?}"));
+        assert_eq!(issue["severity"], json!("WARN"));
+        let msg = issue["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("**AC-N**"), "hint must show the exact format: {msg}");
+        assert!(msg.contains("Command:"), "hint must mention the Command: line: {msg}");
+    }
+
+    /// No AC section at all → behaviour unchanged (no `unparseable-ac`).
+    #[test]
+    fn ac_format_validation_absent_section_unchanged() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
+            "{issues:?}"
+        );
+        // The clean-spec baseline stays clean overall.
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]

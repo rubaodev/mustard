@@ -651,6 +651,12 @@ pub enum RunCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Advisory gate: scan the git diff (working tree + staged, `git diff
+    /// HEAD`) for stack-registry literals added to the agnostic surfaces
+    /// (`apps/scan/src` / `packages/core/src` `.rs` files). Always exits 0;
+    /// the verdict is the `ok` field of the JSON report.
+    #[command(name = "hardcode-gate")]
+    HardcodeGate,
     /// Confirm a named harness event landed within a recent window.
     VerifyEmit {
         /// Event name to match (required).
@@ -1469,6 +1475,44 @@ pub enum RunCmd {
         #[arg(long)]
         phase: String,
     },
+    /// Composite PLAN materialisation: wave-scaffold + analyze-validation +
+    /// `pipeline.scope` (full) + `pipeline.phase` PLAN, all in-process.
+    /// Pressupposes `spec.md`/`meta.json` already drafted by `spec-draft`.
+    /// Output: `{"events":[...],"scaffold":{created_files,skipped},`
+    /// `"validation":{ok,issues}}` — byte-stable, ordered.
+    #[command(name = "plan-materialize")]
+    PlanMaterialize {
+        /// Target spec directory.
+        #[arg(long = "spec-dir")]
+        spec_dir: String,
+        /// Path to the plan JSON file.
+        #[arg(long)]
+        plan: String,
+    },
+    /// Composite dispatch face: dispatch-plan + inline agent-prompt-render for
+    /// the NEXT pending wave level. Emits
+    /// `[{wave, role, subproject, subagent_type, prompt}]` with the prompt
+    /// text ready for `Task`. Pending = first dependency level with a wave not
+    /// yet carrying `pipeline.wave.complete`; everything done → `[]`.
+    #[command(name = "wave-advance")]
+    WaveAdvance {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+    },
+    /// Composite CLOSE face: list `review.result` verdicts (advisory), run QA
+    /// in-process, and — only with QA `overall=pass` — finalize via
+    /// complete-spec + render pipeline-summary. QA fail/skip →
+    /// `completed:false` with the reproved ACs, spec NOT closed (the
+    /// `pipeline.complete` QA gate stays the authority — no bypass).
+    /// Output: `{"completed":bool,"qa":{overall,criteria},"reviews":[...],`
+    /// `"summary":...}`.
+    #[command(name = "close-pipeline")]
+    ClosePipeline {
+        /// Spec slug under `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+    },
 }
 
 /// Dispatch a `run` subcommand.
@@ -1711,6 +1755,7 @@ pub fn dispatch(cmd: RunCmd) {
         } => review::review_result::run(spec.as_deref(), verdict.as_deref(), critical, subproject.as_deref()),
         RunCmd::Statusline { preview } => statusline::run(preview),
         RunCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
+        RunCmd::HardcodeGate => review::hardcode_gate::run(),
         RunCmd::VerifyEmit {
             event,
             since,
@@ -2042,6 +2087,14 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::PipelinePrelude { spec, phase } => {
             pipeline::pipeline_prelude::run(pipeline::pipeline_prelude::PreludeOpts { spec, phase });
         }
+        RunCmd::PlanMaterialize { spec_dir, plan } => {
+            pipeline::plan_materialize::run(pipeline::plan_materialize::PlanMaterializeOpts {
+                spec_dir,
+                plan,
+            });
+        }
+        RunCmd::WaveAdvance { spec } => pipeline::wave_advance::run(&spec),
+        RunCmd::ClosePipeline { spec } => pipeline::close_pipeline::run(&spec),
         RunCmd::SpecStatusBackfill { source, dry_run, spec } => {
             spec::spec_status_backfill::run_cli(spec::spec_status_backfill::BackfillOpts {
                 source,
