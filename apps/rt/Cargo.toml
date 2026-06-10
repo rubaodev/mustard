@@ -59,6 +59,11 @@ notify = { workspace = true }
 # `mustard-core`, so the workspace stays on one `sha2` graph.
 sha2 = { workspace = true }
 
+# `lexicon-suggest` parses the lexicon seed/overlay `[terms]` tables (the same
+# tolerant read scan's matcher does). Pinned to the same `1` line as
+# `apps/scan` so the workspace shares one `toml` resolution.
+toml = "1"
+
 [dev-dependencies]
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,

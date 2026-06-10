@@ -1380,6 +1380,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tiny_http",
+ "toml",
  "ureq",
 ]
 

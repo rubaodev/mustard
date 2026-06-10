@@ -29,6 +29,7 @@ pub mod scan_claude;
 pub mod scan_guards;
 pub mod feature;
 pub mod glossary_coverage;
+pub mod lexicon_suggest;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -94,6 +95,27 @@ pub enum RunCmd {
         #[arg(long)]
         context: Vec<String>,
         /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Correlate consecutive `feature.query` events of the active
+    /// session/spec — a `none`-tier term in one query followed by a NEW
+    /// exact/fold/stem term in the next is a confirmed vocabulary bridge —
+    /// into project-lexicon candidates `{missed, bridged, files}`, deduped
+    /// (folded keys) against the lexicon in force (seed + project overlay).
+    /// Without flags it only LISTS (byte-stable JSON; never writes).
+    /// `--accept <missed>=<bridged>` records ONE entry in the project overlay
+    /// `<root>/.claude/lexicons/<pair>.toml` (created from the template shape
+    /// when absent; `[terms]` kept alphabetical, comments preserved) — never
+    /// the embedded seed. Pair resolved like the digest: root `specLang` + `en`.
+    #[command(name = "lexicon-suggest")]
+    LexiconSuggest {
+        /// Accept one candidate as `<missed>=<bridged>` and write it to the
+        /// project lexicon overlay. Omit to list candidates (read-only).
+        #[arg(long)]
+        accept: Option<String>,
+        /// Workspace root. Defaults to the current directory (resolved to the
+        /// workspace anchor like every run-face emitter).
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -1529,6 +1551,7 @@ pub fn dispatch(cmd: RunCmd) {
             context,
             root,
         } => glossary_coverage::run(&intent, &context, &root),
+        RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
         RunCmd::DiffContext {
             parent,
             subproject,

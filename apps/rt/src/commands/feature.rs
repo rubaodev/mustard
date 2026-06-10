@@ -90,6 +90,52 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
     })
 }
 
+/// Compact `feature.query` event payload: the queried terms + the honest
+/// match report (matched/total/reason + per-term term/tier/lang). The per-term
+/// `files` ride along — they are the evidence `lexicon-suggest` cites when a
+/// later re-query confirms a vocabulary bridge. Pure + deterministic; the
+/// payload carries no timestamp of its own (the event channel stamps `ts`).
+fn query_event_payload(terms: &[String], q: &DigestQuery) -> serde_json::Value {
+    json!({
+        "queryTerms": terms,
+        "report": {
+            "matched": q.report.matched,
+            "total": q.report.total,
+            "reason": q.report.reason,
+            "terms": q.report.terms.iter().map(|t| json!({
+                "term": t.term, "tier": t.tier, "lang": t.lang, "files": t.files,
+            })).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// Record the research round as a `feature.query` harness event, attributed to
+/// the active session/spec by the router's resolution chain (the same channel
+/// `emit-event` uses). Fail-open: a failed write never blocks the research
+/// output on stdout.
+fn emit_query_event(payload: serde_json::Value) {
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    let dir = crate::shared::context::project_dir();
+    let ev = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: mustard_core::time::now_iso8601(),
+        session_id: crate::shared::context::session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Cli,
+            id: Some("feature".to_string()),
+            actor_type: None,
+        },
+        event: "feature.query".to_string(),
+        payload,
+        // None on purpose: the router resolves the active spec (env →
+        // session→spec marker) so ANALYZE-time queries land beside the other
+        // session events and post-PLAN queries attribute to the bound spec.
+        spec: None,
+    };
+    let _ = crate::shared::events::route::emit(&dir, &ev);
+}
+
 /// The guidance note for the AI consuming the payload, keyed on the report's
 /// reason (the truth); an empty reason means the payload came from an older
 /// scan binary, so it falls back to the legacy `miss` flag.
@@ -122,7 +168,14 @@ pub fn run(intent: &str, root: &Path) {
     let model = root.join(".claude").join("grain.model.json");
 
     let payload = match Scan::locate().digest_query(&model, &terms) {
-        Ok(q) => payload(intent, &terms, &q),
+        Ok(q) => {
+            // Register the research round (queryTerms + compact report) so
+            // `lexicon-suggest` can later correlate a `none`-tier query with
+            // the successful re-query that bridged it. Only an answered query
+            // is recorded — a spawn failure has no honest report to fold.
+            emit_query_event(query_event_payload(&terms, &q));
+            payload(intent, &terms, &q)
+        }
         Err(err) => {
             eprintln!("feature: scan digest unavailable: {err}");
             json!({
@@ -204,6 +257,35 @@ mod tests {
         let bare: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("bare digest");
         let v = payload("anything", &[], &bare);
         assert_eq!(v["stacks"], json!([]), "empty stacks must stay an empty array: {v}");
+    }
+
+    #[test]
+    fn feature_query_event_payload_is_compact_and_deterministic() {
+        // The recorded event carries ONLY {queryTerms, report} — none of the
+        // bulky insumos fields (anchors/slices/hubs/stacks) and no timestamp
+        // of its own (the event channel stamps `ts`). Per-term entries keep
+        // term/tier/lang + the evidence files lexicon-suggest cites.
+        let q: DigestQuery = serde_json::from_str(
+            r#"{"query":["hierarquia"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("digest payload with report");
+        let terms = vec!["hierarquia".to_string()];
+        let v = query_event_payload(&terms, &q);
+        assert_eq!(v["queryTerms"], json!(["hierarquia"]));
+        assert_eq!(v["report"]["matched"], 0);
+        assert_eq!(v["report"]["total"], 1);
+        assert_eq!(v["report"]["reason"], "none");
+        assert_eq!(v["report"]["terms"][0]["term"], "hierarquia");
+        assert_eq!(v["report"]["terms"][0]["tier"], "none");
+        assert_eq!(v["report"]["terms"][0]["lang"], "");
+        assert_eq!(v["report"]["terms"][0]["files"], json!([]));
+        let obj = v.as_object().expect("object payload");
+        assert_eq!(obj.len(), 2, "exactly queryTerms + report: {v}");
+        assert!(obj.get("ts").is_none(), "no own timestamp in the payload");
+        // Byte-stable: the same inputs serialize to the same bytes.
+        let a = serde_json::to_string(&query_event_payload(&terms, &q)).expect("serializes");
+        let b = serde_json::to_string(&query_event_payload(&terms, &q)).expect("serializes");
+        assert_eq!(a, b);
     }
 
     #[test]
