@@ -1,6 +1,6 @@
 # /mustard:spec — Resume flow (continue pipeline)
 
-Loaded on demand by SKILL Step 5 when `stage=Execute` (or `Analyze`/`QaReview`/`ReviewPending`/`QaPending`/`Close`). All mode decisions (`continued` vs `reanalyzed`), operational spec resolution, stub detection, `needsDiff`/`needsContextSlice`, `lastDispatchFailure` parsing, **and the post-execute REVIEW/QA decision**, have been moved to `mustard-rt run resume-bootstrap --spec X --json`. Literal agent prompt construction was moved to `mustard-rt run agent-prompt-render`; wave routing + prompts arrive **already rendered** via `mustard-rt run wave-advance`. This ref only keeps what the binary cannot decide on its own.
+Loaded on demand by SKILL Step 5 when `stage=Execute` (or `Analyze`/`QaReview`/`ReviewPending`/`QaPending`/`Close`). All mode decisions (`continued` vs `reanalyzed`), operational spec resolution, stub detection, `needsDiff`/`needsContextSlice`, `lastDispatchFailure` parsing, **and the post-execute REVIEW/QA decision**, have been moved to `mustard-rt run resume-bootstrap --spec X --json`. Literal agent prompt construction was moved to `mustard-rt run agent-prompt-render`; wave routing + prompts arrive **already rendered** via `mustard-rt run wave-advance` — including the post-impl **review round** (see below). This ref only keeps what the binary cannot decide on its own.
 
 ## Stage values post-execute (never freelance)
 
@@ -8,7 +8,7 @@ The binary can return three extra `stage` values when all waves complete. The or
 
 | `stage` | `nextAction` | Companion field | What to do |
 |---------|--------------|-----------------|------------|
-| `ReviewPending` | `dispatch-review` | `reviewRoles: [...]` | Dispatch one REVIEW Task per role |
+| `ReviewPending` | `dispatch-review` | `reviewRoles: [...]` | Fallback only (resumed session / missing or rejected verdict): dispatch one REVIEW Task per role. Inside the wave-advance loop the review round already arrives rendered — prefer that path |
 | `QaPending` | `run-qa` | `qaCommand: "..."` | Run `mustard-rt run close-pipeline --spec {specName}` (it chains `qa-run`) — not the manual sequence |
 | `Close` | `emit-complete` | — | Run `mustard-rt run close-pipeline --spec {specName}` — the close happens only when it returns `completed: true` |
 
@@ -32,7 +32,7 @@ The wave **order, routing and prompts** are not interpreted by the LLM. Run:
 mustard-rt run wave-advance --spec {specName}
 ```
 
-It reads the wave DAG and returns the **current round only** — every wave of the first dependency level whose waves lack `pipeline.wave.complete` — as a deterministic JSON array; `[]` when all waves are done. Each item is:
+It reads the wave DAG and returns the **current round only** — every wave of the first dependency level whose waves lack `pipeline.wave.complete` — as a deterministic JSON array. Once every impl wave is complete it returns the **review round** (next section) instead of `[]`; `[]` comes only after that round is covered too. Each item is:
 
 ```json
 { "wave": 2, "role": "cli", "subproject": "apps/cli", "subagent_type": "general-purpose",
@@ -45,18 +45,36 @@ It reads the wave DAG and returns the **current round only** — every wave of t
 
 The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `wave-advance` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / progress); `wave-advance` is the **wave-routing + render** decision. (`dispatch-plan` still exists — use it only to **inspect** the full DAG/levels, e.g. when debugging routing; it is not the dispatch path. Do NOT drive the loop off the bootstrap's scalar `currentWave`: it names one wave, but a round can hold several independent waves of the same level.)
 
+### Review round — REVIEW enters the same loop
+
+Once EVERY impl wave carries `pipeline.wave.complete`, `wave-advance` does not return `[]` yet: it returns the **review round** — one item per **distinct subproject touched by the plan's waves**, in alphabetical order, each with its prompt already rendered:
+
+```json
+{ "wave": 0, "role": "review", "subproject": "apps/cli", "subagent_type": "mustard-review",
+  "prompt": "…the FULL Task prompt, ALREADY RENDERED…" }
+```
+
+Dispatch these exactly like any other round — `prompt` verbatim, the item's `subagent_type`, all in ONE message. What stays with the **orchestrator** is recording each verdict after the review returns:
+
+```bash
+mustard-rt run review-result --spec {specName} --verdict approved|rejected [--critical N] --subproject {subproject}
+```
+
+The `review.result` event is the "already reviewed" signal: re-running `wave-advance` re-emits only the subprojects still lacking one (dedup by the event payload's `subproject`; an absent/null/empty payload subproject counts as `"."` — a whole-project review). Once every touched subproject carries a verdict, `wave-advance` returns `[]` (terminal).
+
 ### Per-level loop
 
-The **round** is exactly the array one `wave-advance` call returns. Process one round at a time — never one wave at a time when the round holds several.
+The **round** is exactly the array one `wave-advance` call returns — impl waves and the review round alike. Process one round at a time — never one wave at a time when the round holds several.
 
-1. **Dispatch the whole round in ONE message.** For each item in the round: run Step 12d (dependency-precheck) on that wave's spec, then dispatch a Task with the item's `prompt` (verbatim) and the item's `subagent_type`. ALL `<invoke>` blocks go in a single message so the agents run concurrently.
-2. **After each wave N in the round returns:**
+1. **Dispatch the whole round in ONE message.** For each item in the round: run Step 12d (dependency-precheck) on that wave's spec (impl waves only — review-round items have no `wave-N-{role}/spec.md`, skip 12d for them), then dispatch a Task with the item's `prompt` (verbatim) and the item's `subagent_type`. ALL `<invoke>` blocks go in a single message so the agents run concurrently.
+2. **After each impl wave N in the round returns:**
    - Commit `/mustard:git commit` style with message `feat(wave-{N}/{role}): {summary}`. Fallback: `git add {files} && git commit -m "..."`.
    - Emit wave completion: `mustard-rt run emit-pipeline --kind pipeline.wave.complete --spec {specName} --payload "{\"wave\":{N},\"duration_ms\":{elapsed}}"`. The projection derives `completedWaves` from these events — no JSON state file.
    - Cache this wave's diff for dependent waves: `rtk git diff HEAD~1 HEAD --stat > .claude/spec/{specName}/wave-{N}-{role}/diff.md` — keep the redirect target **relative** (never an absolute `C:\...` path; the bash gate rejects Windows-style redirect targets). The next round's render (inside `wave-advance`) injects this file; the orchestrator does not pass anything explicitly.
-3. **After the round completes**, run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress, then re-run `wave-advance` — it returns the next round.
-4. When `wave-advance` returns `[]` (no pending wave) → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` (REVIEW, then `close-pipeline` for QA + CLOSE, in that order).
-5. If a wave fails (REJECTED after 2 fix-loops, or BLOCKED) → see Escalation Statuses + `../resume/fix-loop-wave.md`. A failed wave blocks the higher levels that depend on it; independent waves in the same round still complete.
+3. **After each review item in the round returns:** record the verdict — `mustard-rt run review-result --spec {specName} --verdict approved|rejected [--critical N] --subproject {subproject}`. Emitting `review.result` per subproject stays the orchestrator's responsibility (the review agent does not emit it); without it the next `wave-advance` re-emits the same item. No commit, no `pipeline.wave.complete`, no diff cache for review items. REJECTED (any CRITICAL) → Fix Loop Protocol (`../resume/fix-loop-wave.md`) before moving on.
+4. **After the round completes**, run `mustard-rt run wave-tree --spec-dir .claude/spec/{specName}` to show progress, then re-run `wave-advance` — it returns the next round (the review round once every impl wave is complete).
+5. When `wave-advance` returns `[]` (every impl wave complete **and** every touched subproject reviewed) → do **NOT** emit `pipeline.complete`. Re-run `resume-bootstrap` and follow `nextAction` — with the verdicts already recorded it normally goes straight to `close-pipeline` (QA + CLOSE); `ReviewPending` reappears only when a verdict is missing or rejected.
+6. If a wave fails (REJECTED after 2 fix-loops, or BLOCKED) → see Escalation Statuses + `../resume/fix-loop-wave.md`. A failed wave blocks the higher levels that depend on it; independent waves in the same round still complete.
 
 ## Step 12d — Dependency Precheck (factual gate)
 
@@ -96,9 +114,9 @@ See `.claude/pipeline-config.md § Escalation Statuses` and `../resume/fix-loop-
 - NEVER implement code directly — ALL via Task agents (1 per subproject per wave).
 - Wave dispatch: ALL items of one `wave-advance` round (the same dependency level) in ONE SINGLE message.
 - Each sub-agent reads its own `{subproject}/CLAUDE.md` + auto-loads relevant skills.
-- ALWAYS use `mustard-rt run wave-advance` to decide wave order/routing — NEVER read `wave-plan.md` and assemble the dispatch loop by hand. The LLM is a relay: iterate the returned array, pass each item's `prompt` to Task. (`dispatch-plan` is an inspection fallback for the full DAG — not the dispatch path.)
+- ALWAYS use `mustard-rt run wave-advance` to decide wave order/routing **and the post-impl review round** — NEVER read `wave-plan.md` and assemble the dispatch loop by hand. The LLM is a relay: iterate the returned array, pass each item's `prompt` to Task. (`dispatch-plan` is an inspection fallback for the full DAG — not the dispatch path.)
 - NEVER hand-craft prompts — `wave-advance` IS the render: each item's `prompt` arrives already rendered by `agent-prompt-render`. Never build one from scratch.
 - ALWAYS use `mustard-rt run resume-bootstrap` to decide mode/path/diff/slice/`nextAction` — NEVER reimplement those rules in the SKILL.
-- ALWAYS run REVIEW + QA before CLOSE — `pipeline.complete` is refused (exit 2) without `qa.result`(overall=pass). Follow `nextAction` blindly. `close-pipeline` enforces this: QA fail/skip → `completed: false`, no close.
+- ALWAYS run REVIEW + QA before CLOSE — `pipeline.complete` is refused (exit 2) without `qa.result`(overall=pass). REVIEW is NOT a manual side-step: it arrives as a `wave-advance` round (`role: review`, `mustard-review`, prompts rendered) — dispatch it like any round and record each verdict via `review-result --subproject`. Follow `nextAction` blindly. `close-pipeline` enforces this: QA fail/skip → `completed: false`, no close.
 - ALWAYS run dependency-precheck (Step 12d) before dispatch.
-- Wave plan CLOSE only when every wave is in `completedWaves` (count === `totalWaves`, i.e. `wave-advance` returns `[]`) AND `nextAction === "emit-complete"` — then close via `close-pipeline`, never the manual `qa-run` → `complete-spec` → `pipeline-summary` sequence. Do not gate CLOSE on the scalar `currentWave`.
+- Wave plan CLOSE only when every wave is in `completedWaves` (count === `totalWaves`) AND every touched subproject carries a `review.result` (i.e. `wave-advance` returns `[]`) AND `nextAction === "emit-complete"` — then close via `close-pipeline`, never the manual `qa-run` → `complete-spec` → `pipeline-summary` sequence. Do not gate CLOSE on the scalar `currentWave`.
