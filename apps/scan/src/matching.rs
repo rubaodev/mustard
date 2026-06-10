@@ -16,6 +16,12 @@
 //! Weights drop ~10x per tier (Zoekt-style: exact >> fold >> stem >>
 //! glossary), so a real vocabulary hit always outranks a derived one.
 //!
+//! The T4 glossary is layered: the embedded seed (GENERIC business
+//! equivalences only) merged with the scanned project's own lexicon at
+//! `<root>/.claude/lexicons/<pair>.toml` (same shape; project entries win
+//! per key). Domain vocabulary lives with the project, never embedded in
+//! the tool; a missing or malformed overlay degrades silently to the seed.
+//!
 //! Anti-truncation guard (T3): a stemmer happily maps a word ONTO another
 //! that is merely its prefix (both vendored stemmers reduce "cores" and
 //! "core" to one key; the same happens to "cancelado" and "cancel"). That
@@ -35,7 +41,8 @@
 //! nothing in THIS module names one. Fully deterministic: sorted data,
 //! stable iteration, no floats.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use rust_stemmers::Stemmer;
 
@@ -120,7 +127,10 @@ impl Ladder {
     /// only its primary subtag is used). The active set is
     /// `dedup([request, stemmers::FALLBACK_LANG])` — zero language detection, and an unknown
     /// code simply has no stemmer/stoplist rows (degraded, never an error).
-    pub fn new(request_lang: &str) -> Self {
+    /// `project_root` is the SCANNED project's root (from the loaded model,
+    /// never the cwd): each active pair merges that project's lexicon overlay
+    /// on top of the embedded seed (`None` = seed only).
+    pub fn new(request_lang: &str, project_root: Option<&Path>) -> Self {
         let primary = primary_subtag(request_lang);
         let mut langs: Vec<String> = Vec::new();
         for l in [primary.as_str(), crate::stemmers::FALLBACK_LANG] {
@@ -145,7 +155,8 @@ impl Ladder {
         for i in 0..langs.len() {
             for j in (i + 1)..langs.len() {
                 if let Some(seed) = crate::stemmers::lexicon(&langs[i], &langs[j]) {
-                    lexicons.push(parse_lexicon(&seed, &stemmers));
+                    let overlay = project_root.and_then(|r| crate::stemmers::project_lexicon(r, seed.label));
+                    lexicons.push(parse_lexicon(&seed, overlay.as_deref(), &stemmers));
                 }
             }
         }
@@ -224,33 +235,67 @@ impl Lexicon {
     }
 }
 
-/// Parse a vendored lexicon seed into pre-folded, pre-stemmed entries. A
-/// malformed EMBEDDED file is a programmer error caught by any test run —
-/// the same contract as ranking.toml and stopwords.toml.
-fn parse_lexicon(seed: &crate::stemmers::LexiconSeed, stemmers: &[(String, Stemmer)]) -> Lexicon {
-    let v: toml::Value = toml::from_str(seed.toml).expect("embedded lexicon is not valid TOML");
+/// Parse a vendored lexicon seed (plus the scanned project's optional overlay,
+/// same `[terms]` shape) into pre-folded, pre-stemmed entries. Merge is by
+/// folded key, project last: a project entry REPLACES the seed's synonyms for
+/// that key and new keys extend the pair — BTreeMap keeps the merge and the
+/// entry order deterministic.
+fn parse_lexicon(seed: &crate::stemmers::LexiconSeed, overlay: Option<&str>, stemmers: &[(String, Stemmer)]) -> Lexicon {
     let key_si = stemmers.iter().position(|(l, _)| l == seed.key_lang);
     let val_si = stemmers.iter().position(|(l, _)| l == seed.val_lang);
     let stem_with = |si: Option<usize>, w: &str| si.map(|i| stemmers[i].1.stem(w).into_owned());
-    let mut entries: Vec<Entry> = v
-        .get("terms")
+    let mut terms = seed_terms(seed.toml);
+    if let Some(raw) = overlay {
+        for (k, v) in overlay_terms(raw) {
+            terms.insert(k, v);
+        }
+    }
+    let entries: Vec<Entry> = terms
+        .into_iter()
+        .map(|(key, syns)| {
+            let syn_stems = syns.iter().map(|s| stem_with(val_si, s).unwrap_or_else(|| s.clone())).collect();
+            Entry { key_stem: stem_with(key_si, &key), key, syns, syn_stems }
+        })
+        .collect();
+    Lexicon { label: seed.label.to_string(), key_si, val_si, entries }
+}
+
+/// The EMBEDDED seed's `[terms]`, folded lowercase. A malformed embedded file
+/// is a programmer error caught by any test run — the same contract as
+/// ranking.toml and stopwords.toml.
+fn seed_terms(src: &str) -> BTreeMap<String, Vec<String>> {
+    let v: toml::Value = toml::from_str(src).expect("embedded lexicon is not valid TOML");
+    v.get("terms")
         .and_then(|t| t.as_table())
         .expect("embedded lexicon must contain a [terms] table")
         .iter()
         .map(|(k, val)| {
-            let key = fold(&k.to_lowercase());
-            let syns: Vec<String> = val
+            let syns = val
                 .as_array()
                 .expect("each lexicon entry must be an array of synonyms")
                 .iter()
                 .map(|s| fold(&s.as_str().expect("each synonym must be a string").to_lowercase()))
                 .collect();
-            let syn_stems = syns.iter().map(|s| stem_with(val_si, s).unwrap_or_else(|| s.clone())).collect();
-            Entry { key_stem: stem_with(key_si, &key), key, syns, syn_stems }
+            (fold(&k.to_lowercase()), syns)
         })
-        .collect();
-    entries.sort_by(|a, b| a.key.cmp(&b.key));
-    Lexicon { label: seed.label.to_string(), key_si, val_si, entries }
+        .collect()
+}
+
+/// The PROJECT overlay's `[terms]`, folded lowercase — user data, so parsing
+/// is tolerant: invalid TOML or a missing `[terms]` table yields nothing (the
+/// ladder silently keeps the seed) and a malformed entry is skipped
+/// individually. Never a panic, never an error.
+fn overlay_terms(src: &str) -> BTreeMap<String, Vec<String>> {
+    let Ok(v) = toml::from_str::<toml::Value>(src) else { return BTreeMap::new() };
+    let Some(table) = v.get("terms").and_then(|t| t.as_table()) else { return BTreeMap::new() };
+    table
+        .iter()
+        .filter_map(|(k, val)| {
+            let syns: Vec<String> =
+                val.as_array()?.iter().filter_map(|s| s.as_str()).map(|s| fold(&s.to_lowercase())).collect();
+            (!syns.is_empty()).then(|| (fold(&k.to_lowercase()), syns))
+        })
+        .collect()
 }
 
 /// Fold Latin diacritics to their ASCII base letter. A pure character table
@@ -299,18 +344,18 @@ mod tests {
         // in BOTH vendored stemmers — the guard must refuse them at T3, and
         // without a lexicon entry they are honest misses.
         for lang in ["", "pt-BR", "en-US"] {
-            let l = Ladder::new(lang);
+            let l = Ladder::new(lang, None);
             assert!(hit(&l, "core", "cores").is_none(), "cores~core must miss (lang={lang:?})");
             assert!(hit(&l, "charge", "charges").is_none(), "truncation pair is never stem evidence");
         }
         // cancelado~cancel: dead without the pt-en lexicon...
-        let en_only = Ladder::new("en-US");
+        let en_only = Ladder::new("en-US", None);
         assert!(hit(&en_only, "cancel", "cancelado").is_none(), "no glossary, no bridge");
     }
 
     #[test]
     fn ladder_tiers_report_honestly() {
-        let l = Ladder::new("pt-BR");
+        let l = Ladder::new("pt-BR", None);
         assert_eq!(hit(&l, "parentid", "parentid"), Some((1, String::new())), "whole-ident exact");
         assert_eq!(hit(&l, "cobranca", "cobrança"), Some((2, String::new())), "accent fold");
         // Same-language stems, non-truncation surfaces: real morphology.
@@ -325,18 +370,40 @@ mod tests {
 
     #[test]
     fn query_stopwords_cover_both_languages_raw_and_folded() {
-        let l = Ladder::new("pt-BR");
+        let l = Ladder::new("pt-BR", None);
         assert!(l.query_stopword("the"));
         assert!(l.query_stopword("não"), "raw accented form");
         assert!(l.query_stopword("nao"), "folded form equally inert");
         assert!(!l.query_stopword("cobranca"), "domain vocabulary stays");
-        let en = Ladder::new("");
+        let en = Ladder::new("", None);
         assert!(!en.query_stopword("não"), "inactive language list is not loaded");
     }
 
     #[test]
+    fn overlay_merges_with_project_precedence_and_degrades_when_malformed() {
+        // Merge semantics at the parse level (no IO): a project entry REPLACES
+        // the seed's synonyms for its key, new keys extend the pair, and a
+        // malformed overlay yields nothing — the seed stays authoritative.
+        let seed = crate::stemmers::LexiconSeed {
+            label: "pt-en",
+            key_lang: "pt",
+            val_lang: "en",
+            toml: "[terms]\npedido = [\"order\"]\n",
+        };
+        let no_stemmers: Vec<(String, Stemmer)> = Vec::new();
+        let merged = parse_lexicon(&seed, Some("[terms]\nnovo = [\"brand\"]\npedido = [\"quote\"]\n"), &no_stemmers);
+        let keys: Vec<&str> = merged.entries.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["novo", "pedido"], "deterministic key order after merge");
+        let pedido = merged.entries.iter().find(|e| e.key == "pedido").unwrap();
+        assert_eq!(pedido.syns, vec!["quote"], "project synonyms replace the seed's per key");
+        let degraded = parse_lexicon(&seed, Some("not [valid toml"), &no_stemmers);
+        assert_eq!(degraded.entries.len(), 1, "malformed overlay keeps the seed only");
+        assert_eq!(degraded.entries[0].syns, vec!["order"]);
+    }
+
+    #[test]
     fn unknown_language_degrades_to_fallback_rows() {
-        let l = Ladder::new("fr-FR");
+        let l = Ladder::new("fr-FR", None);
         // No vendored stemmer/lexicon for the request language: only the
         // fallback rows are active — degraded, never an error.
         assert_eq!(hit(&l, "study", "studies"), Some((3, "en".into())));

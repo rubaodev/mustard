@@ -16,8 +16,9 @@
 # synonym exactly: no fuzziness on the index side, ever.
 #
 # A new language pair = one `<a>-<b>.toml` file here + one data row in
-# src/stemmers.rs. Projects can extend coverage by growing this catalog —
-# a missing true cognate is an honest miss, preferred over a false one.
+# src/stemmers.rs. This seed carries GENERIC business equivalences only —
+# domain vocabulary belongs to the scanned project's own lexicon overlay
+# (`<root>/.claude/lexicons/<a>-<b>.toml`), merged on top of this seed per key.
 
 [terms]
 aprovacao = ["approval"]
@@ -32,6 +33,7 @@ endereco = ["address"]
 estorno = ["refund", "chargeback"]
 fatura = ["invoice"]
 fornecedor = ["supplier", "vendor"]
+hierarquia = ["hierarchy", "parent"]
 imposto = ["tax"]
 juros = ["interest"]
 lancamento = ["entry", "posting"]
@@ -43,5 +45,5 @@ permissao = ["permission"]
 recebivel = ["receivable"]
 relatorio = ["report"]
 saldo = ["balance"]
-titulo = ["receivable"]
 usuario = ["user"]
+vencido = ["overdue", "expired"]

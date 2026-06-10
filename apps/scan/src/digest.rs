@@ -223,7 +223,10 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     let c = corpus(model);
     let dig = catalog(model, &c);
     let stop = stopwords();
-    let ladder = crate::matching::Ladder::new(request_lang);
+    // The ladder's project lexicon overlay resolves against the SCANNED
+    // project's root from the loaded model — never the cwd, since the tool
+    // can run from anywhere.
+    let ladder = crate::matching::Ladder::new(request_lang, Some(std::path::Path::new(&model.root)));
     // Query tokens: trimmed, lowercased, length-floored AND stopword-filtered —
     // a glue token like "and" must never act as a discriminator, neither
     // against the term index nor against paths/labels via `hit`. Natural-

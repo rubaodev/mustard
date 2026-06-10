@@ -31,7 +31,11 @@ pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
         if t.len() >= 3 && t.chars().any(|c| c.is_alphabetic()) && seen.insert(t.clone()) {
             out.push(t);
         }
-        if out.len() >= 16 {
+        // Cap at 32: function words eat slots BEFORE the digest's query-side
+        // stopword filter runs, so a tighter cap cut discriminative terms off
+        // the tail of prose intents. Over-querying is harmless — the digest
+        // ORs terms, drops natural-language glue, and reports per term.
+        if out.len() >= 32 {
             break;
         }
     }
@@ -159,7 +163,19 @@ mod tests {
     #[test]
     fn domain_terms_caps_length() {
         let many = (0..50).map(|i| format!("term{i}")).collect::<Vec<_>>().join(" ");
-        assert!(domain_terms(&many).len() <= 16);
+        assert!(domain_terms(&many).len() <= 32);
+    }
+
+    #[test]
+    fn domain_terms_keeps_tail_terms_of_long_prose_intents() {
+        // Prose intents front-load function words (filtered only query-side,
+        // by the digest); the discriminative vocabulary often sits past the
+        // 16th unique token, where the old cap silently cut it.
+        let filler = (0..20).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let t = domain_terms(&format!("{filler} hierarquia vencido"));
+        assert!(t.len() > 16, "cap must not stop at 16: {t:?}");
+        assert!(t.contains(&"hierarquia".to_string()), "term beyond position 16 kept: {t:?}");
+        assert!(t.contains(&"vencido".to_string()), "term beyond position 16 kept: {t:?}");
     }
 
     #[test]

@@ -11,6 +11,9 @@
 //!   * the bilingual seed lexicon bridges across languages with the tier and
 //!     pair reported ("cancelado" -> "cancel" via pt-en), and ONLY when the
 //!     request language activates the pair — no glossary, no bridge;
+//!   * the scanned project's own lexicon overlay
+//!     (`<root>/.claude/lexicons/<pair>.toml`, root from the MODEL) extends
+//!     the seed, wins per key, and degrades silently when absent/malformed;
 //!   * the answer carries the per-term report (term, tier, lang, files) plus
 //!     the aggregate matched k/n and reason; byte-stable across runs.
 
@@ -146,6 +149,88 @@ fn same_language_stem_bridges_real_morphology_only() {
     let t = sole_report_term(&q);
     assert_eq!(t["tier"], "stem");
     assert_eq!(t["lang"], "en", "the stemmer language is the evidence: {q}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Write a project lexicon overlay into the fixture root, where the digest
+/// resolves it from the model's `root` field (never the cwd).
+fn write_overlay(root: &Path, body: &str) {
+    let dir = root.join(".claude").join("lexicons");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("pt-en.toml"), body).unwrap();
+}
+
+#[test]
+fn project_lexicon_overlay_bridges_domain_vocabulary() {
+    // "titulo" left the embedded seed (fintech domain jargon — in a CMS,
+    // titulo = title): without a project lexicon it is an honest miss, the
+    // seed-only behavior. The project's own overlay is what bridges it onto
+    // the repo's vocabulary, reported as tier `lexicon` with the pair named.
+    let (dir, model) = write_model("overlay", serde_json::json!([module("src/finance/payable.rs", &["PayableInvoice"])]));
+
+    let (_, before) = run_query(&model, "titulo", "pt-BR", "q-before.json");
+    assert!(before["matched_terms"].as_array().unwrap().is_empty(), "no overlay, seed has no domain entry: {before}");
+    assert_eq!(sole_report_term(&before)["tier"], "none");
+
+    write_overlay(&dir, "[terms]\ntitulo = [\"payable\"]\n");
+    let (_, with) = run_query(&model, "titulo", "pt-BR", "q-with.json");
+    let matched: Vec<&str> =
+        with["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+    assert!(matched.contains(&"payable"), "project entry bridges onto the index: {with}");
+    let t = sole_report_term(&with);
+    assert_eq!(t["tier"], "lexicon", "tier reported: {with}");
+    assert_eq!(t["lang"], "pt-en", "pair reported: {with}");
+    assert_eq!(t["files"][0], "src/finance/payable.rs", "files where the vocabulary lives: {with}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn project_lexicon_entries_win_over_the_seed() {
+    // The same key on both sides: the project's synonyms REPLACE the seed's
+    // (merge by key, project last) — "pedido" stops bridging onto the seed's
+    // "order" and bridges onto the project's "quote" instead.
+    let (dir, model) = write_model(
+        "precedence",
+        serde_json::json!([module("src/sales/order.rs", &["OrderService"]), module("src/sales/quote.rs", &["QuoteService"])]),
+    );
+    write_overlay(&dir, "[terms]\npedido = [\"quote\"]\n");
+
+    let (_, q) = run_query(&model, "pedido", "pt-BR", "q-precedence.json");
+    let matched: Vec<&str> = q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+    assert!(matched.contains(&"quote"), "project synonym bridges: {q}");
+    assert!(!matched.contains(&"order"), "overridden seed synonym no longer bridges: {q}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn malformed_project_lexicon_degrades_to_the_seed() {
+    // Invalid TOML in the overlay must never panic or fail the query — the
+    // ladder silently keeps the embedded seed (run_query asserts exit 0).
+    let (dir, model) = write_model("badlex", serde_json::json!([module("src/billing/cancel.rs", &["CancelCharge"])]));
+    write_overlay(&dir, "not [valid toml");
+
+    let (_, q) = run_query(&model, "cancelado", "pt-BR", "q-badlex.json");
+    let t = sole_report_term(&q);
+    assert_eq!(t["tier"], "lexicon", "seed entry still bridges: {q}");
+    assert_eq!(t["lang"], "pt-en");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn seed_entry_vencido_bridges_overdue() {
+    // The new generic seed entry works with no project lexicon present: the
+    // seed remains the always-on floor of generic business equivalences.
+    let (dir, model) = write_model("vencido", serde_json::json!([module("src/billing/overdue.rs", &["OverdueInvoice"])]));
+    let (_, q) = run_query(&model, "vencido", "pt-BR", "q-vencido.json");
+    let matched: Vec<&str> = q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
+    assert!(matched.contains(&"overdue"), "vencido -> overdue via the seed: {q}");
+    let t = sole_report_term(&q);
+    assert_eq!(t["tier"], "lexicon");
+    assert_eq!(t["lang"], "pt-en");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

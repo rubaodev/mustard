@@ -69,6 +69,16 @@ pub fn lexicon(a: &str, b: &str) -> Option<LexiconSeed> {
     }
 }
 
+/// The SCANNED project's own lexicon for a pair label —
+/// `<root>/.claude/lexicons/<label>.toml`, same `[terms]` shape as the seed.
+/// The seed carries only generic business equivalences; domain vocabulary
+/// lives with the project, never embedded in the tool ("we don't know where
+/// mustard will run"). The root comes from the loaded model, never the cwd.
+/// `None` (missing/unreadable file) degrades to seed-only — never an error.
+pub fn project_lexicon(root: &std::path::Path, label: &str) -> Option<String> {
+    std::fs::read_to_string(root.join(".claude").join("lexicons").join(format!("{label}.toml"))).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
