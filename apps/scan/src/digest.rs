@@ -138,9 +138,11 @@ pub struct TermD {
 
 /// A focused slice of the digest matching some domain terms — the cheap
 /// per-interaction lookup a `feature` step does (a few KB, not the whole
-/// catalog). `miss=true` means nothing matched: the caller MUST NOT conclude
-/// "no precedent" (the term index has false negatives) — it should confirm by
-/// reading, or treat the area as net-new.
+/// catalog). The truth about what matched is the [`MatchReport`]: per request
+/// term, which ladder tier carried it (or `none`), plus the aggregate
+/// `matched k/n` and a reason. The legacy `miss` flag stays for cheap read
+/// compatibility, but a `miss=false` answer can still be `weak` — consumers
+/// must read the report, never just the flag.
 #[derive(Serialize)]
 pub struct QueryResult {
     pub query: Vec<String>,
@@ -170,49 +172,115 @@ pub struct QueryResult {
     /// touchpoints are appended as a low-priority tail. The handful the
     /// feature reads for ground truth instead of the repo.
     pub files: Vec<String>,
+    /// Legacy flag: every view above came back empty. Kept additively for old
+    /// readers; the `report` is the truth (a non-miss can still be `weak`).
     pub miss: bool,
-    /// Why a non-miss answer still carries no anchorable surface.
-    /// `generated_only`: every match lives in machine-written modules
-    /// (generated/vendored — their samples are filtered out), so the caller
-    /// should regenerate/extend the generator's input, never edit the matches.
+    /// Honest per-term match report — what each request term matched, at
+    /// which ladder tier, in which language, and where.
+    pub report: MatchReport,
+    /// Legacy duplicate of `report.reason == "generated_only"`, kept for old
+    /// readers (additive compat).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// Whole-token match between a repo token `tk` and a query token `q`, with a
-/// length-gated prefix EITHER way so "charge"~"charges" match but a short token
-/// like "tax" never matches "taxonomy". Same whole-token discipline the spec
-/// compiler uses (`spec::token_seq_in`) — one matching philosophy in the crate.
-fn token_match(tk: &str, q: &str) -> bool {
-    tk == q || (q.len() >= 4 && tk.starts_with(q)) || (tk.len() >= 4 && q.starts_with(tk))
+/// The aggregate match report: `matched` of `total` request terms found a
+/// rung on the ladder, and `reason` summarizes the answer's strength:
+/// `none` (nothing matched, no structural hit), `generated_only` (matches
+/// exist but only in machine-written modules), `weak` (under half the terms
+/// matched, or nothing matched at the exact/fold tiers — re-query in the
+/// code's own vocabulary or explore before trusting), `strong` (solid
+/// precedent). Pure serde data, mirrored by the consumer contract in
+/// mustard-core (`domain::scan::DigestQuery`).
+#[derive(Serialize)]
+pub struct MatchReport {
+    pub matched: usize,
+    pub total: usize,
+    pub reason: String,
+    pub terms: Vec<TermReport>,
+}
+
+/// One request term's outcome: the ladder tier that carried it (`exact` |
+/// `fold` | `stem` | `lexicon` | `none`), the natural-language evidence
+/// (stemmer language for `stem`, pair label for `lexicon`, empty otherwise)
+/// and the top sample files where the matched vocabulary lives.
+#[derive(Serialize)]
+pub struct TermReport {
+    pub term: String,
+    pub tier: String,
+    pub lang: String,
+    pub files: Vec<String>,
 }
 
 /// Look up the digest by domain term(s) — OR across terms. Returns only the
 /// matching slice (a few KB, capped) so the caller spends little per
 /// interaction. Query terms shorter than 3 chars are ignored (mirrors the
-/// mined-token floor). Deterministic.
-pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
+/// mined-token floor). `request_lang` is the DECLARED language of the request
+/// (root config / CLI — never detected); matching runs on the tier ladder in
+/// `matching` (exact > fold > same-language stem > lexicon), and the answer
+/// carries a per-term [`MatchReport`]. Deterministic.
+pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> QueryResult {
     let c = corpus(model);
     let dig = catalog(model, &c);
     let stop = stopwords();
+    let ladder = crate::matching::Ladder::new(request_lang);
     // Query tokens: trimmed, lowercased, length-floored AND stopword-filtered —
     // a glue token like "and" must never act as a discriminator, neither
-    // against the term index nor against paths/labels via `hit`.
-    let ql: Vec<String> =
-        terms.iter().map(|s| s.trim().to_lowercase()).filter(|s| s.len() >= 3 && !stop.contains(s)).collect();
-    // A name/path "hits" when any of its tokens matches any query token.
+    // against the term index nor against paths/labels via `hit`. Natural-
+    // language glue in the active languages (vendored stoplists) is dropped
+    // by the same contract.
+    let ql: Vec<String> = terms
+        .iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 3 && !stop.contains(s) && !ladder.query_stopword(s))
+        .collect();
+    let qsigs: Vec<crate::matching::Sig> = ql.iter().map(|q| ladder.sig(q)).collect();
+    // A name/path "hits" when any of its tokens matches any query token on
+    // any rung of the ladder.
     let hit = |hay: &str| {
         let toks = tokenize(hay);
-        ql.iter().any(|q| toks.iter().any(|tk| token_match(tk, q)))
+        toks.iter().any(|tk| {
+            let ks = ladder.sig(tk);
+            qsigs.iter().any(|qs| ladder.tier(&ks, qs).is_some())
+        })
     };
 
-    // Matched terms ranked by RARITY (count asc, stable tie-break on the term):
-    // the rare term is the discriminative one, so under the per-query cap it
-    // must survive while the frequent matches are the ones trimmed.
-    let mut matched_terms: Vec<TermD> = dig.terms.into_iter().filter(|t| ql.iter().any(|q| token_match(&t.term, q))).collect();
-    matched_terms.sort_by(|a, b| a.count.cmp(&b.count).then(a.term.cmp(&b.term)));
-    let terms_omitted = matched_terms.len().saturating_sub(Q_MAX_TERMS);
-    matched_terms.truncate(Q_MAX_TERMS);
+    // One index term's hit for one query token — the raw material of the
+    // per-term match report.
+    struct QHit {
+        tier: u8,
+        lang: String,
+        count: usize,
+        term: String,
+        samples: Vec<String>,
+    }
+    // Sweep the UNCAPPED term index once: per index term, the best (lowest)
+    // tier across the query tokens; per query token, every hit. BTree-ordered
+    // terms + fixed query order keep every outcome deterministic.
+    let mut matched: Vec<(u8, TermD)> = Vec::new(); // (tier, term) for ranking
+    let mut qhits: Vec<Vec<QHit>> = (0..ql.len()).map(|_| Vec::new()).collect();
+    for t in dig.terms.into_iter() {
+        let ks = ladder.sig(&t.term);
+        let mut best: Option<u8> = None;
+        for (qi, qs) in qsigs.iter().enumerate() {
+            if let Some(h) = ladder.tier(&ks, qs) {
+                qhits[qi].push(QHit { tier: h.tier, lang: h.lang, count: t.count, term: t.term.clone(), samples: t.samples.clone() });
+                best = Some(best.map_or(h.tier, |b: u8| b.min(h.tier)));
+            }
+        }
+        if let Some(tier) = best {
+            matched.push((tier, t));
+        }
+    }
+    // Matched terms ranked by TIER then RARITY (count asc, stable tie-break on
+    // the term): a real vocabulary hit outranks a derived one, and among equals
+    // the rare term is the discriminative one, so under the per-query cap the
+    // frequent low-tier matches are the ones trimmed.
+    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.count.cmp(&b.1.count)).then(a.1.term.cmp(&b.1.term)));
+    let terms_omitted = matched.len().saturating_sub(Q_MAX_TERMS);
+    matched.truncate(Q_MAX_TERMS);
+    let tiers: Vec<u8> = matched.iter().map(|(tier, _)| *tier).collect();
+    let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
     let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();
     slices.truncate(Q_MAX_SLICES);
@@ -224,14 +292,16 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
 
     // Anchor candidates, MATCH-FIRST: a module enters on a term match in its
     // DECLARATIONS, never on its path alone — a hub that only path-hits stays
-    // listed in `hubs` but does not anchor. Score ×1024 = Σ BM25 over the
-    // matched terms carrying the module (summing IS the co-occurrence signal:
-    // the file where the queried concepts meet accumulates every term's
-    // contribution) + α·log2(1+fan_in), a small additive tiebreak that never
-    // outranks a term match. Structural stop-files (rank::anchor_stopfile —
-    // fan-in above the configured percent of the repo's module count) leave
-    // anchor eligibility entirely. Ties break on the first (rarest) matched
-    // term that carries the module, then on the path — fully deterministic.
+    // listed in `hubs` but does not anchor. Score ×1024 = Σ tier-weight × BM25
+    // over the matched terms carrying the module (summing IS the co-occurrence
+    // signal: the file where the queried concepts meet accumulates every
+    // term's contribution; the ~10×-per-rung tier weight keeps an exact
+    // vocabulary hit above any derived one) + α·log2(1+fan_in), a small
+    // additive tiebreak that never outranks a term match. Structural
+    // stop-files (rank::anchor_stopfile — fan-in above the configured percent
+    // of the repo's module count) leave anchor eligibility entirely. Ties
+    // break on the first (best-tier, rarest) matched term that carries the
+    // module, then on the path — fully deterministic.
     let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
     let anchorable = |p: &str| {
         crate::classify::anchor_eligible(class(p))
@@ -248,7 +318,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
             }
             let score = crate::rank::bm25_x1024(*tf, c.doc_len.get(path).copied().unwrap_or(0), c.avgdl_x1024);
             let e = cand.entry(path).or_insert((0, i));
-            e.0 += score;
+            e.0 += crate::matching::weight(tiers[i]) * score;
         }
     }
     let mut ranked: Vec<(&str, u64, usize)> = cand
@@ -278,13 +348,52 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     // nothing) and no slice/contract/hub/touchpoint matched. Say WHY instead
     // of handing back an empty `files` the caller would misread as "no
     // precedent".
-    let generated_only = !matched_terms.is_empty()
-        && matched_terms.iter().all(|t| t.samples.is_empty())
-        && slices.is_empty()
-        && contracts.is_empty()
-        && hubs.is_empty()
-        && touchpoints.is_empty();
+    let structural = !(slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty());
+    let generated_only = !matched_terms.is_empty() && matched_terms.iter().all(|t| t.samples.is_empty()) && !structural;
     let reason = generated_only.then(|| "generated_only".to_string());
+
+    // Per-request-term report. Each term's hits sort by tier asc, count asc,
+    // term asc (the matched_terms discipline); the best hit names the tier +
+    // language evidence, and the files are the best-tier hits' samples —
+    // rarest vocabulary first, order-preserving dedup, a handful only.
+    let report_terms: Vec<TermReport> = ql
+        .iter()
+        .enumerate()
+        .map(|(qi, q)| {
+            let hits = &mut qhits[qi];
+            hits.sort_by(|a, b| a.tier.cmp(&b.tier).then(a.count.cmp(&b.count)).then(a.term.cmp(&b.term)));
+            let Some(first) = hits.first() else {
+                return TermReport { term: q.clone(), tier: crate::matching::tier_name(0).into(), lang: String::new(), files: Vec::new() };
+            };
+            let (best, lang) = (first.tier, first.lang.clone());
+            let mut tfiles: Vec<String> = Vec::new();
+            for sample in hits.iter().filter(|h| h.tier == best).flat_map(|h| h.samples.iter()) {
+                if !tfiles.contains(sample) {
+                    tfiles.push(sample.clone());
+                }
+            }
+            tfiles.truncate(MAX_TERM_SAMPLES);
+            TermReport { term: q.clone(), tier: crate::matching::tier_name(best).into(), lang, files: tfiles }
+        })
+        .collect();
+    let k = report_terms.iter().filter(|t| t.tier != "none").count();
+    let n = ql.len();
+    // `weak` = thin evidence: under half the request vocabulary found a rung,
+    // or nothing landed on the exact/fold tiers (everything is stem/lexicon-
+    // derived) — the caller should re-query in the code's own vocabulary (the
+    // matched terms/files show it) or explore before trusting the answer.
+    let has_solid = report_terms.iter().any(|t| t.tier == "exact" || t.tier == "fold");
+    let reason_word = if n == 0 || (k == 0 && !structural) {
+        "none"
+    } else if generated_only {
+        "generated_only"
+    } else if k * 2 < n || !has_solid {
+        "weak"
+    } else {
+        "strong"
+    };
+    let report = MatchReport { matched: k, total: n, reason: reason_word.into(), terms: report_terms };
+
     QueryResult {
         query: ql,
         detected_stacks: dig.detected_stacks,
@@ -296,6 +405,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
         touchpoints,
         files,
         miss,
+        report,
         reason,
     }
 }
@@ -450,7 +560,22 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         len_sum += m.declarations.len();
         docs += 1;
         for d in &m.declarations {
-            for tok in tokenize(&d.name) {
+            let toks = tokenize(&d.name);
+            // ONE extra entry per declaration: the whole identifier, lowercased
+            // and stripped of separators ("SplitAsync" -> "splitasync",
+            // "parent_id" -> "parentid"). Tier-1 of the match ladder accepts
+            // it as an exact key, so a same-case or concatenated request term
+            // lands without any prefix guessing. Skipped when it equals the
+            // single token (no double count) and under the same glue rules.
+            let ident: String = d.name.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>().to_lowercase();
+            if ident.len() >= 3
+                && ident.chars().any(|ch| ch.is_alphabetic())
+                && !(toks.len() == 1 && toks[0] == ident)
+                && !stop.contains(&ident)
+            {
+                *postings.entry(ident).or_default().entry(m.path.as_str()).or_insert(0) += 1;
+            }
+            for tok in toks {
                 if stop.contains(&tok) {
                     continue;
                 }

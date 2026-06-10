@@ -87,10 +87,51 @@ pub struct DigestQuery {
     /// Real files to read next (anchor candidates), hubs first.
     #[serde(default)]
     pub files: Vec<String>,
-    /// `true` when nothing matched — do NOT conclude "no precedent" (the term
-    /// index has false negatives and does not do synonyms); confirm by reading.
+    /// Legacy flag: `true` when every view came back empty. Kept for payloads
+    /// from older scan binaries; [`Self::report`] is the truth — a non-miss
+    /// answer can still be `weak`.
     #[serde(default)]
     pub miss: bool,
+    /// Honest per-term match report (scan's tier ladder): what each request
+    /// term matched, at which tier, in which language, and where — plus the
+    /// aggregate `matched k/n` and a reason. Defaulted so payloads from an
+    /// older scan binary (without the field) keep deserialising; an empty
+    /// `reason` means "old binary, fall back to `miss`".
+    #[serde(default)]
+    pub report: DigestReport,
+}
+
+/// The aggregate match report of a `digest --query` answer. Reasons:
+/// `none` (nothing matched — treat as net-new, confirm by reading),
+/// `generated_only` (matches live only in machine-written modules —
+/// regenerate, never edit them), `weak` (under half the terms matched, or
+/// only stem/lexicon-derived matches — re-query in the code's vocabulary or
+/// explore), `strong` (solid precedent). Empty = payload predates the report.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DigestReport {
+    #[serde(default)]
+    pub matched: usize,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub terms: Vec<TermReport>,
+}
+
+/// One request term's outcome on scan's match ladder: the tier that carried
+/// it (`exact` | `fold` | `stem` | `lexicon` | `none`), the natural-language
+/// evidence (stemmer language / lexicon pair label; empty for exact/fold)
+/// and the top sample files where the matched vocabulary lives.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TermReport {
+    pub term: String,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub lang: String,
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -411,11 +452,35 @@ mod tests {
 
     #[test]
     fn digest_query_deserializes_grain_output() {
-        let json = r#"{"query":["tenant"],"matched_terms":[{"term":"tenant","count":242,"samples":["a.cs"]}],"terms_omitted":0,"slices":[],"contracts":[],"hubs":[{"module":"ICurrentTenant.cs","degree":738}],"touchpoints":[],"files":["ICurrentTenant.cs"],"miss":false}"#;
+        // The REAL shape the scan binary emits since the tier-ladder redesign:
+        // `report` with per-term {term, tier, lang, files} + matched k/n +
+        // reason, alongside the legacy `miss` flag.
+        let json = r#"{"query":["tenant","cancelado"],"matched_terms":[{"term":"tenant","count":242,"samples":["a.cs"]}],"terms_omitted":0,"slices":[],"contracts":[],"hubs":[{"module":"ICurrentTenant.cs","degree":738}],"touchpoints":[],"files":["ICurrentTenant.cs"],"miss":false,"report":{"matched":2,"total":2,"reason":"strong","terms":[{"term":"tenant","tier":"exact","lang":"","files":["a.cs"]},{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["b.cs"]}]}}"#;
         let q: DigestQuery = serde_json::from_str(json).expect("valid grain digest json");
         assert_eq!(q.matched_terms.len(), 1);
         assert_eq!(q.matched_terms[0].count, 242);
         assert_eq!(q.hubs[0].module, "ICurrentTenant.cs");
         assert!(!q.miss);
+        assert_eq!(q.report.matched, 2);
+        assert_eq!(q.report.total, 2);
+        assert_eq!(q.report.reason, "strong");
+        assert_eq!(q.report.terms.len(), 2);
+        assert_eq!(q.report.terms[0].tier, "exact");
+        assert_eq!(q.report.terms[1].tier, "lexicon");
+        assert_eq!(q.report.terms[1].lang, "pt-en");
+        assert_eq!(q.report.terms[1].files, vec!["b.cs"]);
+    }
+
+    #[test]
+    fn digest_query_report_serde_compat_with_old_payloads() {
+        // A payload from an OLDER scan binary (no `report`) keeps
+        // deserialising; the defaulted report's empty reason is the caller's
+        // "fall back to `miss`" signal.
+        let old = r#"{"query":["tenant"],"matched_terms":[],"terms_omitted":0,"miss":true}"#;
+        let q: DigestQuery = serde_json::from_str(old).expect("old payload without report");
+        assert!(q.miss);
+        assert_eq!(q.report.reason, "");
+        assert_eq!(q.report.total, 0);
+        assert!(q.report.terms.is_empty());
     }
 }

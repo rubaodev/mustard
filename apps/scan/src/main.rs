@@ -13,10 +13,12 @@ mod extract;
 mod graph;
 mod ingest;
 mod manifests;
+mod matching;
 mod mine;
 mod model;
 mod rank;
 mod spec;
+mod stemmers;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -52,6 +54,12 @@ enum Command {
         /// <3 chars ignored), e.g. "tenant,receivable". Empty = full digest.
         #[arg(long, default_value = "")]
         query: String,
+        /// DECLARED natural language of the request (BCP-47-ish code; only the
+        /// primary subtag is used). Empty = read the root project config
+        /// (mustard.json) next to the model. The match ladder always keeps the
+        /// fallback language active on top — never any detection.
+        #[arg(long, default_value = "")]
+        lang: String,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -115,6 +123,19 @@ fn count_entity_files(dir: &Path, entity_lower: &str, owned: bool) -> usize {
         .count()
 }
 
+/// The DECLARED natural language of a digest request: the explicit `--lang`
+/// wins; otherwise the root project config next to the model root (the same
+/// root-wins policy every generated artifact follows). Empty = none declared —
+/// the match ladder still keeps its fallback language active. Config is data
+/// read fail-open through its single owner (`ProjectConfig`); never detection.
+fn request_lang(explicit: &str, model_root: &str) -> String {
+    if !explicit.trim().is_empty() {
+        return explicit.trim().to_string();
+    }
+    let cfg = mustard_core::ProjectConfig::load(Path::new(model_root));
+    cfg.lang.or(cfg.spec_lang).unwrap_or_default()
+}
+
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
 fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
@@ -133,13 +154,13 @@ fn main() -> Result<()> {
             std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
             println!("\nModel written to {}", out.display());
         }
-        Command::Digest { path, query, out } => {
+        Command::Digest { path, query, lang, out } => {
             let model = load_model(&path)?;
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let json = if terms.is_empty() {
                 serde_json::to_string_pretty(&digest::build(&model))?
             } else {
-                serde_json::to_string_pretty(&digest::query(&model, &terms))?
+                serde_json::to_string_pretty(&digest::query(&model, &terms, &request_lang(&lang, &model.root)))?
             };
             match out {
                 Some(p) => {

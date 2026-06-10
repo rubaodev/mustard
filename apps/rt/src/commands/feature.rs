@@ -70,12 +70,46 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         "contracts": q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>(),
         "hubs": q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>(),
         "anchors": q.files,
-        "note": if q.miss {
-            "no repo precedent matched — treat as net-new; the term index has no synonyms and false negatives, so confirm by reading anchors, do not conclude 'absent' blindly"
-        } else {
-            "repo precedent found — mirror the matched slices/contracts; read the anchors before planning, then ask `scan spec` per unit"
-        },
+        // The honest per-term match report (scan's tier ladder) — the truth
+        // about what matched. Per term: the tier that carried it (exact |
+        // fold | stem | lexicon | none), the natural-language evidence and
+        // the files where the vocabulary lives; aggregate matched k/n.
+        "report": json!({
+            "matched": q.report.matched,
+            "total": q.report.total,
+            "reason": q.report.reason,
+            "terms": q.report.terms.iter().map(|t| json!({
+                "term": t.term, "tier": t.tier, "lang": t.lang, "files": t.files,
+            })).collect::<Vec<_>>(),
+        }),
+        "note": note(q),
     })
+}
+
+/// The guidance note for the AI consuming the payload, keyed on the report's
+/// reason (the truth); an empty reason means the payload came from an older
+/// scan binary, so it falls back to the legacy `miss` flag.
+fn note(q: &DigestQuery) -> &'static str {
+    match q.report.reason.as_str() {
+        "none" => {
+            "no repo precedent matched — treat as net-new; the report names each missed term, so re-query the digest in the code's own vocabulary or dispatch an Explore before concluding 'absent'"
+        }
+        "weak" => {
+            "weak precedent — under half the terms matched or only stem/lexicon-derived hits; re-query the digest in the code's own vocabulary (see report.terms[].files) and Explore before planning on top of this"
+        }
+        "generated_only" => {
+            "matches live only in machine-written modules — regenerate or extend the generator's input; never edit the matched files directly"
+        }
+        "strong" => {
+            "repo precedent found — mirror the matched slices/contracts; read the anchors before planning, then ask `scan spec` per unit"
+        }
+        _ if q.miss => {
+            "no repo precedent matched — treat as net-new; the term index has no synonyms and false negatives, so confirm by reading anchors, do not conclude 'absent' blindly"
+        }
+        _ => {
+            "repo precedent found — mirror the matched slices/contracts; read the anchors before planning, then ask `scan spec` per unit"
+        }
+    }
 }
 
 /// Run the research step: print the feature insumos JSON for `intent`.
@@ -98,6 +132,7 @@ pub fn run(intent: &str, root: &Path) {
                 "contracts": [],
                 "hubs": [],
                 "anchors": [],
+                "report": { "matched": 0, "total": 0, "reason": "none", "terms": [] },
                 "note": "scan model unavailable — run `mustard-rt run scan` first; treat as net-new until then",
             })
         }
@@ -153,5 +188,41 @@ mod tests {
         let bare: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("bare digest");
         let v = payload("anything", &[], &bare);
         assert_eq!(v["stacks"], json!([]), "empty stacks must stay an empty array: {v}");
+    }
+
+    #[test]
+    fn feature_payload_exposes_match_report_and_reason_note() {
+        // The digest's per-term report passes through verbatim (term, tier,
+        // lang, files + matched k/n + reason), and the note is keyed on the
+        // reason: `weak`/`none` steer to re-querying in the code's own
+        // vocabulary / Explore instead of false confidence.
+        let weak: DigestQuery = serde_json::from_str(
+            r#"{"query":["cancelado"],"matched_terms":[{"term":"cancel","count":3,"samples":["src/cancel.cs"]}],"miss":false,"report":{"matched":1,"total":2,"reason":"weak","terms":[{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["src/cancel.cs"]},{"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("digest payload with report");
+        let v = payload("cancelar titulo", &["cancelado".to_string(), "hierarquia".to_string()], &weak);
+        assert_eq!(v["report"]["matched"], 1);
+        assert_eq!(v["report"]["total"], 2);
+        assert_eq!(v["report"]["reason"], "weak");
+        assert_eq!(v["report"]["terms"][0]["tier"], "lexicon");
+        assert_eq!(v["report"]["terms"][0]["lang"], "pt-en");
+        assert_eq!(v["report"]["terms"][1]["tier"], "none");
+        let note = v["note"].as_str().expect("note");
+        assert!(note.contains("re-query") && note.contains("Explore"), "weak note steers to re-query/Explore: {note}");
+
+        // `none` also steers away from false confidence.
+        let none: DigestQuery = serde_json::from_str(
+            r#"{"query":["zzz"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"zzz","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("none-reason digest");
+        let v = payload("zzz", &["zzz".to_string()], &none);
+        let note = v["note"].as_str().expect("note");
+        assert!(note.contains("net-new") && note.contains("Explore"), "none note: {note}");
+
+        // Old binary (empty reason): the legacy miss flag still drives the note.
+        let old: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("old digest payload");
+        let v = payload("anything", &[], &old);
+        assert_eq!(v["report"]["reason"], "", "old payload exposes the defaulted report honestly: {v}");
+        assert!(v["note"].as_str().expect("note").contains("net-new"), "miss fallback note: {v}");
     }
 }
