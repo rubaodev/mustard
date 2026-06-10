@@ -49,10 +49,10 @@ When in doubt → `AskUserQuestion`: "Which layers?"
 
 Create `.claude/spec/{date}-{name}/spec.md`:
 
-- **Full scope:** Summary, Entity Info, Files, Tasks (by wave), Dependencies. Header: `Scope: full`.
-- **Light scope:** Summary (1-2 lines), Checklist (tasks by agent, no waves). Header: `Scope: light`.
+- **Full scope:** Summary, Entity Info, Files, Tasks (by wave), Dependencies. Each wave's PLAN must declare its target files — `wave-scaffold` seeds that wave's trackable checklist from them into the wave's `meta.json` (one `{label, path, done: false}` item per file). The wave-plan parent is a coordination doc and carries no checklist.
+- **Light scope:** Summary (1-2 lines), Checklist (tasks by agent, no waves).
 
-Add checkpoint: `Status: draft`, `Phase: PLAN`, `Scope: {light|full}`, `Checkpoint: {now}`.
+Lifecycle state (stage/phase/scope/checkpoint) lives ONLY in the `meta.json` sidecar — never write `Status:` / `Phase:` / `Scope:` / `Checkpoint:` header lines into the markdown; the spec.md stays pure narrative.
 Create `.claude/.pipeline-states/{spec-name}.json`.
 
 **Light Scope → Inline Path:** When `/feature` detects Light scope and user approves inline, EXECUTE runs in same session. No PLAN phase needed.
@@ -86,7 +86,7 @@ For each item, pass its `prompt` **verbatim** to the Task `prompt` (it was alrea
 
 - Build passes (backend: `dotnet build`, frontend: `pnpm build`, mobile: `fvm flutter analyze`)
 - Zero critical guard violations
-- Checklist marking is automatic: `checklist-auto-mark.js` hook runs after every Edit/Write and marks the Checklist item that matches the file (incremental, silent). To make a Checklist item auto-markable, give it a file pista — either include the file basename in the item text (e.g. `- [ ] Validate UserService.cs`) or append a target arrow (e.g. `- [ ] Validate input → src/Services/UserService.cs`). Items without any pista won't auto-mark; close-gate will surface them at CLOSE.
+- Checklist marking is automatic: the `checklist-auto-mark` hook runs after every Edit/Write (incremental, silent). Wave specs are meta-first: the hook flips the matching item to `done: true` in the wave's `meta.json#checklist` (matched by the item's `path`/basename) and emits a `checklist.item.marked` NDJSON event — the checklist seeded from the wave's target files is auto-markable by construction. Markdown `## Checklist` sections (Light scope, or legacy specs without a meta checklist) are still marked in place — give each item a file hint: include the file basename in the item text (e.g. `- [ ] Validate UserService.cs`) or append a target arrow (e.g. `- [ ] Validate input → src/Services/UserService.cs`). Items without any hint won't auto-mark; close-gate will surface them at CLOSE.
 - Any failure → retry (max 2/agent), then STOP + replan
 
 **6. Review (MANDATORY — NEVER skip):**
@@ -105,7 +105,7 @@ APPROVED (zero CRITICAL) → CLOSE. REJECTED (any CRITICAL) → fix agent dispat
 ### CLOSE Phase (collapses old COMPLETE)
 
 1. `mustard-rt run scan` (refresh `grain.model.json` if the codebase changed)
-2. Update spec: `Status: completed`, `Phase: CLOSE`. Checklist must already be fully `[x]` from EXECUTE — `close-gate.js` blocks CLOSE if any `[ ]` remains in the Checklist section.
+2. Checklist must already be fully done from EXECUTE — `close-gate` consolidates every wave's `meta.json#checklist` (markdown `## Checklist` is the legacy fallback) and blocks CLOSE while any item is unmarked. Never write lifecycle headers (`Status:` / `Phase:`) into the markdown — `meta.json` is synced by the close itself (step 3).
 3. Run `mustard-rt run close-orchestrate --spec {name}`. When `overall == pass` it **auto-chains the finalize in-process** (flips the spec straight to `completed`, emits + verifies `pipeline.complete`, syncs `meta.json` to Close/Completed); the LLM does not call `complete-spec` itself. When `overall == fail` it is report-only — fix the failing gate and re-run. (A close lands straight on `completed` — there is no follow-up grace window; follow-up work goes into a separate linked sub-spec. No filesystem move — spec dir stays at `.claude/spec/{name}/`.)
 4. Output with agent colors: `═══ PIPELINE COMPLETE — {name} | Agents: {n} ok | Files: {c} created, {m} modified ═══`
 
