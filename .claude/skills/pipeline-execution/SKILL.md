@@ -72,7 +72,7 @@ Do NOT read `wave-plan.md` or decide the wave order by hand. Run:
 mustard-rt run wave-advance --spec {specName}
 ```
 
-It returns the **current dispatch round** as a deterministic JSON array — every wave of the first dependency level whose waves lack `pipeline.wave.complete`; `[]` when all waves are done. Each item is `{wave, role, subproject, subagent_type, prompt}` with the `prompt` **already rendered**:
+It returns the **current dispatch round** as a deterministic JSON array — every wave of the first dependency level whose waves lack `pipeline.wave.complete`; once every impl wave is complete it returns the **review round** (one `role: review` / `mustard-review` item per touched subproject, prompts rendered); `[]` only after every touched subproject carries a `review.result`. Each item is `{wave, role, subproject, subagent_type, prompt}` with the `prompt` **already rendered**:
 
 - Items returned together have no dependency between them → dispatch them together in ONE message (multiple `<invoke>` blocks). Re-run `wave-advance` after the round completes — a higher level starts ONLY after every lower-level wave completes.
 - NEVER nest dispatch — nesting breaks parallel execution.
@@ -90,7 +90,7 @@ For each item, pass its `prompt` **verbatim** to the Task `prompt` (it was alrea
 - Any failure → retry (max 2/agent), then STOP + replan
 
 **6. Review (MANDATORY — NEVER skip):**
-Dispatch review agent for EACH affected subproject. The review agent reads `{subproject}/CLAUDE.md` — the `## Guards` section carries the subproject's DO/DON'T rules — and runs the full 7-category checklist:
+Review enters the same `wave-advance` loop: once every impl wave completes, `wave-advance` returns one rendered `role: review` item (`mustard-review`) per affected subproject — dispatch them like any round; after each returns, the orchestrator records the verdict with `mustard-rt run review-result --spec {specName} --verdict approved|rejected [--critical N] --subproject {sub}`. The review agent reads `{subproject}/CLAUDE.md` — the `## Guards` section carries the subproject's DO/DON'T rules — and runs the full 7-category checklist:
 
 1. **SOLID** — SRP, OCP, LSP, ISP, DIP
 2. **Design System** — tokens, typography, spacing, components, icons, theme
