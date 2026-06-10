@@ -4,12 +4,14 @@
   "phase": "CLOSE",
   "scope": "full",
   "lang": "pt-BR",
-  "checkpoint": "2026-06-10T12:13:32.971Z",
+  "checkpoint": "2026-06-10T11:44:45.431Z",
   "isWavePlan": true,
-  "totalWaves": 2,
-  "currentWave": 2,
+  "totalWaves": 4,
+  "currentWave": 4,
   "completedWaves": [
     1,
-    2
+    2,
+    3,
+    4
   ]
 }
