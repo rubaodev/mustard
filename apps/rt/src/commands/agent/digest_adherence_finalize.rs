@@ -8,8 +8,13 @@
 //! [`crate::commands::feature`] emits `analyze.digest.used` whenever the
 //! digest answers a research round, and the PostToolUse heartbeat
 //! (`hooks::task::metrics_observer`) records every `tool.use` with its
-//! salient target. This command folds the session's own event log
-//! (`.claude/.session/<id>/.events/`) into three adherence signals:
+//! salient target. This command folds the session's events into three
+//! adherence signals. Events live in ONE of two disjoint sinks chosen by
+//! [`crate::shared::events::route::emit`]: the session sink
+//! (`.claude/.session/<id>/.events/`) before the session→spec binding marker
+//! exists, the SPEC sink (`.claude/spec/<spec>/.events/` or a
+//! `wave-N-{role}/.events/` subdir) once it does — so both are read, merged
+//! and filtered by the resolved session id (see [`merged_events`]):
 //!
 //! - `digestUsed` — did any `analyze.digest.used` land in the session?
 //! - `sourceReadsBeforeDigest` — `tool.use` heartbeats for Read/Grep/Glob
@@ -27,9 +32,10 @@
 
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::io::claude_paths::ClaudePaths;
+use mustard_core::io::fs as mfs;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::util::source_class::is_source_file;
 
@@ -104,6 +110,58 @@ fn session_events(project_dir: &str, session: &str) -> Vec<HarnessEvent> {
     read_harness_events_from_ndjson_dir(&dir)
 }
 
+/// Read the spec sink(s) for `spec` — the parent `.claude/spec/<spec>/.events/`
+/// dir plus every `wave-N-{role}/.events/` subdir — keeping ONLY events
+/// stamped with the resolved `session` id (a spec accumulates events from
+/// many sessions; foreign ones must not leak into this session's fold).
+/// Mirrors the resolution in `shared::events::writer_ndjson::event_dir` so
+/// the reader covers exactly where the router writes. Fail-open: empty spec,
+/// unresolved session or missing dirs degrade to an empty list.
+fn spec_events_for_session(project_dir: &str, spec: &str, session: &str) -> Vec<HarnessEvent> {
+    if spec.is_empty() || session.is_empty() || session == "unknown" {
+        return Vec::new();
+    }
+    let root = Path::new(project_dir);
+    let spec_dir = ClaudePaths::for_project(root)
+        .and_then(|p| p.for_spec(spec))
+        .map(|sp| sp.dir().to_path_buf())
+        .unwrap_or_else(|_| ClaudePaths::compose_unchecked(root).spec_dir().join(spec));
+    let mut dirs: Vec<PathBuf> = vec![spec_dir.join(".events")];
+    if let Ok(entries) = mfs::read_dir(&spec_dir) {
+        for entry in entries {
+            if entry.is_dir && entry.file_name.starts_with("wave-") {
+                dirs.push(entry.path.join(".events"));
+            }
+        }
+    }
+    let mut events: Vec<HarnessEvent> = Vec::new();
+    for dir in dirs {
+        events.extend(
+            read_harness_events_from_ndjson_dir(&dir)
+                .into_iter()
+                .filter(|e| e.session_id == session),
+        );
+    }
+    events
+}
+
+/// Merge the session sink with the spec sink(s) into one ts-sorted list.
+///
+/// Once the session→spec binding marker exists, `route::emit` re-routes the
+/// session's events (including `analyze.digest.used` and `tool.use`
+/// heartbeats) to the SPEC sink — reading only `.session/<id>/.events/`
+/// would fold an empty log and report a false `digestUsed=false`. The router
+/// writes each event to exactly ONE sink and the two trees are disjoint, so
+/// no dedup is needed; the reader sorts per-directory only, so the merged
+/// vec is re-sorted (stable, lexicographic ISO-8601 `ts`) to restore the
+/// global order [`summarize`]'s before-digest comparison depends on.
+fn merged_events(project_dir: &str, spec: &str, session: &str) -> Vec<HarnessEvent> {
+    let mut events = session_events(project_dir, session);
+    events.extend(spec_events_for_session(project_dir, spec, session));
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+    events
+}
+
 /// Emit the spec-scoped `analyze.digest.summary` event. Fail-open: a failed
 /// write never blocks the stdout report.
 fn emit_summary(project_dir: &str, session: &str, spec: &str, payload: Value) {
@@ -129,7 +187,7 @@ fn emit_summary(project_dir: &str, session: &str, spec: &str, payload: Value) {
 pub fn run(spec: &str) {
     let project_dir = crate::shared::context::project_dir();
     let session = crate::shared::context::session_id();
-    let events = session_events(&project_dir, &session);
+    let events = merged_events(&project_dir, spec, &session);
     let (digest_used, before, total) = summarize(&events);
     let payload = json!({
         "spec": spec,
@@ -245,5 +303,136 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let project = dir.path().to_str().expect("utf8 path");
         assert!(session_events(project, "s-never-wrote").is_empty());
+        assert!(spec_events_for_session(project, "no-such-spec", "s-1").is_empty());
+        assert!(spec_events_for_session(project, "", "s-1").is_empty());
+        assert!(spec_events_for_session(project, "a-spec", "unknown").is_empty());
+    }
+
+    /// NDJSON record in the on-disk shape `writer_ndjson` produces (the
+    /// subset `read_harness_events_from_ndjson_dir` consumes).
+    fn rec(name: &str, ts: &str, session: &str, payload: Value) -> Value {
+        json!({ "ts": ts, "event": name, "kind": "test", "session_id": session, "payload": payload })
+    }
+
+    fn read_rec(ts: &str, session: &str, file: &str) -> Value {
+        rec("tool.use", ts, session, json!({ "tool": "Read", "target": { "file": file } }))
+    }
+
+    fn write_sink(dir: &Path, recs: &[Value]) {
+        std::fs::create_dir_all(dir).expect("create sink dir");
+        let body = recs.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.join("w.ndjson"), body).expect("write ndjson sink");
+    }
+
+    /// The blind-spot fix: a session already bound to a spec has its
+    /// `analyze.digest.used` routed to the SPEC sink — the merged fold must
+    /// see it and report `digestUsed=true` (it was a false negative before).
+    #[test]
+    fn digest_adherence_reads_digest_from_spec_sink_for_matching_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().to_str().expect("utf8 path");
+        let spec_sink = dir.path().join(".claude").join("spec").join("tf-spec").join(".events");
+        write_sink(
+            &spec_sink,
+            &[rec(
+                "analyze.digest.used",
+                "2026-06-10T00:00:01.000Z",
+                "s-1",
+                json!({ "queryTerms": ["x"], "miss": false }),
+            )],
+        );
+        let (digest_used, before, total) = summarize(&merged_events(project, "tf-spec", "s-1"));
+        assert!(digest_used, "spec-sink digest event must count for its own session");
+        assert_eq!(before, 0);
+        assert_eq!(total, 0);
+    }
+
+    /// Events routed into a `wave-N-{role}/.events/` subdir of the spec are
+    /// part of the spec sink too — the reader must walk them.
+    #[test]
+    fn digest_adherence_reads_wave_subdir_of_spec_sink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().to_str().expect("utf8 path");
+        let wave_sink = dir
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("tf-spec")
+            .join("wave-1-impl")
+            .join(".events");
+        write_sink(
+            &wave_sink,
+            &[rec(
+                "analyze.digest.used",
+                "2026-06-10T00:00:01.000Z",
+                "s-1",
+                json!({ "queryTerms": ["x"], "miss": false }),
+            )],
+        );
+        let (digest_used, _, _) = summarize(&merged_events(project, "tf-spec", "s-1"));
+        assert!(digest_used, "wave-subdir digest event must count for its own session");
+    }
+
+    /// A spec accumulates events from many sessions — another session's
+    /// digest use or source reads must not leak into this session's fold.
+    #[test]
+    fn digest_adherence_ignores_spec_sink_events_from_other_sessions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().to_str().expect("utf8 path");
+        let spec_sink = dir.path().join(".claude").join("spec").join("tf-spec").join(".events");
+        write_sink(
+            &spec_sink,
+            &[
+                rec(
+                    "analyze.digest.used",
+                    "2026-06-10T00:00:01.000Z",
+                    "s-other",
+                    json!({ "queryTerms": ["x"], "miss": false }),
+                ),
+                read_rec("2026-06-10T00:00:02.000Z", "s-other", "apps/rt/src/main.rs"),
+            ],
+        );
+        let events = merged_events(project, "tf-spec", "s-1");
+        assert!(events.is_empty(), "foreign-session spec-sink events must be filtered out");
+        let (digest_used, before, total) = summarize(&events);
+        assert!(!digest_used);
+        assert_eq!(before, 0);
+        assert_eq!(total, 0);
+    }
+
+    /// Merging both sinks must restore the global ts order: a source read
+    /// stamped BEFORE the spec-sink digest counts as before-digest, one
+    /// stamped after does not — regardless of which sink each event came from.
+    #[test]
+    fn digest_adherence_merges_both_sinks_in_ts_order_for_before_digest_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().to_str().expect("utf8 path");
+        let session_sink = dir
+            .path()
+            .join(".claude")
+            .join(".session")
+            .join("s-1")
+            .join(".events");
+        write_sink(
+            &session_sink,
+            &[
+                read_rec("2026-06-10T00:00:01.000Z", "s-1", "apps/rt/src/main.rs"),
+                read_rec("2026-06-10T00:00:03.000Z", "s-1", "apps/rt/src/lib.rs"),
+            ],
+        );
+        let spec_sink = dir.path().join(".claude").join("spec").join("tf-spec").join(".events");
+        write_sink(
+            &spec_sink,
+            &[rec(
+                "analyze.digest.used",
+                "2026-06-10T00:00:02.000Z",
+                "s-1",
+                json!({ "queryTerms": ["x"], "miss": false }),
+            )],
+        );
+        let (digest_used, before, total) = summarize(&merged_events(project, "tf-spec", "s-1"));
+        assert!(digest_used);
+        assert_eq!(before, 1, "only the read stamped before the spec-sink digest counts");
+        assert_eq!(total, 2);
     }
 }
