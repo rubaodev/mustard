@@ -26,10 +26,14 @@
 //!      [`crate::commands::wave::wave_lib::detect_role_with`] (the same
 //!      classifier the wave gates use, with `mustard.json#rolePatterns`
 //!      overrides);
-//!    - `newEntityCount` by **diffing the repo model**: PascalCase entity tokens
-//!      referenced in the spec text that are *not yet* among the known
-//!      declaration names of `.claude/grain.model.json` (read via the scan tool's
-//!      `facts` command — this crate never parses the model's schema itself).
+//!    - `newEntityCount` by **diffing the repo model**: the count of
+//!      Create-marked `## Files` bullets (`(create)`/`(new)`/`(novo)`/`(criar)`)
+//!      corroborated by a PascalCase prose token that is *not yet* among the
+//!      known declaration names of `.claude/grain.model.json` (read via the
+//!      scan tool's `facts` command — this crate never parses the model's
+//!      schema itself). See [`count_new_entities`]. Prose capitalization alone
+//!      — a sentence-initial word, a camelCase split fragment (`GraphQL` →
+//!      `Graph`+`QL`) — never counts as an entity.
 //!
 //!    The spec body is still passed as `text` so the roadmap-signal detection
 //!    runs identically. The result is the same [`decide`] verdict the stdin path
@@ -38,7 +42,9 @@
 //! Fail-open: any error emits `{ "decompose": false, "reason": "error-fallback" }`.
 
 use crate::commands::spec::prd_build::pascal_tokens;
+use crate::commands::spec::spec_sections::is_heading;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
+use mustard_core::platform::i18n::{line_has_file_marker, FileMarker};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -255,8 +261,9 @@ pub fn wave_floor_for_full(decompose: bool) -> u32 {
 /// - `layerCount` = distinct architectural roles across those paths
 ///   ([`detect_role_with`] with `mustard.json#rolePatterns`). A lone `lib`
 ///   bucket counts as 1 (matches `exec-rewave-check`).
-/// - `newEntityCount` = PascalCase entity tokens referenced in the spec that are
-///   **not** already in the registry (registry diff via exact key lookup).
+/// - `newEntityCount` = Create-marked `## Files` bullets corroborated by a
+///   PascalCase prose token **not** already in the registry (registry diff via
+///   exact key lookup) — see [`count_new_entities`].
 /// - `text` = the full spec body, so [`detect_roadmap_signal`] runs unchanged.
 #[must_use]
 pub fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value {
@@ -332,8 +339,10 @@ pub(crate) fn spec_prose(spec_text: &str) -> String {
 /// uses) over the spec's narrative prose ([`spec_prose`]) and grain's mined
 /// declaration names (read via the scan tool's `facts`), so "new" means
 /// "referenced but not yet in the model" — a deterministic stand-in for the
-/// `newEntityCount` the LLM used to estimate. A missing model (no scan yet) fails
-/// open to empty (every referenced token then counts as new).
+/// `newEntityCount` the LLM used to estimate. A missing model (no scan yet)
+/// fails open to empty — but a referenced token still only counts when
+/// corroborated by a Create-marked `## Files` bullet ([`count_new_entities`]),
+/// so a model-less project does not inflate the signal from prose alone.
 fn new_entity_count_from_model(spec_text: &str, project_root: &Path) -> i64 {
     let model = project_root.join(".claude").join("grain.model.json");
     let known: BTreeSet<String> = mustard_core::read_entity_names(&model)
@@ -343,27 +352,151 @@ fn new_entity_count_from_model(spec_text: &str, project_root: &Path) -> i64 {
     count_new_entities(spec_text, &known)
 }
 
-/// Pure: count PascalCase entity tokens in the spec's prose that are not in
-/// `known` (lowercased). Split from the model I/O so it is unit-tested without
-/// the scan tool.
+/// Pure: count the net-new entities of a spec — the **Create-marked `## Files`
+/// bullets** corroborated by a net-new PascalCase prose token. A token is
+/// net-new when it is not in `known` (lowercased); it corroborates a created
+/// file when it equals one of the file's [`entity_keys`].
+///
+/// The corroboration requirement is what keeps the signal honest:
+/// [`pascal_tokens`] extracts every capitalized word, so prose alone yields
+/// sentence-initial words (PT "Nenhuma entidade nova" → `Nenhuma`), camelCase
+/// split fragments (`GraphQL` → `Graph` + `QL`) and pipeline acronyms (`UI`)
+/// — none of which are entities. A *real* net-new entity materializes as a
+/// net-new file: the spec's `## Files` section carries a bullet marked
+/// `(create)` (any catalogue spelling) whose name matches a referenced token.
+/// Requiring that structural witness kills the prose noise with no linguistic
+/// stoplist — language-agnostic by construction.
+///
+/// Counting **files** (not tokens) keeps the count meaningful for compound
+/// names: `InvoiceService` splits into `Invoice` + `Service` in the prose, but
+/// a created `invoice-service.ts` is still exactly ONE new entity. Split from
+/// the model I/O so it is unit-tested without the scan tool.
 fn count_new_entities(spec_text: &str, known: &BTreeSet<String>) -> i64 {
-    pascal_tokens(&spec_prose(spec_text))
+    let new_tokens: BTreeSet<String> = pascal_tokens(&spec_prose(spec_text))
         .into_iter()
-        .filter(|tok| !known.contains(&tok.to_ascii_lowercase()))
+        .map(|t| t.to_ascii_lowercase())
+        .filter(|t| !known.contains(t))
+        .collect();
+    create_marked_paths(spec_text)
+        .iter()
+        .filter(|path| entity_keys(path).iter().any(|k| new_tokens.contains(k)))
         .count() as i64
+}
+
+/// Paths of every `## Files` bullet carrying a **Create** marker — `(create)`
+/// / `(new)` / `(novo)` / `(criar)`, resolved through the i18n marker
+/// catalogue ([`mustard_core::platform::i18n::file_marker_synonyms`] via
+/// [`line_has_file_marker`]) so a localized drafter marker never drifts out of
+/// recognition. Absent `## Files` section ⇒ empty (nothing corroborates).
+fn create_marked_paths(spec_text: &str) -> Vec<String> {
+    let lines: Vec<&str> = spec_text.split('\n').collect();
+    let Some(start) = lines.iter().position(|l| is_heading(l, "files")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in lines.iter().skip(start + 1) {
+        let trimmed = line.trim();
+        // Next `## ` heading ends the section (same break as the files parse).
+        if trimmed
+            .strip_prefix("##")
+            .is_some_and(|rest| rest.starts_with([' ', '\t']))
+        {
+            break;
+        }
+        if !line_has_file_marker(trimmed, FileMarker::Create) {
+            continue;
+        }
+        if let Some(path) = bullet_path(trimmed) {
+            out.push(path.to_string());
+        }
+    }
+    out
+}
+
+/// Parse the leading `- path` / `` - `path` `` bullet of a Files line. Local
+/// mirror of the (private) `wave_lib::parse_bullet`: the captured token stops
+/// at whitespace/backtick, so a trailing ` (create)` marker never leaks into
+/// the path.
+fn bullet_path(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix('-')?;
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let rest = rest.strip_prefix('`').unwrap_or(rest);
+    let token = rest
+        .split(|c: char| c.is_whitespace() || c == '`')
+        .next()
+        .unwrap_or("");
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+/// Corroboration keys for a created file's path: every lowercased shape a
+/// PascalCase prose token can take when it names this file. From the basename
+/// stem (up to the first `.`):
+///
+/// - the whole stem with non-alphanumerics dropped (`invoice-service` →
+///   `invoiceservice`);
+/// - each separator-delimited segment (`invoice`, `service`) — so a compound
+///   filename is matched by the words the prose splitter produces;
+/// - each CamelCase word of the stem via [`pascal_tokens`]
+///   (`InvoiceService.cs` → `invoice`, `service`).
+///
+/// Matching is exact per key — a *fragment* like `Graph` (from `GraphQL`)
+/// never equals the segment `graphql`, so split noise cannot corroborate.
+fn entity_keys(path: &str) -> BTreeSet<String> {
+    let norm = path.replace('\\', "/");
+    let base = norm.rsplit('/').next().unwrap_or(norm.as_str());
+    let stem = base.split('.').next().unwrap_or(base);
+    let mut keys = BTreeSet::new();
+    let whole: String = stem
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if !whole.is_empty() {
+        keys.insert(whole);
+    }
+    for seg in stem.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if !seg.is_empty() {
+            keys.insert(seg.to_ascii_lowercase());
+        }
+    }
+    for tok in pascal_tokens(stem) {
+        keys.insert(tok.to_ascii_lowercase());
+    }
+    keys
 }
 
 /// Deterministic scope label (`light` / `extended-light` / `full`) from the
 /// structural signals — encodes the `/feature` SKILL's prose thresholds in code
 /// so the LLM relays the verdict instead of eyeballing it.
 ///
+/// ## What `slice_match_count` really measures
+///
+/// `slice_match_count` comes from the `feature` digest's `sliceMatchCount` —
+/// the number of recurring slices whose **vocabulary** the query matched,
+/// saturated at the digest's per-query slice cap (`Q_MAX_SLICES = 12` in the
+/// scan crate). It is a vocabulary-overlap signal: any request that names the
+/// project's domain matches ≥2 slices, so by itself it says "there is
+/// precedent", NOT "this change crosses layers". It therefore never forces
+/// `full` alone — it contributes to `full` only when the structural signals
+/// already show layer spread (`layerCount >= 2`); at `layerCount <= 1 &&
+/// fileCount <= 8` it acts as precedent evidence for the extended-light band.
+///
 /// The three scopes (and the prose phrase each numeric condition encodes):
 ///
 /// - **full** when ANY of:
 ///   - `layerCount >= 3` — the SKILL's "3+ layers";
-///   - `newEntityCount >= 1` — "net-new" (an entity referenced in the spec but
-///     not yet in the repo model is net-new work, not a clone of a precedent);
-///   - `sliceMatchCount >= 2` — "spans multiple slices";
+///   - `newEntityCount >= 1` — "net-new" (a Create-marked `## Files` bullet
+///     corroborated by a prose token absent from the repo model — see
+///     [`count_new_entities`]);
+///   - `sliceMatchCount >= 2 && layerCount >= 2` — "spans multiple slices"
+///     *with* actual layer spread (vocabulary overlap alone is not spanning);
 ///   - `fileCount > 8` — beyond the extended-light file ceiling.
 /// - **extended-light** when NOT full AND ALL of:
 ///   - `fileCount > 5 && fileCount <= 8` — "≤8 files" above the light ceiling;
@@ -372,10 +505,9 @@ fn count_new_entities(spec_text: &str, known: &BTreeSet<String>) -> i64 {
 /// - **light** otherwise — `fileCount <= 5`, `layerCount <= 2`, "mirrors a
 ///   matched slice".
 ///
-/// `slice_match_count` comes from the `feature` digest's `sliceMatchCount`
-/// (count of matched recurring slices); the spec-derived signals never carry it,
-/// so it is threaded in separately (defaults to 0 when the digest is absent —
-/// the conservative read for the slice-spanning conditions).
+/// The spec-derived signals never carry `slice_match_count`, so it is threaded
+/// in separately (defaults to 0 when the digest is absent — the conservative
+/// read for the slice conditions).
 #[must_use]
 pub fn classify(signals: &Value, slice_match_count: i64) -> &'static str {
     let file_count = signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0);
@@ -385,10 +517,11 @@ pub fn classify(signals: &Value, slice_match_count: i64) -> &'static str {
         .and_then(Value::as_i64)
         .unwrap_or(0);
 
-    // full: 3+ layers OR net-new entity OR spans multiple slices OR wide.
+    // full: 3+ layers OR corroborated net-new entity OR multi-slice vocabulary
+    // overlap WITH layer spread OR wide.
     if layer_count >= 3
         || new_entity_count >= 1
-        || slice_match_count >= 2
+        || (slice_match_count >= 2 && layer_count >= 2)
         || file_count > 8
     {
         return "full";
@@ -591,19 +724,77 @@ mod tests {
     #[test]
     fn count_new_entities_diffs_known_set() {
         // The model knows `User`; the spec references `User` (known) and
-        // `Invoice` (new) ⇒ count 1. Pure logic — no model file / scan tool.
+        // `Invoice` (new, corroborated by a create-marked bullet) ⇒ count 1.
+        // Pure logic — no model file / scan tool.
         let known: BTreeSet<String> = ["user"].into_iter().map(str::to_string).collect();
-        let spec = "# Spec\nlink the Invoice to the User entity.\n\n## Files\n- src/util/a.ts\n";
-        assert_eq!(count_new_entities(spec, &known), 1, "Invoice new, User known");
+        let spec = "# Spec\nlink the Invoice to the User entity.\n\n## Files\n\
+                    - src/models/invoice.ts (create)\n- src/util/a.ts\n";
+        assert_eq!(count_new_entities(spec, &known), 1, "Invoice new+corroborated, User known");
+    }
+
+    /// Honest signal: a capitalized prose word with NO create-marked file
+    /// witness is not an entity. The payables run counted `Nenhuma` (from the
+    /// PT sentence "Nenhuma entidade nova") as a new entity — corroboration
+    /// kills it with no language stoplist.
+    #[test]
+    fn scope_new_entity_ignores_uncorroborated_prose_capitalization() {
+        let spec = "# Spec\nNenhuma entidade nova. Ajustar a UI da listagem.\n\n\
+                    ## Files\n- src/components/payables/list.tsx\n";
+        assert_eq!(
+            count_new_entities(spec, &BTreeSet::new()),
+            0,
+            "Nenhuma/Ajustar/UI are prose capitalization, not entities"
+        );
+    }
+
+    /// `GraphQL` splits into `Graph` + `QL` at [`pascal_tokens`]'s lower→upper
+    /// boundary; neither fragment has a create-marked file, so neither counts.
+    /// (The split itself is intentionally untouched — prd-build consumes it
+    /// too; corroboration fixes the scope signal without changing it.)
+    #[test]
+    fn scope_new_entity_ignores_graphql_split_fragments() {
+        let spec = "# Spec\nExpose the GraphQL mutation for payables.\n\n\
+                    ## Files\n- src/payables/data.ts (edit)\n";
+        assert_eq!(
+            count_new_entities(spec, &BTreeSet::new()),
+            0,
+            "Graph/QL fragments are not corroborated by any create-marked file"
+        );
+    }
+
+    /// A genuine net-new entity IS counted: the prose names it AND a
+    /// create-marked `## Files` bullet materializes it (key match,
+    /// case-insensitive — see [`entity_keys`]). The PT spelling `(novo)` +
+    /// `## Arquivos` heading resolve through the i18n marker/heading
+    /// catalogues. Compound names count ONCE: `InvoiceService` splits into
+    /// `Invoice` + `Service` in the prose, but the created
+    /// `invoice-service.ts` is a single file ⇒ a single new entity.
+    #[test]
+    fn scope_new_entity_counts_when_corroborated_by_create_marker() {
+        let en = "# Spec\nAdd the Invoice entity.\n\n## Files\n- src/models/invoice.ts (create)\n";
+        assert_eq!(count_new_entities(en, &BTreeSet::new()), 1, "EN (create) corroborates");
+
+        let pt = "# Spec\nCriar a entidade Invoice.\n\n## Arquivos\n- `src/models/invoice.ts` (novo)\n";
+        assert_eq!(count_new_entities(pt, &BTreeSet::new()), 1, "PT (novo) corroborates");
+
+        let kebab = "# Spec\nAdd the InvoiceService.\n\n## Files\n\
+                     - src/invoicing/invoice-service.ts (create)\n";
+        assert_eq!(
+            count_new_entities(kebab, &BTreeSet::new()),
+            1,
+            "compound name ⇒ one created file ⇒ one entity, not two token fragments"
+        );
     }
 
     #[test]
     fn from_spec_wide_and_new_entities_decomposes() {
         let dir = tempfile::tempdir().unwrap();
         plant_project(dir.path()); // no model ⇒ all referenced entities new
-        // 11 files in one bucket (layerCount 1) + 2 new entities ⇒ wide-and-new.
+        // 11 files in one bucket (layerCount 1) + 2 corroborated new entities
+        // (create-marked bullets matching the prose tokens) ⇒ wide-and-new.
         let mut files = String::from("# Spec\nadd the Invoice and the Payment models.\n\n## Files\n");
-        for i in 0..11 {
+        files.push_str("- src/util/invoice.ts (create)\n- src/util/payment.ts (create)\n");
+        for i in 0..9 {
             files.push_str(&format!("- src/util/f{i}.ts\n"));
         }
         let signals = compute_signals_from_spec(&files, dir.path());
@@ -685,8 +876,53 @@ mod tests {
 
     #[test]
     fn scope_classify_full_on_spanning_multiple_slices() {
-        // sliceMatchCount>=2 ⇒ full ("spans multiple slices").
+        // sliceMatchCount>=2 ⇒ full ("spans multiple slices") — but only with
+        // actual layer spread (layerCount >= 2).
         assert_eq!(classify(&sig(4, 2, 0), 2), "full");
+    }
+
+    /// Honest slice signal: `sliceMatchCount` is vocabulary overlap with the
+    /// slice catalogue (saturates at the digest cap), so at layerCount<=1 it
+    /// is precedent evidence — never a full trigger by itself.
+    #[test]
+    fn scope_classify_slice_overlap_alone_does_not_force_full() {
+        // Single layer, small ⇒ light even with a saturated slice count.
+        assert_eq!(classify(&sig(3, 1, 0), 12), "light");
+        // Single layer, 6..=8 files ⇒ the slice match is precedent evidence
+        // (extended-light), not "spans multiple slices".
+        assert_eq!(classify(&sig(7, 1, 0), 2), "extended-light");
+        // Width still escalates regardless of layers.
+        assert_eq!(classify(&sig(9, 1, 0), 2), "full");
+    }
+
+    /// The payables regression end-to-end: 1 layer, 7 files, saturated
+    /// sliceMatchCount 7, PT prose ("Nenhuma entidade nova", GraphQL), two
+    /// create-marked files whose stems match no prose token ⇒ extended-light
+    /// (the live run misclassified this as full off `Nenhuma`/`Graph`/`QL`).
+    #[test]
+    fn scope_classify_payables_run_is_extended_light() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_project(dir.path());
+        let spec = "# Spec\n\n## Contexto\n\nAjustes na listagem de payables via GraphQL. \
+                    Nenhuma entidade nova.\n\n## Arquivos\n\
+                    - src/components/payables/payable-constants.ts (criar)\n\
+                    - src/components/payables/notes-section.tsx (criar)\n\
+                    - src/components/payables/list.tsx\n\
+                    - src/components/payables/row.tsx\n\
+                    - src/components/payables/filters.tsx\n\
+                    - src/components/payables/summary.tsx\n\
+                    - src/components/payables/data.ts\n";
+        let spec_path = dir.path().join("spec.md");
+        std::fs::write(&spec_path, spec).unwrap();
+        let d = classify_from_spec(&spec_path, 7);
+        assert_eq!(d["signals"]["fileCount"], json!(7));
+        assert_eq!(d["signals"]["layerCount"], json!(1));
+        assert_eq!(
+            d["signals"]["newEntityCount"],
+            json!(0),
+            "Ajustes/Graph/QL/Nenhuma are prose noise, and the creates match no prose token"
+        );
+        assert_eq!(d["scope"], json!("extended-light"), "honest signals ⇒ extended-light, not full");
     }
 
     #[test]

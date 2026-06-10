@@ -504,7 +504,9 @@ pub enum RunCmd {
         #[arg(long = "from-spec")]
         from_spec: String,
         /// Count of matched recurring slices from the `feature` digest's
-        /// `sliceMatchCount` (>=2 ⇒ spans multiple slices ⇒ full). Defaults to 0.
+        /// `sliceMatchCount` — vocabulary-overlap precedent: >=2 counts toward
+        /// full only alongside layer spread (layerCount >= 2); alone it is
+        /// precedent evidence for the extended-light band. Defaults to 0.
         #[arg(long = "slice-match-count", default_value_t = 0)]
         slice_match_count: i64,
     },
