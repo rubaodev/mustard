@@ -1917,6 +1917,19 @@ fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_view
     spec_views::spec_waves_v2(&repo_path, &spec)
 }
 
+/// Wave 3 (spec `checklist-progresso-por-onda`) — per-wave checklist progress
+/// (`done`/`total`) folded from the `meta.json#checklist` sidecars plus the
+/// `checklist.item.marked` NDJSON events. Fail-open: a spec with no checklist
+/// data resolves to an empty vec so the frontend renders nothing rather than
+/// a fabricated `0/0`.
+#[tauri::command]
+fn dashboard_spec_checklist_progress(
+    repo_path: String,
+    spec: String,
+) -> Result<Vec<spec_views::WaveChecklistProgress>, String> {
+    spec_views::spec_checklist_progress_v2(&repo_path, &spec)
+}
+
 #[tauri::command]
 fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecQualityItem>, String> {
     spec_views::spec_quality_v2(&repo_path, &spec)
@@ -2635,6 +2648,7 @@ pub fn run() {
             amend_queries::amend_window_duration,
             dashboard_spec_card,
             dashboard_spec_waves,
+            dashboard_spec_checklist_progress,
             dashboard_spec_quality,
             dashboard_spec_timeline,
             dashboard_spec_events,

@@ -22,6 +22,9 @@ export function subscribeFsChange(): Promise<() => void> {
         // timeline currently mounted picks the new rows up without a remount.
         queryClient.invalidateQueries({ queryKey: ["spec-timeline"] });
         queryClient.invalidateQueries({ queryKey: ["sessions", repo_path] });
+        // Per-wave checklist progress folds `checklist.item.marked` events
+        // (plus meta.json sidecars), so an event-log write refreshes it.
+        queryClient.invalidateQueries({ queryKey: ["spec-checklist", repo_path] });
         // These activity views are derived from the same NDJSON event log, so
         // an event-log write is their trigger as well (their query keys don't
         // share the "activity" prefix above — they are distinct first elements).
@@ -40,6 +43,9 @@ export function subscribeFsChange(): Promise<() => void> {
       } else if (kind === "spec") {
         queryClient.invalidateQueries({ queryKey: ["specs", repo_path] });
         queryClient.invalidateQueries({ queryKey: ["spec-md", repo_path] });
+        // `meta.json#checklist` writes (seed / done flips) classify as `spec`
+        // — they carry the per-wave totals the progress fold reads.
+        queryClient.invalidateQueries({ queryKey: ["spec-checklist", repo_path] });
       } else if (kind === "knowledge") {
         queryClient.invalidateQueries({ queryKey: ["knowledge-browse", repo_path] });
         queryClient.invalidateQueries({ queryKey: ["knowledge-search", repo_path] });

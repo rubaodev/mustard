@@ -682,6 +682,130 @@ fn running_wave_numbers(
     active
 }
 
+/// Wave 3 (2026-06-10, spec `checklist-progresso-por-onda`) — per-wave
+/// checklist progress for one spec. Wave `0` is the spec's own sidecar
+/// (items outside a wave plan); waves `1..` map to the `wave-N-{role}/`
+/// sidecars. `total` counts the trackable items seeded in
+/// `meta.json#checklist`; `done` is the live completion signal.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WaveChecklistProgress {
+    pub wave: i64,
+    pub done: i64,
+    pub total: i64,
+}
+
+/// Fold the per-wave checklist progress (`done`/`total`) for `spec` from two
+/// sources, events-first:
+///
+///   * **Totals (+ done floor)** — the `meta.json#checklist` sidecars (the
+///     canonical home, seeded per wave by `wave-scaffold`): the spec's own
+///     sidecar is wave `0`, each `wave-N-{role}/meta.json` is wave `N`.
+///   * **Live `done` signal** — distinct `checklist.item.marked` NDJSON
+///     events for this spec, grouped by their payload `wave`. The events
+///     land before the dashboard re-reads disk (the watcher invalidates on
+///     `.events/*.ndjson` writes), so progress updates without polling.
+///
+/// `done = max(meta done, distinct marked events)`, clamped to `total` when a
+/// total is known — stale events from a re-seeded checklist never overshoot.
+/// A wave seen only through events (legacy markdown checklist, no sidecar)
+/// keeps `total = 0`; the frontend renders the done count without inventing a
+/// denominator. Fail-open: no sidecars and no events → empty vec.
+pub fn spec_checklist_progress_v2(
+    repo_path: &str,
+    spec: &str,
+) -> Result<Vec<WaveChecklistProgress>, String> {
+    if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
+        return Err(format!("invalid spec name: {spec}"));
+    }
+    let project = std::path::PathBuf::from(repo_path);
+    let spec_dir = project.join(".claude").join("spec").join(spec);
+
+    // wave -> (total, done) from the meta.json sidecars.
+    let mut per_wave: std::collections::HashMap<i64, (i64, i64)> =
+        std::collections::HashMap::new();
+    let mut add_meta = |wave: i64, dir: &std::path::Path| {
+        let Some(meta) = mustard_core::domain::meta::read_meta(&dir.join("meta.json")) else {
+            return;
+        };
+        if meta.checklist.is_empty() {
+            return;
+        }
+        let total = i64::try_from(meta.checklist.len()).unwrap_or(i64::MAX);
+        let done = i64::try_from(meta.checklist.iter().filter(|i| i.done).count())
+            .unwrap_or(i64::MAX);
+        let entry = per_wave.entry(wave).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(total);
+        entry.1 = entry.1.saturating_add(done);
+    };
+    add_meta(0, &spec_dir);
+    if let Ok(rd) = fs::read_dir(&spec_dir) {
+        for entry in rd {
+            if !entry.is_dir {
+                continue;
+            }
+            if let Some((n, _role)) = parse_wave_dir_name(&entry.file_name) {
+                add_meta(n, &entry.path);
+            }
+        }
+    }
+
+    // wave -> distinct marked item labels from `checklist.item.marked` events.
+    let events = crate::telemetry::walk_ndjson_events_cached(&project);
+    let mut marked: std::collections::HashMap<i64, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for v in events.iter() {
+        if crate::telemetry::event_name_of(v)
+            != mustard_core::domain::model::event::EVENT_CHECKLIST_ITEM_MARKED
+        {
+            continue;
+        }
+        let payload = v.get("payload");
+        // Payloads are self-contained (spec + wave repeated on purpose);
+        // fall back to the envelope's correlation fields for sparse lines.
+        let ev_spec = payload
+            .and_then(|p| p.get("spec"))
+            .or_else(|| v.get("spec"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if ev_spec != spec {
+            continue;
+        }
+        let wave = payload
+            .and_then(|p| p.get("wave"))
+            .or_else(|| v.get("wave"))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let Some(item) = payload
+            .and_then(|p| p.get("item"))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        marked.entry(wave).or_default().insert(item.to_string());
+    }
+
+    // Union of waves seen in either source, ascending.
+    let mut waves: std::collections::BTreeSet<i64> = per_wave.keys().copied().collect();
+    waves.extend(marked.keys().copied());
+    Ok(waves
+        .into_iter()
+        .map(|w| {
+            let (total, done_meta) = per_wave.get(&w).copied().unwrap_or((0, 0));
+            let done_events = i64::try_from(
+                marked.get(&w).map_or(0, std::collections::HashSet::len),
+            )
+            .unwrap_or(i64::MAX);
+            let mut done = done_meta.max(done_events);
+            if total > 0 {
+                done = done.min(total);
+            }
+            WaveChecklistProgress { wave: w, done, total }
+        })
+        .collect())
+}
+
 /// W8A-2 adapter: AC roll-up via `mustard-core` projections.
 ///
 /// Enrichment (dashboard layer): `project_quality` reads each AC's `label` from
@@ -2242,5 +2366,110 @@ mod tests {
         let events = vec![ev("alpha", "tool.use", 0, json!({ "tool": "Bash" }))];
         let running = running_wave_numbers("alpha", &events);
         assert!(running.is_empty());
+    }
+
+    // ── Wave 3 (spec `checklist-progresso-por-onda`): per-wave progress ──────
+
+    fn write_file(root: &std::path::Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn checklist_progress_folds_meta_totals_and_marked_events() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Spec's own sidecar (wave 0): 2 items, 1 already done in meta.
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/meta.json",
+            r#"{"stage":"Execute","outcome":"Active","checklist":[{"label":"root a","done":true},{"label":"root b"}]}"#,
+        );
+        // Wave 1 sidecar: 3 items, none done in meta yet.
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/wave-1-impl/meta.json",
+            r#"{"stage":"Execute","outcome":"Active","checklist":[{"label":"w1 a"},{"label":"w1 b"},{"label":"w1 c"}]}"#,
+        );
+        // One marked event for wave 1 — duplicated line must dedupe; an event
+        // for ANOTHER spec must be ignored.
+        let line = r#"{"v":1,"ts":"2026-06-10T10:00:00Z","sessionId":"s","wave":1,"actor":{"kind":"hook","id":"checklist-auto-mark"},"event":"checklist.item.marked","payload":{"spec":"alpha","wave":1,"item":"w1 a"},"spec":"alpha"}"#;
+        let other = r#"{"v":1,"ts":"2026-06-10T10:00:01Z","sessionId":"s","wave":1,"actor":{"kind":"hook","id":"checklist-auto-mark"},"event":"checklist.item.marked","payload":{"spec":"beta","wave":1,"item":"x"},"spec":"beta"}"#;
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/.events/events.ndjson",
+            &format!("{line}\n{line}\n{other}\n"),
+        );
+
+        let repo = tmp.path().to_string_lossy().into_owned();
+        crate::telemetry::invalidate_events_cache(&repo);
+        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        assert_eq!(rows.len(), 2);
+        let w0 = rows.iter().find(|r| r.wave == 0).expect("wave 0");
+        assert_eq!((w0.done, w0.total), (1, 2), "meta done flag counts");
+        let w1 = rows.iter().find(|r| r.wave == 1).expect("wave 1");
+        assert_eq!((w1.done, w1.total), (1, 3), "deduped event marks count");
+    }
+
+    #[test]
+    fn checklist_progress_empty_when_no_sidecars_and_no_events() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_file(tmp.path(), ".claude/spec/alpha/spec.md", "# alpha\n");
+        let repo = tmp.path().to_string_lossy().into_owned();
+        crate::telemetry::invalidate_events_cache(&repo);
+        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        assert!(rows.is_empty(), "no checklist data → honest empty payload");
+    }
+
+    #[test]
+    fn checklist_progress_event_only_wave_has_no_invented_total() {
+        // Legacy markdown checklist: events exist but no sidecar was seeded.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let line = r#"{"event":"checklist.item.marked","ts":"2026-06-10T10:00:00Z","spec":"alpha","wave":2,"payload":{"spec":"alpha","wave":2,"item":"legacy"}}"#;
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/.events/events.ndjson",
+            &format!("{line}\n"),
+        );
+        let repo = tmp.path().to_string_lossy().into_owned();
+        crate::telemetry::invalidate_events_cache(&repo);
+        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].wave, rows[0].done, rows[0].total), (2, 1, 0));
+    }
+
+    #[test]
+    fn checklist_progress_clamps_done_to_total() {
+        // A re-seeded (shrunk) checklist must not overshoot from stale events.
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/wave-1-impl/meta.json",
+            r#"{"stage":"Execute","outcome":"Active","checklist":[{"label":"only"}]}"#,
+        );
+        let mk = |item: &str| {
+            format!(
+                r#"{{"event":"checklist.item.marked","ts":"2026-06-10T10:00:00Z","spec":"alpha","wave":1,"payload":{{"spec":"alpha","wave":1,"item":"{item}"}}}}"#,
+            )
+        };
+        write_file(
+            tmp.path(),
+            ".claude/spec/alpha/.events/events.ndjson",
+            &format!("{}\n{}\n{}\n", mk("stale a"), mk("stale b"), mk("only")),
+        );
+        let repo = tmp.path().to_string_lossy().into_owned();
+        crate::telemetry::invalidate_events_cache(&repo);
+        let rows = spec_checklist_progress_v2(&repo, "alpha").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].done, rows[0].total), (1, 1), "done clamped to total");
+    }
+
+    #[test]
+    fn checklist_progress_rejects_traversal_spec_names() {
+        assert!(spec_checklist_progress_v2(".", "../evil").is_err());
+        assert!(spec_checklist_progress_v2(".", "a/b").is_err());
+        assert!(spec_checklist_progress_v2(".", "").is_err());
     }
 }

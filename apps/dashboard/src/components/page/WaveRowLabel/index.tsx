@@ -14,6 +14,12 @@ export interface WaveRowLabelProps {
   role: string;
   /** Parent spec full name — shown as muted lineage text. */
   parentName: string;
+  /**
+   * Wave 3 (spec `checklist-progresso-por-onda`): per-wave checklist progress
+   * (`done`/`total` trackable items, from `useSpecChecklistProgress`). Omitted
+   * or `total === 0` → no badge, so checklist-less waves stay unchanged.
+   */
+  checklist?: { done: number; total: number } | null;
   className?: string;
 }
 
@@ -21,6 +27,7 @@ export function WaveRowLabel({
   waveNumber,
   role,
   parentName,
+  checklist,
   className,
 }: WaveRowLabelProps) {
   return (
@@ -39,6 +46,15 @@ export function WaveRowLabel({
       >
         {role}
       </span>
+      {checklist && checklist.total > 0 && (
+        <span
+          className="text-[10px] text-muted-foreground tabular-nums shrink-0"
+          style={{ fontVariantNumeric: "tabular-nums" }}
+          title={`Itens do checklist concluídos nesta onda: ${checklist.done} de ${checklist.total}`}
+        >
+          {checklist.done}/{checklist.total} itens
+        </span>
+      )}
       <span className="text-muted-foreground/40 shrink-0">·</span>
       <span
         className="text-[11px] text-muted-foreground/70 font-mono truncate"

@@ -4,6 +4,8 @@ import { useNavigate } from "react-router";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
 import type { SpecChild, SpecWave } from "@/lib/types/specs";
+import type { WaveChecklistProgress } from "@/lib/dashboard";
+import { useSpecChecklistProgress } from "@/hooks/useSpecChecklistProgress";
 import { useSpecWaveFiles } from "@/hooks/useSpecWaveFiles";
 import { useSpecWavesPlanned } from "@/hooks/useSpecWavesPlanned";
 import { mergeWaves } from "../_shared/merge-waves";
@@ -198,6 +200,12 @@ interface WaveLiProps {
   borderOverride?: string;
   /** Optional label shown after the wave number (used by Onda #0). */
   labelOverride?: string;
+  /**
+   * Wave 3 (spec `checklist-progresso-por-onda`): per-wave checklist progress
+   * (`done`/`total` trackable items). `null`/`undefined` when the wave has no
+   * checklist data — the row honestly renders nothing instead of `0/0`.
+   */
+  checklist?: WaveChecklistProgress | null;
 }
 
 /**
@@ -221,6 +229,7 @@ function WaveLi({
   childrenOfWave,
   borderOverride,
   labelOverride,
+  checklist,
 }: WaveLiProps) {
   const t = useT();
   const filesQ = useSpecWaveFiles(repoPath ?? null, spec ?? "", wave.wave);
@@ -369,6 +378,21 @@ function WaveLi({
               {displayCount}{" "}
               {displayCount === 1 ? t("specWaves.row.fileSingular") : t("specWaves.row.filePlural")}
             </span>
+            {/* Wave 3 (checklist-progresso-por-onda): N/M checklist items.
+                Only rendered when the wave actually has checklist data —
+                no fabricated 0/0 for checklist-less waves. */}
+            {checklist && (checklist.total > 0 || checklist.done > 0) && (
+              <span title={t("specWaves.row.checklistTitle")}>
+                {checklist.total > 0
+                  ? t("specWaves.row.checklistCount")
+                      .replace("{done}", String(checklist.done))
+                      .replace("{total}", String(checklist.total))
+                  : t("specWaves.row.checklistDoneOnly").replace(
+                      "{done}",
+                      String(checklist.done),
+                    )}
+              </span>
+            )}
           </div>
         </div>
 
@@ -445,6 +469,16 @@ export function SpecWavesTab({
     () => mergeWaves(waves, plannedQ.data),
     [waves, plannedQ.data],
   );
+
+  // Wave 3 (checklist-progresso-por-onda): per-wave checklist progress,
+  // indexed by wave number for the row renderer. Missing data (no sidecars,
+  // no events) resolves to an empty array → no badge on any row.
+  const checklistQ = useSpecChecklistProgress(repoPath ?? null, spec ?? null);
+  const checklistByWave = useMemo(() => {
+    const byWave = new Map<number, WaveChecklistProgress>();
+    for (const row of checklistQ.data ?? []) byWave.set(row.wave, row);
+    return byWave;
+  }, [checklistQ.data]);
 
   // Wave 2 (spec polish): bucket children by their correlated wave. Each
   // entry maps wave number → SpecChild[]; the leftover (`wave == null` /
@@ -532,6 +566,7 @@ export function SpecWavesTab({
           childrenOfWave={undefined}
           borderOverride="border-[--primary]/40 bg-[--primary]/5"
           labelOverride={t("specWaves.row.mainSpecLabel")}
+          checklist={checklistByWave.get(0) ?? null}
         />
       )}
       {merged.map((wave) => (
@@ -542,6 +577,7 @@ export function SpecWavesTab({
           repoPath={repoPath}
           spec={spec}
           childrenOfWave={childrenByWave.get(wave.wave)}
+          checklist={checklistByWave.get(wave.wave) ?? null}
         />
       ))}
       {orphans.length > 0 && (

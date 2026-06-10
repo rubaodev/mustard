@@ -879,6 +879,32 @@ export function dashboardSpecWavesPlanned(
   });
 }
 
+// --- Wave 3 (spec checklist-progresso-por-onda): per-wave checklist progress ---
+
+/**
+ * Per-wave checklist progress — `done`/`total` trackable items. Wave `0` is
+ * the spec's own sidecar (items outside a wave plan); `total` comes from the
+ * `meta.json#checklist` sidecars, the live `done` signal from the
+ * `checklist.item.marked` NDJSON events. `total === 0` means the wave has
+ * marked events but no seeded sidecar (legacy markdown checklist) — render
+ * the done count without inventing a denominator.
+ */
+export interface WaveChecklistProgress {
+  wave: number;
+  done: number;
+  total: number;
+}
+
+export function dashboardSpecChecklistProgress(
+  repoPath: string,
+  spec: string,
+): Promise<WaveChecklistProgress[]> {
+  return invoke<WaveChecklistProgress[]>("dashboard_spec_checklist_progress", {
+    repoPath,
+    spec,
+  });
+}
+
 // --- Wave-2 dashboard visual overview (spec 2026-05-20-dashboard-visual-overview) ---
 
 /** Per-pipeline token savings entry returned in `TokenSummary.top_pipelines`. */

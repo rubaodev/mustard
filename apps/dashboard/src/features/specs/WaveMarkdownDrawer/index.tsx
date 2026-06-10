@@ -8,7 +8,9 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { Markdown } from "@/components/page/Markdown";
+import { useSpecChecklistProgress } from "@/hooks/useSpecChecklistProgress";
 import { useSpecWaveFiles } from "@/hooks/useSpecWaveFiles";
+import type { WaveChecklistProgress } from "@/lib/dashboard";
 
 interface WaveMarkdownDrawerProps {
   open: boolean;
@@ -65,12 +67,16 @@ function DrawerHeader({
   onPinChange,
   onClose,
   showClose,
+  checklist,
 }: {
   label: string;
   pinned: boolean;
   onPinChange?: (p: boolean) => void;
   onClose?: () => void;
   showClose: boolean;
+  /** Wave 3 (checklist-progresso-por-onda): `N/M itens` badge for this wave.
+   *  `null` when the wave has no checklist data — nothing is rendered. */
+  checklist?: WaveChecklistProgress | null;
 }) {
   const PinIcon = pinned ? PinOff : Pin;
   const pinTitle = pinned ? "Soltar como janela" : "Fixar dentro do painel";
@@ -83,6 +89,17 @@ function DrawerHeader({
       <span className="font-mono text-[13px] truncate flex-1 min-w-0">
         {label}
       </span>
+      {checklist && (checklist.total > 0 || checklist.done > 0) && (
+        <span
+          className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground tabular-nums shrink-0"
+          style={{ fontVariantNumeric: "tabular-nums" }}
+          title="Itens do checklist concluídos nesta onda (meta.json + eventos checklist.item.marked)"
+        >
+          {checklist.total > 0
+            ? `${checklist.done}/${checklist.total} itens`
+            : `itens marcados: ${checklist.done}`}
+        </span>
+      )}
       {onPinChange && (
         <button
           type="button"
@@ -140,6 +157,15 @@ export function WaveMarkdownDrawer({
   // for the closed state would fire a spurious "Onda #0" fetch.
   const q = useSpecWaveFiles(repoPath, spec, wave == null ? -1 : waveNum);
 
+  // Wave 3 (checklist-progresso-por-onda): per-wave checklist progress for the
+  // header badge. Same queryKey as `SpecWavesTab`'s query — React Query dedupes
+  // the round-trip. `null` when the open wave carries no checklist data.
+  const checklistQ = useSpecChecklistProgress(repoPath, spec || null);
+  const checklist =
+    wave == null
+      ? null
+      : ((checklistQ.data ?? []).find((r) => r.wave === wave) ?? null);
+
   const headerLabel =
     wave == null
       ? "Wave"
@@ -189,6 +215,7 @@ export function WaveMarkdownDrawer({
           onPinChange={onPinChange}
           onClose={() => onOpenChange(false)}
           showClose
+          checklist={checklist}
         />
         {body}
       </aside>
@@ -204,6 +231,7 @@ export function WaveMarkdownDrawer({
             pinned={pinned}
             onPinChange={onPinChange}
             showClose={false}
+            checklist={checklist}
           />
           <SheetTitle className="sr-only">{headerLabel}</SheetTitle>
           <SheetDescription className="sr-only">
