@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export interface PipelineSummary {
   spec_name: string;
@@ -344,6 +345,37 @@ export interface ActivePipeline {
 
 export function fetchActivePipelines(repoPath: string): Promise<ActivePipeline[]> {
   return invoke<ActivePipeline[]>("dashboard_active_pipelines", { repoPath });
+}
+
+// --- Specs snapshot push (spec performance-dashboard-rotas-lentas-cache, W3) ---
+
+/**
+ * Aggregated payload of the `dashboard:specs-snapshot` Tauri event — mirrors
+ * the Rust `SpecsSnapshot` struct (`serde(rename_all = "snake_case")`). The
+ * watcher rebuilds it on a background thread after each debounced burst of
+ * `.ndjson` / spec writes and ships it ready to render: `specs` is the
+ * `dashboard_specs` projection, `active_pipelines` the
+ * `dashboard_active_pipelines` one.
+ */
+export interface SpecsSnapshot {
+  repo_path: string;
+  specs: SpecRow[];
+  active_pipelines: ActivePipeline[];
+}
+
+/**
+ * Typed binding for the `dashboard:specs-snapshot` push. Resolves to the
+ * unlisten function, like `listen` from `@tauri-apps/api/event`. The payload
+ * carries no sequence number, so callers apply snapshots in reception order
+ * (last write wins) and lean on the queries' own staleTime / refetch fallback
+ * to reconcile the theoretical out-of-order pair of overlapping rebuilds.
+ */
+export function onSpecsSnapshot(
+  handler: (snapshot: SpecsSnapshot) => void,
+): Promise<() => void> {
+  return listen<SpecsSnapshot>("dashboard:specs-snapshot", ({ payload }) =>
+    handler(payload),
+  );
 }
 
 // --- New Wave 3 commands ---
