@@ -206,6 +206,38 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// Resolve the spec a Write/Edit should be checked against, fail-open `None`.
+///
+/// Priority:
+/// 1. [`spec_for_session`] — the `.session/<id>/active-spec` marker bound to
+///    THIS session. This is the canonical session→spec link the event router
+///    maintains; the rest of the harness already resolves the active spec this
+///    way. Using it here means the boundary check runs against the spec the
+///    session is actually working on.
+/// 2. `MUSTARD_ACTIVE_SPEC` — the explicit env override `/feature` & `/spec` set.
+/// 3. Legacy: the newest *fresh* (`mtime < 10 min`) `.pipeline-states/*.json`
+///    `specName`. Kept only for flows that carry no session binding; the
+///    freshness window stops an ancient leftover from misattributing.
+///
+/// Why not the legacy scan first: picking the newest state file by mtime alone
+/// attributes an edit to whichever spec last touched a `.pipeline-states` file —
+/// which can be a *finished, leftover* spec (a stale `payables-…`), raising a
+/// BOUNDARY WARNING for a spec the current session never touched.
+fn resolve_boundary_spec(cwd: &str, session_id: Option<&str>) -> Option<String> {
+    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown") {
+        if let Some(spec) = crate::shared::context::spec_for_session(cwd, sid) {
+            return Some(spec);
+        }
+    }
+    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC") {
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    read_newest_fresh_state(cwd)
+        .and_then(|s| s.get("specName").and_then(|v| v.as_str()).map(str::to_string))
+}
+
 /// Resolve the spec.md file for a pipeline-state. Mirrors `resolveSpecFile`:
 /// `.claude/spec/{specName}/spec.md` (flat layout), with a wave-plan branch that
 /// looks for a `wave-{N}-*/spec.md` child directory first.
@@ -627,10 +659,13 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if is_meta_path(&rel) {
         return None;
     }
-    // The JSON state file is read only for `specName` (filesystem identity) and
-    // the mtime freshness gate.
-    let state = read_newest_fresh_state(cwd)?;
-    let spec_name = state.get("specName").and_then(|v| v.as_str())?;
+    // Resolve the spec THIS edit belongs to. Canonical source: the session→spec
+    // binding (`active-spec` marker) the event router maintains — the same link
+    // the rest of the harness uses — falling back to the legacy newest-fresh
+    // `.pipeline-states` scan only for a session with no binding (see
+    // `resolve_boundary_spec`).
+    let spec_name = resolve_boundary_spec(cwd, input.session_id.as_deref())?;
+    let spec_name = spec_name.as_str();
 
     // Collect events from the NDJSON event log (W3C — no SQLite).
     let events = read_spec_events(cwd, spec_name);
@@ -928,6 +963,59 @@ mod tests {
         };
         // No spec dir → no patterns → boundary_gate returns None (Allow).
         assert!(boundary_gate(&input, &cwd_str).is_none());
+    }
+
+    #[test]
+    fn boundary_gate_attributes_to_session_spec_not_newest_state() {
+        // Regression (#1): the gate must check the edit against the spec THIS
+        // session is bound to (the `active-spec` marker), NOT the newest
+        // `.pipeline-states` file by mtime. Otherwise a finished, leftover spec
+        // misattributes every edit and raises a BOUNDARY WARNING for a spec the
+        // session never touched.
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let paths = ClaudePaths::for_project(cwd).unwrap();
+        let states = paths.pipeline_states_dir();
+        std::fs::create_dir_all(&states).unwrap();
+        // A stale leftover state file — newest by mtime, would win the legacy scan.
+        std::fs::write(
+            paths.pipeline_state_file("old-leftover"),
+            r#"{"specName":"old-leftover"}"#,
+        )
+        .unwrap();
+        let old = paths.for_spec("old-leftover").unwrap();
+        std::fs::create_dir_all(old.dir()).unwrap();
+        std::fs::write(old.spec_md_path(), "# Old\n## Files\n- `src/old.ts`\n").unwrap();
+        // The current run's spec + its own boundary.
+        let cur = paths.for_spec("current-run").unwrap();
+        std::fs::create_dir_all(cur.dir()).unwrap();
+        std::fs::write(cur.spec_md_path(), "# Cur\n## Files\n- `src/current.ts`\n").unwrap();
+
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        // Bind THIS session to current-run.
+        crate::shared::context::bind_session_spec(&cwd_str, "sess-1", "current-run");
+
+        let input = HookInput {
+            tool_name: Some("Edit".to_string()),
+            tool_input: serde_json::json!({ "file_path": "src/forbidden.ts" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd_str.clone()),
+            session_id: Some("sess-1".to_string()),
+            ..HookInput::default()
+        };
+        match boundary_gate(&input, &cwd_str) {
+            Some(Verdict::Warn { message }) => {
+                assert!(
+                    message.contains("current-run"),
+                    "must cite the session spec: {message}"
+                );
+                assert!(
+                    !message.contains("old-leftover"),
+                    "must NOT cite the leftover spec: {message}"
+                );
+            }
+            other => panic!("expected Warn citing current-run, got {other:?}"),
+        }
     }
 
     #[test]
