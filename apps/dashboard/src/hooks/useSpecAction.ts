@@ -26,6 +26,7 @@ export function useSpecAction(repoPath: string | null) {
 
       // Invalidate affected query families
       queryClient.invalidateQueries({ queryKey: ["spec-card"] });
+      queryClient.invalidateQueries({ queryKey: ["spec-cards"] });
       queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
       queryClient.invalidateQueries({ queryKey: ["specs-list"] });
       if (repoPath) {

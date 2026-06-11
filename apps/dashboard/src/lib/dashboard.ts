@@ -708,6 +708,18 @@ export function dashboardSpecCard(
   return invoke("dashboard_spec_card", { repoPath, spec });
 }
 
+/**
+ * Batch counterpart of `dashboardSpecCard` for the Specs LIST route: one
+ * invoke returns a card for every listed top-level spec, paying a single
+ * workspace event fold instead of one per row. Fail-open — an empty
+ * workspace resolves to an empty array.
+ */
+export function fetchSpecCards(
+  repoPath: string,
+): Promise<import("@/lib/types/specs").SpecCard[]> {
+  return invoke("dashboard_spec_cards", { repoPath });
+}
+
 export function dashboardSpecWaves(
   repoPath: string,
   spec: string,

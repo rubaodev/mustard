@@ -75,11 +75,14 @@ export function Economia() {
 
   // Two extra typed wrappers — both fail-soft on the backend, so the React
   // Query layer never surfaces a hard error for missing data, just empty.
+  // staleTime aligned with the global 60s default — the 30s refetchInterval
+  // stays as the live fallback, so route switches within the window render
+  // from cache instead of refiring all economy folds.
   const breakdown = useQuery({
     queryKey: ["economy-savings", scope && scopeKey(scope)],
     queryFn: () => fetchEconomySavingsBreakdown(scope as EconomyScope),
     enabled: !!scope,
-    staleTime: 15_000,
+    staleTime: 60_000,
     refetchInterval: 30_000,
   });
 
@@ -87,7 +90,7 @@ export function Economia() {
     queryKey: ["economy-routing", scope && scopeKey(scope)],
     queryFn: () => fetchEconomyContextRouting(scope as EconomyScope),
     enabled: !!scope,
-    staleTime: 15_000,
+    staleTime: 60_000,
     refetchInterval: 30_000,
   });
 
@@ -95,7 +98,7 @@ export function Economia() {
     queryKey: ["economy-per-spec", scope && scopeKey(scope)],
     queryFn: () => fetchEconomyPerSpecCosts(scope as EconomyScope),
     enabled: !!scope,
-    staleTime: 15_000,
+    staleTime: 60_000,
     refetchInterval: 30_000,
   });
 
@@ -103,7 +106,7 @@ export function Economia() {
     queryKey: ["economy-per-wave", scope && scopeKey(scope)],
     queryFn: () => fetchEconomyPerWaveCosts(scope as EconomyScope),
     enabled: !!scope,
-    staleTime: 15_000,
+    staleTime: 60_000,
     refetchInterval: 30_000,
   });
 

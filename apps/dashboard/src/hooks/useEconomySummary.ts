@@ -27,7 +27,9 @@ export function useEconomySummary(
     queryKey: ["economy-summary", scope && stableScopeKey(scope)],
     queryFn: () => fetchEconomySummary(scope as EconomyScope),
     enabled: !!scope,
-    staleTime: 15_000,
+    // staleTime aligned with the global 60s default; the 30s refetchInterval
+    // remains the live fallback (same cadence as the other Economia panels).
+    staleTime: 60_000,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });

@@ -26,6 +26,9 @@ function applySpecBucket(
     rows?.map((row) => (row.name === specName ? { ...row, bucket } : row)),
   );
   queryClient.invalidateQueries({ queryKey: ["spec-card", repoPath, specName] });
+  // The Specs list renders from the batch query now — refetch it so the
+  // acted-on row moves bucket without waiting for the 60s poll.
+  queryClient.invalidateQueries({ queryKey: ["spec-cards", repoPath] });
 }
 
 export function useSpecActions(repoPath: string | undefined) {

@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router";
 import { Search } from "lucide-react";
 import { useStore } from "@/lib/store";
 import {
   useProjects,
-  fetchSpecs,
-  dashboardSpecCard,
+  fetchSpecCards,
   fetchWorkspaceHealth,
   type SpecCard,
 } from "@/lib/dashboard";
@@ -341,6 +340,7 @@ export function Specs() {
     const active = tabs.find((t) => t.id === activeTabId);
     if (!active || active.kind === "list") {
       queryClient.invalidateQueries({ queryKey: ["specs"] });
+      queryClient.invalidateQueries({ queryKey: ["spec-cards"] });
       queryClient.invalidateQueries({ queryKey: ["spec-card"] });
       queryClient.invalidateQueries({ queryKey: ["spec-children-tree"] });
       return;
@@ -348,6 +348,7 @@ export function Specs() {
     const slug = active.specName;
     queryClient.invalidateQueries({ queryKey: ["spec-card", undefined, slug] });
     queryClient.invalidateQueries({ queryKey: ["spec-card"] });
+    queryClient.invalidateQueries({ queryKey: ["spec-cards"] });
     queryClient.invalidateQueries({ queryKey: ["spec-waves", slug] });
     queryClient.invalidateQueries({ queryKey: ["spec-quality", slug] });
     queryClient.invalidateQueries({ queryKey: ["spec-children", slug] });
@@ -361,35 +362,26 @@ export function Specs() {
     if (hash && /^\d{4}-\d{2}-\d{2}-/.test(hash)) openSpec(hash);
   }, []);
 
-  // Fetch spec list (SpecRow names) then fan out one SpecCard per spec.
-  // Wave 3 (2026-05-22): ["specs"] is invalidated by the FS watcher on
-  // "spec"/"pipeline-state" changes — drop the 15s poll, keep staleTime.
-  const { data: specRows, isLoading: listLoading } = useQuery({
-    queryKey: ["specs", activeProject?.path],
-    queryFn: () => fetchSpecs(activeProject!.path),
+  // ONE batch query replaces the old list query + per-spec fan-out (spec
+  // `sidebar-lento-lista-specs-dispara`): `dashboard_spec_cards` resolves the
+  // cached spec list backend-side and folds the workspace events ONCE for all
+  // cards, instead of N parallel `dashboard_spec_card` calls each re-folding
+  // the whole slice. spec-cards has no dedicated watcher kind; mutations
+  // invalidate it (useSpecAction / onRefresh) — keep a 60s poll as the live
+  // fallback, like the per-card queries had.
+  const cardsQuery = useQuery({
+    queryKey: ["spec-cards", activeProject?.path],
+    queryFn: (): Promise<SpecCard[]> => fetchSpecCards(activeProject!.path),
     enabled: !!activeProject,
     staleTime: 10_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
 
-  // spec-card has no dedicated watcher kind; events arrive via mutations
-  // (useSpecAction invalidates it). Keep a long 60s fallback instead of 5s.
-  const cardQueries = useQueries({
-    queries: (specRows ?? []).map((row) => ({
-      queryKey: ["spec-card", activeProject?.path, row.name] as const,
-      queryFn: (): Promise<SpecCard> =>
-        dashboardSpecCard(activeProject!.path, row.name),
-      enabled: !!activeProject,
-      staleTime: 5_000,
-      refetchInterval: 60_000,
-      refetchIntervalInBackground: false,
-    })),
-  });
-
-  const cards = useMemo<SpecCard[]>(() => {
-    return cardQueries
-      .map((q) => q.data)
-      .filter((d): d is SpecCard => d != null);
-  }, [cardQueries]);
+  const cards = useMemo<SpecCard[]>(
+    () => cardsQuery.data ?? [],
+    [cardsQuery.data],
+  );
 
   // Wave-6: fetch hygiene health to populate suspect sets for badges + "Suspeitas" filter.
   const { data: healthData } = useQuery({
@@ -407,10 +399,9 @@ export function Specs() {
     [healthData],
   );
 
-  // Two-stage loading cascade — see prior spec note: don't flash the empty
-  // state while the per-card fan-out is mid-flight.
-  const cardsLoading = cardQueries.some((q) => q.isLoading);
-  const specsLoading = listLoading || cardsLoading;
+  // Loading gate — the batch query covers both stages the old cascade
+  // tracked (list walk + per-card folds happen in one command now).
+  const specsLoading = cardsQuery.isLoading;
 
   const dateCutoff = useMemo<number>(() => {
     const now = Date.now();

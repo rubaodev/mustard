@@ -1905,15 +1905,17 @@ async fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipel
         .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
-fn dashboard_active_pipelines_impl(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
-    // Onda 2 (HIGH-VALUE): fold the NDJSON workspace once, then per discovered
-    // spec build a SpecCard via the same `spec_card_v2` primitive the spec page
-    // uses. Specs in a terminal status (completed / cancelled / closed-followup)
-    // are dropped — the "PIPELINES ATIVOS" card lists only live work.
-    let base = PathBuf::from(&repo_path);
-
-    // Discover spec names from the filesystem (source of truth for existence),
-    // via the watcher-invalidated specs cache.
+/// Shared core for every "card per listed spec" command: discover the
+/// top-level spec names from the filesystem (via the watcher-invalidated specs
+/// cache), build the attributed per-spec activity counts ONCE for the whole
+/// workspace (folds spec-less session `tool.use`/`agent.*` onto the spec their
+/// session was bound to — otherwise each row would re-walk the event log), and
+/// map each spec through `spec_card_v2_with_counts`. A spec with no event
+/// evidence (or a per-row projection error) yields `(name, None)` so each
+/// caller picks its own degradation: the batch list substitutes the
+/// "no-events" card, the active-pipelines list skips the row.
+fn workspace_spec_cards(repo_path: &str) -> Vec<(String, Option<spec_views::SpecCard>)> {
+    let base = PathBuf::from(repo_path);
     let mut names: Vec<String> = specs_from_fs_cached(&base)
         .iter()
         .filter(|r| r.parent.is_none()) // top-level specs only; waves nest inside
@@ -1922,19 +1924,28 @@ fn dashboard_active_pipelines_impl(repo_path: String) -> Result<Vec<ActivePipeli
     names.sort();
     names.dedup();
 
-    // Build the attributed per-spec activity counts ONCE for the whole
-    // workspace (folds spec-less session `tool.use`/`agent.*` onto the spec
-    // their session was bound to) and thread it into every `spec_card_v2`
-    // below — otherwise each row would re-walk the event log. Closes the card
-    // gap where a live spec's session work lands in `.session/*/.events/` with
-    // `spec == null` and the core fold counted it as zero.
     let counts = telemetry::attributed_spec_counts(&base);
 
+    names
+        .into_iter()
+        .map(|spec| {
+            let card = spec_views::spec_card_v2_with_counts(repo_path, &spec, &counts)
+                .ok()
+                .flatten();
+            (spec, card)
+        })
+        .collect()
+}
+
+fn dashboard_active_pipelines_impl(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
+    // Onda 2 (HIGH-VALUE): fold the NDJSON workspace once, then per discovered
+    // spec build a SpecCard via the same `spec_card_v2` primitive the spec page
+    // uses. Specs in a terminal status (completed / cancelled / closed-followup)
+    // are dropped — the "PIPELINES ATIVOS" card lists only live work.
     let mut out: Vec<ActivePipeline> = Vec::new();
-    for spec in names {
-        let card = match spec_views::spec_card_v2_with_counts(&repo_path, &spec, &counts) {
-            Ok(Some(c)) => c,
-            _ => continue, // no event evidence → not an active pipeline
+    for (_, card) in workspace_spec_cards(&repo_path) {
+        let Some(card) = card else {
+            continue; // no event evidence → not an active pipeline
         };
         if is_terminal_pipeline_status(&card.status) {
             continue;
@@ -2098,6 +2109,29 @@ fn no_events_spec_card(spec: String) -> spec_views::SpecCard {
         digest_used: false,
         source_reads_before_digest: 0,
     }
+}
+
+/// Batch counterpart of [`dashboard_spec_card`] for the Specs LIST route
+/// (spec `sidebar-lento-lista-specs-dispara`): one command returns a card for
+/// EVERY listed top-level spec, paying a single `attributed_spec_counts`
+/// workspace fold instead of one per row — the page used to fan out N
+/// `dashboard_spec_card` calls, each re-folding the whole event slice. A join
+/// error degrades to an empty list (the failure-tolerant contract).
+#[tauri::command]
+async fn dashboard_spec_cards(repo_path: String) -> Result<Vec<spec_views::SpecCard>, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_spec_cards_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_spec_cards_impl(repo_path: String) -> Result<Vec<spec_views::SpecCard>, String> {
+    // Parity with the per-spec command: a listed spec with no event evidence
+    // still gets a card (the "no-events" empty state), so the list renders
+    // every spec exactly as the old fan-out did.
+    Ok(workspace_spec_cards(&repo_path)
+        .into_iter()
+        .map(|(spec, card)| card.unwrap_or_else(|| no_events_spec_card(spec)))
+        .collect())
 }
 
 /// Off-main-thread + cached-slice wrapper (see [`dashboard_spec_card`]). A
@@ -2966,6 +3000,7 @@ pub fn run() {
             amend_queries::cross_session_amend_count,
             amend_queries::amend_window_duration,
             dashboard_spec_card,
+            dashboard_spec_cards,
             dashboard_spec_waves,
             dashboard_spec_checklist_progress,
             dashboard_spec_quality,
@@ -3352,6 +3387,48 @@ mod onda2_tests {
             .find(|p| p.spec_name == "alpha")
             .expect("alpha must be an active pipeline");
         assert_eq!(alpha.updated_at.as_deref(), Some("2026-05-27T09:31:00.000Z"));
+    }
+
+    #[test]
+    fn spec_cards_batch_folds_attributed_counts_once() {
+        // T1 contract (spec `sidebar-lento-lista-specs-dispara`): the batch
+        // command returns one card per listed spec while paying exactly ONE
+        // `attributed_spec_counts` workspace fold — the per-row re-fold was
+        // the Specs-page latency bug. Counter is per-repo (TempDir), so
+        // parallel tests never skew the delta.
+        let tmp = TempDir::new().unwrap();
+        for spec in ["alpha", "beta"] {
+            let line = format!(
+                r#"{{"event":"tool.use","kind":"tool","ts":"2026-05-27T09:00:00.000Z","spec":"{spec}","payload":{{"tool":"Read","target":{{"file_path":"src/x.rs"}}}}}}"#
+            );
+            write_event(tmp.path(), spec, "events.ndjson", &format!("{line}\n"));
+            std::fs::write(
+                tmp.path().join(".claude").join("spec").join(spec).join("spec.md"),
+                format!("# {spec}\n"),
+            )
+            .unwrap();
+        }
+        // A third spec with NO events: the batch must still emit its card as
+        // the "no-events" empty state (parity with the per-spec command).
+        let gamma_dir = tmp.path().join(".claude").join("spec").join("gamma");
+        std::fs::create_dir_all(&gamma_dir).unwrap();
+        std::fs::write(gamma_dir.join("spec.md"), "# gamma\n").unwrap();
+
+        let before = telemetry::attributed_spec_counts_calls(tmp.path());
+        let cards =
+            dashboard_spec_cards_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(cards.len(), 3, "one card per listed spec");
+        assert!(cards.iter().any(|c| c.spec == "alpha" && c.tools_used > 0));
+        assert!(cards.iter().any(|c| c.spec == "beta" && c.tools_used > 0));
+        assert!(
+            cards.iter().any(|c| c.spec == "gamma" && c.status == "no-events"),
+            "event-less spec degrades to the no-events card, not a dropped row"
+        );
+        assert_eq!(
+            telemetry::attributed_spec_counts_calls(tmp.path()),
+            before + 1,
+            "N cards must cost exactly ONE attributed-counts fold"
+        );
     }
 
     /// Write a spec's `meta.json` sidecar beside its `spec.md`.

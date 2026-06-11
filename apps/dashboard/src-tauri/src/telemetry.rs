@@ -513,8 +513,34 @@ pub(crate) struct AttributedSpecCounts {
 pub(crate) fn attributed_spec_counts(
     repo_path: &Path,
 ) -> HashMap<String, AttributedSpecCounts> {
+    #[cfg(test)]
+    if let Ok(mut calls) = ATTRIBUTED_COUNTS_CALLS.lock() {
+        *calls
+            .entry(repo_path.to_string_lossy().into_owned())
+            .or_insert(0) += 1;
+    }
     let events = walk_ndjson_events_cached(repo_path);
     attributed_spec_counts_from(&events)
+}
+
+/// Test-visible per-repo invocation counter for [`attributed_spec_counts`],
+/// mirroring the [`events_cache_parsed_files`] pattern. Keyed by repo path so
+/// parallel tests on distinct `TempDir`s never observe each other's calls.
+/// Backs the batch-command contract ("N cards cost exactly ONE workspace
+/// fold") asserted in `lib.rs`.
+#[cfg(test)]
+static ATTRIBUTED_COUNTS_CALLS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, u64>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// How many times [`attributed_spec_counts`] has run for `repo` so far.
+#[cfg(test)]
+pub(crate) fn attributed_spec_counts_calls(repo: &Path) -> u64 {
+    ATTRIBUTED_COUNTS_CALLS
+        .lock()
+        .ok()
+        .and_then(|calls| calls.get(repo.to_string_lossy().as_ref()).copied())
+        .unwrap_or(0)
 }
 
 /// [`attributed_spec_counts`] over a pre-collected event slice — split out so a

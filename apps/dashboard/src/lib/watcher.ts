@@ -21,6 +21,9 @@ function subscribeSpecsSnapshot(): Promise<() => void> {
   return onSpecsSnapshot(({ repo_path, specs, active_pipelines }) => {
     queryClient.setQueryData(["specs", repo_path], specs);
     queryClient.setQueryData(["active-pipelines", repo_path], active_pipelines);
+    // The snapshot does not carry the batch spec-cards; one invalidation per
+    // burst keeps the Specs list live (the batch refetch is a single fold).
+    queryClient.invalidateQueries({ queryKey: ["spec-cards", repo_path] });
   });
 }
 
