@@ -1,15 +1,16 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
-  "phase": "EXECUTE",
+  "stage": "Close",
+  "outcome": "Completed",
+  "phase": "CLOSE",
   "scope": "full",
   "lang": "pt-BR",
-  "checkpoint": "2026-06-11T18:46:34.504Z",
+  "checkpoint": "2026-06-11T19:11:08.247Z",
   "isWavePlan": true,
   "totalWaves": 3,
-  "currentWave": 2,
+  "currentWave": 3,
   "completedWaves": [
     1,
-    2
+    2,
+    3
   ]
 }
