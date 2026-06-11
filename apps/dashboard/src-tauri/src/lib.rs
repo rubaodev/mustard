@@ -679,6 +679,25 @@ fn event_summary(
                 .unwrap_or("");
             format!("review {verdict}")
         }
+        "pipeline.change.request" => {
+            let stage = payload
+                .and_then(|p| p.get("stage"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let preview: String = payload
+                .and_then(|p| p.get("prompt"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(60)
+                .collect();
+            match (stage.is_empty(), preview.is_empty()) {
+                (false, false) => format!("solicitação ({stage}) — {preview}"),
+                (true, false) => format!("solicitação — {preview}"),
+                (false, true) => format!("solicitação ({stage})"),
+                (true, true) => "solicitação".to_string(),
+            }
+        }
         other => other.to_string(),
     };
     s.chars().take(120).collect()

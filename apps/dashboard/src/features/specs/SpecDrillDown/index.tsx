@@ -9,6 +9,7 @@ import { Markdown } from "@/components/page";
 import { SpecWavesTab } from "../SpecWavesTab";
 import { SpecQualityTab } from "../SpecQualityTab";
 import { ExecutionTrace } from "@/features/trace/ExecutionTrace";
+import { ChangeRequestActivityBlock } from "@/features/changeRequests";
 
 interface SpecDrillDownProps {
   repoPath: string | null;
@@ -115,6 +116,9 @@ export function SpecDrillDown({
 
       {/* Spec (spec.md narrative) */}
       <TabsContent value="Spec" className="pt-3">
+        {/* Mid-spec change requests (pipeline.change.request). Renders nothing
+            when the spec has no requests — keeps the narrative clean. */}
+        <ChangeRequestActivityBlock specId={spec} />
         {markdownQ.isLoading ? (
           <LoadingRows />
         ) : markdownQ.error ? (
