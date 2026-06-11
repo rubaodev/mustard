@@ -97,6 +97,7 @@ Before building the wave plan in Full scope, check whether the work warrants mor
 8. **Present wave plan to user:**
    - Read `wave-plan.md` and print its ENTIRE contents verbatim inside a fenced markdown block.
    - Also list each wave's spec file paths (one line each) so the user can open individual wave specs if desired.
+   - **The plan must be visible at the moment of the question**: attach the `wave-plan.md` content as the `preview` of the approval option (and keep the verbatim print in the same final message). Text written before a tool call may not be displayed — an approval question whose plan the user cannot see is a defect, not a style choice.
    - Then `AskUserQuestion` — Full scope STOPS at PLAN, so the only forward path is approval via `/spec` (`/feature` never executes a Full spec inline):
      - **"Approve wave plan for later"** → stop, user runs `/mustard:spec {letter}` to approve (new session) or `/mustard:spec {letter}r` to approve + resume inline.
      - **"Edit decomposition (hint PLAN)"** → user provides hint (e.g., "merge waves 2 and 3"), PLAN reexecutes with the hint appended to `estimatedTouchPoints`/manual grouping. Re-decompose once.
