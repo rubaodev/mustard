@@ -1,31 +1,31 @@
 {
-  "stage": "Execute",
-  "outcome": "Active",
+  "stage": "Close",
+  "outcome": "Completed",
   "phase": "EXECUTE",
   "scope": null,
   "lang": "pt-BR",
-  "checkpoint": "2026-06-11T17:40:35.302Z",
+  "checkpoint": "2026-06-11T18:27:03.354Z",
   "parent": "performance-dashboard-rotas-lentas-cache",
   "checklist": [
     {
       "label": "packages/core/src/view/projection/mod.rs",
       "path": "packages/core/src/view/projection/mod.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src-tauri/src/telemetry.rs",
       "path": "apps/dashboard/src-tauri/src/telemetry.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src-tauri/src/lib.rs",
       "path": "apps/dashboard/src-tauri/src/lib.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src-tauri/src/spec_views.rs",
       "path": "apps/dashboard/src-tauri/src/spec_views.rs",
-      "done": false
+      "done": true
     }
   ]
 }

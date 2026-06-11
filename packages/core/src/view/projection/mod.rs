@@ -7,8 +7,10 @@
 //!
 //! This is what makes the crate testable without IO: a test seeds a `Vec`,
 //! calls the projection, asserts the view. Production callers in `apps/rt`
-//! and `apps/dashboard` supply the slice via
-//! [`read_workspace_events`] (NDJSON walker) before invoking the projection.
+//! supply the slice via [`read_workspace_events`] (NDJSON walker); callers
+//! that already hold the raw records in memory (the dashboard's parsed-events
+//! cache) convert them with [`harness_events_from_values`] instead — the disk
+//! walk is the caller's responsibility, never repeated here.
 
 mod card;
 mod quality;
@@ -44,7 +46,41 @@ use std::path::Path;
 /// converter.
 #[must_use]
 pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
-    let raw = &e.raw;
+    harness_from_raw(&e.raw, e.payload)
+}
+
+/// Convert one already-loaded raw NDJSON record (the full line as a
+/// [`serde_json::Value`], including its `payload` key) into a [`HarnessEvent`].
+///
+/// Performance spec `performance-dashboard-rotas-lentas-cache` (wave 1): the
+/// dashboard keeps the parsed workspace records in an in-memory cache and must
+/// feed the projections WITHOUT re-walking the disk. This is the conversion
+/// entry point for events the caller already holds; [`ndjson_to_harness`]
+/// remains the entry point for records streamed off disk via [`EventReader`].
+/// Both share one field-extraction body so the two paths can never drift.
+#[must_use]
+pub fn value_to_harness(record: &Value) -> HarnessEvent {
+    let payload = record.get("payload").cloned().unwrap_or(Value::Null);
+    harness_from_raw(record, payload)
+}
+
+/// Convert an iterator of already-loaded raw NDJSON records into the
+/// `Vec<HarnessEvent>` slice every projection folds over. The cached caller
+/// (dashboard) owns the disk walk; this function only converts.
+#[must_use]
+pub fn harness_events_from_values<'a, I>(records: I) -> Vec<HarnessEvent>
+where
+    I: IntoIterator<Item = &'a Value>,
+{
+    records.into_iter().map(value_to_harness).collect()
+}
+
+/// Shared field-extraction body for [`ndjson_to_harness`] /
+/// [`value_to_harness`]. `raw` is the record's envelope (for an [`Event`] the
+/// flatten catch-all, for a loaded [`Value`] the full line — the keys read
+/// here are identical in both shapes); `payload` is passed separately because
+/// the [`Event`] deserializer already split it out.
+fn harness_from_raw(raw: &Value, payload: Value) -> HarnessEvent {
     let get_str = |key: &str| -> String {
         raw.get(key)
             .and_then(Value::as_str)
@@ -62,7 +98,7 @@ pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
             actor_type: None,
         },
         event: get_str("event"),
-        payload: e.payload,
+        payload,
         spec: raw.get("spec").and_then(Value::as_str).map(str::to_string),
     }
 }
@@ -75,10 +111,14 @@ pub fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// unreadable files and malformed lines are silently skipped — telemetry is
 /// never load-bearing, the projection callers always render *something*.
 ///
-/// W8A-2 (no-sqlite Wave 8): the single canonical event-slice loader for the
-/// crate. Both `apps/rt` and the dashboard Tauri layer consume this — keeping
-/// it in `mustard-core` keeps the projection inputs identical across the two
-/// consumers (the regression W6 caught when the dashboard had its own copy).
+/// W8A-2 (no-sqlite Wave 8): the canonical disk-walking event-slice loader.
+/// `apps/rt` (one-shot CLI) consumes this directly; the dashboard Tauri layer
+/// now feeds the same projections from its incremental parsed-events cache via
+/// [`harness_events_from_values`] instead of re-walking the disk per command
+/// (spec `performance-dashboard-rotas-lentas-cache`, wave 1). Conversion stays
+/// shared (`harness_from_raw`), so the projection inputs remain identical
+/// across the two consumers (the regression W6 caught when the dashboard had
+/// its own copy).
 #[must_use]
 pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {
     let Ok(paths) = ClaudePaths::for_project(project_root) else {
@@ -130,7 +170,55 @@ pub(crate) fn extract_to_phase(ev: &HarnessEvent) -> Option<Phase> {
 
 #[cfg(test)]
 mod tests {
+    use super::{harness_events_from_values, ndjson_to_harness, value_to_harness};
+    use crate::io::events::Event;
     use crate::platform::time::iso_diff_ms;
+    use serde_json::json;
+
+    #[test]
+    fn value_to_harness_matches_disk_streamed_conversion() {
+        // The cached caller path (already-loaded Value) must produce the same
+        // HarnessEvent as the disk-streamed path (EventReader line → Event).
+        let line = json!({
+            "v": 1,
+            "ts": "2026-06-10T10:00:00Z",
+            "session_id": "sess-1",
+            "wave": 2,
+            "actor": "metrics-tracker",
+            "event": "tool.use",
+            "kind": "tool",
+            "spec": "alpha",
+            "payload": { "tool": "Read", "target": { "file_path": "src/x.rs" } }
+        });
+        let from_value = value_to_harness(&line);
+        let event: Event = serde_json::from_value(line).expect("valid NDJSON record");
+        let from_event = ndjson_to_harness(event);
+        assert_eq!(from_value.ts, from_event.ts);
+        assert_eq!(from_value.session_id, from_event.session_id);
+        assert_eq!(from_value.wave, from_event.wave);
+        assert_eq!(from_value.event, from_event.event);
+        assert_eq!(from_value.spec, from_event.spec);
+        assert_eq!(from_value.payload, from_event.payload);
+        assert_eq!(from_value.actor.id, from_event.actor.id);
+    }
+
+    #[test]
+    fn harness_events_from_values_converts_a_loaded_slice_without_io() {
+        // Sparse record: missing payload/spec/wave must default safely.
+        let records = vec![
+            json!({ "event": "pipeline.phase", "ts": "2026-06-10T10:00:00Z",
+                    "spec": "alpha", "payload": { "to": "EXECUTE" } }),
+            json!({ "event": "tool.use", "ts": "2026-06-10T10:01:00Z" }),
+        ];
+        let events = harness_events_from_values(records.iter());
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event, "pipeline.phase");
+        assert_eq!(events[0].spec.as_deref(), Some("alpha"));
+        assert_eq!(events[1].event, "tool.use");
+        assert!(events[1].spec.is_none());
+        assert!(events[1].payload.is_null());
+        assert_eq!(events[1].wave, 0);
+    }
 
     #[test]
     fn iso_diff_handles_zero_and_one_second() {

@@ -188,8 +188,17 @@ fn baselines_from_rt(repo: &Path) -> (Vec<BaselineEntry>, usize, Option<String>)
 /// Fail-open: the function never returns `Err` for missing data; it surfaces
 /// degradation through `EconomySummary::notes` so the dashboard can render a
 /// subtle hint without breaking the page.
+/// Off-main-thread wrapper for [`economy_summary_impl`] (cold cache pays a
+/// full spec-dir walk + an `mustard-rt` subprocess). A join error degrades to
+/// a zeroed summary.
 #[tauri::command]
-pub fn economy_summary(repo_path: String) -> Result<EconomySummary, String> {
+pub async fn economy_summary(repo_path: String) -> Result<EconomySummary, String> {
+    tauri::async_runtime::spawn_blocking(move || economy_summary_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(EconomySummary::default()))
+}
+
+fn economy_summary_impl(repo_path: String) -> Result<EconomySummary, String> {
     let repo = PathBuf::from(&repo_path);
     let mut notes: Vec<String> = Vec::new();
 

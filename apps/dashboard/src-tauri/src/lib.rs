@@ -47,7 +47,7 @@ pub struct KnowledgeSummary {
     pub high_confidence_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct SpecRow {
     pub name: String,
@@ -159,13 +159,23 @@ pub struct GlobalConsumption {
     pub rtk: telemetry::RtkBlock,
 }
 
+/// Off-main-thread wrapper for [`dashboard_pipelines_impl`] — it runs the same
+/// heavy per-spec fold as `dashboard_active_pipelines`, so on a cold cache it
+/// pays the full workspace parse. A join error degrades to an empty list. See
+/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
+async fn dashboard_pipelines(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_pipelines_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_pipelines_impl(repo_path: String) -> Result<Vec<PipelineSummary>, String> {
     // Onda 2: this legacy command has no live caller (superseded by
     // `dashboard_active_pipelines`). Alias it to the same NDJSON-backed
     // active-pipelines data, projected down to the leaner `PipelineSummary`
     // shape so any stray consumer still sees real rows.
-    let actives = dashboard_active_pipelines(repo_path)?;
+    let actives = dashboard_active_pipelines_impl(repo_path)?;
     Ok(actives
         .into_iter()
         .map(|p| PipelineSummary {
@@ -703,8 +713,17 @@ fn event_summary(
     s.chars().take(120).collect()
 }
 
+/// Off-main-thread wrapper for [`dashboard_specs_impl`] (spec-list walk; served
+/// from the specs cache when warm). A join error degrades to an empty list.
+/// See [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
+async fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_specs_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_specs_impl(repo_path: String) -> Result<Vec<SpecRow>, String> {
     let base = PathBuf::from(&repo_path);
 
     // The filesystem is the source of truth for spec existence. The walk also
@@ -712,11 +731,13 @@ fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
     // is no SQLite event-log merge — phase/timestamps that the legacy DB
     // enriched here come back unset until the NDJSON projection lands (Onda 2);
     // `phase` falls back to the value parsed from spec.md/wave-plan.md frontmatter.
-    let fs_rows = specs_from_fs(&base);
+    // Served from the watcher-invalidated specs cache: spec.md is tiny markdown,
+    // the list route must never wait on a directory walk when nothing changed.
+    let fs_rows = specs_from_fs_cached(&base);
 
     let mut by_name: HashMap<String, SpecRow> = HashMap::new();
-    for row in fs_rows {
-        by_name.insert(row.name.clone(), row);
+    for row in fs_rows.iter() {
+        by_name.insert(row.name.clone(), row.clone());
     }
 
     // Top-level specs only. `specs_from_fs` walks wave-plan children and emits
@@ -740,6 +761,45 @@ fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(rows)
+}
+
+/// Process-global, per-repo cache of the [`specs_from_fs`] walk (spec
+/// `performance-dashboard-rotas-lentas-cache`, wave 1). spec.md is tiny
+/// markdown, but the walk opens every `spec.md` / `wave-plan.md` under
+/// `.claude/spec/` — on the list route that is pure latency when nothing
+/// changed. The watcher invalidates the entry on any `spec`-kind fs-change
+/// (see `watcher.rs`); the dashboard's own spec.md writes invalidate inline
+/// via [`invalidate_specs_cache`]. Lock discipline mirrors the events cache:
+/// the lock is held only for the O(1) probe / insert, never across the walk.
+static SPECS_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Arc<Vec<SpecRow>>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Cached counterpart of [`specs_from_fs`]: returns the shared spec-row list
+/// for `base`, walking the directory only on a miss.
+#[must_use]
+fn specs_from_fs_cached(base: &std::path::Path) -> Arc<Vec<SpecRow>> {
+    let key = base.to_string_lossy().into_owned();
+    if let Ok(guard) = SPECS_CACHE.lock() {
+        if let Some(hit) = guard.get(&key) {
+            return Arc::clone(hit);
+        }
+    }
+    // Cold miss: walk OUTSIDE the lock so parallel projects never serialise.
+    let rows = Arc::new(specs_from_fs(base));
+    if let Ok(mut guard) = SPECS_CACHE.lock() {
+        return Arc::clone(guard.entry(key).or_insert(rows));
+    }
+    rows
+}
+
+/// Drop `repo`'s cached spec list so the next [`specs_from_fs_cached`] re-walks
+/// the directory. Called by the watcher on a `spec`-kind fs-change and by the
+/// dashboard's own spec.md writers. Fail-open: a poisoned lock is a no-op (the
+/// stale list is corrected on the next change).
+pub(crate) fn invalidate_specs_cache(repo: &str) {
+    if let Ok(mut guard) = SPECS_CACHE.lock() {
+        guard.remove(repo);
+    }
 }
 
 // Walk .claude/spec/*/spec.md (and wave-plan.md) for spec existence and
@@ -966,8 +1026,18 @@ fn strip_bold_label(s: &str, label: &str) -> Option<String> {
     }
 }
 
+/// Off-main-thread wrapper for [`dashboard_spec_markdown_impl`] (small file
+/// read, but part of the spec-detail fan-out — no synchronous IO on the main
+/// thread). A join error surfaces as the not-found `Err` the viewer already
+/// maps to its "not available" state.
 #[tauri::command]
-fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<String, String> {
+async fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_spec_markdown_impl(repo_path, spec_name))
+        .await
+        .unwrap_or_else(|_| Err("spec markdown read failed".to_string()))
+}
+
+fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<String, String> {
     let base = PathBuf::from(&repo_path).join(".claude").join("spec");
     // Reject traversal — spec_name is a single directory name, not a path.
     if spec_name.is_empty()
@@ -1126,6 +1196,10 @@ pub(crate) fn lib_emit_ndjson(
             if let Err(e) = writeln!(file, "{serialized}") {
                 eprintln!("lib_emit_ndjson: write {} failed: {e}", path.display());
             }
+            // Surgical cache maintenance: mark exactly this shard dirty so the
+            // next read reflects the emit immediately, without waiting on the
+            // watcher's debounce (and without a full re-parse).
+            telemetry::invalidate_events_cache_path(repo_path, &path);
         }
         Err(e) => {
             eprintln!("lib_emit_ndjson: open {} failed: {e}", path.display());
@@ -1158,7 +1232,11 @@ fn lib_sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
     if content.ends_with('\n') { out.push('\n'); }
     if let Err(e) = fs::write_atomic(&path, out.as_bytes()) {
         eprintln!("lib_sync_spec_status_header: write {}: {e}", path.display());
+        return;
     }
+    // The cached spec list parses this very header — drop it inline so the
+    // status flip is visible on the next list call, ahead of the watcher.
+    invalidate_specs_cache(repo_path);
 }
 
 #[tauri::command]
@@ -1378,8 +1456,17 @@ fn dashboard_activity_aggregated_impl(repo_path: String, limit: Option<usize>) -
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_quality_metrics_impl`] (full
+/// workspace fold). A join error degrades to a zeroed summary. See
+/// [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_quality_metrics(repo_path: String) -> Result<QualityMetrics, String> {
+async fn dashboard_quality_metrics(repo_path: String) -> Result<QualityMetrics, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_quality_metrics_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(QualityMetrics::default()))
+}
+
+fn dashboard_quality_metrics_impl(repo_path: String) -> Result<QualityMetrics, String> {
     // Onda 2: derive quality from `review.result` / `qa.result` events folded
     // per spec via the core `project_quality` projection. pass@1 = share of
     // specs whose latest QA had zero fails; fix_loop_rate = share of specs with
@@ -1387,12 +1474,12 @@ fn dashboard_quality_metrics(repo_path: String) -> Result<QualityMetrics, String
     // by spec here (no role dimension on qa events). Honest about thin data:
     // returns zeros when no review/qa events exist.
     let base = PathBuf::from(&repo_path);
-    let events = mustard_core::view::projection::read_workspace_events(&base);
+    let events = telemetry::workspace_harness_events_cached(&base);
 
     // Distinct specs that emitted any qa.result.
     let mut qa_specs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut qa_runs_per_spec: HashMap<String, i64> = HashMap::new();
-    for e in &events {
+    for e in events.iter() {
         if e.event == "qa.result" {
             if let Some(spec) = e.spec.as_deref() {
                 qa_specs.insert(spec.to_string());
@@ -1497,18 +1584,29 @@ fn dashboard_telemetry_impl(repo_path: String) -> Result<telemetry::TelemetrySum
 /// (hook-retry counts, heavy pipelines). Distinct from knowledge patterns;
 /// the Knowledge page renders this in its own "Atrito" section. Empty vec
 /// when the file is absent (the common case — friction is rare).
+/// Off-main-thread: cheap when warm, but pays a cold disk read on the main
+/// thread otherwise. A join error degrades to an empty list.
 #[tauri::command]
-fn dashboard_friction(repo_path: String) -> Result<Vec<telemetry::FrictionEntry>, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    Ok(telemetry::friction_entries(&base))
+async fn dashboard_friction(repo_path: String) -> Result<Vec<telemetry::FrictionEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = std::path::PathBuf::from(&repo_path);
+        Ok(telemetry::friction_entries(&base))
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 /// Live activity derived from mustard.db. Events are written by mustard-rt
 /// on every hook dispatch, so the DB always reflects the current session.
+/// Off-main-thread; a join error degrades to a zeroed summary.
 #[tauri::command]
-fn dashboard_live_activity(repo_path: String) -> Result<telemetry::LiveActivity, String> {
-    let base = std::path::PathBuf::from(&repo_path);
-    Ok(telemetry::live_activity(&base))
+async fn dashboard_live_activity(repo_path: String) -> Result<telemetry::LiveActivity, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = std::path::PathBuf::from(&repo_path);
+        Ok(telemetry::live_activity(&base))
+    })
+    .await
+    .unwrap_or_else(|_| Ok(telemetry::LiveActivity::default()))
 }
 
 /// Build a [`ConsumptionSummary`] for one project root from the core NDJSON
@@ -1610,9 +1708,15 @@ fn consumption_today(root: &std::path::Path) -> (u64, f64) {
 
 /// Per-workspace consumption + cost summary, folded from the NDJSON economy
 /// channel. Returns zeros when no economy events exist for the project.
+/// Off-main-thread (cold cache pays a full workspace parse); a join error
+/// degrades to a zeroed summary.
 #[tauri::command]
-fn dashboard_consumption(repo_path: String) -> Result<ConsumptionSummary, String> {
-    Ok(consumption_for_root(&PathBuf::from(&repo_path)))
+async fn dashboard_consumption(repo_path: String) -> Result<ConsumptionSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(consumption_for_root(&PathBuf::from(&repo_path)))
+    })
+    .await
+    .unwrap_or_else(|_| Ok(ConsumptionSummary::default()))
 }
 
 /// Cross-project (global) consumption: walks every project discovered under
@@ -1756,19 +1860,29 @@ fn dashboard_watch_repos(
     Ok(())
 }
 
+/// Off-main-thread wrapper for [`dashboard_active_pipelines_impl`] (per-spec
+/// card folds over the whole workspace). A join error degrades to an empty
+/// list. See [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
+async fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_active_pipelines_impl(repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_active_pipelines_impl(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
     // Onda 2 (HIGH-VALUE): fold the NDJSON workspace once, then per discovered
     // spec build a SpecCard via the same `spec_card_v2` primitive the spec page
     // uses. Specs in a terminal status (completed / cancelled / closed-followup)
     // are dropped — the "PIPELINES ATIVOS" card lists only live work.
     let base = PathBuf::from(&repo_path);
 
-    // Discover spec names from the filesystem (source of truth for existence).
-    let mut names: Vec<String> = specs_from_fs(&base)
-        .into_iter()
+    // Discover spec names from the filesystem (source of truth for existence),
+    // via the watcher-invalidated specs cache.
+    let mut names: Vec<String> = specs_from_fs_cached(&base)
+        .iter()
         .filter(|r| r.parent.is_none()) // top-level specs only; waves nest inside
-        .map(|r| r.name)
+        .map(|r| r.name.clone())
         .collect();
     names.sort();
     names.dedup();
@@ -1907,35 +2021,57 @@ fn mustard_update(path: String) -> Result<(), String> {
 /// with no events resolves to the typed `SpecStatus::NoEvents`, which the
 /// adapter surfaces as the `"no-events"` string, and the UI can render an
 /// honest empty state.
+/// Off-main-thread wrapper for [`dashboard_spec_card_impl`]. The spec-detail
+/// route fans 5 commands out in parallel; all of them now read the cached
+/// workspace slice, but the cold rebuild is still a full parse — keep it off
+/// the main thread (see [`dashboard_metrics`]). A join error degrades to the
+/// "no-events" card (the failure-tolerant contract).
 #[tauri::command]
-fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
+async fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
+    let fallback_spec = spec.clone();
+    tauri::async_runtime::spawn_blocking(move || dashboard_spec_card_impl(repo_path, spec))
+        .await
+        .unwrap_or_else(|_| Ok(no_events_spec_card(fallback_spec)))
+}
+
+fn dashboard_spec_card_impl(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
     match spec_views::spec_card_v2(&repo_path, &spec)? {
         Some(card) => Ok(card),
-        None => Ok(spec_views::SpecCard {
-            spec,
-            status: "no-events".to_string(),
-            phase: String::new(),
-            scope: None,
-            started_at: None,
-            last_event_at: None,
-            duration_ms: None,
-            current_wave: None,
-            total_waves: None,
-            ac_passed: 0,
-            ac_total: 0,
-            files_touched: 0,
-            tools_used: 0,
-            model: None,
-            children_count: 0,
-            digest_used: false,
-            source_reads_before_digest: 0,
-        }),
+        None => Ok(no_events_spec_card(spec)),
     }
 }
 
+/// The empty-state card for a spec with no event evidence — also the join-error
+/// degradation of the async wrapper (never an `Err` toast).
+fn no_events_spec_card(spec: String) -> spec_views::SpecCard {
+    spec_views::SpecCard {
+        spec,
+        status: "no-events".to_string(),
+        phase: String::new(),
+        scope: None,
+        started_at: None,
+        last_event_at: None,
+        duration_ms: None,
+        current_wave: None,
+        total_waves: None,
+        ac_passed: 0,
+        ac_total: 0,
+        files_touched: 0,
+        tools_used: 0,
+        model: None,
+        children_count: 0,
+        digest_used: false,
+        source_reads_before_digest: 0,
+    }
+}
+
+/// Off-main-thread + cached-slice wrapper (see [`dashboard_spec_card`]). A
+/// join error degrades to an empty list.
 #[tauri::command]
-fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecWave>, String> {
-    spec_views::spec_waves_v2(&repo_path, &spec)
+async fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecWave>, String> {
+    tauri::async_runtime::spawn_blocking(move || spec_views::spec_waves_v2(&repo_path, &spec))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 /// Wave 3 (spec `checklist-progresso-por-onda`) — per-wave checklist progress
@@ -1944,25 +2080,47 @@ fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_view
 /// data resolves to an empty vec so the frontend renders nothing rather than
 /// a fabricated `0/0`.
 #[tauri::command]
-fn dashboard_spec_checklist_progress(
+async fn dashboard_spec_checklist_progress(
     repo_path: String,
     spec: String,
 ) -> Result<Vec<spec_views::WaveChecklistProgress>, String> {
-    spec_views::spec_checklist_progress_v2(&repo_path, &spec)
+    tauri::async_runtime::spawn_blocking(move || {
+        spec_views::spec_checklist_progress_v2(&repo_path, &spec)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 #[tauri::command]
-fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecQualityItem>, String> {
-    spec_views::spec_quality_v2(&repo_path, &spec)
+async fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecQualityItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || spec_views::spec_quality_v2(&repo_path, &spec))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
 #[tauri::command]
-fn dashboard_spec_timeline(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecTimelineNode>, String> {
-    spec_views::spec_timeline_v2(&repo_path, &spec)
+async fn dashboard_spec_timeline(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecTimelineNode>, String> {
+    tauri::async_runtime::spawn_blocking(move || spec_views::spec_timeline_v2(&repo_path, &spec))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
+/// Off-main-thread wrapper for [`dashboard_spec_events_impl`]. A join error
+/// degrades to an empty list.
 #[tauri::command]
-fn dashboard_spec_events(
+async fn dashboard_spec_events(
+    repo_path: String,
+    spec: String,
+    filter: Option<spec_views::EventFilter>,
+) -> Result<Vec<spec_views::TimelineEvent>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_spec_events_impl(repo_path, spec, filter)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_spec_events_impl(
     repo_path: String,
     spec: String,
     filter: Option<spec_views::EventFilter>,
@@ -2130,9 +2288,13 @@ async fn dashboard_spec_waves_planned(
 /// the `tokens_saved_today LIKE '%token%saved%'` query that never matched
 /// any real event. The new projection counts events strictly within the
 /// trailing 60-second window and sums RTK/hook/routing savings events.
+/// Off-main-thread wrapper (full workspace fold; cached slice when warm). A
+/// join error degrades to the default summary.
 #[tauri::command]
-fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::WorkspaceSummary, String> {
-    spec_views::workspace_summary_v2(&repo_path)
+async fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::WorkspaceSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || spec_views::workspace_summary_v2(&repo_path))
+        .await
+        .unwrap_or_else(|_| Ok(spec_views::WorkspaceSummary::default()))
 }
 
 // ── Wave-6 hygiene observability ─────────────────────────────────────────────
@@ -2148,13 +2310,19 @@ fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::Workspac
 ///     spec `meta.json` flags, which are not folded here; left at 0 honestly
 ///     rather than guessed. `last_hygiene_run_at` is the max `hygiene.*` ts.
 #[tauri::command]
-fn workspace_health(repo_path: String) -> spec_views::WorkspaceHealth {
+async fn workspace_health(repo_path: String) -> spec_views::WorkspaceHealth {
+    tauri::async_runtime::spawn_blocking(move || workspace_health_impl(repo_path))
+        .await
+        .unwrap_or_default()
+}
+
+fn workspace_health_impl(repo_path: String) -> spec_views::WorkspaceHealth {
     let base = PathBuf::from(&repo_path);
 
     // Active specs: FS-discovered top-level specs whose projection is non-terminal.
     let mut active = 0i64;
     let mut active_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for row in specs_from_fs(&base) {
+    for row in specs_from_fs_cached(&base).iter() {
         if row.parent.is_some() {
             continue;
         }
@@ -2232,8 +2400,21 @@ fn time_range_floor_ms(time_range: &str) -> i64 {
     }
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_phases_impl`] (cold cache
+/// pays the full workspace parse). A join error degrades to an empty list.
 #[tauri::command]
-fn dashboard_telemetry_phases(
+async fn dashboard_telemetry_phases(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::PhaseSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_phases_impl(repo_path, time_range)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_telemetry_phases_impl(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::PhaseSummary>, String> {
@@ -2295,8 +2476,22 @@ fn dashboard_telemetry_phases(
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_timeline_impl`] (cold
+/// cache pays the full workspace parse). A join error degrades to an empty list.
 #[tauri::command]
-fn dashboard_telemetry_timeline(
+async fn dashboard_telemetry_timeline(
+    repo_path: String,
+    time_range: String,
+    limit: Option<usize>,
+) -> Result<Vec<telemetry_agg::TimelineEvent>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_timeline_impl(repo_path, time_range, limit)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_telemetry_timeline_impl(
     repo_path: String,
     time_range: String,
     limit: Option<usize>,
@@ -2339,8 +2534,22 @@ fn dashboard_telemetry_timeline(
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_heatmap_impl`] (cold
+/// cache pays the full workspace parse). A join error degrades to an empty
+/// list. The sync `_impl` is kept so unit tests call it directly.
 #[tauri::command]
-fn dashboard_telemetry_heatmap(
+async fn dashboard_telemetry_heatmap(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::HeatmapCell>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_heatmap_impl(repo_path, time_range)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_telemetry_heatmap_impl(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::HeatmapCell>, String> {
@@ -2375,17 +2584,32 @@ fn dashboard_telemetry_heatmap(
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_history_impl`] (full
+/// workspace fold + per-spec quality rollups). A join error degrades to an
+/// empty list. See [`dashboard_metrics`] for the rationale.
 #[tauri::command]
-fn dashboard_telemetry_history(
+async fn dashboard_telemetry_history(
+    repo_path: String,
+    time_range: String,
+    limit: Option<usize>,
+) -> Result<Vec<telemetry_agg::HistoryEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_history_impl(repo_path, time_range, limit)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_telemetry_history_impl(
     repo_path: String,
     time_range: String,
     limit: Option<usize>,
 ) -> Result<Vec<telemetry_agg::HistoryEntry>, String> {
     // (C) trio: per-spec `pipeline.status` transition timeline + per-phase event
-    // counts + AC pass/total. Built from the folded workspace events.
+    // counts + AC pass/total. Built from the cached workspace slice.
     let base = PathBuf::from(&repo_path);
     let floor = time_range_floor_ms(&time_range);
-    let h_events = mustard_core::view::projection::read_workspace_events(&base);
+    let h_events = telemetry::workspace_harness_events_cached(&base);
 
     struct Acc {
         status: String,
@@ -2394,7 +2618,7 @@ fn dashboard_telemetry_history(
         per_phase: std::collections::HashMap<String, i64>,
     }
     let mut by_spec: HashMap<String, Acc> = HashMap::new();
-    for e in &h_events {
+    for e in h_events.iter() {
         let Some(spec) = e.spec.as_deref() else { continue };
         if telemetry::iso_to_ms_crate(&e.ts).map_or(true, |ms| ms < floor) {
             continue;
@@ -2448,15 +2672,28 @@ fn dashboard_telemetry_history(
     Ok(rows)
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_criteria_impl`]. A join
+/// error degrades to an empty list.
 #[tauri::command]
-fn dashboard_telemetry_criteria(
+async fn dashboard_telemetry_criteria(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::AcceptanceCriterion>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_criteria_impl(repo_path, time_range)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_telemetry_criteria_impl(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::AcceptanceCriterion>, String> {
     // (C) trio: AC rows across every spec via `project_quality` (qa.result).
     let base = PathBuf::from(&repo_path);
     let floor = time_range_floor_ms(&time_range);
-    let events = mustard_core::view::projection::read_workspace_events(&base);
+    let events = telemetry::workspace_harness_events_cached(&base);
     let specs: std::collections::BTreeSet<String> = events
         .iter()
         .filter(|e| e.event == "qa.result")
@@ -2495,8 +2732,21 @@ fn ac_status_word(s: mustard_core::AcStatus) -> String {
     .to_string()
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_effort_impl`] (cold cache
+/// pays the full workspace parse). A join error degrades to an empty breakdown.
 #[tauri::command]
-fn dashboard_telemetry_effort(
+async fn dashboard_telemetry_effort(
+    repo_path: String,
+    time_range: String,
+) -> Result<telemetry_agg::EffortBreakdown, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_effort_impl(repo_path, time_range)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(telemetry_agg::EffortBreakdown::default()))
+}
+
+fn dashboard_telemetry_effort_impl(
     repo_path: String,
     time_range: String,
 ) -> Result<telemetry_agg::EffortBreakdown, String> {
@@ -2582,8 +2832,21 @@ fn dashboard_telemetry_effort(
     })
 }
 
+/// Off-main-thread wrapper for [`dashboard_telemetry_agents_impl`] (cold cache
+/// pays the full workspace parse). A join error degrades to an empty list.
 #[tauri::command]
-fn dashboard_telemetry_agents(
+async fn dashboard_telemetry_agents(
+    repo_path: String,
+    time_range: String,
+) -> Result<Vec<telemetry_agg::AgentDispatch>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_telemetry_agents_impl(repo_path, time_range)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_telemetry_agents_impl(
     repo_path: String,
     time_range: String,
 ) -> Result<Vec<telemetry_agg::AgentDispatch>, String> {
@@ -2830,7 +3093,7 @@ mod onda2_tests {
             r#"{"event":"tool.use","kind":"tool","ts":"2026-05-27T10:30:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#, "\n",
         );
         write_event(tmp.path(), "a", "events.ndjson", lines);
-        let cells = dashboard_telemetry_heatmap(
+        let cells = dashboard_telemetry_heatmap_impl(
             tmp.path().to_string_lossy().into_owned(),
             "all".to_string(),
         )
@@ -2880,7 +3143,7 @@ mod onda2_tests {
         );
 
         // dashboard_specs filters to top-level only.
-        let rows = dashboard_specs(tmp.path().to_string_lossy().into_owned()).unwrap();
+        let rows = dashboard_specs_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"epic"), "parent spec must be kept");
         assert!(names.contains(&"solo"), "standalone spec must be kept");
@@ -2889,6 +3152,37 @@ mod onda2_tests {
             "wave subdirectory must be dropped"
         );
         assert!(rows.iter().all(|r| r.parent.is_none()));
+    }
+
+    #[test]
+    fn specs_cache_serves_warm_list_until_invalidated() {
+        // Wave-1 task 4: the spec LIST never waits on a directory walk when
+        // warm; the watcher (kind `spec`) is the invalidation path.
+        let tmp = TempDir::new().unwrap();
+        let spec_root = tmp.path().join(".claude").join("spec");
+        let solo = spec_root.join("solo");
+        std::fs::create_dir_all(&solo).unwrap();
+        std::fs::write(solo.join("spec.md"), "# solo\n").unwrap();
+
+        let first = specs_from_fs_cached(tmp.path());
+        assert!(first.iter().any(|r| r.name == "solo"));
+
+        // A new spec lands on disk: the warm cache still serves the shared
+        // list (same Arc — no re-walk happened).
+        let late = spec_root.join("later");
+        std::fs::create_dir_all(&late).unwrap();
+        std::fs::write(late.join("spec.md"), "# later\n").unwrap();
+        let warm = specs_from_fs_cached(tmp.path());
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &warm),
+            "a warm hit must share the Arc, not re-walk"
+        );
+        assert!(!warm.iter().any(|r| r.name == "later"));
+
+        // Watcher-style invalidation → the fresh walk picks the new spec up.
+        invalidate_specs_cache(&tmp.path().to_string_lossy());
+        let fresh = specs_from_fs_cached(tmp.path());
+        assert!(fresh.iter().any(|r| r.name == "later"));
     }
 
     #[test]
@@ -2955,7 +3249,8 @@ mod onda2_tests {
         )
         .unwrap();
 
-        let actives = dashboard_active_pipelines(tmp.path().to_string_lossy().into_owned()).unwrap();
+        let actives =
+            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
         let names: Vec<&str> = actives.iter().map(|p| p.spec_name.as_str()).collect();
         assert!(names.contains(&"live"), "live spec should be active: {names:?}");
         assert!(!names.contains(&"done"), "completed spec must be excluded");
@@ -3000,9 +3295,11 @@ mod onda2_tests {
         write_session_event(tmp.path(), "sess-1", "work.ndjson", work);
 
         // Spec card: tools/files counts must include the attributed session work.
-        let card =
-            dashboard_spec_card(tmp.path().to_string_lossy().into_owned(), "alpha".to_string())
-                .unwrap();
+        let card = dashboard_spec_card_impl(
+            tmp.path().to_string_lossy().into_owned(),
+            "alpha".to_string(),
+        )
+        .unwrap();
         assert_eq!(card.tools_used, 2, "two attributed session tool.use events");
         assert_eq!(card.files_touched, 2, "two distinct attributed file targets");
         assert_eq!(
@@ -3014,7 +3311,7 @@ mod onda2_tests {
         // Active-pipelines: the spec stays listed and its updated_at advances to
         // the attributed session activity.
         let actives =
-            dashboard_active_pipelines(tmp.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
         let alpha = actives
             .iter()
             .find(|p| p.spec_name == "alpha")
@@ -3058,7 +3355,7 @@ mod onda2_tests {
         meta.total_waves = Some(2);
         write_meta_json(tmp.path(), "payable", &meta);
 
-        let card = dashboard_spec_card(
+        let card = dashboard_spec_card_impl(
             tmp.path().to_string_lossy().into_owned(),
             "payable".to_string(),
         )
@@ -3068,7 +3365,7 @@ mod onda2_tests {
         // And the active-pipelines list (which mirrors the Ativas taxonomy on
         // the backend) must drop it as terminal.
         let actives =
-            dashboard_active_pipelines(tmp.path().to_string_lossy().into_owned()).unwrap();
+            dashboard_active_pipelines_impl(tmp.path().to_string_lossy().into_owned()).unwrap();
         assert!(
             !actives.iter().any(|p| p.spec_name == "payable"),
             "a meta-Completed spec must not appear as an active pipeline",
@@ -3092,7 +3389,7 @@ mod onda2_tests {
             "# nometa\n",
         )
         .unwrap();
-        let card = dashboard_spec_card(
+        let card = dashboard_spec_card_impl(
             tmp.path().to_string_lossy().into_owned(),
             "nometa".to_string(),
         )
@@ -3118,9 +3415,9 @@ mod onda2_tests {
             "# acme\n\n## Critérios de Aceitação\n\n- **AC-1** — Build passes on Windows.\n  Command: `rtk cargo build`\n- **AC-2** — Lint is clean.\n  Command: `rtk lint`\n",
         )
         .unwrap();
-        let items = dashboard_spec_quality(
-            tmp.path().to_string_lossy().into_owned(),
-            "acme".to_string(),
+        let items = spec_views::spec_quality_v2(
+            &tmp.path().to_string_lossy(),
+            "acme",
         )
         .unwrap();
         let ac1 = items.iter().find(|i| i.ac_id == "AC-1").expect("AC-1");
@@ -3158,9 +3455,9 @@ mod onda2_tests {
         )
         .unwrap();
 
-        let waves = dashboard_spec_waves(
-            tmp.path().to_string_lossy().into_owned(),
-            "epic".to_string(),
+        let waves = spec_views::spec_waves_v2(
+            &tmp.path().to_string_lossy(),
+            "epic",
         )
         .unwrap();
         let w1 = waves.iter().find(|w| w.wave == 1).expect("wave 1");

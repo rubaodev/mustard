@@ -10,12 +10,12 @@
     {
       "label": "apps/dashboard/src-tauri/src/watcher.rs",
       "path": "apps/dashboard/src-tauri/src/watcher.rs",
-      "done": false
+      "done": true
     },
     {
       "label": "apps/dashboard/src-tauri/src/lib.rs",
       "path": "apps/dashboard/src-tauri/src/lib.rs",
-      "done": false
+      "done": true
     }
   ]
 }

@@ -7,10 +7,11 @@
 //!
 //! `*_v2` adapter family that delegates to `mustard-core`.
 //!
-//! Each `*_v2` function is a thin adapter — it walks
-//! `<project>/.claude/spec/*/.events/*.ndjson` via
-//! [`mustard_core::view::projection::read_workspace_events`], folds the resulting
-//! slice with the matching projection function (`project_spec_view_with_header`,
+//! Each `*_v2` function is a thin adapter — it takes the cached workspace
+//! event slice from [`crate::telemetry::workspace_harness_events_cached`]
+//! (spec `performance-dashboard-rotas-lentas-cache`: no per-command disk
+//! walk; the incremental cache re-reads only changed shards), folds it with
+//! the matching projection function (`project_spec_view_with_header`,
 //! `project_waves`, `project_quality`, `project_timeline`, `project_workspace`)
 //! and maps the typed ViewModel into the JSON shape the frontend already
 //! expects (so React contracts stay untouched). The legacy hand-rolled SQL functions
@@ -266,7 +267,7 @@ pub struct WikilinkExtract {
     pub orphans: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkspaceSummary {
     pub events_per_minute: f64,
@@ -362,7 +363,11 @@ pub(crate) fn spec_card_v2_with_counts(
     counts: &std::collections::HashMap<String, crate::telemetry::AttributedSpecCounts>,
 ) -> Result<Option<SpecCard>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::view::projection::read_workspace_events(&project);
+    // Cached workspace slice (spec `performance-dashboard-rotas-lentas-cache`):
+    // the spec-detail route fans 5 commands out in parallel — each used to
+    // re-walk ~10k NDJSON shards via `read_workspace_events`. The shared
+    // incremental cache parses a shard once and serves the burst from memory.
+    let events = crate::telemetry::workspace_harness_events_cached(&project);
     let spec_md = project.join(".claude").join("spec").join(spec).join("spec.md");
     let view = mustard_core::view::projection::project_spec_view_with_header(
         spec,
@@ -626,7 +631,7 @@ fn merge_attributed_counts(
 /// keyed by wave number, never overwriting a non-empty event-derived role.
 pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::view::projection::read_workspace_events(&project);
+    let events = crate::telemetry::workspace_harness_events_cached(&project);
     let waves = mustard_core::view::projection::project_waves(spec, &events);
     let meta = wave_plan_meta(&project, spec);
     // DEFECT 2 relief: which wave numbers are running but not yet completed.
@@ -849,7 +854,7 @@ pub fn spec_checklist_progress_v2(
 /// id. The pass/fail status and command are untouched.
 pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityItem>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::view::projection::read_workspace_events(&project);
+    let events = crate::telemetry::workspace_harness_events_cached(&project);
     let rollup = mustard_core::view::projection::project_quality(spec, &events);
     let descriptions = ac_descriptions(&project, spec);
     Ok(rollup
@@ -1131,7 +1136,7 @@ fn parse_wave_plan_row(line: &str) -> Option<(i64, Option<String>, Option<String
 /// needs a narrower view.
 pub fn spec_timeline_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecTimelineNode>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::view::projection::read_workspace_events(&project);
+    let events = crate::telemetry::workspace_harness_events_cached(&project);
     let nodes = mustard_core::view::projection::project_timeline(
         spec,
         &events,
@@ -1317,7 +1322,10 @@ pub fn dashboard_metrics_wave_status_run(
 /// when the override fails-soft (DB missing / schema mismatch).
 pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String> {
     let project = std::path::PathBuf::from(repo_path);
-    let events = mustard_core::view::projection::read_workspace_events(&project);
+    // Cached + complete slice (spec/wave/session sinks) — see
+    // `workspace_harness_events_cached`. Session-attributed activity that the
+    // old spec-only core walk missed now counts toward the workspace totals.
+    let events = crate::telemetry::workspace_harness_events_cached(&project);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -2050,8 +2058,16 @@ pub struct FeedEvent {
 /// savings, folded from the NDJSON savings channel. `total_saved` comes from
 /// the core `savings_breakdown` (project scope); the per-spec ranking is folded
 /// directly from `pipeline.economy.savings.*` events grouped by `spec`.
+/// Off-main-thread wrapper for [`dashboard_token_summary_impl`] (cold cache
+/// pays the full workspace parse). A join error degrades to a zeroed summary.
 #[tauri::command]
-pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, String> {
+pub async fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_token_summary_impl(project_path))
+        .await
+        .unwrap_or_else(|_| Ok(TokenSummary::default()))
+}
+
+fn dashboard_token_summary_impl(project_path: String) -> Result<TokenSummary, String> {
     use mustard_core::domain::economy::scope::ProjectPath as CoreProjectPath;
     use mustard_core::domain::economy::EconomyScope as CoreScope;
 
@@ -2102,8 +2118,22 @@ pub fn dashboard_token_summary(project_path: String) -> Result<TokenSummary, Str
 /// with the real event count + the day's top pipeline phase, folded from the
 /// complete NDJSON walker. Days with no events keep `event_count: 0` /
 /// `top_phase: None`, so the scaffold shape is preserved exactly.
+/// Off-main-thread wrapper for [`dashboard_month_activity_impl`] (cold cache
+/// pays the full workspace parse). A join error degrades to an empty list.
 #[tauri::command]
-pub fn dashboard_month_activity(
+pub async fn dashboard_month_activity(
+    project_path: String,
+    year: i32,
+    month: u32,
+) -> Result<Vec<DayActivity>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        dashboard_month_activity_impl(project_path, year, month)
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_month_activity_impl(
     project_path: String,
     year: i32,
     month: u32,
@@ -2164,8 +2194,19 @@ pub fn dashboard_month_activity(
 
 /// `dashboard_events_feed` — Onda 2: chronological cross-spec feed (newest
 /// first) folded from the complete NDJSON walker, in the `FeedEvent` shape.
+/// Off-main-thread wrapper for [`dashboard_events_feed_impl`] (cold cache
+/// pays the full workspace parse). A join error degrades to an empty list.
 #[tauri::command]
-pub fn dashboard_events_feed(
+pub async fn dashboard_events_feed(
+    project_path: String,
+    limit: u32,
+) -> Result<Vec<FeedEvent>, String> {
+    tauri::async_runtime::spawn_blocking(move || dashboard_events_feed_impl(project_path, limit))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn dashboard_events_feed_impl(
     project_path: String,
     limit: u32,
 ) -> Result<Vec<FeedEvent>, String> {

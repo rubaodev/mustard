@@ -1569,6 +1569,18 @@ impl EconomyScopeDto {
 /// spec-only `for_each_ndjson_line`, which misses `.session/` and wave subdirs).
 pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
     let mut out = Vec::new();
+    for p in enumerate_ndjson_paths(root) {
+        out.extend(parse_ndjson_file(&p));
+    }
+    out
+}
+
+/// Enumerate every `.ndjson` shard path under the three canonical event sinks
+/// — directory metadata only, no file contents are read. The incremental cache
+/// uses this for its full sweep (re-stat everything, re-parse only changed
+/// fingerprints); [`walk_ndjson_events`] uses it for the uncached walk.
+fn enumerate_ndjson_paths(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
     let claude = root.join(".claude");
 
     // Per-spec channel + wave subdirs.
@@ -1578,7 +1590,7 @@ pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
             if !spec_path.is_dir() {
                 continue;
             }
-            collect_one_dir(&spec_path.join(".events"), &mut out);
+            collect_dir_ndjson(&spec_path.join(".events"), &mut out);
             if let Ok(waves) = std::fs::read_dir(&spec_path) {
                 for wave_entry in waves.flatten() {
                     let wp = wave_entry.path();
@@ -1589,8 +1601,8 @@ pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
                     if !name.starts_with("wave-") {
                         continue;
                     }
-                    collect_one_dir(&wp.join("events"), &mut out);
-                    collect_one_dir(&wp.join(".events"), &mut out);
+                    collect_dir_ndjson(&wp.join("events"), &mut out);
+                    collect_dir_ndjson(&wp.join(".events"), &mut out);
                 }
             }
         }
@@ -1603,64 +1615,273 @@ pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
             if !path.is_dir() {
                 continue;
             }
-            collect_one_dir(&path.join(".events"), &mut out);
+            collect_dir_ndjson(&path.join(".events"), &mut out);
         }
     }
 
     out
 }
 
-/// Process-global, per-project parsed-events cache.
-///
-/// Keyed by the repo path (the same `String` the commands receive), the value is
-/// a shared `Arc<Vec<Value>>` of the fully-parsed workspace event slice. The
-/// dashboard's live refresh fans every page query out within a single
-/// `dashboard:fs-change` burst, so without this cache every burst re-walked and
-/// re-parsed the WHOLE workspace NDJSON once *per command*, synchronously — the
-/// freeze this whole change fixes. The watcher invalidates a repo's entry the
-/// instant a relevant file changes (see `watcher.rs`), so the first command
-/// after a write re-parses fresh and the rest of the burst hits the warm slice.
-///
-/// Lock discipline: the `Mutex` is held only for the O(1) map probe / insert —
-/// never across the parse. On a cold miss we drop the lock, parse outside it,
-/// then briefly re-lock to insert. A rare double-parse on two simultaneous cold
-/// misses for the same repo is acceptable (both produce identical slices); it is
-/// strictly cheaper than serialising parallel projects behind one lock.
-static EVENTS_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<HashMap<String, std::sync::Arc<Vec<Value>>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
-/// Cached counterpart of [`walk_ndjson_events`]: returns the shared parsed event
-/// slice for `repo`, parsing (and caching) only on a miss. See [`EVENTS_CACHE`]
-/// for the lock discipline. Callers read it as `&[Value]` via deref.
-#[must_use]
-pub(crate) fn walk_ndjson_events_cached(repo: &Path) -> std::sync::Arc<Vec<Value>> {
-    let key = repo.to_string_lossy().into_owned();
-    // Fast path: short lock, clone the Arc, release.
-    if let Ok(guard) = EVENTS_CACHE.lock() {
-        if let Some(hit) = guard.get(&key) {
-            return std::sync::Arc::clone(hit);
-        }
-    }
-    // Cold miss: parse OUTSIDE the lock so parallel projects never serialise.
-    let parsed = std::sync::Arc::new(walk_ndjson_events(repo));
-    // Re-lock briefly to insert. If another thread inserted meanwhile, its Arc
-    // and ours hold identical data — keep the one already in the map so every
-    // caller observing this key shares a single allocation.
-    if let Ok(mut guard) = EVENTS_CACHE.lock() {
-        return std::sync::Arc::clone(guard.entry(key).or_insert(parsed));
-    }
-    parsed
+/// One parsed NDJSON shard plus the fingerprint (`len` + `modified`) it was
+/// parsed at. The fingerprint is the incremental-cache key part beyond the
+/// path: a shard is re-read only when its size or mtime moved (NDJSON is
+/// append-only, so any write changes the length).
+struct FileChunk {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    events: Vec<Value>,
 }
 
-/// Drop `repo`'s cached event slice so the next [`walk_ndjson_events_cached`]
-/// re-parses from disk. Called by the watcher on a relevant fs-change before it
-/// notifies the frontend. A no-op when the entry is absent or the lock is
-/// poisoned (fail-open — a stale cache is corrected on the next change).
-pub fn invalidate_events_cache(repo: &str) {
-    if let Ok(mut guard) = EVENTS_CACHE.lock() {
-        guard.remove(repo);
+/// Per-repo incremental parsed-events cache (spec
+/// `performance-dashboard-rotas-lentas-cache`, wave 1).
+///
+/// The previous cache held one flat `Arc<Vec<Value>>` per repo and the watcher
+/// dropped the WHOLE entry on any change — every event write re-walked and
+/// re-parsed all ~10k workspace shards. This shape keeps the parse per shard:
+///
+/// * `files` — shard path → [`FileChunk`] (fingerprint + parsed events).
+/// * `dirty` — shard paths the watcher marked changed; the next read
+///   re-parses ONLY these (milliseconds per event in steady state).
+/// * `sweep` — full re-enumeration requested (cold start / generic
+///   [`invalidate_events_cache`]): re-stat everything, re-parse only
+///   fingerprint mismatches, drop vanished shards.
+/// * `snapshot` — the flattened `Arc<Vec<Value>>` slice commands consume.
+/// * `harness` — the same snapshot converted to `HarnessEvent` for the
+///   `mustard-core` projections, built lazily and dropped together with
+///   `snapshot`.
+struct RepoEventsCache {
+    files: HashMap<PathBuf, FileChunk>,
+    dirty: std::collections::HashSet<PathBuf>,
+    sweep: bool,
+    snapshot: Option<std::sync::Arc<Vec<Value>>>,
+    harness: Option<std::sync::Arc<Vec<mustard_core::domain::model::event::HarnessEvent>>>,
+    /// How many shard parses this repo has performed — test-visible so the
+    /// incremental contract ("touch 1 file → re-read exactly 1 file") is
+    /// asserted by counting parses, not by timing.
+    parsed_files: u64,
+}
+
+impl RepoEventsCache {
+    fn new() -> Self {
+        Self {
+            files: HashMap::new(),
+            dirty: std::collections::HashSet::new(),
+            sweep: true,
+            snapshot: None,
+            harness: None,
+            parsed_files: 0,
+        }
     }
+
+    /// Bring `snapshot` up to date. Warm + clean → no IO at all. Dirty → stat
+    /// and re-parse only the marked shards. Sweep → re-enumerate the shard set
+    /// (metadata-only walk), re-parsing only fingerprint mismatches.
+    fn ensure_fresh(&mut self, repo: &Path) {
+        if self.snapshot.is_some() && !self.sweep && self.dirty.is_empty() {
+            return;
+        }
+        if self.sweep || self.snapshot.is_none() {
+            let live = enumerate_ndjson_paths(repo);
+            let live_set: std::collections::HashSet<&PathBuf> = live.iter().collect();
+            self.files.retain(|p, _| live_set.contains(p));
+            for p in &live {
+                self.refresh_file(p);
+            }
+            self.sweep = false;
+            self.dirty.clear();
+        } else {
+            let dirty: Vec<PathBuf> = self.dirty.drain().collect();
+            for p in &dirty {
+                self.refresh_file(p);
+            }
+        }
+        // Deterministic flatten: shard paths ascending. Shard names start with
+        // a nanosecond timestamp, so this is roughly chronological per dir;
+        // every projection that needs strict order sorts by `ts` itself.
+        let mut keys: Vec<PathBuf> = self.files.keys().cloned().collect();
+        keys.sort();
+        let total = self.files.values().map(|c| c.events.len()).sum();
+        let mut flat: Vec<Value> = Vec::with_capacity(total);
+        for k in &keys {
+            if let Some(chunk) = self.files.get(k) {
+                flat.extend(chunk.events.iter().cloned());
+            }
+        }
+        self.snapshot = Some(std::sync::Arc::new(flat));
+        self.harness = None;
+    }
+
+    /// Re-stat one shard; re-parse only when the fingerprint moved. A vanished
+    /// shard drops its chunk (covers deleted specs / rotated session dirs).
+    fn refresh_file(&mut self, path: &Path) {
+        match std::fs::metadata(path) {
+            Ok(md) => {
+                let len = md.len();
+                let modified = md.modified().ok();
+                if let Some(chunk) = self.files.get(path) {
+                    if modified.is_some() && chunk.modified == modified && chunk.len == len {
+                        return; // fingerprint unchanged — keep the parsed shard
+                    }
+                }
+                let events = parse_ndjson_file(path);
+                self.parsed_files = self.parsed_files.saturating_add(1);
+                self.files
+                    .insert(path.to_path_buf(), FileChunk { len, modified, events });
+            }
+            Err(_) => {
+                self.files.remove(path);
+            }
+        }
+    }
+}
+
+/// Process-global, per-project parsed-events cache.
+///
+/// Keyed by the repo path (the same `String` the commands receive), the value
+/// is the per-repo [`RepoEventsCache`] behind its own `Mutex`. The dashboard's
+/// live refresh fans every page query out within a single
+/// `dashboard:fs-change` burst, so without this cache every burst re-walked
+/// and re-parsed the WHOLE workspace NDJSON once *per command*, synchronously.
+/// The watcher marks ONLY the changed shard dirty the instant a relevant file
+/// changes (see `watcher.rs`), so the first command after a write re-parses
+/// just that shard and the rest of the burst hits the warm slice.
+///
+/// Lock discipline: the outer `Mutex` is held only for the O(1) map probe /
+/// insert — never across a parse. The per-repo `Mutex` IS held across the
+/// (incremental) rebuild, deliberately: same-repo callers serialise on it so a
+/// burst never duplicates the rebuild, while parallel projects proceed on
+/// their own entries.
+static EVENTS_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<RepoEventsCache>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Fetch (or create) the per-repo cache handle. The global lock is released
+/// before the caller locks the entry, so a long rebuild on one repo never
+/// blocks lookups for another.
+fn repo_cache_handle(repo: &Path) -> std::sync::Arc<std::sync::Mutex<RepoEventsCache>> {
+    let key = repo.to_string_lossy().into_owned();
+    if let Ok(mut guard) = EVENTS_CACHE.lock() {
+        return std::sync::Arc::clone(
+            guard
+                .entry(key)
+                .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(RepoEventsCache::new()))),
+        );
+    }
+    // Poisoned global lock: fail-open with an unshared entry (parses fresh,
+    // never caches) — telemetry is not load-bearing.
+    std::sync::Arc::new(std::sync::Mutex::new(RepoEventsCache::new()))
+}
+
+/// Cached counterpart of [`walk_ndjson_events`]: returns the shared parsed event
+/// slice for `repo`, re-reading only the shards whose fingerprint moved since
+/// the last call. See [`EVENTS_CACHE`] for the lock discipline. Callers read it
+/// as `&[Value]` via deref.
+#[must_use]
+pub(crate) fn walk_ndjson_events_cached(repo: &Path) -> std::sync::Arc<Vec<Value>> {
+    let handle = repo_cache_handle(repo);
+    let mut cache = match handle.lock() {
+        Ok(c) => c,
+        // Poisoned entry: fail-open with a fresh uncached parse.
+        Err(_) => return std::sync::Arc::new(walk_ndjson_events(repo)),
+    };
+    cache.ensure_fresh(repo);
+    match &cache.snapshot {
+        Some(s) => std::sync::Arc::clone(s),
+        None => std::sync::Arc::new(Vec::new()),
+    }
+}
+
+/// The cached workspace slice converted for the `mustard-core` projections
+/// (`project_spec_view` / `project_waves` / `project_quality` /
+/// `project_timeline` / `project_workspace`).
+///
+/// Replaces the per-command `mustard_core::view::projection::read_workspace_events`
+/// disk walk (~10k shard opens, five times per spec-detail render) with one
+/// conversion over the warm snapshot, cached until the next invalidation. Note
+/// the slice is a SUPERSET of the old core walk: it also carries the wave
+/// (`wave-N-*/events/` and `wave-N-*/.events/`) and session
+/// (`.session/*/.events/`) sinks — the
+/// per-spec projections filter by `event.spec`, so extra evidence only
+/// improves them.
+#[must_use]
+pub(crate) fn workspace_harness_events_cached(
+    repo: &Path,
+) -> std::sync::Arc<Vec<mustard_core::domain::model::event::HarnessEvent>> {
+    let handle = repo_cache_handle(repo);
+    let mut cache = match handle.lock() {
+        Ok(c) => c,
+        Err(_) => {
+            // Poisoned entry: fail-open with a fresh uncached parse + convert.
+            let values = walk_ndjson_events(repo);
+            return std::sync::Arc::new(
+                mustard_core::view::projection::harness_events_from_values(values.iter()),
+            );
+        }
+    };
+    cache.ensure_fresh(repo);
+    if cache.harness.is_none() {
+        let converted = match &cache.snapshot {
+            Some(s) => mustard_core::view::projection::harness_events_from_values(s.iter()),
+            None => Vec::new(),
+        };
+        cache.harness = Some(std::sync::Arc::new(converted));
+    }
+    match &cache.harness {
+        Some(h) => std::sync::Arc::clone(h),
+        None => std::sync::Arc::new(Vec::new()),
+    }
+}
+
+/// Request a full sweep of `repo`'s cache: the next read re-enumerates the
+/// shard set and re-stats everything, but still re-parses ONLY the shards
+/// whose fingerprint moved. Safety-net invalidation (spec-dir deletions,
+/// tests); the steady-state path is [`invalidate_events_cache_path`]. A no-op
+/// when the entry is absent or a lock is poisoned (fail-open — a stale cache
+/// is corrected on the next change).
+pub fn invalidate_events_cache(repo: &str) {
+    let entry = match EVENTS_CACHE.lock() {
+        Ok(guard) => guard.get(repo).cloned(),
+        Err(_) => None,
+    };
+    if let Some(entry) = entry {
+        if let Ok(mut cache) = entry.lock() {
+            cache.sweep = true;
+        }
+    }
+}
+
+/// Mark ONE shard dirty so the next read re-parses only that file — the
+/// watcher's steady-state invalidation (it knows the exact path that changed,
+/// including brand-new and deleted shards). Non-`.ndjson` paths are ignored:
+/// they never feed the parsed snapshot. A no-op for repos with no cache entry
+/// (the cold-start sweep will pick the file up anyway).
+pub fn invalidate_events_cache_path(repo: &str, path: &Path) {
+    if path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
+        return;
+    }
+    let entry = match EVENTS_CACHE.lock() {
+        Ok(guard) => guard.get(repo).cloned(),
+        Err(_) => None,
+    };
+    if let Some(entry) = entry {
+        if let Ok(mut cache) = entry.lock() {
+            cache.dirty.insert(path.to_path_buf());
+        }
+    }
+}
+
+/// Test-visible: how many shard parses `repo`'s cache has performed so far.
+/// Backs the incremental-contract assertions ("warm second call reads nothing",
+/// "touch 1 file → exactly 1 re-read").
+#[cfg(test)]
+pub(crate) fn events_cache_parsed_files(repo: &Path) -> u64 {
+    let entry = match EVENTS_CACHE.lock() {
+        Ok(guard) => guard.get(repo.to_string_lossy().as_ref()).cloned(),
+        Err(_) => None,
+    };
+    entry
+        .and_then(|e| e.lock().ok().map(|c| c.parsed_files))
+        .unwrap_or(0)
 }
 
 /// Canonical harness event NAME for a raw record (`"event"` ?? `"kind"`).
@@ -1679,28 +1900,49 @@ pub(crate) fn iso_to_ms_crate(s: &str) -> Option<i64> {
     iso_to_ms(s)
 }
 
-fn collect_one_dir(dir: &Path, out: &mut Vec<Value>) {
+/// Append every `.ndjson` path directly inside `dir` to `out` (no recursion,
+/// no content reads). Fail-open: an unreadable dir contributes nothing.
+fn collect_dir_ndjson(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(files) = std::fs::read_dir(dir) else {
         return;
     };
     for file in files.flatten() {
         let p = file.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("ndjson") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&p) else {
-            continue;
-        };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<Value>(line) {
-                out.push(v);
-            }
+        if p.extension().and_then(|s| s.to_str()) == Some("ndjson") {
+            out.push(p);
         }
     }
+}
+
+/// Append every parsed record from the `.ndjson` shards directly inside `dir`
+/// to `out`. Kept for the narrow per-dir readers (spec trace, session feeds)
+/// that intentionally read ONE directory rather than the cached workspace
+/// snapshot. Composed from the same enumerate/parse primitives as the cache.
+fn collect_one_dir(dir: &Path, out: &mut Vec<Value>) {
+    let mut paths = Vec::new();
+    collect_dir_ndjson(dir, &mut paths);
+    for p in paths {
+        out.extend(parse_ndjson_file(&p));
+    }
+}
+
+/// Parse one NDJSON shard into raw `Value` records. Fail-open: an unreadable
+/// file yields an empty vec, malformed lines are skipped.
+fn parse_ndjson_file(path: &Path) -> Vec<Value> {
+    let mut out = Vec::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return out;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            out.push(v);
+        }
+    }
+    out
 }
 
 /// `dashboard_prompt_economy` — aggregates three independently-measured blocks
@@ -3793,5 +4035,123 @@ mod tests {
             "after invalidation the slice must be a fresh allocation"
         );
         assert_eq!(fresh.len(), 2, "the re-parse must pick up the new event");
+    }
+
+    #[test]
+    fn events_cache_warm_hit_reads_no_shard_and_dirty_path_rereads_only_it() {
+        // The incremental contract (wave-1 task 6): with a warm cache the
+        // second call performs ZERO shard reads; after touching ONE shard,
+        // exactly that shard is re-read — asserted via the parse counter.
+        let tmp = TempDir::new().unwrap();
+        let line1 = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
+        let line2 = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:01:00.000Z","spec":"a","payload":{"tool":"Edit"}}"#;
+        write_event(tmp.path(), "a", "one.ndjson", &format!("{line1}\n"));
+        write_event(tmp.path(), "a", "two.ndjson", &format!("{line2}\n"));
+
+        // Cold: both shards parsed once.
+        let first = walk_ndjson_events_cached(tmp.path());
+        assert_eq!(first.len(), 2);
+        let cold = events_cache_parsed_files(tmp.path());
+        assert_eq!(cold, 2, "cold start parses each shard exactly once");
+
+        // Warm: same Arc, zero additional shard reads.
+        let second = walk_ndjson_events_cached(tmp.path());
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            events_cache_parsed_files(tmp.path()),
+            cold,
+            "a warm hit must not touch the disk"
+        );
+
+        // Append to ONE shard + watcher-style per-path invalidation.
+        let one_path = tmp
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("a")
+            .join(".events")
+            .join("one.ndjson");
+        let line3 = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:02:00.000Z","spec":"a","payload":{"tool":"Bash"}}"#;
+        std::fs::write(&one_path, format!("{line1}\n{line3}\n")).unwrap();
+        invalidate_events_cache_path(&tmp.path().to_string_lossy(), &one_path);
+
+        let fresh = walk_ndjson_events_cached(tmp.path());
+        assert_eq!(fresh.len(), 3, "the appended event must surface");
+        assert_eq!(
+            events_cache_parsed_files(tmp.path()),
+            cold + 1,
+            "only the touched shard may be re-read"
+        );
+    }
+
+    #[test]
+    fn full_invalidation_sweeps_but_reparses_only_changed_fingerprints() {
+        // The generic sweep re-enumerates + re-stats, but an unchanged shard
+        // keeps its parsed chunk — only the NEW shard costs a parse.
+        let tmp = TempDir::new().unwrap();
+        let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
+        write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
+        assert_eq!(walk_ndjson_events_cached(tmp.path()).len(), 1);
+        let cold = events_cache_parsed_files(tmp.path());
+
+        write_event(tmp.path(), "a", "new.ndjson", &format!("{line}\n"));
+        invalidate_events_cache(&tmp.path().to_string_lossy());
+        assert_eq!(walk_ndjson_events_cached(tmp.path()).len(), 2);
+        assert_eq!(
+            events_cache_parsed_files(tmp.path()),
+            cold + 1,
+            "sweep must re-parse only the new shard, not the unchanged one"
+        );
+    }
+
+    #[test]
+    fn harness_cache_converts_once_and_tracks_value_invalidation() {
+        let tmp = TempDir::new().unwrap();
+        let line = r#"{"event":"pipeline.phase","kind":"pipeline","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"to":"EXECUTE"}}"#;
+        write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
+
+        let h1 = workspace_harness_events_cached(tmp.path());
+        assert_eq!(h1.len(), 1);
+        assert_eq!(h1[0].event, "pipeline.phase");
+        assert_eq!(h1[0].spec.as_deref(), Some("a"));
+
+        // Warm: the converted slice is shared, not rebuilt.
+        let h2 = workspace_harness_events_cached(tmp.path());
+        assert!(std::sync::Arc::ptr_eq(&h1, &h2), "warm harness hit shares the Arc");
+
+        // A new shard invalidates BOTH the value snapshot and the converted slice.
+        let two_path = tmp
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("a")
+            .join(".events")
+            .join("two.ndjson");
+        let line2 = r#"{"event":"qa.result","kind":"qa","ts":"2026-06-10T09:05:00.000Z","spec":"a","payload":{"criteria":[]}}"#;
+        std::fs::write(&two_path, format!("{line2}\n")).unwrap();
+        invalidate_events_cache_path(&tmp.path().to_string_lossy(), &two_path);
+
+        let h3 = workspace_harness_events_cached(tmp.path());
+        assert_eq!(h3.len(), 2, "the converted slice must follow the value snapshot");
+        assert!(!std::sync::Arc::ptr_eq(&h1, &h3));
+    }
+
+    #[test]
+    fn non_ndjson_path_invalidation_is_ignored() {
+        // telemetry.db (and WAL/SHM) writes classify as `events` in the watcher
+        // but never feed the parsed snapshot — they must not dirty the cache.
+        let tmp = TempDir::new().unwrap();
+        let line = r#"{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:00:00.000Z","spec":"a","payload":{"tool":"Read"}}"#;
+        write_event(tmp.path(), "a", "one.ndjson", &format!("{line}\n"));
+        let first = walk_ndjson_events_cached(tmp.path());
+        invalidate_events_cache_path(
+            &tmp.path().to_string_lossy(),
+            &tmp.path().join(".claude").join(".harness").join("telemetry.db"),
+        );
+        let second = walk_ndjson_events_cached(tmp.path());
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "a non-ndjson write must not invalidate the snapshot"
+        );
     }
 }

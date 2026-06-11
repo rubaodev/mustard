@@ -130,6 +130,36 @@ pub fn ensure_watching(
             let Ok(events) = res else { return };
             for ev in events {
                 let Some(kind) = classify_kind(&ev.path) else { continue };
+                // Surgical cache maintenance FIRST, for EVERY debounced event —
+                // before the emit throttle below, which coalesces same-kind
+                // notifications and previously skipped the invalidation along
+                // with the emit (a second changed file inside the 100 ms window
+                // would never be marked).
+                //
+                //   * `events` — mark exactly the changed `.ndjson` shard dirty;
+                //     the next read re-parses ONLY that file (the incremental
+                //     contract). Non-ndjson `events` writes (telemetry.db +
+                //     WAL/SHM) never feed the parsed snapshot and are ignored
+                //     inside `invalidate_events_cache_path`.
+                //   * `spec` — drop the cached spec list (spec.md / wave-plan.md
+                //     / meta.json back it). A spec path that no longer exists
+                //     means a deletion the per-path marking can't see (the
+                //     shards under it vanished without their own events) — fall
+                //     back to a full sweep of the events cache.
+                //   * `knowledge` / `pipeline-state` — read on-disk files, not
+                //     the cached event vec; no cache work needed.
+                match kind {
+                    "events" => {
+                        crate::telemetry::invalidate_events_cache_path(&repo_clone, &ev.path);
+                    }
+                    "spec" => {
+                        crate::invalidate_specs_cache(&repo_clone);
+                        if !ev.path.exists() {
+                            crate::telemetry::invalidate_events_cache(&repo_clone);
+                        }
+                    }
+                    _ => {}
+                }
                 let key = format!("{}|{}", repo_clone, kind);
                 let now = Instant::now();
                 let mut guard = match state_clone.lock() {
@@ -145,15 +175,6 @@ pub fn ensure_watching(
                 }
                 guard.last_emit.insert(key, now);
                 drop(guard);
-                // Invalidate the per-project parsed-events cache BEFORE notifying
-                // the frontend, so the first command in the refresh burst
-                // re-parses fresh and the rest hit the warm slice. Only the kinds
-                // that change the parsed NDJSON event set matter (events / spec /
-                // pipeline-state); a `knowledge` change reads on-disk files, not
-                // the cached event vec, so it never needs to drop the cache.
-                if matches!(kind, "events" | "spec" | "pipeline-state") {
-                    crate::telemetry::invalidate_events_cache(&repo_clone);
-                }
                 let _ = app_clone.emit(
                     "dashboard:fs-change",
                     FsChangePayload {
