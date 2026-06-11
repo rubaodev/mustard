@@ -126,9 +126,10 @@ Enforcement runs as the single Rust binary `mustard-rt` (modules `bash_command_g
 |--------|---------|----------|-----------|
 | `close_gate` | `emit-pipeline` phase=CLOSE | `MUSTARD_CLOSE_GATE_MODE` (default strict) | build/test fail |
 | `close_gate` (QA) | same | `MUSTARD_QA_GATE_MODE` (default strict) | no `qa.result` or `qa.result=fail` |
+| `close_gate` (QA stale) | same | `MUSTARD_QA_GATE_MODE` (default strict) | `spec.md`/`wave-plan.md` edited after the last `qa.result` → the pass was never re-verified, re-run /mustard:qa |
 | `close_gate` (checklist) | same | `MUSTARD_CHECKLIST_GATE_MODE` (default strict) | unchecked `- [ ]` items remain |
 | `close_gate` (debt) | same | `MUSTARD_DEBT_GATE_MODE` (default strict) | unresolved tracked debt |
-| `bash_command_gate` (rtk gate) | Bash | `MUSTARD_RTK_GATE_MODE` (default strict) | unprefixed command → deny `[bash_guard rtk]` |
+| `bash_command_gate` (rtk gate) | Bash | `MUSTARD_RTK_GATE_MODE` (default **warn**) | unprefixed command → auto-rewrite to `rtk <cmd>` (`updatedInput`, zero round-trip — `rtk` still applied, so the token savings hold); `strict` is opt-in and denies instead; builtins/subshells pass untouched |
 | `bash_command_gate` (commit gate) | Bash `git commit` | `MUSTARD_COMMIT_GATE_MODE` (default warn) | secrets staged / build broken |
 | `bash_command_gate` (native-redirect) | Bash | hardcoded always-on | `grep`/`ls`/`cat`/`head`/`tail`/`find` → suggests Grep/Glob/Read (+ `[bash-windows-redirect]` sub-gate) |
 | `scope_guard` | PreToolUse `Write`/`Edit`/`Task`/`Agent` | fail-open | production-file change outside an approved spec → deny `[scope-guard]` |

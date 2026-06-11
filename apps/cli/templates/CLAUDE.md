@@ -58,6 +58,14 @@ After EXECUTE completes, run QA before CLOSE:
 3. close-gate blocks CLOSE unless `qa.result` with `overall=pass` exists in the events log
 4. Control: `MUSTARD_QA_GATE_MODE=strict (default) | warn | off`
 
+### Mid-pipeline change requests
+
+A user request to change something while a spec is Active is auto-recorded — hook `change_request_log` writes `.claude/spec/{id}/change-requests.ndjson` (machine) + a human-readable `change-log.md` (documented beside the spec) and emits a `pipeline.change.request` event. Nothing is lost; the frozen `spec.md` narrative is not touched. When a request changes intended behavior:
+
+1. **Document** — it is already in the spec's `change-log.md`; reference it.
+2. **Compose the test** — fold it into `## Acceptance Criteria` as a new/updated AC (free-text → runnable criterion; interpretive, your job — the hook only captures).
+3. **Re-verify** — editing `spec.md`/`wave-plan.md` after a QA pass marks that pass STALE; the close-gate (QA-stale) blocks CLOSE until `/mustard:qa` re-runs against the current criteria.
+
 ## Context Loading
 
 Agents auto-load skills from `{subproject}/.claude/skills/` based on task description. Guards always loaded via `{subproject}/CLAUDE.md`. Skill catalog: `.claude/skills/`. Progressive-disclosure refs live in `.claude/refs/{command}/` and are pulled on demand.
