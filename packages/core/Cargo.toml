@@ -57,6 +57,7 @@ tree-sitter-python = "0.25.0"
 tree-sitter-go = "0.25.0"
 tree-sitter-java = "0.23.5"
 tree-sitter-c-sharp = "0.23.5"
+tree-sitter-dart-orchard = "0.3"
 # Line-based textual diff for `regression_check` — used as fallback when no
 # tree-sitter grammar is installed for the file's language. The 3.x line keeps
 # the same `TextDiff::from_lines` / `iter_all_changes` / `ChangeTag` surface

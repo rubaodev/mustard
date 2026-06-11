@@ -463,6 +463,7 @@ fn builtin_grammars() -> Vec<(&'static str, &'static [&'static str], Language)> 
         ("go", &["go"], tree_sitter_go::LANGUAGE.into()),
         ("java", &["java"], tree_sitter_java::LANGUAGE.into()),
         ("c-sharp", &["cs"], tree_sitter_c_sharp::LANGUAGE.into()),
+        ("dart", &["dart"], tree_sitter_dart_orchard::LANGUAGE.into()),
     ]
 }
 

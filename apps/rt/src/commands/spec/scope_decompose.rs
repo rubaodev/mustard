@@ -540,9 +540,36 @@ pub fn classify(signals: &Value, slice_match_count: i64) -> &'static str {
     "light"
 }
 
+/// Honesty annotation for a [`classify_from_spec`] verdict whose `fileCount`
+/// came back 0.
+///
+/// `fileCount` is derived **exclusively** from the spec's `## Files` /
+/// `## Arquivos` section ([`parse_files_section`]). That section is a
+/// placeholder when the spec scaffold is freshly drafted — the `/feature` SKILL
+/// runs `scope-classify` immediately after `spec-draft`, *before* the file
+/// census is filled in. With zero parsed paths the verdict is **arithmetically
+/// correct** (0 files ⇒ `light`) but **not yet trustworthy**: the same spec can
+/// flip to `full` once its census lands. The classifier still emits `light`
+/// (and never a non-zero exit — a genuinely tiny change is legitimately light),
+/// but it must say so out loud so the orchestrator does not execute inline off a
+/// stale verdict.
+///
+/// Distinguishes "section absent / placeholder" (`None` or `Some(empty)` ⇒ 0
+/// paths) from "section present with ≥1 real path" (`Some(non-empty)`): the
+/// warning fires **only** when nothing was parsed. A spec that legitimately
+/// touches a single real file is silent (no false alarm).
+const FILES_SECTION_EMPTY_WARNING: &str = "## Arquivos vazio/placeholder — \
+fileCount=0; classificacao nao-confiavel ate preencher o censo";
+
 /// Classify a spec file's scope deterministically: compute the structural
 /// signals via [`compute_signals_from_spec`] (no duplicate computation), then
 /// [`classify`]. Returns `{ "scope": ..., "signals": { ... } }`.
+///
+/// When the `## Files` section parses to **zero** paths (absent or placeholder),
+/// the verdict carries `"filesSectionEmpty": true` plus a human `"warning"` so a
+/// confident-but-premature `light` is never mistaken for a settled one — see
+/// [`FILES_SECTION_EMPTY_WARNING`]. The exit code is unchanged (this stays
+/// non-blocking).
 ///
 /// Fail-open: an unreadable spec yields `{ "scope": "full", ... }` — the
 /// conservative default, since `full` gets the most pipeline rigor (PLAN +
@@ -565,7 +592,7 @@ pub fn classify_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
     // Reuse `compute_signals_from_spec` verbatim (single signal source), but the
     // classifier never reads `text` (only `decide`'s roadmap detection does), so
     // drop it from the emitted view to keep the relay output lean.
-    json!({
+    let mut out = json!({
         "scope": scope,
         "sliceMatchCount": slice_match_count,
         "signals": {
@@ -573,7 +600,18 @@ pub fn classify_from_spec(spec_file: &Path, slice_match_count: i64) -> Value {
             "layerCount": signals.get("layerCount").cloned().unwrap_or(json!(0)),
             "newEntityCount": signals.get("newEntityCount").cloned().unwrap_or(json!(0)),
         },
-    })
+    });
+    // Honest signal: a zero `fileCount` means the `## Files`/`## Arquivos`
+    // section was absent or a placeholder (nothing parsed) — distinct from a
+    // section holding ≥1 real path. Flag it so the consumer treats this `light`
+    // as non-confident, without blocking (legitimate light exists).
+    if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("filesSectionEmpty".to_string(), json!(true));
+            obj.insert("warning".to_string(), json!(FILES_SECTION_EMPTY_WARNING));
+        }
+    }
+    out
 }
 
 /// Dispatch `mustard-rt run scope-classify --from-spec <path>
@@ -955,6 +993,48 @@ mod tests {
         assert_eq!(classify(&sig(7, 2, 0), 1), "extended-light");
         // 2 matched slices ⇒ full (spans multiple slices) even in that band.
         assert_eq!(classify(&sig(7, 2, 0), 2), "full");
+    }
+
+    /// Honesty annotation: a freshly-drafted spec whose `## Arquivos` section is
+    /// a placeholder (no real bullet paths) parses to `fileCount=0`. The verdict
+    /// stays `light` (0 files is arithmetically light) but MUST carry
+    /// `filesSectionEmpty: true` + the warning so the orchestrator does not treat
+    /// the premature `light` as settled. A spec with ≥1 real path is silent.
+    #[test]
+    fn classify_from_spec_flags_empty_files_section() {
+        let dir = tempfile::tempdir().unwrap();
+        plant_project(dir.path());
+
+        // (i) `## Arquivos` heading present but only a placeholder line — no
+        // bullet path parses ⇒ fileCount 0 ⇒ flagged non-confident.
+        let placeholder = "# Spec\n\n## Contexto\n\nAdicionar algo.\n\n## Arquivos\n\
+                           _(a preencher após o censo)_\n";
+        let placeholder_path = dir.path().join("placeholder.md");
+        std::fs::write(&placeholder_path, placeholder).unwrap();
+        let d = classify_from_spec(&placeholder_path, 0);
+        assert_eq!(d["signals"]["fileCount"], json!(0));
+        assert_eq!(d["scope"], json!("light"), "0 files is arithmetically light");
+        assert_eq!(d["filesSectionEmpty"], json!(true), "placeholder ⇒ flagged");
+        assert!(
+            d["warning"].as_str().is_some_and(|w| !w.is_empty()),
+            "non-confident verdict carries a warning"
+        );
+
+        // An entirely absent `## Files` section is also 0 paths ⇒ flagged.
+        let absent = "# Spec\n\n## Contexto\n\nAlgo sem censo.\n";
+        let absent_path = dir.path().join("absent.md");
+        std::fs::write(&absent_path, absent).unwrap();
+        let da = classify_from_spec(&absent_path, 0);
+        assert_eq!(da["filesSectionEmpty"], json!(true), "absent section ⇒ flagged");
+
+        // (ii) Section present with ≥1 real path ⇒ NOT flagged (no false alarm).
+        let filled = "# Spec\n\n## Files\n- src/util/a.ts\n";
+        let filled_path = dir.path().join("filled.md");
+        std::fs::write(&filled_path, filled).unwrap();
+        let df = classify_from_spec(&filled_path, 0);
+        assert_eq!(df["signals"]["fileCount"], json!(1));
+        assert!(df.get("filesSectionEmpty").is_none(), "≥1 real path ⇒ no flag");
+        assert!(df.get("warning").is_none(), "≥1 real path ⇒ no warning");
     }
 
     #[test]

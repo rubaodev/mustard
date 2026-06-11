@@ -65,3 +65,9 @@ name = "php"
 extensions = ["php"]
 dir = "php"
 grammar = "grammar_php::LANGUAGE_PHP"
+
+[[language]]
+name = "dart"
+extensions = ["dart"]
+dir = "dart"
+grammar = "grammar_dart::LANGUAGE"

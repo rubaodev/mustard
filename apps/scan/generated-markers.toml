@@ -56,6 +56,7 @@ lockfiles = [
   "pipfile.lock",
   "pnpm-lock.yaml",
   "poetry.lock",
+  "pubspec.lock",
   "uv.lock",
   "yarn.lock",
 ]
@@ -116,6 +117,16 @@ glob = "**/src/gen/**"
 class = "generated"
 # WinForms/resx designer-owned partial files.
 glob = "**/*.Designer.cs"
+
+[[path]]
+class = "generated"
+# build_runner codegen output (json_serializable, retrofit, drift, ...).
+glob = "**/*.g.dart"
+
+[[path]]
+class = "generated"
+# freezed codegen output (immutable data classes / unions).
+glob = "**/*.freezed.dart"
 
 [[path]]
 class = "vendored"

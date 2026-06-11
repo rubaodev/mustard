@@ -61,3 +61,10 @@ manifest_deps = [
 ]
 path_markers = ["appsettings.json", "appsettings.Development.json", "wwwroot", "Properties/launchSettings.json"]
 code_signatures = ["Microsoft.AspNetCore", "WebApplication.CreateBuilder(", "[ApiController]"]
+
+[[stack]]
+name = "flutter"
+language = "dart"
+manifest_deps = ["flutter", "flutter_test"]
+path_markers = ["pubspec.yaml", "lib/main.dart"]
+code_signatures = ["package:flutter/", "StatelessWidget", "StatefulWidget", "runApp(", "BuildContext"]

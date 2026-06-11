@@ -127,6 +127,16 @@ const BUILTIN_QUERIES: &[(&str, &str, &str)] = &[
         "import_edges",
         include_str!("queries_builtin/c-sharp/import_edges.scm"),
     ),
+    (
+        "dart",
+        "entity_definitions",
+        include_str!("queries_builtin/dart/entity_definitions.scm"),
+    ),
+    (
+        "dart",
+        "import_edges",
+        include_str!("queries_builtin/dart/import_edges.scm"),
+    ),
 ];
 
 /// Compiled tree-sitter queries for a single language.

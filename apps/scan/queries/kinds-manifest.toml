@@ -85,3 +85,12 @@ kinds = [
   "property",
   "enum_member",
 ]
+
+[dart]
+kinds = [
+  "class",
+  "mixin",
+  "enum",
+  "extension",
+  "method",
+]
