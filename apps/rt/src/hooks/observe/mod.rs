@@ -2,6 +2,7 @@ mod agent_memory;
 
 pub mod agent_summary_observer;
 pub mod amend_window_inject;
+pub mod change_request_log;
 pub mod memory_promote_observer;
 pub mod notification_observer;
 pub mod rewave_observer;

@@ -86,6 +86,27 @@ fn resolve_mode(env_var: &str, config_override: Option<&str>) -> GateMode {
     }
 }
 
+/// Resolve the QA-composition gate mode from `MUSTARD_QA_COMPOSITION_GATE_MODE`.
+///
+/// Unlike the other close sub-gates this defaults to **warn**, not strict: a
+/// natural-language close prompt (e.g. "feche isso") is itself recorded as a
+/// `pipeline.change.request` after the last QA, so a strict default could block
+/// a legitimate close. `warn` surfaces the pending requests as telemetry (and on
+/// the dashboard) without a hard deadlock; opt into `strict` for a hard block.
+fn resolve_composition_mode() -> GateMode {
+    match std::env::var("MUSTARD_QA_COMPOSITION_GATE_MODE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" => GateMode::Off,
+        "strict" => GateMode::Strict,
+        _ => GateMode::Warn,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Input parsing
 // ---------------------------------------------------------------------------
@@ -599,12 +620,17 @@ fn unchecked_item_text(line: &str) -> Option<String> {
 // QA gate
 // ---------------------------------------------------------------------------
 
-/// The last `qa.result` for a spec. Returns `(found, overall, failed_count)`.
+/// The last `qa.result` for a spec. Returns
+/// `(found, overall, failed_count, ts)` — `ts` is the ISO-8601 timestamp of that
+/// most-recent `qa.result` (used to detect a stale pass).
 ///
 /// W5: `qa.result` events live in the per-spec NDJSON sink, not in `pipeline_events`,
 /// so this reads the spec's `events/` directory directly. With `spec = None` we
 /// fall back to scanning every spec dir under `.claude/spec/` — slow but rare.
-fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, usize) {
+fn find_last_qa_result(
+    cwd: &str,
+    spec: Option<&str>,
+) -> (bool, Option<String>, usize, Option<String>) {
     let project = Path::new(cwd);
     let mut events: Vec<HarnessEvent> = Vec::new();
     let paths = ClaudePaths::for_project(project).ok();
@@ -619,7 +645,7 @@ fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, 
     } else {
         // No spec attribution — scan every per-spec .events/ dir under .claude/spec/.
         let Some(specs_root) = paths.as_ref().map(ClaudePaths::spec_dir) else {
-            return (false, None, 0);
+            return (false, None, 0, None);
         };
         if let Ok(entries) = fs::read_dir(&specs_root) {
             for entry in entries {
@@ -649,7 +675,7 @@ fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, 
         last = Some(ev);
     }
     let Some(last) = last else {
-        return (false, None, 0);
+        return (false, None, 0, None);
     };
     let overall = last
         .payload
@@ -665,7 +691,76 @@ fn find_last_qa_result(cwd: &str, spec: Option<&str>) -> (bool, Option<String>, 
                 .filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("fail"))
                 .count()
         });
-    (true, overall, failed_count)
+    (true, overall, failed_count, Some(last.ts))
+}
+
+/// `Some(filename)` when the spec's acceptance source (`spec.md` / `wave-plan.md`)
+/// was modified strictly AFTER `qa_ts` — i.e. the recorded QA pass predates a
+/// spec edit and is therefore STALE. `None` when nothing changed after QA, no
+/// spec is known, or on any read error (fail-open: never block CLOSE on a sensor
+/// failure).
+///
+/// Both timestamps are ISO-8601 UTC, so a lexicographic `>` is chronological.
+/// mtime-based by design: a post-QA write for ANY reason (folding a change
+/// request into `## Acceptance Criteria`, editing a criterion, a narrative
+/// amendment) is a legitimate re-verification trigger — and a re-render only
+/// bumps mtime when something actually edited the file, which is the very
+/// condition we want to catch.
+fn spec_edited_after(cwd: &str, spec: Option<&str>, qa_ts: &str) -> Option<String> {
+    let spec = spec.filter(|s| !s.is_empty())?;
+    let sp = ClaudePaths::for_project(Path::new(cwd)).ok()?.for_spec(spec).ok()?;
+    let dir = sp.dir();
+    for name in ["spec.md", "wave-plan.md"] {
+        if let Some(mtime_iso) = file_mtime_iso(&dir.join(name)) {
+            if mtime_iso.as_str() > qa_ts {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The mtime of `path` as an ISO-8601 UTC string. `None` on a missing file or
+/// any read/conversion error.
+fn file_mtime_iso(path: &Path) -> Option<String> {
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    let millis = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    Some(mustard_core::time::millis_to_iso(i64::try_from(millis).ok()?))
+}
+
+/// Mid-spec change requests recorded AFTER `qa_ts` (the last QA pass) — requests
+/// the verified criteria may not cover. Returns one short description per
+/// request (`(stage) prompt-preview`). Reads the spec's per-spec NDJSON event
+/// sink. Empty on no spec / read error (fail-open).
+fn unaddressed_change_requests(cwd: &str, spec: Option<&str>, qa_ts: &str) -> Vec<String> {
+    let Some(spec_name) = spec.filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let Some(events_dir) = ClaudePaths::for_project(Path::new(cwd))
+        .ok()
+        .and_then(|p| p.for_spec(spec_name).ok())
+        .map(|sp| sp.events_dir())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ev in read_harness_events_from_ndjson_dir(&events_dir) {
+        if ev.event != "pipeline.change.request" || ev.ts.as_str() <= qa_ts {
+            continue;
+        }
+        let stage = ev.payload.get("stage").and_then(Value::as_str).unwrap_or("");
+        let prompt = ev.payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+        let preview: String = prompt.chars().take(60).collect();
+        out.push(if stage.is_empty() {
+            preview
+        } else {
+            format!("({stage}) {preview}")
+        });
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -996,7 +1091,7 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
     // ── QA gate (Wave 10) ─────────────────────────────────────────────────
     let qa_mode = modes.qa;
     if qa_mode != GateMode::Off {
-        let (found, overall, failed_count) = find_last_qa_result(cwd, spec_ref);
+        let (found, overall, failed_count, qa_ts) = find_last_qa_result(cwd, spec_ref);
         if !found {
             let reason = format_gate_message(
                 "Close Gate",
@@ -1063,8 +1158,91 @@ fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGateModes) -> 
                 return Verdict::Deny { reason };
             }
             // warn → fall through.
+        } else if let Some(stale_file) =
+            qa_ts.as_deref().and_then(|ts| spec_edited_after(cwd, spec_ref, ts))
+        {
+            // QA passed, but the spec's acceptance source changed AFTER the QA
+            // ran — the green was never re-verified against the current criteria
+            // (e.g. a mid-pipeline change request folded into a new AC). Hold
+            // CLOSE until /mustard:qa re-runs.
+            let reason = format_gate_message(
+                "Close Gate",
+                &spec_ref.map_or_else(
+                    || format!("QA pass is stale — {stale_file} changed after the last QA run"),
+                    |s| {
+                        format!(
+                            "QA pass for spec \"{s}\" is stale — {stale_file} changed after \
+                             the last QA run"
+                        )
+                    },
+                ),
+                "an edit to the spec / acceptance criteria after QA means the pass was \
+                 never re-verified",
+                "re-run /mustard:qa to re-verify the current criteria, or set \
+                 MUSTARD_QA_GATE_MODE=warn",
+            );
+            if qa_mode == GateMode::Strict {
+                emit_close_gate_event(
+                    cwd,
+                    spec_ref,
+                    json!({
+                        "result": "deny-qa-stale",
+                        "mode": mode_str(mode),
+                        "qaMode": mode_str(qa_mode),
+                        "spec": spec_ref,
+                        "staleFile": stale_file,
+                        "qaTs": qa_ts,
+                    }),
+                );
+                return Verdict::Deny { reason };
+            }
+            // warn → fall through.
         }
-        // QA passed → fall through.
+        // QA passed (and fresh) → fall through.
+    }
+
+    // ── QA composition gate — unaddressed mid-spec change requests ────────
+    // A `pipeline.change.request` recorded AFTER the last `qa.result` is a
+    // mid-spec request the verified criteria may not cover (a behaviour change
+    // not yet folded into an AC). Surface it at CLOSE so it is consciously
+    // triaged. Default `warn` (telemetry + dashboard only — a natural-language
+    // close prompt is itself recorded as a request, so a strict default could
+    // deadlock the close); `strict` blocks. Only meaningful once a QA pass
+    // exists (`qa_ts`); a missing QA is already caught by the QA gate above.
+    let composition_mode = resolve_composition_mode();
+    if composition_mode != GateMode::Off {
+        let (_, _, _, qa_ts) = find_last_qa_result(cwd, spec_ref);
+        if let Some(qa_ts) = qa_ts {
+            let pending = unaddressed_change_requests(cwd, spec_ref, &qa_ts);
+            if !pending.is_empty() {
+                let list = pending.iter().take(5).cloned().collect::<Vec<_>>().join(" | ");
+                let reason = format_gate_message(
+                    "Close Gate",
+                    &format!(
+                        "{} change request(s) recorded after the last QA: {list}",
+                        pending.len()
+                    ),
+                    "a mid-pipeline change may not be covered by the verified criteria",
+                    "fold each behavioural request into ## Acceptance Criteria and re-run \
+                     /mustard:qa, or set MUSTARD_QA_COMPOSITION_GATE_MODE=warn",
+                );
+                emit_close_gate_event(
+                    cwd,
+                    spec_ref,
+                    json!({
+                        "result": "deny-qa-composition",
+                        "mode": mode_str(mode),
+                        "compositionMode": mode_str(composition_mode),
+                        "spec": spec_ref,
+                        "pendingCount": pending.len(),
+                    }),
+                );
+                if composition_mode == GateMode::Strict {
+                    return Verdict::Deny { reason };
+                }
+                // warn → telemetry only; fall through.
+            }
+        }
     }
 
     // ── Build/test gate (Wave 9) ──────────────────────────────────────────
@@ -1219,6 +1397,27 @@ mod tests {
         dir
     }
 
+    /// Item-3 regression: a `spec.md` modified AFTER the recorded QA timestamp is
+    /// detected as stale; one that predates QA is not; no spec → fail-open None.
+    #[test]
+    fn spec_edited_after_flags_post_qa_spec_change() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("feat").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Spec\n## Acceptance Criteria\n- AC-1\n").unwrap();
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        // QA ran in the distant past → the just-written spec.md is newer → stale.
+        assert_eq!(
+            spec_edited_after(&cwd_str, Some("feat"), "2000-01-01T00:00:00.000Z").as_deref(),
+            Some("spec.md"),
+        );
+        // QA ran in the distant future → spec.md predates it → fresh.
+        assert!(spec_edited_after(&cwd_str, Some("feat"), "2999-01-01T00:00:00.000Z").is_none());
+        // No spec known → fail-open None.
+        assert!(spec_edited_after(&cwd_str, None, "2000-01-01T00:00:00.000Z").is_none());
+    }
+
     /// A `PreToolUse(Write)` close-state input for `spec_name`.
     fn close_input(cwd: &Path, spec_name: &str) -> HookInput {
         let state_file = ClaudePaths::for_project(cwd)
@@ -1267,6 +1466,40 @@ mod tests {
             route::emit(cwd.to_str().unwrap(), &event),
             "router must land qa.result for {spec}"
         );
+    }
+
+    fn write_change_request_event(cwd: &Path, spec: &str, ts: &str, prompt: &str) {
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: ts.to_string(),
+            session_id: "s-test".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Hook,
+                id: Some("change_request_log".to_string()),
+                actor_type: None,
+            },
+            event: "pipeline.change.request".to_string(),
+            payload: json!({ "spec": spec, "stage": "Execute", "prompt": prompt }),
+            spec: Some(spec.to_string()),
+        };
+        assert!(
+            route::emit(cwd.to_str().unwrap(), &event),
+            "router must land change.request for {spec}"
+        );
+    }
+
+    /// Item-#1 regression: only change requests recorded AFTER the QA timestamp
+    /// count as unaddressed by the QA-composition gate.
+    #[test]
+    fn unaddressed_change_requests_filters_by_qa_ts() {
+        let dir = make_project();
+        let cwd = dir.path().to_str().unwrap();
+        write_change_request_event(dir.path(), "feat", "2026-01-01T00:00:00.000Z", "antes do QA");
+        write_change_request_event(dir.path(), "feat", "2026-03-01T00:00:00.000Z", "depois do QA");
+        let pending = unaddressed_change_requests(cwd, Some("feat"), "2026-02-01T00:00:00.000Z");
+        assert_eq!(pending.len(), 1, "only the post-QA request is pending: {pending:?}");
+        assert!(pending[0].contains("depois do QA"), "got {pending:?}");
     }
 
     /// The strict-cmd commands that exit non-zero / zero, cross-platform.

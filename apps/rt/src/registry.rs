@@ -7,6 +7,7 @@
 //! to have it self-`Allow`.
 
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
+use crate::hooks::observe::change_request_log::ChangeRequestLog;
 use crate::hooks::observe::agent_summary_observer::AgentSummaryObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
@@ -508,6 +509,17 @@ impl Registry {
                 ],
                 check: Some(Box::new(AmendWindowInject)),
                 observer: Some(Box::new(AmendWindowInject)),
+            },
+            // Mid-pipeline counterpart to `amend_window_inject`: records every
+            // user request made WHILE a spec is Active to
+            // `.claude/spec/{id}/change-requests.ndjson` + a
+            // `pipeline.change.request` event, so chat-driven changes no longer
+            // vanish. Pure Observer — side-effects only, never blocks.
+            Module {
+                id: "change_request_log",
+                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(ChangeRequestLog)),
             },
             // ── FASE 4-c: auto-abertura por tipo (structural → automatic) ────
             // Both are pure Observers — they emit/restructure as a side effect
