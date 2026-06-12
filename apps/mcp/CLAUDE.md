@@ -2,10 +2,7 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
 
-<!-- mustard:scan-map -->
-Tipo: cargo · 2 arquivos
-Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-<!-- /mustard:scan-map -->
+
 
 ## Guards
 
@@ -18,3 +15,8 @@ Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
 - Tokens e métricas saem dos readers de `mustard_core::domain::economy` (ex.: `metric_token_summary`); não refaça a agregação à mão sobre `pipeline.telemetry.run` (sempre reportaria zero).
 - Preserve a paridade byte-a-byte das shapes serde com o original TypeScript: nomes de campo via `#[serde(rename)]` (camelCase) e os clamp de `limit` por ferramenta são contrato.
 <!-- /mustard:guards -->
+
+<!-- mustard:scan-map -->
+Tipo: cargo · 2 arquivos
+Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
+<!-- /mustard:scan-map -->

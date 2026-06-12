@@ -2,10 +2,7 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
 
-<!-- mustard:scan-map -->
-Tipo: cargo · 13 arquivos
-Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-<!-- /mustard:scan-map -->
+
 
 ## Guards
 
@@ -18,3 +15,8 @@ Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
 - A extração tree-sitter é tolerante a falha: pattern que não compila é descartado individualmente e linguagem cuja gramática falha é pulada com aviso — nunca dê panic nem aborte o scan inteiro, e preserve o fallback textual agnóstico.
 - O produto é o `grain.model.json`; `facts`/`digest`/`spec` projetam a partir do modelo e nunca releem o repositório — não quebre o `preserve_order` do `serde_json` (o ranking de deps segue a ordem do manifesto, não a alfabética).
 <!-- /mustard:guards -->
+
+<!-- mustard:scan-map -->
+Tipo: cargo · 61 arquivos
+Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
+<!-- /mustard:scan-map -->

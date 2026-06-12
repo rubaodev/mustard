@@ -2,10 +2,7 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
 
-<!-- mustard:scan-map -->
-Tipo: cargo · 24 arquivos
-Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-<!-- /mustard:scan-map -->
+
 
 ## Guards
 
@@ -18,3 +15,8 @@ Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
 - No language/framework identifier in `.rs` source — language data lives in `templates/grammars-suggestions.json`; commands come from `detect_commands`.
 - Validate template/skill names (`[A-Za-z0-9_-]`, reject `..`) before FS/network use.
 - No `unwrap`/`expect` outside `#[cfg(test)]`. Keep `main.rs` thin; all logic in the library.
+
+<!-- mustard:scan-map -->
+Tipo: cargo · 24 arquivos
+Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
+<!-- /mustard:scan-map -->

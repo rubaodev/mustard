@@ -2,10 +2,7 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
 
-<!-- mustard:scan-map -->
-Tipo: cargo · 89 arquivos
-Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-<!-- /mustard:scan-map -->
+
 
 ## Guards
 
@@ -18,3 +15,8 @@ Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
 - `ProjectConfig` (`domain/config.rs`) é o dono único do schema de `mustard.json`: chaves de topo em camelCase, lido só do raiz via `ClaudePaths` — não crie parser ad-hoc nem leia o JSON como `Value` solto.
 - `unwrap()`/`expect()` são `deny` no workspace fora de teste; propague `Result`. O automaton Aho-Corasick (`vocabulary/`) é único — reúse `KeyedAutomaton`, não instancie outro.
 <!-- /mustard:guards -->
+
+<!-- mustard:scan-map -->
+Tipo: cargo · 91 arquivos
+Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
+<!-- /mustard:scan-map -->

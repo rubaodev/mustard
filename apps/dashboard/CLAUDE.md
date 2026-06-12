@@ -2,10 +2,7 @@
 
 > Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/CLAUDE.md](../../.claude/CLAUDE.md)
 
-<!-- mustard:scan-map -->
-Tipo: npm · 203 arquivos
-Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
-<!-- /mustard:scan-map -->
+
 
 ## Guards
 
@@ -17,3 +14,8 @@ Pesquise via `mustard-rt run feature` (digest) — não leia o repo direto.
 - O refresh ao vivo é orientado a evento: o watcher (`lib/watcher.ts`) escuta `dashboard:fs-change` e invalida `queryKey`s por prefixo — ao criar uma página nova, registre a chave lá em vez de fazer polling.
 - Os comandos Tauri são tolerantes a falha (devolvem vazio quando faltam dados); trate o caso vazio com um empty state em vez de supor que o erro virá pelo `onError`.
 <!-- /mustard:guards -->
+
+<!-- mustard:scan-map -->
+Tipo: npm · 203 arquivos
+Pesquise via `mustard-rt run feature` (digest) para localizar; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler.
+<!-- /mustard:scan-map -->
