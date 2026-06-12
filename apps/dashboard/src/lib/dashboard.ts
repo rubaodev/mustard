@@ -1034,3 +1034,60 @@ export function setLanguage(repoPath: string, lang: string): Promise<void> {
 export function setTone(repoPath: string, tone: string): Promise<void> {
   return invoke<void>("set_tone", { repoPath, tone });
 }
+
+// --- Visão Geral redesign (spec redesenho-rota-visao-geral-dashboard, W2) ---
+//
+// Local git inspection + grain-model project overview for the overview cards.
+// Both Tauri commands are fail-open (mirror `dashboard_git_info` /
+// `dashboard_project_overview` in src-tauri): a missing repo/remote/model
+// resolves to an empty struct, never a rejected Promise — render an empty
+// state, do not lean on `onError`.
+
+/**
+ * Read-only snapshot of a repository's local git state. Mirrors the Rust
+ * `GitInfo` struct (`serde(rename_all = "snake_case")`). Every field defaults
+ * to its empty form so a non-repo / no-remote path renders an empty-state card:
+ * `is_repo === false`, empty strings, zeroed ahead/behind.
+ */
+export interface GitInfo {
+  is_repo: boolean;
+  remote_url: string;
+  branch: string;
+  ahead: number;
+  behind: number;
+  last_commit_hash: string;
+  last_commit_message: string;
+  last_commit_author: string;
+  /** Author date of the last commit, ISO-8601, empty when absent. */
+  last_commit_date: string;
+}
+
+/** One inferred stack — mirrors the Rust `StackSummary`. */
+export interface StackSummary {
+  name: string;
+  /** Confidence 0..1 (the model's `StackDetection.confidence`). */
+  confidence: number;
+}
+
+/**
+ * Card-ready projection of the workspace's grain model. Mirrors the Rust
+ * `ProjectOverview` struct (`serde(rename_all = "snake_case")`). NOTE:
+ * `languages` carries each unit's `kind` (`cargo`, `npm`, `go`, …) — the only
+ * per-unit language signal the model holds — NOT language names; map kind→label
+ * in the UI. A missing/unscanned model resolves to an all-empty overview.
+ */
+export interface ProjectOverview {
+  is_monorepo: boolean;
+  project_count: number;
+  languages: string[];
+  frameworks: string[];
+  detected_stacks: StackSummary[];
+}
+
+export function fetchGitInfo(repoPath: string): Promise<GitInfo> {
+  return invoke<GitInfo>("dashboard_git_info", { repoPath });
+}
+
+export function fetchProjectOverview(repoPath: string): Promise<ProjectOverview> {
+  return invoke<ProjectOverview>("dashboard_project_overview", { repoPath });
+}

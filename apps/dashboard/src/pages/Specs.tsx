@@ -35,6 +35,12 @@ import {
 
 type DateFilter = "today" | "7d" | "30d" | "all";
 
+// "Specs paradas" (stale) threshold — active specs gone quiet for this long
+// (spec `redesenho-rota-visao-geral-dashboard`). Constant, revisable later;
+// mirrors the SpecAlertsBand derivation. Module-scoped so it stays a stable
+// reference across renders.
+const STALE_CUTOFF_MS = 7 * 24 * 60 * 60 * 1000;
+
 // ── Stage grouping ────────────────────────────────────────────────────────────
 // Active specs group by their `state.stage`; terminal specs split into their
 // own outcome buckets so cleanup of cancelled/abandoned stays meaningful.
@@ -267,16 +273,53 @@ export function Specs() {
   const queryClient = useQueryClient();
   const location = useLocation();
 
-  // Wave-6: read `?filter=` query param so deep-links from WorkspaceHealthCard work.
-  const initialBucket = useMemo<SpecFilterBucket>(() => {
+  // Sub-filter by lifecycle stage, layered on top of the `ativas` bucket. The
+  // Visão Geral stage cards (spec `redesenho-rota-visao-geral-dashboard`) deep-
+  // link here with `?filter=planejando|executando`. `null` = no stage narrowing.
+  type StageFilter = "planning" | "executing" | null;
+
+  // Wave-6: read `?filter=` query param so deep-links from WorkspaceHealthCard
+  // and the Visão Geral stage cards / alerts band work. Returns the resolved
+  // bucket plus an optional stage sub-filter and the `stale` (specs paradas) flag.
+  const { initialBucket, initialStage, initialStale } = useMemo<{
+    initialBucket: SpecFilterBucket;
+    initialStage: StageFilter;
+    initialStale: boolean;
+  }>(() => {
     const params = new URLSearchParams(location.search);
     const f = params.get("filter");
-    if (f === "suspects" || f === "suspeitas") return "suspeitas";
-    if (f === "encerradas") return "encerradas";
-    return "ativas";
+    if (f === "suspects" || f === "suspeitas")
+      return { initialBucket: "suspeitas", initialStage: null, initialStale: false };
+    if (f === "encerradas" || f === "finalizadas")
+      return { initialBucket: "encerradas", initialStage: null, initialStale: false };
+    if (f === "planejando")
+      return { initialBucket: "ativas", initialStage: "planning", initialStale: false };
+    if (f === "executando")
+      return { initialBucket: "ativas", initialStage: "executing", initialStale: false };
+    if (f === "stale")
+      return { initialBucket: "ativas", initialStage: null, initialStale: true };
+    return { initialBucket: "ativas", initialStage: null, initialStale: false };
   }, [location.search]);
 
   const [bucket, setBucket] = useState<SpecFilterBucket>(initialBucket);
+  // Stage sub-filter + stale flag come from the deep-link only; clicking a
+  // bucket pill clears them so the manual filters stay intuitive.
+  const [stageFilter, setStageFilter] = useState<StageFilter>(initialStage);
+  const [staleOnly, setStaleOnly] = useState<boolean>(initialStale);
+
+  function selectBucket(b: SpecFilterBucket) {
+    setBucket(b);
+    setStageFilter(null);
+    setStaleOnly(false);
+  }
+
+  // Re-sync from the URL when a deep-link arrives while the page is already
+  // mounted (router keeps the component, only `location.search` changes).
+  useEffect(() => {
+    setBucket(initialBucket);
+    setStageFilter(initialStage);
+    setStaleOnly(initialStale);
+  }, [initialBucket, initialStage, initialStale]);
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [search, setSearch] = useState("");
 
@@ -417,6 +460,7 @@ export function Specs() {
   }, [dateFilter]);
 
   const filteredSpecs = useMemo<SpecCard[]>(() => {
+    const staleCutoff = Date.now() - STALE_CUTOFF_MS;
     return cards
       .filter((c) => {
         const state = stateFromStatus(c.status);
@@ -429,6 +473,24 @@ export function Specs() {
         return fb === bucket;
       })
       .filter((c) => {
+        // Stage sub-filter (deep-link from the Visão Geral stage cards). Only
+        // narrows within `ativas`; terminal specs already left the bucket.
+        if (!stageFilter) return true;
+        const { stage } = stateFromStatus(c.status);
+        if (stageFilter === "executing") return stage === "execute";
+        // "planning" = everything active that isn't executing yet.
+        return stage !== "execute";
+      })
+      .filter((c) => {
+        // "Specs paradas" deep-link: keep only active specs gone quiet for >= 7d.
+        if (!staleOnly) return true;
+        if (stateFromStatus(c.status).outcome !== "active") return false;
+        const ts = c.last_event_at ?? c.started_at;
+        if (!ts) return false;
+        const ms = Date.parse(ts);
+        return Number.isFinite(ms) && ms < staleCutoff;
+      })
+      .filter((c) => {
         if (dateCutoff === 0) return true;
         const ts = c.last_event_at ?? c.started_at;
         if (!ts) return true;
@@ -438,7 +500,7 @@ export function Specs() {
         if (!search.trim()) return true;
         return c.spec.toLowerCase().includes(search.trim().toLowerCase());
       });
-  }, [cards, bucket, dateCutoff, search, suspectSpecs]);
+  }, [cards, bucket, stageFilter, staleOnly, dateCutoff, search, suspectSpecs]);
 
   // Group filtered specs by Stage, dropping empty groups. Within a group,
   // newest activity first.
@@ -518,7 +580,7 @@ export function Specs() {
         <div className="flex flex-col gap-6">
           <SpecsFilterBar
             bucket={bucket}
-            onBucket={setBucket}
+            onBucket={selectBucket}
             date={dateFilter}
             onDate={setDateFilter}
             search={search}
