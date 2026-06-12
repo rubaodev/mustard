@@ -19,6 +19,34 @@ use crate::process_util::no_window_command;
 use serde::Serialize;
 use std::path::Path;
 
+/// Working-tree change counts parsed from `git status --porcelain`. All zero on
+/// a clean tree, a non-repo, or any probe failure (fail-open).
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GitPending {
+    /// Files with a staged change (index column of the porcelain status).
+    pub staged: u32,
+    /// Tracked files with an unstaged change (work-tree column).
+    pub unstaged: u32,
+    /// Untracked files (`??` entries).
+    pub untracked: u32,
+}
+
+/// One commit from the recent log, one field per `git log` format token so a
+/// subject containing any character never splits the parse.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CommitSummary {
+    /// Abbreviated commit hash (`%h`).
+    pub hash: String,
+    /// Commit subject line (`%s`) — may contain any character.
+    pub subject: String,
+    /// Author name (`%an`).
+    pub author: String,
+    /// Committer date, ISO-8601 (`%cI`).
+    pub date: String,
+}
+
 /// Read-only snapshot of a repository's git state. Every field defaults to its
 /// empty form so a non-repo / no-remote path renders as an empty-state card.
 #[derive(Serialize, Default)]
@@ -42,6 +70,12 @@ pub struct GitInfo {
     pub last_commit_author: String,
     /// Author date of the last commit, ISO-8601 (`%cI`), empty when absent.
     pub last_commit_date: String,
+    /// Working-tree change counts (staged / unstaged / untracked).
+    pub pending: GitPending,
+    /// Local branch names (`git branch`), capped at ~20.
+    pub branches: Vec<String>,
+    /// The last 10 commits, newest first.
+    pub recent_commits: Vec<CommitSummary>,
 }
 
 /// Run `git <args>` in `repo_path` and return trimmed stdout, or `None` when
@@ -132,6 +166,65 @@ fn git_info_impl(repo_path: &str) -> GitInfo {
         info.last_commit_date = date;
     }
 
+    // Pending changes from porcelain v1. Each line's first two columns are the
+    // index (staged) and work-tree (unstaged) status; `??` marks an untracked
+    // file. `git_capture` trims the trailing newline, so blank lines never
+    // appear except an all-empty (clean tree) output, which yields zero counts.
+    if let Some(status) = git_capture(base, &["status", "--porcelain"]) {
+        for line in status.lines() {
+            if line.starts_with("??") {
+                info.pending.untracked += 1;
+                continue;
+            }
+            let mut cols = line.chars();
+            let index = cols.next().unwrap_or(' ');
+            let worktree = cols.next().unwrap_or(' ');
+            if index != ' ' {
+                info.pending.staged += 1;
+            }
+            if worktree != ' ' {
+                info.pending.unstaged += 1;
+            }
+        }
+    }
+
+    // Local branches only, one short name per line. Capped so a repo with many
+    // branches never floods the card.
+    if let Some(out) = git_capture(base, &["branch", "--format=%(refname:short)"]) {
+        info.branches = out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .take(20)
+            .map(str::to_string)
+            .collect();
+    }
+
+    // Recent commits, last 10. Fields are separated by the US control char
+    // (0x1f), which cannot occur in a commit subject, so a subject containing
+    // `|`, tabs, or newlines never breaks the parse. (`%s` is single-line.)
+    if let Some(out) = git_capture(
+        base,
+        &["log", "-10", "--format=%h%x1f%s%x1f%an%x1f%cI"],
+    ) {
+        for line in out.lines() {
+            let mut fields = line.split('\u{1f}');
+            let hash = fields.next().unwrap_or("").to_string();
+            let subject = fields.next().unwrap_or("").to_string();
+            let author = fields.next().unwrap_or("").to_string();
+            let date = fields.next().unwrap_or("").to_string();
+            if hash.is_empty() {
+                continue;
+            }
+            info.recent_commits.push(CommitSummary {
+                hash,
+                subject,
+                author,
+                date,
+            });
+        }
+    }
+
     info
 }
 
@@ -170,6 +263,8 @@ mod tests {
         std::fs::write(base.join("a.txt"), b"hello").unwrap();
         let _ = run(&["add", "."]);
         let _ = run(&["commit", "-m", "initial commit"]);
+        // An untracked file so `pending.untracked` has something to count.
+        std::fs::write(base.join("untracked.txt"), b"new").unwrap();
 
         let info = git_info_impl(&base.to_string_lossy());
         assert!(info.is_repo);
@@ -179,5 +274,21 @@ mod tests {
         assert_eq!(info.last_commit_message, "initial commit");
         assert_eq!(info.last_commit_author, "QA Bot");
         assert!(!info.last_commit_date.is_empty());
+
+        // Enriched git-client fields.
+        assert!(
+            !info.recent_commits.is_empty(),
+            "recent_commits has the initial commit"
+        );
+        assert_eq!(info.recent_commits[0].subject, "initial commit");
+        assert_eq!(info.recent_commits[0].author, "QA Bot");
+        assert!(
+            info.branches.iter().any(|b| b == "trunk"),
+            "branches lists the created branch"
+        );
+        assert!(
+            info.pending.untracked >= 1,
+            "the untracked file is counted"
+        );
     }
 }

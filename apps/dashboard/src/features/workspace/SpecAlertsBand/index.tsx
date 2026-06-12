@@ -23,12 +23,18 @@ interface SpecAlertsBandProps {
 const STALE_DAYS = 7;
 const STALE_CUTOFF_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
 
+/** Severity hue an alert takes when it is "hot" (count > 0). Suspeitas are an
+ *  error signal (vermelho), specs paradas a warning (âmbar). When cold the pill
+ *  falls back to muted/structural grey — cor = significado, cinza = estrutura. */
+type AlertTone = "error" | "warning";
+
 interface AlertDef {
   /** `/specs?filter=` target. */
   filterKey: string;
   labelKey: string;
   labelFallback: string;
   icon: LucideIcon;
+  tone: AlertTone;
 }
 
 const SUSPECTS: AlertDef = {
@@ -36,6 +42,7 @@ const SUSPECTS: AlertDef = {
   labelKey: "overview.alerts.suspects",
   labelFallback: "Suspeitas",
   icon: AlertTriangle,
+  tone: "error",
 };
 
 const STALE: AlertDef = {
@@ -43,17 +50,33 @@ const STALE: AlertDef = {
   labelKey: "overview.alerts.stale",
   labelFallback: "Specs paradas",
   icon: PauseCircle,
+  tone: "warning",
+};
+
+const HOT_BORDER: Record<AlertTone, string> = {
+  error: "border-[--intent-error]/40 bg-[--intent-error]/5 hover:bg-[--intent-error]/10",
+  warning: "border-[--intent-warning]/40 bg-[--intent-warning]/5 hover:bg-[--intent-warning]/10",
+};
+const HOT_BOX: Record<AlertTone, string> = {
+  error: "bg-[--intent-error]/10",
+  warning: "bg-[--intent-warning]/10",
+};
+const HOT_TEXT: Record<AlertTone, string> = {
+  error: "text-[--intent-error]",
+  warning: "text-[--intent-warning]",
 };
 
 function AlertPill({
   label,
   count,
   icon: Icon,
+  tone,
   onClick,
 }: {
   label: string;
   count: number;
   icon: LucideIcon;
+  tone: AlertTone;
   onClick: () => void;
 }) {
   const hot = count > 0;
@@ -65,19 +88,24 @@ function AlertPill({
       className={cn(
         "flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--primary]",
-        hot
-          ? "border-[--intent-warning]/40 bg-[--intent-warning]/5 hover:bg-[--intent-warning]/10"
-          : "border-border bg-card/40 hover:bg-muted/40",
+        hot ? HOT_BORDER[tone] : "border-border bg-card/40 hover:bg-muted/40",
       )}
     >
-      <Icon
-        className={cn("h-4 w-4 shrink-0", hot ? "text-[--intent-warning]" : "text-muted-foreground")}
+      <span
         aria-hidden
-      />
+        className={cn(
+          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+          hot ? HOT_BOX[tone] : "bg-muted/40",
+        )}
+      >
+        <Icon
+          className={cn("h-3.5 w-3.5", hot ? HOT_TEXT[tone] : "text-muted-foreground")}
+        />
+      </span>
       <span
         className={cn(
           "text-lg font-mono font-medium tabular-nums",
-          hot ? "text-[--intent-warning]" : "text-foreground/80",
+          hot ? HOT_TEXT[tone] : "text-foreground/80",
         )}
       >
         {count}
@@ -138,12 +166,14 @@ export function SpecAlertsBand({ repoPath }: SpecAlertsBandProps) {
           label={t(SUSPECTS.labelKey, SUSPECTS.labelFallback)}
           count={suspectsCount}
           icon={SUSPECTS.icon}
+          tone={SUSPECTS.tone}
           onClick={() => navigate(`/specs?filter=${SUSPECTS.filterKey}`)}
         />
         <AlertPill
           label={t(STALE.labelKey, STALE.labelFallback)}
           count={staleCount}
           icon={STALE.icon}
+          tone={STALE.tone}
           onClick={() => navigate(`/specs?filter=${STALE.filterKey}`)}
         />
       </div>

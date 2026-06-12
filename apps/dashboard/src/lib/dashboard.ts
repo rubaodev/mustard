@@ -1049,6 +1049,23 @@ export function setTone(repoPath: string, tone: string): Promise<void> {
  * to its empty form so a non-repo / no-remote path renders an empty-state card:
  * `is_repo === false`, empty strings, zeroed ahead/behind.
  */
+/** One commit in the recent-history list — mirrors the Rust
+ *  `GitCommit` (`serde(rename_all = "snake_case")`). */
+export interface GitCommit {
+  hash: string;
+  subject: string;
+  author: string;
+  /** Author date, ISO-8601 (or git's relative/short form), empty when absent. */
+  date: string;
+}
+
+/** Working-tree pending counts — mirrors the Rust `GitPending`. */
+export interface GitPending {
+  staged: number;
+  unstaged: number;
+  untracked: number;
+}
+
 export interface GitInfo {
   is_repo: boolean;
   remote_url: string;
@@ -1060,6 +1077,12 @@ export interface GitInfo {
   last_commit_author: string;
   /** Author date of the last commit, ISO-8601, empty when absent. */
   last_commit_date: string;
+  /** Working-tree pending counts (staged / unstaged / untracked). */
+  pending: GitPending;
+  /** Local branch names (the current branch is `branch`). */
+  branches: string[];
+  /** Most-recent commits, newest first (backend caps the count). */
+  recent_commits: GitCommit[];
 }
 
 /** One inferred stack — mirrors the Rust `StackSummary`. */
@@ -1070,11 +1093,26 @@ export interface StackSummary {
 }
 
 /**
+ * Per-unit identity of one project inside the workspace — mirrors the Rust
+ * `ProjectUnitSummary` (`serde(rename_all = "snake_case")`). `language` is the
+ * unit's `kind` (`cargo`, `npm`, `go`, …), the only per-unit language signal
+ * the model holds; map kind→label in the UI.
+ */
+export interface ProjectUnitSummary {
+  name: string;
+  dir: string;
+  language: string;
+  frameworks: string[];
+  stacks: StackSummary[];
+}
+
+/**
  * Card-ready projection of the workspace's grain model. Mirrors the Rust
  * `ProjectOverview` struct (`serde(rename_all = "snake_case")`). NOTE:
- * `languages` carries each unit's `kind` (`cargo`, `npm`, `go`, …) — the only
- * per-unit language signal the model holds — NOT language names; map kind→label
- * in the UI. A missing/unscanned model resolves to an all-empty overview.
+ * the aggregate `languages` carries each unit's `kind` (`cargo`, `npm`, `go`,
+ * …) — the only per-unit language signal the model holds — NOT language names;
+ * map kind→label in the UI. `units` carries the same per-project. A
+ * missing/unscanned model resolves to an all-empty overview.
  */
 export interface ProjectOverview {
   is_monorepo: boolean;
@@ -1082,6 +1120,8 @@ export interface ProjectOverview {
   languages: string[];
   frameworks: string[];
   detected_stacks: StackSummary[];
+  /** Per-project identity rows (name, dir, language kind, frameworks, stacks). */
+  units: ProjectUnitSummary[];
 }
 
 export function fetchGitInfo(repoPath: string): Promise<GitInfo> {

@@ -76,13 +76,11 @@ export function Workspace() {
 
       <Separator />
 
-      {/* ── Projetos: identity, local git, most-touched files ───────────── */}
+      {/* ── Projetos: identity, local git, most-touched files (1 coluna) ── */}
       <section className="flex flex-col gap-3">
         <SectionHeader title="Projetos" />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <ProjectInfoCard repoPath={repoPath} />
-          <GitInfoCard repoPath={repoPath} />
-        </div>
+        <ProjectInfoCard repoPath={repoPath} />
+        <GitInfoCard repoPath={repoPath} />
         <WorkspaceFilesRanking repoPath={repoPath} />
       </section>
     </PageSurface>

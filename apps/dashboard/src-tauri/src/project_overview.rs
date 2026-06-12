@@ -26,6 +26,25 @@ pub struct StackSummary {
     pub confidence: f32,
 }
 
+/// Per-unit projection so the card can list each subproject of a monorepo
+/// rather than only the workspace-wide aggregates. One per `projects[]` entry.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectUnitSummary {
+    /// Unit name from the model.
+    pub name: String,
+    /// Unit directory relative to the repo root; falls back to `name` when the
+    /// model carries no `dir`.
+    pub dir: String,
+    /// The unit's `kind` (e.g. `cargo`, `npm`, `go`) — the only per-unit
+    /// language signal the model carries.
+    pub language: String,
+    /// Frameworks/deps mined for this unit (frequency-ranked by the model).
+    pub frameworks: Vec<String>,
+    /// Stacks inferred for this unit, flattened to name + confidence.
+    pub stacks: Vec<StackSummary>,
+}
+
 /// Card-ready projection of the workspace's grain model.
 #[derive(Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +62,10 @@ pub struct ProjectOverview {
     /// Distinct inferred stacks across units, keeping the highest confidence
     /// seen for each stack name.
     pub detected_stacks: Vec<StackSummary>,
+    /// One entry per compilation unit, so the card can render the monorepo's
+    /// members instead of only the workspace-wide aggregates. Stably ordered
+    /// by `dir` then `name`.
+    pub units: Vec<ProjectUnitSummary>,
 }
 
 /// Project the grain model at `repo_path` into a [`ProjectOverview`]. Always
@@ -59,6 +82,7 @@ pub fn dashboard_project_overview(repo_path: String) -> Result<ProjectOverview, 
     let mut frameworks: BTreeSet<String> = BTreeSet::new();
     // Highest confidence wins per stack name.
     let mut stacks: std::collections::BTreeMap<String, f32> = std::collections::BTreeMap::new();
+    let mut units: Vec<ProjectUnitSummary> = Vec::with_capacity(project_count);
 
     for project in &projects {
         if !project.kind.is_empty() {
@@ -77,7 +101,33 @@ pub fn dashboard_project_overview(repo_path: String) -> Result<ProjectOverview, 
                 })
                 .or_insert(stack.confidence);
         }
+
+        // The model carries `dir` per unit, but older models / a root unit may
+        // leave it empty — fall back to the name so the card always has a key.
+        let dir = if project.dir.is_empty() {
+            project.name.clone()
+        } else {
+            project.dir.clone()
+        };
+        units.push(ProjectUnitSummary {
+            name: project.name.clone(),
+            dir,
+            language: project.kind.clone(),
+            frameworks: project.frameworks.clone(),
+            stacks: project
+                .detected_stacks
+                .iter()
+                .map(|s| StackSummary {
+                    name: s.name.clone(),
+                    confidence: s.confidence,
+                })
+                .collect(),
+        });
     }
+
+    // Stable order: by directory, then name, so the card list never jitters
+    // between scans.
+    units.sort_by(|a, b| a.dir.cmp(&b.dir).then_with(|| a.name.cmp(&b.name)));
 
     Ok(ProjectOverview {
         is_monorepo: project_count > 1,
@@ -88,6 +138,7 @@ pub fn dashboard_project_overview(repo_path: String) -> Result<ProjectOverview, 
             .into_iter()
             .map(|(name, confidence)| StackSummary { name, confidence })
             .collect(),
+        units,
     })
 }
 
@@ -105,5 +156,6 @@ mod tests {
         assert!(overview.languages.is_empty());
         assert!(overview.frameworks.is_empty());
         assert!(overview.detected_stacks.is_empty());
+        assert!(overview.units.is_empty());
     }
 }
