@@ -40,7 +40,7 @@ It reads the wave DAG and returns the **current round only** — every wave of t
 ```
 
 - Items returned together share one dependency level → dispatch them **together in one message** (several `<invoke>` blocks). Never reach for a later level by hand — re-run `wave-advance` after the round completes and it advances on its own.
-- **`prompt`** IS the final Task prompt — already rendered by `agent-prompt-render` inside the binary. There is no `prompt_cmd` round-trip and nothing to assemble; pass it **verbatim** as the Task `prompt`.
+- **`prompt`** IS the final Task prompt — already rendered by `agent-prompt-render` inside the binary. There is no `prompt_cmd` round-trip and nothing to assemble; pass it **verbatim** as the Task `prompt` — it is a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands at dispatch; NEVER read the `.dispatch/` file in the parent (that pays the full prompt back into your context).
 - **`subagent_type`**: each item carries its own — the tool picks the agent per role (read-only roles run tool-restricted: `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`; writing roles → `general-purpose`). Pass it through; never pick by hand.
 
 The orchestrator does NOT decide the order, group rounds, or assemble the loop by hand — `wave-advance` owns that ("free section" determinised). `resume-bootstrap` stays the **stage** decision (mode / stage / progress); `wave-advance` is the **wave-routing + render** decision. (`dispatch-plan` still exists — use it only to **inspect** the full DAG/levels, e.g. when debugging routing; it is not the dispatch path. Do NOT drive the loop off the bootstrap's scalar `currentWave`: it names one wave, but a round can hold several independent waves of the same level.)
@@ -115,7 +115,7 @@ See `.claude/pipeline-config.md § Escalation Statuses` and `../resume/fix-loop-
 - Wave dispatch: ALL items of one `wave-advance` round (the same dependency level) in ONE SINGLE message.
 - Each sub-agent reads its own `{subproject}/CLAUDE.md` + auto-loads relevant skills.
 - ALWAYS use `mustard-rt run wave-advance` to decide wave order/routing **and the post-impl review round** — NEVER read `wave-plan.md` and assemble the dispatch loop by hand. The LLM is a relay: iterate the returned array, pass each item's `prompt` to Task. (`dispatch-plan` is an inspection fallback for the full DAG — not the dispatch path.)
-- NEVER hand-craft prompts — `wave-advance` IS the render: each item's `prompt` arrives already rendered by `agent-prompt-render`. Never build one from scratch.
+- NEVER hand-craft prompts — `wave-advance` IS the render: each item's `prompt` arrives already rendered by `agent-prompt-render` (as a `MUSTARD-PROMPT-REF` stub). Never build one from scratch, and never expand a stub by hand — the PreToolUse hook does it at dispatch.
 - ALWAYS use `mustard-rt run resume-bootstrap` to decide mode/path/diff/slice/`nextAction` — NEVER reimplement those rules in the SKILL.
 - ALWAYS run REVIEW + QA before CLOSE — `pipeline.complete` is refused (exit 2) without `qa.result`(overall=pass). REVIEW is NOT a manual side-step: it arrives as a `wave-advance` round (`role: review`, `mustard-review`, prompts rendered) — dispatch it like any round and record each verdict via `review-result --subproject`. Follow `nextAction` blindly. `close-pipeline` enforces this: QA fail/skip → `completed: false`, no close.
 - ALWAYS run dependency-precheck (Step 12d) before dispatch.

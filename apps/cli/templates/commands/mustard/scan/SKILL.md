@@ -51,9 +51,11 @@ stays purely deterministic and cheap; it never dispatches an agent. When opted i
    (root already excluded). Fail-open: on error it returns `[]` (exit 0) — nothing to do.
    Parse it.
 3. **Render one prompt per subproject.** For each worklist item:
-   `mustard-rt run agent-prompt-render --role guards --subproject <subproject>` — this path is
-   **spec-less** (no `--spec`): the renderer reads the pending block's facts and derives the
-   project's language/tone from `mustard.json`. Pass its stdout to the Task **verbatim**;
+   `mustard-rt run agent-prompt-render --role guards --subproject <subproject> --emit ref` — this
+   path is **spec-less** (no `--spec`): the renderer reads the pending block's facts and derives
+   the project's language/tone from `mustard.json`. Pass its stdout to the Task **verbatim** —
+   with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands at dispatch (never
+   read the `.dispatch/` file in the parent; that would pay the prompt back into your context);
    never hand-craft the prompt.
 4. **Dispatch in parallel + relay.** Dispatch **one agent per subproject**, `subagent_type`
    `mustard-guards` (read-only — it has no Edit/Write/Bash, so it cannot write a file; it

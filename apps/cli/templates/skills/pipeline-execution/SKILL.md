@@ -80,7 +80,7 @@ It returns the **current dispatch round** as a deterministic JSON array — ever
 
 **3. Dispatch Agent:**
 
-For each item, pass its `prompt` **verbatim** to the Task `prompt` (it was already rendered by `agent-prompt-render` inside `wave-advance` — never hand-assembled) with the item's **`subagent_type`** (the tool picks it per role: read-only roles run tool-restricted — `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`, so they physically cannot write; writing roles → `general-purpose`). Never pick the agent by hand. The rendered template carries the role contract + boundary + return cap inline, plus the spec's project section + its anchors.
+For each item, pass its `prompt` **verbatim** to the Task `prompt` (it was already rendered by `agent-prompt-render` inside `wave-advance` — never hand-assembled; it arrives as a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands at dispatch — never read the `.dispatch/` file in the parent, that pays the full prompt back into your context) with the item's **`subagent_type`** (the tool picks it per role: read-only roles run tool-restricted — `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`, so they physically cannot write; writing roles → `general-purpose`). Never pick the agent by hand. The rendered template carries the role contract + boundary + return cap inline, plus the spec's project section + its anchors.
 
 **4. Validate:**
 
