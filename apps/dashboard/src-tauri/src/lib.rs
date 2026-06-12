@@ -4,7 +4,9 @@ pub mod commands;
 mod discovery;
 pub mod doctor;
 pub mod economy;
+mod git_info;
 mod prd_lapidator;
+mod project_overview;
 pub mod process_util;
 mod projects;
 pub mod spec_views;
@@ -3022,7 +3024,9 @@ pub fn run() {
             prd_lapidator::check_claude_available,
             read_model_entities,
             workspace_health,
-            economy::economy_summary
+            economy::economy_summary,
+            git_info::dashboard_git_info,
+            project_overview::dashboard_project_overview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
