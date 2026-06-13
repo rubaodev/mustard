@@ -236,13 +236,13 @@ fn note(q: &DigestQuery) -> &'static str {
             "matches live only in machine-written modules — regenerate or extend the generator's input; never edit the matched files directly"
         }
         "strong" => {
-            "repo precedent found — read the anchors AND the hubs before planning: anchors are the lexical entry points (often the module NAMED after the entity), but the logic that COMPUTES a behavior frequently lives in a generically-named service listed under `hubs` (a central module that matched vocabulary), not the homonym — open both. Mirror the matched slices/contracts, then ask `scan spec` per unit"
+            "repo precedent found — `anchors` is EVIDENCE, not a ranked verdict: the deduped union of the files where your matched vocabulary is DECLARED (`report.terms[].files` is the same evidence grouped per term — on a wide query read THAT, the flat union is capped and may not list every term's file). Pick the files that fit the request and read them; also read the `hubs` — the logic that COMPUTES a behavior often lives in a generically-named central service, not the module named after the entity. Mirror the matched slices/contracts, then ask `scan spec` per unit"
         }
         _ if q.miss => {
-            "no repo precedent matched — treat as net-new; the term index has no synonyms and false negatives, so confirm by reading anchors, do not conclude 'absent' blindly"
+            "no repo precedent matched — treat as net-new; the term index has no synonyms and false negatives, so confirm by reading the matched files, do not conclude 'absent' blindly"
         }
         _ => {
-            "repo precedent found — read the anchors AND the hubs before planning: anchors are the lexical entry points (often the module NAMED after the entity), but the logic that COMPUTES a behavior frequently lives in a generically-named service listed under `hubs` (a central module that matched vocabulary), not the homonym — open both. Mirror the matched slices/contracts, then ask `scan spec` per unit"
+            "repo precedent found — `anchors` is EVIDENCE, not a ranked verdict: the deduped union of the files where your matched vocabulary is DECLARED (`report.terms[].files` is the same evidence grouped per term — on a wide query read THAT). Pick the files that fit the request and read them; also read the `hubs` (the computing logic often lives in a generically-named central service). Mirror the matched slices/contracts, then ask `scan spec` per unit"
         }
     }
 }

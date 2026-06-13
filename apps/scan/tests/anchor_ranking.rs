@@ -85,48 +85,41 @@ fn anchor_ranking_orders_matched_terms_by_rarity_then_term() {
 }
 
 #[test]
-fn anchor_coverage_seats_each_terms_best_file_then_fills_with_the_cooccurring() {
-    // CONTRACT CHANGE (anchor-coverage spec): selection is now COVERAGE-FIRST.
-    // The old expectation put the co-occurring `m/shared.rs` first — the very
-    // sum bias that let frequent terms double-dip and expel a rare domain.
-    // Now each matched term seats its best file first (per-term BM25 prefers
-    // the focused module over the longer shared one), and the co-occurring
-    // file still anchors right behind via the IDF-weighted fill.
+fn anchor_files_are_the_deduped_union_of_per_term_samples() {
+    // NEW CONTRACT: `files` is NOT a ranked verdict — it is the deduped UNION
+    // of the matched terms' per-term declaration samples, walked rarest-term
+    // first. No cross-term score decides "the target"; the reader does, from
+    // this evidence. A co-occurring file appears once and lists every term
+    // that declares it; there is no relevance score (the FACT, not a ranking).
     let modules = serde_json::json!([
         module("m/aaa.rs", &["AlphaFirst"]),
         module("m/shared.rs", &["AlphaSecond", "OmegaThing"]),
         module("m/zzz.rs", &["OmegaOther"]),
     ]);
-    let (dir, model) = write_model("cooccur", modules);
+    let (dir, model) = write_model("union", modules);
     let (_, q) = run_query(&model, "alpha,omega", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert_eq!(
-        files,
-        vec!["m/aaa.rs", "m/zzz.rs", "m/shared.rs"],
-        "each term's top file first (term order), co-occurring file fills next: {q}"
+    assert!(
+        files.contains(&"m/aaa.rs") && files.contains(&"m/shared.rs") && files.contains(&"m/zzz.rs"),
+        "the union covers every matched term's samples: {q}"
     );
-    // The audit trail says WHY: the fill row carries both query terms.
+    assert_eq!(files.iter().filter(|f| **f == "m/shared.rs").count(), 1, "co-occurring file deduped: {q}");
     let detail = q["files_detail"].as_array().unwrap();
-    assert_eq!(detail.len(), files.len(), "one detail row per anchor: {q}");
+    assert_eq!(detail.len(), files.len(), "one detail row per file: {q}");
     let shared = detail.iter().find(|d| d["file"] == "m/shared.rs").unwrap();
     let dterms: Vec<&str> = shared["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
-    assert_eq!(dterms, vec!["alpha", "omega"], "carrying terms named per anchor: {q}");
-    assert!(shared["score_x1024"].as_u64().unwrap() > 0, "term-matched anchor scores above zero: {q}");
+    assert!(dterms.contains(&"alpha") && dterms.contains(&"omega"), "the file lists both declaring terms: {q}");
+    assert_eq!(shared["score_x1024"].as_u64().unwrap(), 0, "union is a fact, no relevance score: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn anchor_coverage_rare_domain_survives_a_frequent_term_neighbour() {
-    // The sialia regression in neutral vocabulary: the neighbour's NAME is
-    // two frequent query terms ("garden", "market") that double-dip in every
-    // declaration of its 14 modules; the target domain is one rare term
-    // ("quince") in a single file. Under the old pure-sum selection the
-    // neighbour outranked the target on every slot and the 12-file cap
-    // expelled it; coverage must seat the rare term's top file FIRST (terms
-    // walk rarest-first) and keep it in `files` regardless of the
-    // neighbour's volume.
+fn rare_domain_leads_the_union_ahead_of_a_frequent_neighbour() {
+    // The rarest matched term leads the matched walk, so its samples lead the
+    // union — a frequent neighbour's volume can never push the rare domain's
+    // file out (the old crowding bug). quince: one file; garden/market: 14.
     let mut modules = vec![module("m/quince/page.rs", &["QuinceEntry", "QuinceFlow"])];
     for i in 0..14 {
         modules.push(module(
@@ -134,37 +127,32 @@ fn anchor_coverage_rare_domain_survives_a_frequent_term_neighbour() {
             &[&format!("GardenMarketList{i:02}"), &format!("GardenMarketCard{i:02}"), &format!("GardenMarketTotal{i:02}")],
         ));
     }
-    let (dir, model) = write_model("coverage", serde_json::json!(modules));
+    let (dir, model) = write_model("union-rare", serde_json::json!(modules));
     let (_, q) = run_query(&model, "quince,garden,market", "query.json");
 
     let matched: Vec<&str> =
         q["matched_terms"].as_array().unwrap().iter().map(|t| t["term"].as_str().unwrap()).collect();
     assert_eq!(matched[0], "quince", "rarest term leads the matched walk: {q}");
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert_eq!(files[0], "m/quince/page.rs", "the rare domain's top file is seated first: {q}");
-    assert_eq!(files.len(), 12, "anchor cap intact: {q}");
-
-    // files_detail mirrors files (same order) and explains the leader.
+    assert_eq!(files[0], "m/quince/page.rs", "rare domain's sample leads the union: {q}");
+    // files_detail mirrors files order; the leader is carried by the rare term.
     let detail = q["files_detail"].as_array().unwrap();
     assert_eq!(detail.len(), files.len());
     for (f, d) in files.iter().zip(detail) {
         assert_eq!(d["file"].as_str().unwrap(), *f, "detail mirrors files order: {q}");
     }
     let dterms: Vec<&str> = detail[0]["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
-    assert_eq!(dterms, vec!["quince"], "the anchor is carried by the rare term alone: {q}");
+    assert_eq!(dterms, vec!["quince"], "the leader is declared by the rare term alone: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn anchor_fill_idf_keeps_a_rare_term_file_above_a_frequent_double_dipper() {
-    // FILL contract: leftover slots rank by Σ tier-weight × IDF × BM25.
-    // `m/gem/ruby_more.rs` carries the rare term ("ruby", 2 modules) once;
-    // `m/yard/dd_b.rs` double-dips two terms that 20 of the 22 modules carry.
-    // Under the old unweighted sum the double-dipper outranked the rare file
-    // roughly 2:1 and won the earlier slot; the document-frequency weight
-    // must invert that. (Coverage seats ruby_top and dd_a — the per-term
-    // tops — beforehand, so both contenders here are genuinely fill-ranked.)
+fn rare_terms_samples_precede_frequent_terms_in_the_union() {
+    // The union is walked in matched-term order (rarest first), so EVERY file
+    // of a rare term precedes a frequent term's files — the property the old
+    // IDF-fill ranking simulated, now a direct consequence of the ordering.
+    // "ruby" lives in 2 modules; "stone"/"brick" in 20 — ruby's samples lead.
     let mut modules = vec![
         module("m/gem/ruby_top.rs", &["RubyAlpha", "RubyBeta"]),
         module("m/gem/ruby_more.rs", &["RubyGamma"]),
@@ -174,15 +162,15 @@ fn anchor_fill_idf_keeps_a_rare_term_file_above_a_frequent_double_dipper() {
     for i in 0..18 {
         modules.push(module(&format!("m/yard/f{i:02}.rs"), &[&format!("StoneUse{i:02}"), &format!("BrickUse{i:02}")]));
     }
-    let (dir, model) = write_model("idf-fill", serde_json::json!(modules));
+    let (dir, model) = write_model("union-order", serde_json::json!(modules));
     let (_, q) = run_query(&model, "ruby,stone,brick", "query.json");
 
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     let pos = |f: &str| files.iter().position(|x| *x == f).unwrap_or_else(|| panic!("{f} missing from {files:?}"));
-    assert_eq!(files[0], "m/gem/ruby_top.rs", "coverage: rarest term's top file leads: {q}");
+    // Both ruby files (the rare term) precede the frequent-term double-dipper.
     assert!(
-        pos("m/gem/ruby_more.rs") < pos("m/yard/dd_b.rs"),
-        "IDF fill: the rare term's second file outranks the frequent double-dipper: {files:?}"
+        pos("m/gem/ruby_top.rs") < pos("m/yard/dd_b.rs") && pos("m/gem/ruby_more.rs") < pos("m/yard/dd_b.rs"),
+        "rare term's samples lead the union ahead of frequent-term files: {files:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -222,21 +210,16 @@ fn query_slices_omitted_mirrors_the_cap_and_terms_omitted_contract() {
 }
 
 #[test]
-fn anchor_hub_needs_declaration_match_not_just_path() {
-    // Both hubs path-hit "billing" (and stay listed in `hubs`), but only the
-    // one whose DECLARATIONS carry the queried vocabulary may anchor. Among
-    // the term-matched candidates with equal BM25, the hub's fan-in acts as
-    // the tiebreak — so the matching hub leads, the plain module follows and
-    // the path-only hub never appears in `files`. Seven fillers keep both
-    // hubs' fan-in (2) under the structural stop-file percent of 10 modules.
-    let mut modules = vec![
-        module_fi("m/core/billing_hub.rs", &["RegistryWiring"], 2),
-        module_fi("m/core/billing_registry.rs", &["BillingRegistry"], 2),
+fn path_only_hub_never_anchors_only_declaration_matches_do() {
+    // A module enters `files` ONLY through a term's declaration samples.
+    // `billing_hub` path-hits "billing" (its NAME) but declares no billing
+    // vocabulary, so it stays listed in `hubs` and never anchors; the two
+    // modules whose DECLARATIONS carry "billing" are the union.
+    let modules = vec![
+        module("m/core/billing_hub.rs", &["RegistryWiring"]),
+        module("m/core/billing_registry.rs", &["BillingRegistry"]),
         module("m/billing/invoice.rs", &["BillingInvoice"]),
     ];
-    for i in 0..7 {
-        modules.push(module(&format!("m/f/f{i}.rs"), &[&format!("Filler{i}")]));
-    }
     let dir = std::env::temp_dir().join(format!("scan-anchor-ranking-hubgate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -245,13 +228,10 @@ fn anchor_hub_needs_declaration_match_not_just_path() {
         "root": dir.to_string_lossy(),
         "modules": modules,
         "graph": {
-            "nodes": 10, "edges": 4, "cyclic": false, "cycles": [],
-            "top_fan_in": [
-                { "module": "m/core/billing_hub.rs", "degree": 2 },
-                { "module": "m/core/billing_registry.rs", "degree": 2 }
-            ],
+            "nodes": 3, "edges": 0, "cyclic": false, "cycles": [],
+            "top_fan_in": [ { "module": "m/core/billing_hub.rs", "degree": 2 } ],
             "top_fan_out": [],
-            "layers": [], "cyclic_edges": 0, "total_edges": 4
+            "layers": [], "cyclic_edges": 0, "total_edges": 0
         }
     });
     std::fs::write(&model, serde_json::to_string_pretty(&v).unwrap()).unwrap();
@@ -260,37 +240,33 @@ fn anchor_hub_needs_declaration_match_not_just_path() {
     let hubs: Vec<&str> = q["hubs"].as_array().unwrap().iter().map(|h| h["module"].as_str().unwrap()).collect();
     assert!(hubs.contains(&"m/core/billing_hub.rs"), "path hit keeps the hub listed in `hubs`: {q}");
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert_eq!(
-        files,
-        vec!["m/core/billing_registry.rs", "m/billing/invoice.rs"],
-        "declaration-matched hub leads via fan-in tiebreak; path-only hub never anchors: {q}"
+    assert!(!files.contains(&"m/core/billing_hub.rs"), "path-only hub never anchors: {q}");
+    assert!(
+        files.contains(&"m/core/billing_registry.rs") && files.contains(&"m/billing/invoice.rs"),
+        "both declaration-matched modules are in the union: {q}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn anchor_structural_stopfile_excludes_repo_glue() {
-    // `m/glue/common.rs` carries the queried term 3x — by match score alone
-    // it would lead the anchors — but its fan-in (4) exceeds the stop-file
-    // percent of the 10-module repo: glue the whole repo leans on is never
-    // the file to read for one capability. It must stay visible as an index
-    // SAMPLE (the published view is untouched) while leaving `files`.
-    let mut modules = vec![
+fn high_fan_in_file_that_declares_the_term_now_anchors() {
+    // The structural stop-file heuristic was REMOVED with the ranking: a file
+    // is selected purely because a matched term is DECLARED in it (per-term
+    // BM25 samples). A high-fan-in module that genuinely declares the queried
+    // vocabulary is legitimate evidence and now anchors — per-term BM25 already
+    // disfavours glue that only re-exports (few real declarations of a term),
+    // and the cross-term aggregation that the stop-file once guarded is gone.
+    let modules = vec![
         module_fi("m/glue/common.rs", &["LedgerCore", "LedgerStore", "LedgerSync"], 4),
         module("m/feat/ledger.rs", &["LedgerReport"]),
     ];
-    for i in 0..8 {
-        modules.push(module(&format!("m/f/f{i}.rs"), &[&format!("Filler{i}")]));
-    }
-    let (dir, model) = write_model("stopfile", serde_json::json!(modules));
+    let (dir, model) = write_model("nostopfile", serde_json::json!(modules));
     let (_, q) = run_query(&model, "ledger", "query.json");
 
-    let samples: Vec<&str> =
-        q["matched_terms"][0]["samples"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
-    assert_eq!(samples[0], "m/glue/common.rs", "the index sample view is untouched: {q}");
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert_eq!(files, vec!["m/feat/ledger.rs"], "the stop-file leaves anchor eligibility: {q}");
+    assert!(files.contains(&"m/glue/common.rs"), "a file declaring the term anchors (no stop-file): {q}");
+    assert!(files.contains(&"m/feat/ledger.rs"), "the other declaration-matched file too: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -356,33 +332,23 @@ fn digest_query_stacks_copies_model_detected_stacks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Field regression (sialia, 2026-06-12 — spec `ranking-digest-deixa-alvo-central`):
-/// on a WIDE query (more matched terms than anchor slots) pure coverage
-/// seated one single-term file per rare term and crowded the capability
-/// cluster out entirely (target folder 0/12), even though its files are
-/// where the queried concepts CO-OCCUR (declarations + path). The fix is the
-/// fill reserve + path co-occurrence: coverage stops short of the cap when a
-/// multi-term candidate exists, and >=2 matched terms appearing as path
-/// subtokens pay into the fill aggregate (one path token alone still pays
-/// nothing — the anti-noise rule).
+/// Field regression (sialia, 2026-06-12 — spec `ranking-digest-deixa-alvo-central`),
+/// rewritten for the insumo contract: on a WIDE query (more matched terms
+/// than the flat `files` cap) the deterministic FACT the reader navigates is
+/// the GROUPED per-term evidence `report.terms[].files` — it carries every
+/// term's declaring files regardless of the flat cap, so the co-occurring
+/// capability file is always reachable UNDER ITS TERM even when the flat union
+/// (rarest-first, capped) crowds it out. The redesign deletes the cross-term
+/// ranking that used to fake "these N are the targets"; the reader picks from
+/// the grouped index instead of trusting a top-N.
 #[test]
-fn wide_query_keeps_the_cooccurring_target_via_fill_reserve_and_path_co() {
-    // The resolver wins the coverage seats for financial+titles (heavier
-    // declarations); 11 single-term domains each seat their own term. Before
-    // the fix that filled all 12 slots and the target — whose path carries
-    // financial+titles and whose declaration carries titles+table — was out.
+fn wide_query_target_survives_in_the_grouped_per_term_evidence() {
     let mut mods = vec![
-        module(
-            "backend/financialtitles/FinancialTitlesQueryResolver.cs",
-            &["FinancialTitlesQueryResolver", "FinancialTitlesFilterDto"],
-        ),
+        module("backend/financialtitles/resolver.cs", &["FinancialTitlesQueryResolver"]),
         module("app/financial/all-titles/titles-table.tsx", &["TitlesTable"]),
     ];
     for i in 0..11 {
-        mods.push(module(
-            &format!("other/dom{i:02}/file{i:02}.ts"),
-            &[&format!("Term{i:02}Thing")],
-        ));
+        mods.push(module(&format!("other/dom{i:02}/file{i:02}.ts"), &[&format!("Term{i:02}Thing")]));
     }
     let modules = serde_json::Value::Array(mods);
     let (dir, model) = write_model("widequery", modules);
@@ -392,22 +358,17 @@ fn wide_query_keeps_the_cooccurring_target_via_fill_reserve_and_path_co() {
         .collect();
     let (_, q) = run_query(&model, &terms.join(","), "query.json");
 
-    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert!(
-        files.contains(&"app/financial/all-titles/titles-table.tsx"),
-        "the co-occurring capability file must anchor on a wide query: {q}"
-    );
-    // The audit trail shows the path terms riding along with the declared one.
-    let detail = q["files_detail"]
-        .as_array()
-        .unwrap()
+    // The grouped evidence: the request term "titles" lists the target file,
+    // regardless of the flat-`files` cap that a wide query overflows.
+    let report_terms = q["report"]["terms"].as_array().unwrap();
+    let titles = report_terms
         .iter()
-        .find(|d| d["file"] == "app/financial/all-titles/titles-table.tsx")
-        .expect("target row in files_detail");
-    let dterms: Vec<&str> = detail["terms"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+        .find(|t| t["term"] == "titles")
+        .expect("`titles` present in the grouped report");
+    let tfiles: Vec<&str> = titles["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert!(
-        dterms.contains(&"financial") && dterms.contains(&"titles"),
-        "path co-occurrence terms audited: {detail}"
+        tfiles.contains(&"app/financial/all-titles/titles-table.tsx"),
+        "the grouped per-term evidence carries the target under its term: {q}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -306,7 +306,6 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.count.cmp(&b.1.count)).then(a.1.term.cmp(&b.1.term)));
     let terms_omitted = matched.len().saturating_sub(Q_MAX_TERMS);
     matched.truncate(Q_MAX_TERMS);
-    let tiers: Vec<u8> = matched.iter().map(|(tier, _)| *tier).collect();
     let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
     let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();
@@ -318,161 +317,42 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     let mut touchpoints: Vec<TouchD> = dig.graph.touchpoints.into_iter().filter(|t| hit(&t.module)).collect();
     touchpoints.truncate(Q_MAX_TOUCHPOINTS);
 
-    // Anchor candidates, MATCH-FIRST: a module enters on a term match in its
-    // DECLARATIONS, never on its path alone — a hub that only path-hits stays
-    // listed in `hubs` but does not anchor. Selection is COVERAGE-FIRST, two
-    // passes over per-(term, module) scores computed once below:
-    //
-    //   (a) COVERAGE — walk `matched_terms` in their existing order (tier
-    //       asc, then rarity asc) and seat each term's best module: argmax
-    //       of tier-weight × BM25 (the ~10×-per-rung tier weight keeps an
-    //       exact vocabulary hit above any derived one) with the small
-    //       fan-in boost as tiebreak, path asc on full ties. A term whose
-    //       best module is already seated is covered — no second-best taken.
-    //       This is what a frequent-term neighbour can never crowd out:
-    //       every matched term keeps its top file among the anchors, rarest
-    //       (most discriminative) terms leading.
-    //   (b) FILL — remaining slots go to the leftover candidates by the
-    //       aggregate Σ tier-weight × IDF × BM25 over the matched terms
-    //       carrying the module (rank::idf_x1024, document-frequency
-    //       derived: a term half the repo carries cannot drown a three-file
-    //       term by double-dipping in every declaration; co-occurrence still
-    //       pays — a file where several queried concepts meet accumulates
-    //       every term's weighted contribution) + α·log2(1+fan_in), a small
-    //       additive tiebreak that never outranks a term match. Fill ties
-    //       break on the first (best-tier, rarest) matched term that carries
-    //       the module, then on the path.
-    //
-    // Structural stop-files (rank::anchor_stopfile — fan-in above the
-    // configured percent of the repo's module count) leave anchor
-    // eligibility entirely. Fully deterministic.
-    let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
-    let anchorable = |p: &str| {
-        crate::classify::anchor_eligible(class(p))
-            && !crate::rank::anchor_stopfile(c.fan_in.get(p).copied().unwrap_or(0), c.total_modules)
-    };
-    let boost = |p: &str| crate::rank::fanin_boost_x1024(c.fan_in.get(p).copied().unwrap_or(0));
-    // Candidate -> (IDF-weighted aggregate, first carrying term, every
-    // carrying term — the audit trail `files_detail` publishes).
-    let mut cand: BTreeMap<&str, (u64, usize, Vec<usize>)> = BTreeMap::new();
-    // Per matched term, its best anchorable module — the coverage argmax.
-    let mut top_of: Vec<Option<(u64, &str)>> = vec![None; matched_terms.len()];
-    let docs = c.doc_len.len();
-    for (i, t) in matched_terms.iter().enumerate() {
-        let Some(per_module) = c.postings.get(&t.term) else { continue };
-        let idf = crate::rank::idf_x1024(per_module.len(), docs);
-        for (path, (tf, _)) in per_module {
-            // Same anchor discipline as the term samples: hand-written
-            // modules only, and never a structural stop-file.
-            if !anchorable(path) {
-                continue;
-            }
-            let bm25 = crate::rank::bm25_x1024(*tf, c.doc_len.get(path).copied().unwrap_or(0), c.avgdl_x1024);
-            let w = crate::matching::weight(tiers[i]);
-            let cover = w * bm25 + boost(path);
-            if top_of[i].is_none_or(|(bs, bp)| cover > bs || (cover == bs && *path < bp)) {
-                top_of[i] = Some((cover, *path));
-            }
-            let e = cand.entry(path).or_insert((0, i, Vec::new()));
-            e.0 += w * crate::rank::idf_term_score_x1024(idf, bm25);
-            e.2.push(i);
-        }
-    }
-    // PATH CO-OCCURRENCE — fill evidence for capability folders that name
-    // themselves. A composing view (the screen that wires the pieces) often
-    // declares little vocabulary, but its folder does — and the directory
-    // donates its subtokens to every file inside, so the whole cluster
-    // surfaces together. When at least `path_co_min_terms` DISTINCT matched
-    // terms appear as exact lowercased path subtokens of an anchorable
-    // module, each contributes `path_co_bm25` BM25 units × its IDF to the
-    // FILL aggregate — never a coverage seat. A single path token stays
-    // worthless: that is the anti-noise rule that keeps mere path hits in
-    // `hubs`, not here — a folder whose path carries several query terms
-    // donates them to every file inside, while a file whose path matches just
-    // one query term stays single-token and gains nothing.
-    let path_co_bm25 = crate::rank::path_co_bm25_x1024();
-    if path_co_bm25 > 0 && !matched_terms.is_empty() {
-        let min_co = crate::rank::path_co_min_terms();
-        let lowered: Vec<String> = matched_terms.iter().map(|t| t.term.to_lowercase()).collect();
-        for (path, toks) in &c.path_tokens {
-            if !anchorable(path) {
-                continue;
-            }
-            let hit_idx: Vec<usize> =
-                (0..matched_terms.len()).filter(|&i| toks.contains(&lowered[i])).collect();
-            if hit_idx.len() < min_co {
-                continue;
-            }
-            let mut add = 0u64;
-            for &i in &hit_idx {
-                let df = c.postings.get(&matched_terms[i].term).map_or(1, BTreeMap::len);
-                let idf = crate::rank::idf_x1024(df, docs);
-                add += crate::matching::weight(tiers[i])
-                    * crate::rank::idf_term_score_x1024(idf, path_co_bm25);
-            }
-            let e = cand.entry(path).or_insert((0, hit_idx[0], Vec::new()));
-            e.0 += add;
-            for &i in &hit_idx {
-                if !e.2.contains(&i) {
-                    e.2.push(i);
-                }
-            }
-        }
-    }
-    // Pass (a): the coverage walk, capped — minus the fill reserve on a wide
-    // query. With more matched terms than slots, pure coverage degenerates to
-    // one-file-per-rare-term and the capability cluster (where the queried
-    // concepts CO-OCCUR) is crowded out entirely (field case: 12 single-term
-    // seats, target folder 0/12). The reserve binds only when a multi-term
-    // candidate exists to claim it; otherwise coverage keeps every slot.
-    let has_multi = cand.values().any(|(_, _, terms)| terms.len() >= 2);
-    let coverage_cap = if has_multi {
-        Q_MAX_FILES.saturating_sub(crate::rank::fill_reserve_slots()).max(1)
-    } else {
-        Q_MAX_FILES
-    };
+    // Anchor INSUMO — the deterministic FACT, not a ranked verdict. `files` is
+    // the deduped UNION of the matched terms' declaration samples, walked in
+    // the matched_terms order (tier asc, then rarity asc — rarest/most
+    // discriminative first). Each term contributes its own BM25-selected
+    // samples (the per-term fact); there is NO cross-term relevance scoring,
+    // fan-in boost, or path heuristic deciding "which file is THE target" —
+    // that judgment belongs to the reader, made from this evidence. The
+    // GROUPED-by-term view (the truth a wide query needs, since a flat cap
+    // crowds) rides in `report.terms[].files` below; `files` is its convenience
+    // union. A module enters ONLY through a term's declaration samples
+    // (hand-written by construction — `catalog` filters machine-written out),
+    // so a path-only hub never anchors. Deterministic: matched_terms order +
+    // order-preserving dedup.
     let mut files: Vec<String> = Vec::new();
-    let mut seated: BTreeSet<&str> = BTreeSet::new();
-    for (_, p) in top_of.iter().flatten() {
-        if files.len() == coverage_cap {
-            break;
-        }
-        if seated.insert(p) {
-            files.push(p.to_string());
-        }
-    }
-    // Pass (b): leftover candidates by aggregate desc.
-    let mut ranked: Vec<(&str, u64, usize)> =
-        cand.iter().filter(|(p, _)| !seated.contains(*p)).map(|(p, (s, i, _))| (*p, s + boost(p), *i)).collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(b.0)));
-
-    // Path-matched touchpoints stay a low-priority tail (registration points
-    // are edited, not read for vocabulary), behind every term-matched
-    // candidate. Order-preserving dedup; capped to ~a dozen.
-    let src = ranked
-        .iter()
-        .map(|(p, _, _)| (*p).to_string())
-        .chain(touchpoints.iter().filter(|t| anchorable(&t.module)).map(|t| t.module.clone()));
-    for m in src {
-        if files.len() == Q_MAX_FILES {
-            break;
-        }
-        if !files.contains(&m) {
-            files.push(m);
+    'outer: for t in &matched_terms {
+        for s in &t.samples {
+            if files.len() == Q_MAX_FILES {
+                break 'outer;
+            }
+            if !files.contains(s) {
+                files.push(s.clone());
+            }
         }
     }
-
-    // The audit trail: one row per anchor, same order as `files`, with the
-    // (fill-comparable) aggregate score and the matched terms carrying it.
+    // Audit row per file (same order): which matched terms declare it — honest
+    // provenance, no score (there is no ranking to report).
     let files_detail: Vec<FileDetail> = files
         .iter()
-        .map(|f| match cand.get(f.as_str()) {
-            Some((s, _, idxs)) => FileDetail {
-                file: f.clone(),
-                score_x1024: s + boost(f),
-                terms: idxs.iter().map(|&i| matched_terms[i].term.clone()).collect(),
-            },
-            None => FileDetail { file: f.clone(), score_x1024: 0, terms: Vec::new() },
+        .map(|f| FileDetail {
+            file: f.clone(),
+            score_x1024: 0,
+            terms: matched_terms
+                .iter()
+                .filter(|t| t.samples.contains(f))
+                .map(|t| t.term.clone())
+                .collect(),
         })
         .collect();
 
@@ -665,8 +545,6 @@ struct Corpus<'a> {
     class_of: BTreeMap<&'a str, &'a str>,
     /// Module path -> declaration count — the BM25 document length.
     doc_len: BTreeMap<&'a str, usize>,
-    /// Module path -> import-graph fan-in, persisted on the model by scan.
-    fan_in: BTreeMap<&'a str, usize>,
     /// Module path -> the project stratum it lives under: the longest
     /// `projects[].dir` prefixing the path (same rule as the spec compiler's
     /// project attribution), "" when no project claims it.
@@ -677,8 +555,6 @@ struct Corpus<'a> {
     imports: BTreeMap<&'a str, BTreeSet<&'a str>>,
     /// Average document length ×1024 over the indexed modules.
     avgdl_x1024: u64,
-    /// Total modules in the model — the base of the stop-file percent.
-    total_modules: usize,
 }
 
 /// Build the corpus from declaration names (the repo's own vocabulary).
@@ -693,7 +569,6 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         .collect();
     let mut postings: BTreeMap<String, BTreeMap<&str, (usize, u64)>> = BTreeMap::new();
     let mut doc_len: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut fan_in: BTreeMap<&str, usize> = BTreeMap::new();
     let mut stratum: BTreeMap<&str, &str> = BTreeMap::new();
     let mut path_tokens: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -702,7 +577,6 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
     let under = |path: &str, dir: &str| path == dir || (path.len() > dir.len() && path.starts_with(dir) && path.as_bytes()[dir.len()] == b'/');
     let (mut len_sum, mut docs) = (0usize, 0usize);
     for m in &model.modules {
-        fan_in.insert(m.path.as_str(), m.fan_in);
         // Lockfiles and minified output never enter the index; generated and
         // vendored modules stay (demoted in the published count) so a query
         // still lands.
@@ -757,12 +631,10 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
         postings,
         class_of,
         doc_len,
-        fan_in,
         stratum,
         path_tokens,
         imports,
         avgdl_x1024: crate::rank::avgdl_x1024(len_sum, docs),
-        total_modules: model.modules.len(),
     }
 }
 

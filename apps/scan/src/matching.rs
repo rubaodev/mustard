@@ -53,17 +53,6 @@ use std::path::Path;
 
 use rust_stemmers::Stemmer;
 
-/// Tier weight multipliers, ~10x per step. Applied to the fixed-point BM25
-/// anchor arithmetic in `digest::query` (integer multiplier — byte-stable).
-pub fn weight(tier: u8) -> u64 {
-    match tier {
-        1 => 1000,
-        2 => 100,
-        3 => 10,
-        _ => 1,
-    }
-}
-
 /// Stable tier names for the per-term match report.
 pub fn tier_name(tier: u8) -> &'static str {
     match tier {

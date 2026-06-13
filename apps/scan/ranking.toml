@@ -20,53 +20,14 @@
 k1 = 1.2
 b = 0.75
 
-[anchors]
-# Fan-in tiebreak weight: an anchor candidate's score gains
-# alpha * log2(1 + fan_in). Kept SMALL by contract — fan-in breaks ties
-# between term-matched candidates, it must never outrank a term match
-# (one BM25 unit is worth ~1000 fixed-point points; this boost stays under
-# ~300 even for extreme fan-in).
-alpha = 0.03125
-
-# Structural stop-file: a module whose import-graph fan-in exceeds this
-# percent of the repo's total module count is glue the whole repo leans on
-# (a prelude, a shared-utility barrel) — never the file to read for one
-# capability, so it leaves anchor eligibility. Repo-relative statistic; no
-# type or file names involved.
-hub_fanin_pct = 30
-
-# IDF floor for the anchor FILL aggregation. Each matched term's contribution
-# to a candidate's aggregate is weighted by log2((indexed_modules + 1) /
-# (term_document_frequency + 1)) in fixed point — so a term half the repo
-# carries cannot drown a three-file term by double-dipping in every
-# declaration. The floor is the minimum per-term multiplier: frequent terms
-# keep a small voice (the same findability floor the rest of the crate
-# applies) instead of zeroing out, and a corpus where every matched term is
-# everywhere degenerates to plain tier x BM25 order.
-idf_floor = 0.0625
-
-# Path co-occurrence (anchor FILL only — never a coverage seat). When at
-# least `path_co_min_terms` DISTINCT matched terms appear as exact lowercased
-# path subtokens of one module, each contributes `path_co_bm25` BM25 units ×
-# its IDF to the fill aggregate. A capability folder names itself in its
-# path, and its directory donates those tokens to every file inside — so a
-# composing view whose declarations carry little vocabulary still surfaces
-# when the query's terms CO-OCCUR in its path. A single path token stays
-# worthless: that is the anti-noise rule that keeps mere path hits listed in
-# `hubs`, never in anchors. 0.5 = half the weight of one declared occurrence.
-path_co_min_terms = 2
-path_co_bm25 = 0.5
-
-# Fill reserve. On a WIDE query (more matched terms than anchor slots) pure
-# coverage degenerates to one-file-per-rare-term: every slot goes to a
-# single-term seat and the capability cluster — the files where the queried
-# concepts CO-OCCUR — is crowded out entirely (field case: 12 single-term
-# seats, target folder 0/12). Coverage therefore stops `fill_reserve_slots`
-# short of the cap, leaving room for the aggregate (multi-term / path
-# co-occurrence) candidates. The reserve only binds when an unseated
-# multi-term candidate actually exists; narrow queries (terms <= remaining
-# slots) never feel it.
-fill_reserve_slots = 4
+# NOTE: the former [anchors] section (alpha / hub_fanin_pct / idf_floor /
+# path_co_* / fill_reserve_slots) is GONE. The digest no longer RANKS anchor
+# relevance — `files` is now the deduped UNION of the matched terms' per-term
+# declaration samples (a deterministic FACT, see digest.rs), and the grouped
+# `report.terms[].files` is the evidence the reader picks from. Cross-term
+# relevance scoring was a semantic JUDGMENT the miner faked as a fact and got
+# wrong in the field; it was removed, not retuned. Per-term sample selection
+# (BM25 + MMR diversity) lives in [bm25] and [samples] below.
 
 [catalog]
 # Kind-class weights for the PUBLISHED catalog ranking only. A declaration
