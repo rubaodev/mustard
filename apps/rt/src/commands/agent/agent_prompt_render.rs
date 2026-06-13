@@ -603,10 +603,13 @@ fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) ->
         "ROLE: guards\n\
          Write 3-6 lines of Guards (do/don't) GROUNDED in the deterministic facts \
          and the subproject's real code; include ONLY what is NOT auto-inferable \
-         from the manifest/tree. Write in the project locale ({spec_lang}) and tone \
-         ({tone}). Be concise; never generic prose. Deliver ONLY the lines as your \
-         final message; do NOT write any file — the caller pipes your text to \
-         scan-guards-apply.{facts_line}"
+         from the manifest/tree. Do not RESTATE a fact — author the non-obvious \
+         RULE it implies: a `scripts=` codegen step ⇒ \"its output is generated — \
+         regenerate via that script, never hand-edit it\"; a detected stack ⇒ the \
+         convention that stack enforces here. Write in the project locale \
+         ({spec_lang}) and tone ({tone}). Be concise; never generic prose. Deliver \
+         ONLY the lines as your final message; do NOT write any file — the caller \
+         pipes your text to scan-guards-apply.{facts_line}"
     )
 }
 

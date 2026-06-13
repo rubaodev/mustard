@@ -289,6 +289,7 @@ mod tests {
             "php",
             &["laravel/framework".to_string()],
             &detections,
+            &[],
         );
         let (kind, fw, stacks) = parse_facts(&block);
         assert_eq!(kind, "php");
@@ -301,7 +302,7 @@ mod tests {
 
         // A legacy line without the segment degrades to an empty vec — and the
         // generator with no detections produces exactly that legacy line.
-        let legacy = crate::commands::scan_claude::build_guards_block("php", &[], &[]);
+        let legacy = crate::commands::scan_claude::build_guards_block("php", &[], &[], &[]);
         let (_, _, none) = parse_facts(&legacy);
         assert!(none.is_empty(), "absent stacks segment must yield an empty vec");
     }
