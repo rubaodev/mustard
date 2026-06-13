@@ -23,7 +23,7 @@ source: manual
 - **ZERO confirmations** — except `commit` without `--scope` asks once per session and memoizes.
 - **Prefix `git` with `rtk`** — every invocation, including inside `&&`/`;` chains and `$(…)` substitutions.
 - Minimize Bash calls — chain with `&&`/`;`, one Bash per repo max.
-- Submodules BEFORE parent (always). Single repo: skip submodule steps.
+- Submodules BEFORE parent (always). Single repo: skip submodule steps. → `../../../refs/git/submodule-rules.md` (monorepo handling + ephemeral paths).
 - **Local fast-forward merge** — no PRs, no merge commits, 100% linear history.
 - **Only reversible operations** — see Forbidden Operations in `../../../refs/git/merge-protocol.md`.
 
