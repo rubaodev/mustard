@@ -91,7 +91,8 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         // precedent) — see `withhold_planning`. `planningWithheld` is the
         // honest marker; the counts keep reporting the true sizes.
         "planningWithheld": withhold,
-        "matchedTerms": if withhold { Vec::new() } else { q.matched_terms.iter().map(|t| json!({ "term": t.term, "count": t.count })).collect::<Vec<_>>() },
+        // `matchedTerms` (term+count) was dropped — it duplicated `report.terms`
+        // (which carries term + tier + the files), so it was pure payload weight.
         "slices": if withhold { Vec::new() } else { q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities })).collect::<Vec<_>>() },
         // Count of matched recurring slices — the deterministic signal the
         // scope classifier consumes: 1 = "mirrors a matched slice"
@@ -106,14 +107,13 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         "contracts": if withhold { Vec::new() } else { q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>() },
         "hubs": if withhold { Vec::new() } else { q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>() },
         "anchors": if withhold { &[] as &[String] } else { &q.files[..] },
-        // Audit trail per anchor (additive, same order as `anchors`): the
-        // fixed-point selection score + the matched terms that carried the
-        // file — the orchestrator sees WHY each anchor ranked (score/terms)
-        // without ever opening the scan JSON. Scores stay on scan's integer
-        // x1024 scale (byte-stable; no float formatting). Empty rows for
-        // payloads from an older scan binary.
+        // Per-anchor provenance (same order as `anchors`): which matched terms
+        // declare each file — the orchestrator sees WHY each anchor is in the
+        // set (file→terms) to pick what to read, without opening the scan JSON.
+        // The `scoreX1024` was dropped: since the ranking became an insumo
+        // union (no relevance scoring), it was always 0 — dead weight × N rows.
         "anchorsDetail": if withhold { Vec::new() } else { q.files_detail.iter().map(|d| json!({
-            "file": d.file, "scoreX1024": d.score_x1024, "terms": d.terms,
+            "file": d.file, "terms": d.terms,
         })).collect::<Vec<_>>() },
         // The honest per-term match report (scan's tier ladder) — the truth
         // about what matched. Per term: the tier that carried it (exact |
@@ -272,7 +272,6 @@ pub fn run(intent: &str, root: &Path) {
                 "stacks": [],
                 "miss": true,
                 "planningWithheld": true,
-                "matchedTerms": [],
                 "slices": [],
                 "sliceMatchCount": 0,
                 "slicesOmitted": 0,
@@ -404,24 +403,23 @@ mod tests {
 
     #[test]
     fn feature_payload_exposes_anchors_detail_audit() {
-        // `files_detail` (lote 1 of the anchor-robustness track) passes
-        // through as `anchorsDetail` — per anchor, the integer x1024 score +
-        // the carrying terms — so the orchestrator can rank-check anchors
-        // without opening the scan JSON. Same order as `anchors`; a
-        // touchpoint-tail anchor honestly shows score 0 / no terms.
+        // `files_detail` passes through as `anchorsDetail` — per anchor, the
+        // matched terms that declare it (file→terms provenance), so the
+        // orchestrator sees WHY each anchor is in the set and picks what to
+        // read without opening the scan JSON. NO score: the ranking became an
+        // insumo union, so the per-anchor score was always 0 and was dropped.
         let q: DigestQuery = serde_json::from_str(
             r#"{"query":["refund"],"files":["src/refund.cs","src/tail.cs"],"files_detail":[{"file":"src/refund.cs","score_x1024":2048,"terms":["refund"]},{"file":"src/tail.cs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
         )
         .expect("digest payload with files_detail");
         let v = payload("refund", &["refund".to_string()], &q);
         let detail = v["anchorsDetail"].as_array().expect("anchorsDetail array");
-        assert_eq!(detail.len(), 2, "one audit row per anchor: {v}");
+        assert_eq!(detail.len(), 2, "one provenance row per anchor: {v}");
         assert_eq!(detail[0]["file"], "src/refund.cs");
-        assert_eq!(detail[0]["scoreX1024"], 2048);
         assert_eq!(detail[0]["terms"], json!(["refund"]));
-        assert_eq!(detail[1]["scoreX1024"], 0, "tail anchor shows honest zero: {v}");
-        // The reason rides in the same payload — score/terms + strong/weak
-        // are both visible without the scan JSON.
+        assert!(detail[0].get("scoreX1024").is_none(), "dead score field dropped: {v}");
+        assert_eq!(detail[1]["terms"], json!([]), "tail anchor shows no carrying terms: {v}");
+        // The reason rides in the same payload.
         assert_eq!(v["report"]["reason"], "strong");
 
         // Old scan binary (no files_detail): the field degrades to an empty
@@ -511,7 +509,7 @@ mod tests {
         .expect("weak digest payload");
         let v = payload("cancelar titulo", &["cancelado".to_string()], &weak);
         assert_eq!(v["planningWithheld"], json!(true));
-        for field in ["matchedTerms", "slices", "contracts", "hubs", "anchors", "anchorsDetail"] {
+        for field in ["slices", "contracts", "hubs", "anchors", "anchorsDetail"] {
             assert_eq!(v[field], json!([]), "{field} must be withheld on weak: {v}");
         }
         // Honest counts survive the withholding.
