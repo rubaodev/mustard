@@ -258,9 +258,17 @@ pub fn wave_floor_for_full(decompose: bool) -> u32 {
 /// equivalent inputs. Structural-only; no LLM.
 ///
 /// - `fileCount` = number of paths in the spec's `## Files` section.
-/// - `layerCount` = distinct architectural roles across those paths
-///   ([`detect_role_with`] with `mustard.json#rolePatterns`). A lone `lib`
-///   bucket counts as 1 (matches `exec-rewave-check`).
+/// - `layerCount` = the **stronger** of two signals: the distinct architectural
+///   roles across those paths ([`detect_role_with`] with
+///   `mustard.json#rolePatterns`; a lone `lib` bucket counts as 1) AND the
+///   number of distinct mined **projects** the census spans (grain's own
+///   agnostic project detection via `scan facts`). A change that touches N
+///   independently-built units is N-layer by construction — so the project
+///   span catches the cross-project case the role keywords collapse (a census
+///   whose paths all match one role token but live in three projects).
+///   `max()` is monotonic: it never lowers the role signal, only raises it
+///   when the project span is wider. No hardcoded layout — the project dirs
+///   come from the miner's build-manifest detection.
 /// - `newEntityCount` = Create-marked `## Files` bullets corroborated by a
 ///   PascalCase prose token **not** already in the registry (registry diff via
 ///   exact key lookup) — see [`count_new_entities`].
@@ -276,11 +284,12 @@ pub fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value 
         .iter()
         .map(|f| detect_role_with(f, &role_patterns))
         .collect();
-    let layer_count: i64 = if roles.len() == 1 && roles.contains("lib") {
+    let role_layers: i64 = if roles.len() == 1 && roles.contains("lib") {
         1
     } else {
         roles.len() as i64
     };
+    let layer_count = role_layers.max(project_span_from_model(&file_paths, project_root));
 
     let new_entity_count = new_entity_count_from_model(spec_text, project_root);
 
@@ -290,6 +299,61 @@ pub fn compute_signals_from_spec(spec_text: &str, project_root: &Path) -> Value 
         "newEntityCount": new_entity_count,
         "text": spec_text,
     })
+}
+
+/// Number of distinct mined **projects** the census `files` span — the
+/// deterministic, agnostic layer signal (grain detects projects by build
+/// manifest, no hardcoded layout). Each path is attributed to the project
+/// whose `dir` is its longest matching path-prefix (the most specific
+/// enclosing unit); the count of distinct matched projects is the span. A path
+/// under no known project contributes nothing (the role signal covers it).
+/// Pure — split from the model I/O so it is unit-tested without the scan tool.
+fn project_span(files: &[String], project_dirs: &[String]) -> i64 {
+    let matched: BTreeSet<&str> = files
+        .iter()
+        .filter_map(|f| longest_project_prefix(f, project_dirs))
+        .collect();
+    matched.len() as i64
+}
+
+/// The `dir` of the project whose directory is the longest path-prefix of
+/// `file` (most specific enclosing project), or `None` when none encloses it.
+fn longest_project_prefix<'a>(file: &str, project_dirs: &'a [String]) -> Option<&'a str> {
+    project_dirs
+        .iter()
+        .filter(|d| path_has_prefix(file, d))
+        .max_by_key(|d| d.len())
+        .map(String::as_str)
+}
+
+/// `true` when `dir` is a path-prefix of `file` on SEGMENT boundaries:
+/// `apps/web` is a prefix of `apps/web/x.ts` but not of `apps/website/x.ts`.
+/// Tolerant of `\\` separators in the census. Empty `dir` never matches (it
+/// would enclose everything — the root "project" is not a layer signal).
+fn path_has_prefix(file: &str, dir: &str) -> bool {
+    let file = file.replace('\\', "/");
+    let dir = dir.replace('\\', "/");
+    let dir = dir.trim_end_matches('/');
+    if dir.is_empty() {
+        return false;
+    }
+    file == dir || file.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// [`project_span`] over the repo model's `projects[]`, read via the scan
+/// tool's `facts` (this crate never parses the model schema itself). A missing
+/// model fails open to 0 — the role signal then stands alone.
+fn project_span_from_model(files: &[String], project_root: &Path) -> i64 {
+    if files.is_empty() {
+        return 0;
+    }
+    let model = project_root.join(".claude").join("grain.model.json");
+    let dirs: Vec<String> = mustard_core::read_projects(&model)
+        .into_iter()
+        .map(|p| p.dir)
+        .filter(|d| !d.is_empty())
+        .collect();
+    project_span(files, &dirs)
 }
 
 /// Reduce a spec to its narrative prose for entity-reference extraction.
@@ -700,6 +764,50 @@ mod tests {
     /// backend+core+app change came back `layerCount: 1` and steered
     /// scope-decompose to a wrong `single-layer` verdict (contradicting the
     /// wave-dependency graph, which reads the clean plan JSON).
+    #[test]
+    fn project_span_counts_distinct_projects_even_when_roles_collapse() {
+        // The cross-project gap the role keywords miss: three files that all
+        // classify as the SAME role token but live in three independently-built
+        // projects. role-distinct = 1, but the change is genuinely 3-layer.
+        let dirs = vec![
+            "apps/web".to_string(),
+            "packages/core".to_string(),
+            "services/api".to_string(),
+        ];
+        let files = vec![
+            "apps/web/src/schemas/x.schema.ts".to_string(),
+            "packages/core/src/schemas/y.schema.ts".to_string(),
+            "services/api/schemas/z.schema.rb".to_string(),
+        ];
+        assert_eq!(project_span(&files, &dirs), 3, "spans three mined projects");
+
+        // All in one project ⇒ span 1 (the role signal then decides depth).
+        let one = vec![
+            "apps/web/a.ts".to_string(),
+            "apps/web/sub/b.ts".to_string(),
+        ];
+        assert_eq!(project_span(&one, &dirs), 1);
+
+        // A path under no known project contributes nothing.
+        assert_eq!(project_span(&["root-file.md".to_string()], &dirs), 0);
+        // No projects mined (model-less) ⇒ 0, role signal stands alone.
+        assert_eq!(project_span(&files, &[]), 0);
+    }
+
+    #[test]
+    fn project_prefix_matches_on_segment_boundaries_only() {
+        let dirs = vec!["apps/web".to_string(), "apps/website".to_string()];
+        // `apps/web` must NOT swallow `apps/website` (prefix-on-segments).
+        assert_eq!(longest_project_prefix("apps/website/x.ts", &dirs), Some("apps/website"));
+        assert_eq!(longest_project_prefix("apps/web/x.ts", &dirs), Some("apps/web"));
+        // Longest (most specific) enclosing project wins on nesting.
+        let nested = vec!["apps".to_string(), "apps/web".to_string()];
+        assert_eq!(longest_project_prefix("apps/web/x.ts", &nested), Some("apps/web"));
+        // Backslash census paths are tolerated; empty dir never encloses.
+        assert!(path_has_prefix("apps\\web\\x.ts", "apps/web"));
+        assert!(!path_has_prefix("apps/web/x.ts", ""));
+    }
+
     #[test]
     fn compute_signals_counts_layers_through_status_markers() {
         let dir = tempfile::tempdir().expect("tempdir");
