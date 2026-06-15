@@ -79,38 +79,22 @@ fn parse_params(src: &str) -> Params {
     }
 }
 
-/// Average document length ×1024 over an indexed corpus of `docs` documents
-/// totalling `total_len` declarations. Floored at 1 so it can always divide.
+/// Average document length ×1024 — delegates to the shared primitive in
+/// [`mustard_core::domain::ranking`], the single home for the BM25 arithmetic.
 pub fn avgdl_x1024(total_len: usize, docs: usize) -> u64 {
-    if docs == 0 {
-        return SCALE;
-    }
-    ((total_len as u64 * SCALE) / docs as u64).max(1)
+    mustard_core::domain::ranking::avgdl_x1024(total_len, docs)
 }
 
 /// BM25 score ×1024 for `tf` occurrences of a term in a document of length
-/// `dl`, against the corpus average `avgdl_x1024`. Classic Okapi shape
-/// WITHOUT the IDF factor — a premise that holds PER TERM: when modules
-/// compete FOR one term (the per-term sample slots) the term's IDF is a common
-/// constant and cancels. This is the only place BM25 is used now: the digest's
-/// `files` is the deduped UNION of these per-term samples (the FACT), not a
-/// cross-term relevance ranking. Pure integer arithmetic; ties are broken by
-/// the caller (path asc) for byte-stable output.
+/// `dl`, against the corpus average `avgdl_x1024`. Binds this crate's
+/// `ranking.toml` tuning (`k1`/`b`) onto the shared, parameterized primitive in
+/// [`mustard_core::domain::ranking`] — the single owner of the arithmetic. The
+/// IDF factor is omitted by design (it cancels when modules compete FOR one
+/// term — the per-term sample slots), so the digest's `files` is the deduped
+/// UNION of these per-term samples, not a cross-term ranking.
 pub fn bm25_x1024(tf: usize, dl: usize, avgdl_x1024: u64) -> u64 {
-    if tf == 0 {
-        return 0;
-    }
     let p = params();
-    let tf = tf as u64;
-    // dl / avgdl, ×1024.
-    let len_ratio_x1024 = (dl as u64 * SCALE * SCALE) / avgdl_x1024.max(1);
-    // (1 - b) + b * dl/avgdl, ×1024. b is clamped to [0, SCALE] at load, so
-    // the subtraction never underflows.
-    let norm_x1024 = SCALE - p.b_x1024 + (p.b_x1024 * len_ratio_x1024) / SCALE;
-    // tf + k1 * norm, ×1024.
-    let denom_x1024 = tf * SCALE + (p.k1_x1024 * norm_x1024) / SCALE;
-    // tf * (k1 + 1) / denom, ×1024.
-    (tf * (SCALE + p.k1_x1024) * SCALE) / denom_x1024.max(1)
+    mustard_core::domain::ranking::bm25_x1024(tf, dl, avgdl_x1024, p.k1_x1024, p.b_x1024)
 }
 
 /// Published-catalog weight ×1024 of one occurrence under a declaration of

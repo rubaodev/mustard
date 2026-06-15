@@ -255,13 +255,61 @@ pub enum RunCmd {
         /// The spec file to match relevance against.
         #[arg(long)]
         spec: Option<String>,
-        /// Override the line cap (`MUSTARD_GLOSSARY_MAX_LINES`).
-        #[arg(long = "max-lines")]
-        max_lines: Option<usize>,
         /// W8.T8.8 — slice the given CLAUDE.md against the same relevance
         /// terms. Optional; the CONTEXT.md path(s) remain primary.
         #[arg(long = "context-claude-md")]
         context_claude_md: Option<String>,
+    },
+    /// Recall the knowledge records most relevant to a query from the unified
+    /// store — the measurable CLI face of `knowledge::recall::recall_scored`
+    /// (BM25 + relevance threshold, the same function the agent-prompt render
+    /// calls in-process). Invoked as `mustard-rt run knowledge recall ...`
+    /// (argv pre-routing in `main.rs` collapses the two tokens).
+    ///
+    /// Output is one byte-stable pair of lines per hit, best-first:
+    /// `[{kind}] ({scope}) score={n} — {label}` + an indented ~120-char snippet
+    /// of the content. An empty recall prints `(no matches)`. Determinism +
+    /// fail-open mirror the underlying recall (never panics).
+    #[command(name = "knowledge-recall")]
+    KnowledgeRecall {
+        /// The relevance query (role + task text, free-form). Required.
+        #[arg(long)]
+        query: String,
+        /// Scope filter: `global` | `spec:NAME` | `wave:NAME:N`. Omit for all
+        /// scopes (the default — the whole store is eligible).
+        #[arg(long)]
+        scope: Option<String>,
+        /// `.claude/` directory to read the store from. Defaults to the
+        /// workspace-resolved `.claude/` of the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Result cap (default 5).
+        #[arg(long, default_value_t = 5)]
+        max: usize,
+    },
+    /// Garbage-collect non-substantive records from the unified knowledge store
+    /// — the physical-delete leg of the quality gate (write rejects, read hides,
+    /// `prune` removes). Invoked as `mustard-rt run knowledge prune ...` (argv
+    /// pre-routing in `main.rs` collapses the two tokens).
+    ///
+    /// Scans ONLY the four content-addressed store dirs under `--root`
+    /// (`memory/agent`, `memory/decisions`, `memory/lessons`, `knowledge`) —
+    /// never `spec/{spec}/memory` (the name-addressed per-spec store). A file is
+    /// a removal candidate iff it parses but is not
+    /// `Knowledge::is_substantive` (the SAME criterion the write/read gates use).
+    /// Dry-run by default (lists `would remove: <rel> (<reason>)`); `--apply`
+    /// deletes and prints `removed: <rel> (<reason>)`. A substantive record is
+    /// never deleted. Byte-stable output, fail-open, never panics.
+    #[command(name = "knowledge-prune")]
+    KnowledgePrune {
+        /// `.claude/` directory whose store to sweep. Taken verbatim, like
+        /// `knowledge recall --root`.
+        #[arg(long)]
+        root: PathBuf,
+        /// Delete the candidates. Without it, the command only lists them
+        /// (dry-run — nothing is mutated).
+        #[arg(long)]
+        apply: bool,
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
     /// `cross-wave` is the read-side: emits markdown summarising prior waves.
@@ -1081,13 +1129,6 @@ pub enum RunCmd {
         /// orchestrator never hand-appends the task after the render.
         #[arg(long = "task-text")]
         task_text: Option<String>,
-        /// W8.T8.9 — soft token budget. When set, the renderer trims the
-        /// bulky placeholders (`task_steps`, `context_md`, `prior_wave_diff`,
-        /// `cross_wave_memory`, `recommended_skills`) to keep the prompt at
-        /// or below this many estimated model tokens. The estimator uses the
-        /// 4-chars-per-token heuristic; trimming is head-preserving.
-        #[arg(long = "budget-tokens")]
-        budget_tokens: Option<usize>,
         /// Emit mode: `inline` (default) prints the full rendered prompt;
         /// `ref` writes it to a deterministic `.dispatch/` file and prints a
         /// 2-line stub instead — pass the stub verbatim as the Task prompt
@@ -1693,14 +1734,38 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::ContextSlice {
             context,
             spec,
-            max_lines,
             context_claude_md,
         } => economy::context_slice::run(
             &context,
             spec.as_deref(),
-            max_lines,
             context_claude_md.as_deref(),
         ),
+        RunCmd::KnowledgeRecall {
+            query,
+            scope,
+            root,
+            max,
+        } => {
+            // Parse the optional scope string; a malformed value is a usage
+            // error (exit 2) rather than a silent widen to all-scopes.
+            let parsed_scope = match scope.as_deref().map(knowledge::recall_cli::parse_scope) {
+                None => None,
+                Some(Ok(s)) => Some(s),
+                Some(Err(msg)) => {
+                    eprintln!("error: {msg}");
+                    std::process::exit(2);
+                }
+            };
+            knowledge::recall_cli::run(knowledge::recall_cli::RecallOpts {
+                query,
+                scope: parsed_scope,
+                root,
+                max,
+            });
+        }
+        RunCmd::KnowledgePrune { root, apply } => {
+            knowledge::prune::run(knowledge::prune::PruneOpts { root, apply });
+        }
         RunCmd::Memory {
             subcommand,
             json,
@@ -1956,7 +2021,6 @@ pub fn dispatch(cmd: RunCmd) {
             retry_context_file,
             task_filter,
             task_text,
-            budget_tokens,
             emit,
         } => agent::agent_prompt_render::run(
             spec.as_deref(),
@@ -1967,7 +2031,6 @@ pub fn dispatch(cmd: RunCmd) {
             retry_context_file.as_deref(),
             task_filter.as_deref(),
             task_text.as_deref(),
-            budget_tokens,
             agent::agent_prompt_render::EmitMode::parse(&emit),
         ),
         RunCmd::WorktreeGc {

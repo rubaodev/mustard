@@ -66,8 +66,6 @@ use mustard_core::time::now_iso8601;
 /// Archived sessions older than this are pruned on `SessionStart` (30 days).
 const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
 
-/// The advisory-context size cap for the injected persistent memory.
-const MEMORY_MAX_CHARS: usize = 2000;
 /// Number of knowledge entries injected from `.claude/knowledge/*.md`.
 const KB_MAX_ENTRIES: usize = 5;
 
@@ -533,8 +531,8 @@ fn load_memory_md(memory_dir: &Path, max: usize) -> Vec<String> {
 ///   `memory_decisions` / `memory_lessons`)
 ///
 /// Empty or absent directories are treated as zero entries — fail-open throughout.
-/// The injection cap [`MEMORY_MAX_CHARS`] is preserved unchanged. Top-N budget
-/// is [`SPEC_SCOPED_MAX`] + [`GLOBAL_FALLBACK_MAX`] entries per section.
+/// Bounded by top-N recent entries per section ([`SPEC_SCOPED_MAX`] +
+/// [`GLOBAL_FALLBACK_MAX`]) — recency is the filter, no char cap.
 fn build_memory_context(cwd: &str) -> Option<String> {
     let Ok(paths) = ClaudePaths::for_project(cwd) else {
         return None;
@@ -561,10 +559,10 @@ fn build_memory_context(cwd: &str) -> Option<String> {
     if parts.is_empty() {
         return None;
     }
-    let mut context = parts.join("\n");
-    if context.chars().count() > MEMORY_MAX_CHARS {
-        context = context.chars().take(MEMORY_MAX_CHARS).collect::<String>() + "\n...truncated";
-    }
+    // No char cap: the entry count is already bounded (top-N recent per section
+    // via SPEC_SCOPED_MAX + GLOBAL_FALLBACK_MAX), each entry a one-line
+    // description — recency/importance is the filter, not a char count.
+    let context = parts.join("\n");
     Some(format!("[Persistent Memory]\n{context}"))
 }
 

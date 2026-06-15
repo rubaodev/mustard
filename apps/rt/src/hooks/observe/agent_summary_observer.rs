@@ -1,13 +1,15 @@
 //! `agent_summary_observer` — PostToolUse(Task) memory writer (W8.T8.4).
 //!
-//! Every time a `Task` (subagent) returns, we scan its output for either:
+//! Every time a `Task` (subagent) returns, we scan its output for an explicit
+//! `<MEMORY>…</MEMORY>` block — the *intentional* knowledge the agent chose to
+//! pass forward. That is the ONLY thing we capture. A `Resumo:` / `Summary:`
+//! line is "what I did" (a task summary), not transferable knowledge; capturing
+//! it polluted `agent_memory` with run-recaps, so the fallback was removed. No
+//! `<MEMORY>` block → nothing is persisted (the hook returns early).
 //!
-//! - a `<MEMORY>…</MEMORY>` block (preferred — the explicit form), or
-//! - a `Resumo:` / `Summary:` line/section (fallback — informal returns)
-//!
-//! and persist what we find as an `agent_memory` row via the W7 helper
-//! `crate::commands::knowledge::memory::insert_agent_memory`. The hook never blocks — it is
-//! a pure [`Observer`].
+//! What we find is persisted as an `agent_memory` row via the W7 helper
+//! `crate::commands::knowledge::memory::persist_agent_memory_md`. The hook never
+//! blocks — it is a pure [`Observer`].
 //!
 //! ## W3C → W4B migration
 //!
@@ -24,61 +26,12 @@
 use serde_json::json;
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::events::economy;
+use super::memory_block::extract_memory_block;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 
 /// The W8 auto-capture hook.
 pub struct AgentSummaryObserver;
 
-
-/// Extract a `<MEMORY>...</MEMORY>` block body, trimmed. `None` when absent or
-/// empty.
-fn extract_memory_block(text: &str) -> Option<String> {
-    let open = text.find("<MEMORY>")?;
-    let rest = &text[open + "<MEMORY>".len()..];
-    let close = rest.find("</MEMORY>")?;
-    let body = rest[..close].trim();
-    if body.is_empty() {
-        None
-    } else {
-        Some(body.to_string())
-    }
-}
-
-/// Extract a `Resumo:` / `Summary:` line as a single-line summary. Picks the
-/// first paragraph after the keyword, capped at 240 chars.
-fn extract_resumo(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    let key_idx = lower
-        .find("resumo:")
-        .or_else(|| lower.find("summary:"))?;
-    // Step past the keyword + colon. Use byte offsets — they are identical to
-    // char offsets for ASCII keywords.
-    let after = &text[key_idx..];
-    let colon = after.find(':')?;
-    let body = after[colon + 1..].trim_start();
-    // Take until the next blank line.
-    let mut end = body.len();
-    for (i, line) in body.lines().enumerate() {
-        if i > 0 && line.trim().is_empty() {
-            // Compute the byte offset of this blank line in `body`.
-            let mut off = 0;
-            for (j, l) in body.lines().enumerate() {
-                if j == i {
-                    end = off;
-                    break;
-                }
-                off += l.len() + 1;
-            }
-            break;
-        }
-    }
-    let raw = body[..end].trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let summary: String = raw.chars().take(240).collect();
-    Some(summary)
-}
 
 /// Pull the role for an `agent_memory` row from the Task input.
 fn role_from_input(input: &HookInput) -> Option<String> {
@@ -141,9 +94,6 @@ fn persist(
     );
 }
 
-/// Emit `pipeline.economy.operation.invoked` via the NDJSON event route.
-/// Fail-open: any error degrades to a no-op.
-
 impl Observer for AgentSummaryObserver {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         // Only Task PostToolUse — the registry already constrains us, but
@@ -154,32 +104,27 @@ impl Observer for AgentSummaryObserver {
         }
         let cwd = ctx.project_dir_or_cwd(input);
 
-        let memory_body = extract_memory_block(&output);
-        let resumo = extract_resumo(&output);
-
-        // Prefer the explicit MEMORY block; fall back to Resumo:.
-        let (summary, details) = match (memory_body.as_deref(), resumo.as_deref()) {
-            (Some(body), _) => {
-                // First non-empty line is the summary; remainder = details.
-                let mut lines = body.lines();
-                let summary = lines.find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-                let rest: String = lines.collect::<Vec<_>>().join("\n");
-                let rest = rest.trim();
-                (
-                    summary.to_string(),
-                    if rest.is_empty() {
-                        None
-                    } else {
-                        Some(rest.to_string())
-                    },
-                )
-            }
-            (None, Some(r)) => (r.to_string(), None),
-            (None, None) => return,
+        // Capture ONLY an explicit `<MEMORY>…</MEMORY>` block — the intentional
+        // knowledge the agent marked for the next agent/wave/spec. No block →
+        // nothing to persist (a task-summary `Resumo:` is not transferable
+        // knowledge and is no longer captured).
+        let Some(body) = extract_memory_block(&output) else {
+            return;
+        };
+        // First non-empty line is the summary; remainder = details.
+        let mut lines = body.lines();
+        let summary = lines.find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let rest: String = lines.collect::<Vec<_>>().join("\n");
+        let rest = rest.trim();
+        let details = if rest.is_empty() {
+            None
+        } else {
+            Some(rest.to_string())
         };
         if summary.is_empty() {
             return;
         }
+        let summary = summary.to_string();
 
         let role = role_from_input(input);
         let spec = crate::shared::context::current_spec(&cwd);
@@ -222,31 +167,68 @@ impl Observer for AgentSummaryObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::domain::model::contract::Trigger;
+    use serde_json::json;
+    use tempfile::tempdir;
 
+    /// A `Resumo:` / `Summary:` line WITHOUT a `<MEMORY>` block is a task recap,
+    /// not transferable knowledge — the fallback was removed, so nothing is
+    /// captured and no `.claude/memory/agent/` row is written.
     #[test]
-    fn extract_memory_block_round_trip() {
-        let text = "blurb\n<MEMORY>\nKey insight here.\nLine two.\n</MEMORY>\nmore";
-        let body = extract_memory_block(text).unwrap();
-        assert!(body.contains("Key insight"));
-        assert!(body.contains("Line two"));
+    fn resumo_without_memory_block_captures_nothing() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap().to_string();
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            session_id: Some("s-1".to_string()),
+            tool_input: json!({"subagent_type": "general-purpose"}),
+            raw: json!({"tool_response": "Resumo: refatorei o módulo X e rodei os testes."}),
+            ..HookInput::default()
+        };
+        AgentSummaryObserver.observe(&input, &ctx(&project));
+        assert!(
+            !dir.path().join(".claude/memory/agent").exists(),
+            "a bare Resumo: must not produce a memory row"
+        );
     }
 
+    /// An explicit `<MEMORY>…</MEMORY>` block IS captured — its body lands as the
+    /// `agent_memory` row.
     #[test]
-    fn extract_memory_block_absent_returns_none() {
-        assert!(extract_memory_block("no marker here").is_none());
+    fn memory_block_is_captured() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap().to_string();
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            session_id: Some("s-2".to_string()),
+            tool_input: json!({"subagent_type": "general-purpose"}),
+            raw: json!({
+                "tool_response":
+                    "did stuff\n<MEMORY>\nChose retry-on-conflict for the writer.\n\
+                     The API 409s under concurrent load, so a blind retry corrupts state.\n\
+                     </MEMORY>"
+            }),
+            ..HookInput::default()
+        };
+        AgentSummaryObserver.observe(&input, &ctx(&project));
+        let dir_path = dir.path().join(".claude/memory/agent");
+        assert!(dir_path.exists(), "an explicit MEMORY block must produce a row");
+        let captured = std::fs::read_dir(&dir_path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+            .collect::<String>();
+        assert!(
+            captured.contains("retry-on-conflict"),
+            "the MEMORY body should be persisted: {captured}"
+        );
     }
 
-    #[test]
-    fn extract_resumo_picks_first_paragraph() {
-        let text = "blah blah\n\nResumo: this is the takeaway from the run.\n\nNext section\n";
-        let r = extract_resumo(text).unwrap();
-        assert!(r.contains("takeaway"));
-    }
-
-    #[test]
-    fn extract_summary_keyword_also_works() {
-        let text = "Summary: short one-liner.\n";
-        let r = extract_resumo(text).unwrap();
-        assert!(r.starts_with("short"));
+    fn ctx(dir: &str) -> Ctx {
+        Ctx {
+            project_dir: dir.to_string(),
+            trigger: Some(Trigger::PostToolUse),
+            workspace_root: None,
+        }
     }
 }

@@ -1,4 +1,5 @@
 mod agent_memory;
+mod memory_block;
 
 pub mod agent_summary_observer;
 pub mod amend_window_inject;

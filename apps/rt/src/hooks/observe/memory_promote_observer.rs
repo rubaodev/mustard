@@ -9,12 +9,13 @@
 
 use super::agent_memory::agent_dir;
 use crate::shared::events::economy;
-use crate::util::slug;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use mustard_core::domain::model::event::ActorKind;
-use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::domain::model::knowledge::{Kind, Knowledge, Origin, Scope, Status};
+use mustard_core::io::knowledge_store::KnowledgeStore;
+use mustard_core::io::atomic_md::MarkdownStore;
 use mustard_core::ClaudePaths;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::Path;
 
 pub struct MemoryPromoteObserver;
@@ -40,76 +41,80 @@ fn classify(summary: &str) -> &'static str {
 }
 
 fn promote_high_confidence(cwd: &str) -> usize {
-    let Some(dir) = agent_dir(cwd) else { return 0 };
-    if !dir.exists() {
+    let Some(agent) = agent_dir(cwd) else { return 0 };
+    if !agent.exists() {
         return 0;
     }
     let Ok(cp) = ClaudePaths::for_project(Path::new(cwd)) else {
         return 0;
     };
-    let memory_root = cp.claude_dir().join("memory");
+    // One store, rooted at `.claude/`: it owns BOTH the read of the agent
+    // summaries and the write of the promoted decision/lesson + the in-place
+    // status flip. The agent dir is `memory/agent/` → Summary records.
+    //
+    // The read is SCOPED to `memory/agent/` (one `scan_dir` over that dir), not
+    // a whole-`.claude/` `read_all`: a recursive read of the root would also
+    // hydrate `spec.md` / `wave-plan.md` and every other frontmatter-less `.md`
+    // as a `Kind::Summary` (no `kind:` key → Summary), polluting the promotion
+    // set. The agent dir holds only agent summaries, so it is the correct reach.
+    let store = KnowledgeStore::new(cp.claude_dir());
     let now = mustard_core::time::now_iso8601();
     let mut promoted = 0usize;
 
-    for doc in MarkdownStore::scan_dir(&dir) {
-        let Some(fm) = &doc.frontmatter else { continue };
-        let status = fm
-            .get_str("status")
-            .map(str::to_string)
-            .unwrap_or_else(|| "active".to_string());
-        if status != "active" {
+    let source_paths: Vec<_> = MarkdownStore::scan_dir(&agent).into_iter().map(|d| d.path).collect();
+    for path in source_paths {
+        let Ok(src) = store.read(&path) else { continue };
+        if src.kind != Kind::Summary || src.status != Status::Active {
             continue;
         }
-        let confidence = fm
-            .as_object()
-            .and_then(|o| o.get("confidence"))
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        if confidence < PROMOTION_CONFIDENCE_THRESHOLD {
+        if f64::from(src.confidence) < PROMOTION_CONFIDENCE_THRESHOLD {
             continue;
         }
-        let summary = fm.get_str("summary").map(str::to_string).unwrap_or_default();
-        let spec = fm.get_str("spec").map(str::to_string);
-        // Body of source doc becomes "details".
-        let details = MarkdownStore::read_one(&doc.path)
-            .map(|d| d.body)
-            .unwrap_or_default();
+        let summary = src.label.clone();
+        let details = src.content.clone();
         let table = classify(&summary);
         let content = if details.is_empty() {
             summary.clone()
         } else {
             format!("{summary}\n\n{details}")
         };
-        let source = spec.unwrap_or_else(|| "agent_memory_promotion".to_string());
-        let dest_dir = memory_root.join(table);
-        if std::fs::create_dir_all(&dest_dir).is_err() {
-            continue;
-        }
-        let slug = slug::slug_for(&now, &content);
-        let dest_path = dest_dir.join(format!("{slug}.md"));
-        let kind = if table == "decisions" { "decision" } else { "lesson" };
-        let mut new_fm = serde_json::Map::new();
-        new_fm.insert("kind".into(), json!(kind));
-        new_fm.insert("captured_at".into(), json!(now.clone()));
-        new_fm.insert("source".into(), json!(source));
-        new_fm.insert("status".into(), json!("active"));
-        let new_doc = MarkdownDoc {
-            path: dest_path.clone(),
-            frontmatter: Some(mustard_core::io::atomic_md::frontmatter::Frontmatter(
-                Value::Object(new_fm),
-            )),
-            body: format!("{content}\n"),
+        let kind = if table == "decisions" {
+            Kind::Decision
+        } else {
+            Kind::Lesson
         };
-        if MarkdownStore::write_atomic(&dest_path, &new_doc).is_ok() {
-            // Flip source to promoted.
-            if let Ok(mut src_doc) = MarkdownStore::read_one(&doc.path) {
-                if let Some(src_fm) = &mut src_doc.frontmatter {
-                    if let Value::Object(map) = &mut src_fm.0 {
-                        map.insert("status".into(), json!("promoted"));
-                    }
-                }
-                let _ = MarkdownStore::write_atomic(&doc.path, &src_doc);
-            }
+        // Provenance: keep the source spec when present; else mark the synthetic
+        // promotion origin.
+        let source_spec = src
+            .scope
+            .spec()
+            .map(str::to_string)
+            .unwrap_or_else(|| "agent_memory_promotion".to_string());
+        let promoted_record = Knowledge {
+            kind,
+            scope: Scope::Spec {
+                spec: source_spec.clone(),
+            },
+            label: content.chars().take(200).collect(),
+            content,
+            origin: Origin {
+                spec: Some(source_spec),
+                captured_at: now.clone(),
+                ..Origin::default()
+            },
+            confidence: 0.0,
+            status: Status::Active,
+        };
+        // Only proceed when the promotion actually persisted. The store's
+        // quality gate may skip a non-substantive record (`Ok(None)`); in that
+        // case we must NOT flip the source to `promoted` or count it.
+        if matches!(store.write(&promoted_record), Ok(Some(_))) {
+            // Flip the source summary to `promoted` in place. The slug is
+            // content-addressed and `status` is NOT part of the seed, so the
+            // re-write lands on the SAME agent file (idempotent overwrite).
+            let mut flipped = src;
+            flipped.status = Status::Promoted;
+            let _ = store.write(&flipped);
             promoted += 1;
         }
     }

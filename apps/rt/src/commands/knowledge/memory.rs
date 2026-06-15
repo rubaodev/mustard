@@ -19,11 +19,11 @@
 //! (POSIX fallback). Exit is always `0` (fail-open).
 
 use crate::shared::context::{current_spec, project_dir, session_id};
-use crate::util::slug;
 use mustard_core::time::now_iso8601;
-use mustard_core::io::atomic_md::frontmatter::Frontmatter;
-use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
+use mustard_core::domain::model::knowledge::{Kind, Knowledge, Origin, Scope, Status};
+use mustard_core::io::atomic_md::MarkdownStore;
 use mustard_core::io::fs;
+use mustard_core::io::knowledge_store::KnowledgeStore;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
@@ -34,10 +34,6 @@ use std::time::Instant;
 /// Minimum *effective* confidence (after lazy decay) for a memory row to
 /// surface in default `search` results. Bypass with `--include-low`.
 pub(crate) const DEFAULT_MIN_EFFECTIVE_CONFIDENCE: f64 = 0.3;
-
-/// Days over which a memory's confidence linearly decays to zero from its
-/// `last_used` timestamp.
-pub(crate) const DECAY_WINDOW_DAYS: f64 = 30.0;
 
 /// Default `search` result cap when `--limit` is omitted.
 pub(crate) const DEFAULT_SEARCH_LIMIT: usize = 20;
@@ -114,18 +110,19 @@ fn resolve_session_prefix(project_dir: &Path) -> String {
 }
 
 
-/// Build a `MarkdownDoc` with a JSON-object frontmatter and a UTF-8 body.
-fn doc_with_frontmatter(path: PathBuf, fm: Map<String, Value>, body: String) -> MarkdownDoc {
-    MarkdownDoc {
-        path,
-        frontmatter: Some(Frontmatter(Value::Object(fm))),
-        body,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
+
+/// Open the unified [`KnowledgeStore`] rooted at `<project>/.claude/`. The store
+/// is the single owner of knowledge writes; it maps each record's `(kind, scope)`
+/// onto the legacy directory the readers already scan. `None` when the project
+/// root cannot be resolved (fail-open).
+pub(crate) fn knowledge_store(project: &Path) -> Option<KnowledgeStore> {
+    ClaudePaths::for_project(project)
+        .ok()
+        .map(|p| KnowledgeStore::new(p.claude_dir()))
+}
 
 fn memory_root(project: &Path) -> Option<PathBuf> {
     ClaudePaths::for_project(project)
@@ -321,35 +318,49 @@ fn write_decision_or_lesson(
     source: &str,
     context: &str,
 ) -> bool {
-    let dir = if entry_type == "decision" {
-        decisions_dir(project)
+    let Some(store) = knowledge_store(project) else {
+        return false;
+    };
+    let kind = if entry_type == "decision" {
+        Kind::Decision
     } else {
-        lessons_dir(project)
+        Kind::Lesson
     };
-    let Some(dir) = dir else {
-        return false;
+    // `source` was a free-form origin tag (`spec:demo`, `spec-1`); thread it
+    // through `origin.spec` so the record keeps its provenance. `context` had no
+    // reader (only `captured_at` is read from this dir) — fold it into the body
+    // so it is not lost.
+    let spec = source
+        .strip_prefix("spec:")
+        .unwrap_or(source)
+        .trim()
+        .to_string();
+    let body = if context.trim().is_empty() {
+        content.to_string()
+    } else {
+        format!("{content}\n\n> {context}")
     };
-    if fs::create_dir_all(&dir).is_err() {
-        return false;
-    }
-    let captured_at = now_iso8601();
-    let slug = slug::slug_for(&captured_at, content);
-    let dest = dir.join(format!("{slug}.md"));
-
-    let mut fm = Map::new();
-    fm.insert("kind".into(), json!(entry_type));
-    fm.insert("captured_at".into(), json!(captured_at));
-    if !source.is_empty() {
-        fm.insert("source".into(), json!(source));
-    }
-    if !context.is_empty() {
-        fm.insert("context".into(), json!(context));
-    }
-    fm.insert("status".into(), json!("active"));
-
-    let body = format!("{content}\n");
-    let doc = doc_with_frontmatter(dest.clone(), fm, body);
-    MarkdownStore::write_atomic(&dest, &doc).is_ok()
+    let k = Knowledge {
+        kind,
+        scope: if spec.is_empty() {
+            Scope::Global
+        } else {
+            Scope::Spec { spec: spec.clone() }
+        },
+        label: content.chars().take(200).collect(),
+        content: body,
+        origin: Origin {
+            spec: (!spec.is_empty()).then_some(spec),
+            captured_at: now_iso8601(),
+            ..Origin::default()
+        },
+        confidence: 0.0,
+        status: Status::Active,
+    };
+    // `is_ok()` ⇒ no IO failure. A non-substantive record the store's quality
+    // gate skips (`Ok(None)`) is NOT a failure here, so it must not trigger the
+    // caller's "markdown write failed" log; only a genuine IO error returns false.
+    store.write(&k).is_ok()
 }
 
 fn run_decision(input: &Value) {
@@ -421,30 +432,32 @@ fn run_knowledge(input: &Value) {
         eprintln!("[memory] knowledge: missing name or description");
         return;
     }
-    let Some(dir) = knowledge_root(project) else {
+    let Some(store) = knowledge_store(project) else {
         return;
     };
-    if fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let captured_at = now_iso8601();
-    let pattern = format!("{name}: {description}");
-    let slug = slug::slug_for(&captured_at, &pattern);
-    let dest = dir.join(format!("{slug}.md"));
-
-    let mut fm = Map::new();
-    fm.insert("kind".into(), json!("pattern"));
-    fm.insert("name".into(), json!(name));
-    fm.insert("captured_at".into(), json!(captured_at));
-    fm.insert("confidence".into(), json!(confidence));
-    if let Some(s) = source {
-        fm.insert("source".into(), json!(s));
-    }
-    fm.insert("status".into(), json!("active"));
-
-    let body = format!("{description}\n");
-    let doc = doc_with_frontmatter(dest.clone(), fm, body);
-    let _ = MarkdownStore::write_atomic(&dest, &doc);
+    // A `pattern` is a reusable convention → `Kind::Principle`, `Scope::Global`
+    // → `.claude/knowledge/`. The store mirrors `label` onto the legacy `name` +
+    // `description` frontmatter keys the readers (session_start_inject, list)
+    // expect; `description` (the body) stays the searchable text. `source`
+    // becomes the origin spec when it names one.
+    let spec = source
+        .as_deref()
+        .map(|s| s.strip_prefix("spec:").unwrap_or(s).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let k = Knowledge {
+        kind: Kind::Principle,
+        scope: Scope::Global,
+        label: name,
+        content: description,
+        origin: Origin {
+            spec,
+            captured_at: now_iso8601(),
+            ..Origin::default()
+        },
+        confidence: confidence as f32,
+        status: Status::Active,
+    };
+    let _ = store.write(&k);
 }
 
 fn agent_input_from_flags(
@@ -479,6 +492,12 @@ fn agent_input_from_flags(
 /// Persist one agent_memory entry as `.claude/memory/agent/{slug}.md`.
 /// Public for hook consumers (auto_capture_summary, stop) that used to call
 /// `insert_agent_memory` against SQLite. Fail-open: returns `false` on error.
+///
+/// Routed through the unified [`KnowledgeStore`]: the entry is a
+/// [`Kind::Summary`] record whose [`Scope`] is `Wave`/`Spec`/`Global` depending
+/// on which of `spec`/`wave` are present. The store maps that onto
+/// `.claude/memory/agent/` and emits the legacy `summary`/`at`/`last_used`/
+/// `session_id` aliases the readers expect — see [`KnowledgeStore::write`].
 #[allow(clippy::too_many_arguments)]
 pub fn persist_agent_memory_md(
     cwd: &str,
@@ -491,39 +510,44 @@ pub fn persist_agent_memory_md(
     confidence: f64,
     status: Option<&str>,
 ) -> bool {
-    let Some(dir) = agent_dir(Path::new(cwd)) else {
+    let Some(store) = knowledge_store(Path::new(cwd)) else {
         return false;
     };
-    if fs::create_dir_all(&dir).is_err() {
-        return false;
-    }
     let captured_at = now_iso8601();
-    let slug = slug::slug_for(&captured_at, summary);
-    let dest = dir.join(format!("{slug}.md"));
-    let mut fm = Map::new();
-    if let Some(s) = session_id {
-        fm.insert("session_id".into(), json!(s));
+    let wave_u32 = wave.and_then(|w| u32::try_from(w).ok());
+    let scope = scope_from(spec, wave_u32);
+    let k = Knowledge {
+        kind: Kind::Summary,
+        scope,
+        label: summary.to_string(),
+        content: details.unwrap_or("").to_string(),
+        origin: Origin {
+            spec: spec.map(str::to_string),
+            wave: wave_u32,
+            role: role.map(str::to_string),
+            session: session_id.map(str::to_string),
+            captured_at,
+        },
+        confidence: confidence as f32,
+        status: Status::from_legacy(status),
+    };
+    // Fire-and-forget: callers ignore the result. `is_ok()` ⇒ no IO failure;
+    // the store's quality gate may skip a non-substantive summary (`Ok(None)`,
+    // e.g. the `"interrupted mid-task"` + empty-body row), which is not an error.
+    store.write(&k).is_ok()
+}
+
+/// Build a [`Scope`] from the optional `spec`/`wave` an agent-summary carries:
+/// both → `Wave`, spec only → `Spec`, neither → `Global`.
+fn scope_from(spec: Option<&str>, wave: Option<u32>) -> Scope {
+    match (spec, wave) {
+        (Some(s), Some(w)) => Scope::Wave {
+            spec: s.to_string(),
+            wave: w,
+        },
+        (Some(s), None) => Scope::Spec { spec: s.to_string() },
+        _ => Scope::Global,
     }
-    if let Some(s) = spec {
-        fm.insert("spec".into(), json!(s));
-    }
-    if let Some(w) = wave {
-        fm.insert("wave".into(), json!(w));
-    }
-    if let Some(r) = role {
-        fm.insert("role".into(), json!(r));
-    }
-    fm.insert("summary".into(), json!(summary));
-    fm.insert("confidence".into(), json!(confidence));
-    fm.insert(
-        "status".into(),
-        json!(status.unwrap_or("active")),
-    );
-    fm.insert("at".into(), json!(captured_at.clone()));
-    fm.insert("last_used".into(), json!(captured_at));
-    let body = details.unwrap_or("").to_string();
-    let doc = doc_with_frontmatter(dest.clone(), fm, body);
-    MarkdownStore::write_atomic(&dest, &doc).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -639,22 +663,10 @@ fn truncate_col(s: &str, max: usize) -> String {
 // ---------------------------------------------------------------------------
 
 
-#[must_use]
-pub(crate) fn effective_confidence(
-    confidence: f64,
-    last_used: Option<&str>,
-    now_iso: &str,
-) -> f64 {
-    let Some(last) = last_used.and_then(|s| mustard_core::time::parse_iso_millis(s).map(|ms| ms / 1000)) else {
-        return confidence.clamp(0.0, 1.0);
-    };
-    let Some(now) = mustard_core::time::parse_iso_millis(now_iso).map(|ms| ms / 1000) else {
-        return confidence.clamp(0.0, 1.0);
-    };
-    let days = ((now - last) as f64) / 86_400.0;
-    let factor = 1.0 - (days / DECAY_WINDOW_DAYS);
-    (confidence * factor.max(0.0)).clamp(0.0, 1.0)
-}
+// The decay math (`effective_confidence`) is the ONE shared curve in the
+// knowledge module root (`super::effective_confidence`) — `search` here,
+// `recall`, and `prune` all consult it so the curve never diverges (SOLID).
+use super::effective_confidence;
 
 #[derive(Debug, Default, Clone)]
 pub struct WriteOpts {
@@ -688,46 +700,33 @@ pub(crate) fn run_write(opts: WriteOpts) {
     } else {
         0.5
     };
-    let Some(dir) = agent_dir(Path::new(&cwd)) else {
+    let Some(store) = knowledge_store(Path::new(&cwd)) else {
         report["error"] = json!("could not resolve agent dir");
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         emit_memory_economy("write", started.elapsed().as_millis());
         return;
     };
-    if fs::create_dir_all(&dir).is_err() {
-        report["error"] = json!("could not create agent dir");
-        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
-        emit_memory_economy("write", started.elapsed().as_millis());
-        return;
-    }
-    let captured_at = now_iso8601();
-    let slug = slug::slug_for(&captured_at, &opts.summary);
-    let dest = dir.join(format!("{slug}.md"));
 
     let session = session_id();
-    let mut fm = Map::new();
-    if session != "unknown" {
-        fm.insert("session_id".into(), json!(session));
-    }
-    if let Some(s) = &opts.spec {
-        fm.insert("spec".into(), json!(s));
-    }
-    if let Some(w) = opts.wave {
-        fm.insert("wave".into(), json!(w));
-    }
-    if let Some(r) = &opts.role {
-        fm.insert("role".into(), json!(r));
-    }
-    fm.insert("summary".into(), json!(opts.summary));
-    fm.insert("confidence".into(), json!(confidence));
-    fm.insert("status".into(), json!("active"));
-    fm.insert("at".into(), json!(captured_at));
-    fm.insert("last_used".into(), json!(captured_at));
-
-    let body = opts.details.clone().unwrap_or_default();
-    let doc = doc_with_frontmatter(dest.clone(), fm, body);
-    match MarkdownStore::write_atomic(&dest, &doc) {
-        Ok(()) => {
+    let scope = scope_from(opts.spec.as_deref(), opts.wave.and_then(|w| u32::try_from(w).ok()));
+    let k = Knowledge {
+        kind: Kind::Summary,
+        scope,
+        label: opts.summary.clone(),
+        content: opts.details.clone().unwrap_or_default(),
+        origin: Origin {
+            spec: opts.spec.clone(),
+            wave: opts.wave.and_then(|w| u32::try_from(w).ok()),
+            role: opts.role.clone(),
+            session: (session != "unknown").then_some(session),
+            captured_at: now_iso8601(),
+        },
+        confidence: confidence as f32,
+        status: Status::Active,
+    };
+    match store.write(&k) {
+        // Quality gate accepted the record.
+        Ok(Some(dest)) => {
             report["inserted_path"] = json!(dest.to_string_lossy().to_string());
             if opts.verify {
                 let round_trip = MarkdownStore::read_one(&dest)
@@ -740,6 +739,10 @@ pub(crate) fn run_write(opts: WriteOpts) {
                 report["verified"] = json!(round_trip);
             }
         }
+        // Quality gate skipped a non-substantive record (empty body /
+        // placeholder summary / context echo). Not an error: `inserted_path`
+        // stays null; record the reason so the caller can see it was a no-op.
+        Ok(None) => report["skipped"] = json!("non-substantive: nothing written"),
         Err(e) => report["error"] = json!(format!("write failed: {e}")),
     }
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
@@ -1088,15 +1091,6 @@ mod tests {
         let out = truncate_summary(text, 20);
         assert!(out.ends_with('.'));
         assert!(out.len() <= text.len());
-    }
-
-    #[test]
-    fn slug_is_deterministic() {
-        let a = slug::slug_for("2026-05-27T00:00:00.000Z", "hello");
-        let b = slug::slug_for("2026-05-27T00:00:00.000Z", "hello");
-        assert_eq!(a, b);
-        let c = slug::slug_for("2026-05-27T00:00:00.000Z", "world");
-        assert_ne!(a, c);
     }
 
     #[test]

@@ -79,6 +79,17 @@ A user request to change something while a spec is Active is auto-recorded — h
 
 Agents auto-load skills from `{subproject}/.claude/skills/` based on task description. Guards always loaded via `{subproject}/CLAUDE.md`. Skill catalog: `.claude/skills/`. Progressive-disclosure refs live in `.claude/refs/{command}/` and are pulled on demand.
 
+## Knowledge Capture
+
+Emit one `<MEMORY>decision/lesson in one line + why in ≤2 sentences</MEMORY>` block before ending ONLY when BOTH tests pass:
+- **(a) Real choice** — there was a genuine fork: alternatives existed and you could have gone the other way (not the only option, not the obvious default).
+- **(b) Transferable** — a future agent on THIS project would decide WORSE without knowing this.
+
+Obvious / "what I did" / a recap / context you read / guards / a file list / only-true-for-this-one-task → emit NOTHING. Captured automatically; works even for light, direct work that dispatches no subagent.
+
+- Good: `<MEMORY>Chose atomic_md write over direct fs::write — a mid-write crash corrupts the file</MEMORY>`
+- Bad: `<MEMORY>Fixed the bug in foo.rs</MEMORY>` (a recap — not a choice, not transferable).
+
 ## Spec Layout
 
 Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — lifecycle state (`stage` + `outcome` + `flags`) lives in the `meta.json` sidecar beside each `spec.md` (the single source of truth), and archival is semantic-only (recorded as a `pipeline.status` event, not a filesystem move). The `spec.md` is **pure narrative** — it carries no `### Stage:` / `### Outcome:` / `### Flags:` / `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:` / `### Total waves:` header lines; never read or write lifecycle metadata from the markdown. Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs (each with its own `meta.json`) inside the same `{name}/` directory.

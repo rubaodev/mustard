@@ -1,10 +1,7 @@
 //! Token-budget primitive for prompt pruning.
 //!
 //! Spec A v4 / W6 — supports `resume_bootstrap`'s ≤10k-token discipline.
-//! Estimator uses the 4-chars-per-token heuristic shared by the rest of the
-//! crate (see `agent_prompt_render::chars_to_tokens`, W8.T8.9 — kept private
-//! there because it is a leaf helper; we re-state the same arithmetic here so
-//! the budget primitive does not have to reach into another module's internals).
+//! Estimator uses the conventional 4-chars-per-token heuristic.
 //!
 //! ## API
 //!
@@ -26,9 +23,8 @@
 
 /// Conventional 4-chars-per-token heuristic.
 ///
-/// Mirrors `agent_prompt_render::chars_to_tokens` (private there). Counts
-/// `chars()` not `len()` so multi-byte UTF-8 (PT-BR diacritics, CJK) is not
-/// over-estimated by a factor of 2-4×.
+/// Counts `chars()` not `len()` so multi-byte UTF-8 (PT-BR diacritics, CJK)
+/// is not over-estimated by a factor of 2-4×.
 #[must_use]
 pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)

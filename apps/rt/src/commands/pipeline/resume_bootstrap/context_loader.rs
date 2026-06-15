@@ -50,8 +50,8 @@ pub(super) fn wikilinked_summary_targets(
 /// pruned-to-budget prefix.
 ///
 /// Returns `(kept_texts, used_tokens, kept_count)`. Texts are returned in
-/// load order (which is also priority order — most recent wave first) so the
-/// caller can pass them through unchanged into `_context.md` rendering.
+/// relevance order (strongest match to the current wave's task first; recency
+/// breaks ties) so the caller passes them through into `_context.md` rendering.
 ///
 /// Fail-open: missing summaries are skipped silently. A wave that did not
 /// produce a `_summary.md` simply does not contribute to the budget.
@@ -59,6 +59,7 @@ pub(super) fn load_pruned_prior_summaries(
     spec_dir: &Path,
     current_wave: u32,
     allowed: Option<&std::collections::HashSet<String>>,
+    relevance_source: &str,
     budget: usize,
 ) -> (Vec<String>, usize, usize) {
     if current_wave == 0 {
@@ -117,6 +118,24 @@ pub(super) fn load_pruned_prior_summaries(
         let distance = current_wave.saturating_sub(n).saturating_sub(1);
         let priority = PRIORITY_BASE.saturating_sub(distance.min(u32::from(u8::MAX - 1)) as u8);
         candidates.push(PrioritizedItem::new(body, priority));
+    }
+
+    // Relevance, not just recency: order candidates by how strongly each prior
+    // summary matches the current wave's task BEFORE the budget keeps its prefix
+    // — the resume window then holds the most RELEVANT prior context, not merely
+    // the most recent. Recency breaks ties. Empty source leaves recency order.
+    let terms: std::collections::BTreeSet<String> = relevance_source
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| t.chars().count() >= 4)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if !terms.is_empty() {
+        let score = |text: &str| -> usize {
+            let hay = text.to_ascii_lowercase();
+            terms.iter().filter(|t| hay.contains(t.as_str())).count()
+        };
+        candidates
+            .sort_by(|a, b| score(&b.text).cmp(&score(&a.text)).then(b.priority.cmp(&a.priority)));
     }
 
     let kept = prune_to_budget(&candidates, budget);
@@ -344,6 +363,7 @@ mod tests {
             spec_dir,
             /* current_wave = */ 12,
             allowed.as_ref(),
+            &op_body,
             RESUME_TOKEN_BUDGET,
         );
         // AC-A-10: under the 10 000-token cap, no matter what.
@@ -374,7 +394,7 @@ mod tests {
         assert!(allowed.is_none());
 
         let (_texts, used_tokens, count) =
-            load_pruned_prior_summaries(spec_dir, 12, None, RESUME_TOKEN_BUDGET);
+            load_pruned_prior_summaries(spec_dir, 12, None, &op_body, RESUME_TOKEN_BUDGET);
         assert!(
             used_tokens <= RESUME_TOKEN_BUDGET,
             "budget breached: {used_tokens} > {RESUME_TOKEN_BUDGET}"
@@ -393,7 +413,7 @@ mod tests {
         let op_body = std::fs::read_to_string(spec_dir.join("wave-12-rt").join("spec.md")).unwrap();
         let allowed = wikilinked_summary_targets(&op_body);
         let (texts, _used, _count) =
-            load_pruned_prior_summaries(spec_dir, 12, allowed.as_ref(), RESUME_TOKEN_BUDGET);
+            load_pruned_prior_summaries(spec_dir, 12, allowed.as_ref(), &op_body, RESUME_TOKEN_BUDGET);
 
         let written = generate_context_on_resume(spec_dir, 12, &texts, &op_body)
             .expect("context generation must succeed");

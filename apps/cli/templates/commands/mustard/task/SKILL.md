@@ -36,7 +36,7 @@ mustard-rt run context-slice --spec {scope} \
 
 # 2. Render the dispatch prompt (one process call → Task-ready string on stdout).
 mustard-rt run agent-prompt-render --spec {scope} --role {action} \
-  --subproject {subproject} --task-text "<the action's task>" --mode first --emit ref [--budget-tokens 4000]
+  --subproject {subproject} --task-text "<the action's task>" --mode first --emit ref
 ```
 
 Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`), `{context_md}` (the `context-slice` output above) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work rides in via `--task-text`.
@@ -51,7 +51,7 @@ Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`,
 - **audit** — load `improve-codebase-architecture` → `--role audit`, `subagent_type: general-purpose`; pass the domain checklist as the task via `--task-text "<checklist>"` (the renderer folds it into `## TASK` — no hand-appending) → severity-classified report.
 - **compare** — one explorer per subproject in PARALLEL (single message), each rendered with its own `--subproject` (`--role explore`) → Task(Plan) merges + surfaces discrepancies.
 - **refactor** — load `improve-codebase-architecture` → render `--role plan` (Plan) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → render `--role implement` (general-purpose) → validate.
-- **implement** — render `--role implement` (general-purpose) with `--budget-tokens 4000`, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
+- **implement** — render `--role implement` (general-purpose), return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
 
 → See `../../../refs/task/task-prompts.md` for the per-action render invocations.
 

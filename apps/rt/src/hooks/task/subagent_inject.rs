@@ -40,12 +40,6 @@ use crate::commands::review::gate_regression_check::{
 };
 use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
-/// Char cap for the injected slice — keeps a high enough ceiling for a useful
-/// snippet without ballooning the parent context budget.
-const INJECT_MAX_CHARS: usize = 1500;
-
-/// Max spec-memory principles loaded per dispatch (T8.10).
-const SPEC_MEMORY_MAX: usize = 3;
 
 /// The W8 subagent-inject hook.
 pub struct SubagentInject;
@@ -122,35 +116,28 @@ fn role_is_readonly(role: &str) -> bool {
     )
 }
 
-/// Read at most `INJECT_MAX_CHARS` of the project's top-level CONTEXT.md.
-/// Returns an empty string when the file is missing.
-fn read_context_md_slice(project: &Path) -> String {
-    let path = project.join("CONTEXT.md");
-    let Ok(text) = fs::read_to_string(&path) else {
-        return String::new();
-    };
-    if text.chars().count() <= INJECT_MAX_CHARS {
-        text
-    } else {
-        let trimmed: String = text.chars().take(INJECT_MAX_CHARS).collect();
-        format!("{trimmed}\n...[truncated CONTEXT.md slice]")
-    }
+/// Read the project's top-level CONTEXT.md in full — no size cap. Relevance,
+/// not size, decides what is injected; empty string when the file is missing.
+fn read_context_md(project: &Path) -> String {
+    fs::read_to_string(project.join("CONTEXT.md")).unwrap_or_default()
 }
 
-/// Pull the spec-memory principle files most relevant to the dispatch via the
-/// shared [`context_inject::match_spec_memory`] (Aho-Corasick over the
-/// memory-name stems), capped at [`SPEC_MEMORY_MAX`] and scoped to the active
-/// spec. Name-only rendering (no inline summary) keeps the hook slice short.
+/// Pull the spec-memory principle files for the dispatch, honouring the
+/// relevance gate. When the orchestration-layer judge has written
+/// `<spec>/.memory-approved`, inject EXACTLY that approved set; with no gate
+/// file, fall back to the deterministic recall matcher (relevance-ranked,
+/// uncapped). Either way the filter is **relevance, never a count** — there is
+/// no quantity cap, and the caller keeps the whole block out of the size cap.
+/// Name-only rendering keeps each entry to a one-line wikilink.
 fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> String {
-    let Some(memory_dir) = ClaudePaths::for_project(project)
+    let Some(spec_paths) = ClaudePaths::for_project(project)
         .ok()
         .and_then(|p| p.for_spec(spec).ok())
-        .map(|sp| sp.dir().join("memory"))
     else {
         return String::new();
     };
     let intent = format!("{role} {prompt}");
-    let matches = context_inject::match_spec_memory(&memory_dir, &intent, SPEC_MEMORY_MAX, false);
+    let matches = context_inject::resolve_spec_memory(spec_paths.dir(), &intent, false);
     context_inject::render_spec_memory_block(&matches)
 }
 
@@ -345,17 +332,28 @@ impl Check for SubagentInject {
         }
         let role = role_from_input(input);
 
+        // CONTEXT.md + regression vocab. No size cap — relevance decides what
+        // enters; nothing is trimmed by char count.
         let mut sections: Vec<String> = Vec::new();
-        let ctx_md = read_context_md_slice(&project);
+        // Relevance-slice CONTEXT.md against the dispatch prompt — the SAME
+        // term-block filter the renderer runs, so the hook injects only the
+        // matching blocks (in full), never the raw whole file. Relevance, not
+        // size, bounds it (fixes the raw-dump regression).
+        let ctx_md = crate::commands::economy::context_slice::slice_text(
+            &read_context_md(&project),
+            &prompt,
+        );
         if !ctx_md.is_empty() {
-            sections.push(format!("## CONTEXT.md (slice)\n{ctx_md}"));
+            sections.push(format!("## CONTEXT.md\n{ctx_md}"));
         }
+        // Spec memory rides OUTSIDE the size cap: it is relevance-filtered (the
+        // gate's approved set, or the recall fallback) and carries no count cap,
+        // so truncating it by size would contradict the gate — relevance, not
+        // size, decides what enters.
+        let mut memory = String::new();
         if let Some(spec) = crate::shared::context::current_spec(&cwd) {
             if !spec.is_empty() {
-                let mem = spec_memory_block(&project, &spec, &prompt, &role);
-                if !mem.is_empty() {
-                    sections.push(mem);
-                }
+                memory = spec_memory_block(&project, &spec, &prompt, &role);
             }
         }
         // W5.T5.1 — Pre-arm the child with the regression vocabulary the
@@ -373,20 +371,20 @@ impl Check for SubagentInject {
             }
         }
 
-        if sections.is_empty() {
+        if sections.is_empty() && memory.is_empty() {
             return Ok(Verdict::Allow);
         }
         // Emit telemetry — fail-open.
         economy::emit(&cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.dispatch", "duration_ms": 0, "tokens_used": 0}));
-        let combined = sections.join("\n\n");
-        let capped = if combined.chars().count() > INJECT_MAX_CHARS {
-            let mut s: String = combined.chars().take(INJECT_MAX_CHARS).collect();
-            s.push_str("\n...[truncated subagent_inject slice]");
-            s
-        } else {
-            combined
+        // No size cap: every section rides in full. Relevance is the only filter.
+        let pre = sections.join("\n\n");
+        let context = match (pre.is_empty(), memory.is_empty()) {
+            (false, false) => format!("{pre}\n\n{memory}"),
+            (false, true) => pre,
+            (true, false) => memory,
+            (true, true) => return Ok(Verdict::Allow),
         };
-        Ok(Verdict::Inject { context: capped })
+        Ok(Verdict::Inject { context })
     }
 }
 
@@ -499,13 +497,36 @@ mod tests {
     #[test]
     fn injects_context_md_when_present() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("CONTEXT.md"), "## Domain\nrelevant.").unwrap();
+        // The hook now relevance-slices CONTEXT.md against the dispatch prompt —
+        // only blocks sharing a term with the prompt are injected. So the block
+        // must mention something the prompt does ("user"/"module").
+        std::fs::write(dir.path().join("CONTEXT.md"), "## User\nThe user module domain.").unwrap();
         let input = task_input("refactor the user module", "general-purpose");
         let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
         match v {
             Verdict::Inject { context } => {
                 assert!(context.contains("CONTEXT.md"));
-                assert!(context.contains("Domain"));
+                assert!(context.contains("User"));
+            }
+            other => panic!("expected Inject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_md_is_relevance_sliced_not_raw_dumped() {
+        let dir = tempdir().unwrap();
+        // Two blocks; only one shares a term with the prompt. The off-topic block
+        // must NOT be injected — relevance slices it out (no raw whole-file dump).
+        std::fs::write(
+            dir.path().join("CONTEXT.md"),
+            "## Billing\nInvoice and payment terms.\n## User\nThe user module domain.",
+        )
+        .unwrap();
+        let input = task_input("refactor the user module", "general-purpose");
+        match SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap() {
+            Verdict::Inject { context } => {
+                assert!(context.contains("User"), "relevant block kept");
+                assert!(!context.contains("Billing"), "off-topic block sliced out");
             }
             other => panic!("expected Inject, got {other:?}"),
         }

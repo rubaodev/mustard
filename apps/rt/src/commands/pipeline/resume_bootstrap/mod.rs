@@ -331,6 +331,7 @@ pub fn run(spec: &str, json_flag: bool) {
             &spec_dir,
             out.current_wave,
             allowed.as_ref(),
+            &op_body,
             RESUME_TOKEN_BUDGET,
         );
         out.tokens_used = used_tokens;

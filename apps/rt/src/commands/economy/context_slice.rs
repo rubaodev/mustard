@@ -13,12 +13,6 @@ use mustard_core::io::fs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Default line cap for the emitted slice — mirrors `DEFAULT_MAX_LINES`.
-const DEFAULT_MAX_LINES: usize = 250;
-
-/// Truncation marker appended when the slice exceeds the cap.
-const TRUNCATE_TAIL: &str = "\n...[truncated — glossary slice exceeded cap]";
-
 /// A token shorter than this is almost always a common word — no signal.
 const MIN_TOKEN_LEN: usize = 4;
 
@@ -41,23 +35,12 @@ pub struct SliceResult {
     /// parity even though the CLI path prints only `slice`.
     #[allow(dead_code)]
     pub line_count: usize,
-    pub truncated: bool,
     pub block_count: usize,
 }
 
 /// Read a file, returning `None` on any error (fail-graceful).
 fn read_file_safe(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
-}
-
-/// The line cap: `MUSTARD_GLOSSARY_MAX_LINES` when a positive integer, else
-/// [`DEFAULT_MAX_LINES`].
-fn resolve_max_lines() -> usize {
-    std::env::var("MUSTARD_GLOSSARY_MAX_LINES")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_MAX_LINES)
 }
 
 /// `true` if a line is a `## Heading` / `### Heading` (depth 2-3).
@@ -419,18 +402,10 @@ fn map_context_refs(map_text: &str) -> Vec<String> {
 }
 
 /// Slice one or more `CONTEXT.md` files against a spec.
-fn slice_context(
-    context_paths: &[String],
-    spec_path: &str,
-    max_lines: Option<usize>,
-) -> SliceResult {
-    let cap = max_lines
-        .filter(|&n| n > 0)
-        .unwrap_or_else(resolve_max_lines);
+fn slice_context(context_paths: &[String], spec_path: &str) -> SliceResult {
     let empty = || SliceResult {
         slice: String::new(),
         line_count: 0,
-        truncated: false,
         block_count: 0,
     };
 
@@ -466,23 +441,49 @@ fn slice_context(
         return empty();
     }
 
+    // No line cap: relevance (`block_matches`) is the only filter — every
+    // matched block is emitted in full.
     let joined = matched.join("\n\n");
-    let all_lines: Vec<&str> = joined.split('\n').collect();
-    if all_lines.len() <= cap {
-        return SliceResult {
-            line_count: all_lines.len(),
-            slice: joined,
-            truncated: false,
-            block_count: matched.len(),
-        };
-    }
-    let kept = format!("{}{TRUNCATE_TAIL}", all_lines[..cap].join("\n"));
     SliceResult {
-        slice: kept,
-        line_count: cap,
-        truncated: true,
+        line_count: joined.split('\n').count(),
+        slice: joined,
         block_count: matched.len(),
     }
+}
+
+/// Relevance-slice a `CONTEXT.md` body against free relevance-source text (a
+/// dispatch prompt, say) instead of a spec file — the SAME term-block matching
+/// [`slice_context`] runs, keyed on arbitrary text. Returns the matched blocks
+/// joined (empty when nothing matches). No size cap — relevance is the only
+/// filter, every matched block in full. The shared home so the `subagent_inject`
+/// hook gets the same relevance slice as the renderer, never a raw CONTEXT.md dump.
+#[must_use]
+pub fn slice_text(context_md: &str, relevance_source: &str) -> String {
+    // Terms straight from the source prose (a dispatch prompt). The spec-keyed
+    // `extract_relevance_terms` only reads `## Entities`/`## Files` sections,
+    // which free prompt text lacks — so here significant content tokens (≥
+    // `MIN_TOKEN_LEN` chars, lowercased) are the relevance signal.
+    let terms: BTreeSet<String> = relevance_source
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| t.chars().count() >= MIN_TOKEN_LEN)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if terms.is_empty() {
+        return String::new();
+    }
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut matched: Vec<String> = Vec::new();
+    for block in parse_term_blocks(context_md) {
+        let key = block.term.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        if block_matches(&block, &terms) {
+            seen.insert(key);
+            matched.push(block.text);
+        }
+    }
+    matched.join("\n\n")
 }
 
 /// Run `mustard-rt run context-slice`, writing the slice to stdout.
@@ -499,7 +500,6 @@ fn slice_context(
 pub fn run(
     context: &[String],
     spec: Option<&str>,
-    max_lines: Option<usize>,
     context_claude_md: Option<&str>,
 ) {
     let Some(spec) = spec else {
@@ -527,16 +527,7 @@ pub fn run(
     let mut emitted_anything = false;
 
     if !context.is_empty() {
-        let result = slice_context(context, spec, max_lines);
-        if result.truncated {
-            eprintln!(
-                "[context-slice] WARN: relevant glossary slice is {} blocks and exceeds the \
-                 {}-line cap (MUSTARD_GLOSSARY_MAX_LINES). Truncated. Narrow the spec's scope \
-                 or raise the cap if every block is needed.",
-                result.block_count,
-                resolve_max_lines()
-            );
-        }
+        let result = slice_context(context, spec);
         if !result.slice.is_empty() {
             println!("{}", result.slice);
             emitted_anything = true;
@@ -545,7 +536,7 @@ pub fn run(
 
     // T8.8: slice CLAUDE.md against the same spec-derived relevance terms.
     if let Some(claude_md_path) = context_claude_md {
-        let slice = slice_claude_md(claude_md_path, spec, max_lines);
+        let slice = slice_claude_md(claude_md_path, spec);
         if !slice.is_empty() {
             if emitted_anything {
                 println!();
@@ -561,10 +552,7 @@ pub fn run(
 /// Strategy: parse CLAUDE.md into heading-bounded sections (depth 2-3) and
 /// keep every section whose heading or body contains any relevance term.
 /// Fail-graceful: a missing CLAUDE.md or spec yields an empty string.
-fn slice_claude_md(claude_md_path: &str, spec_path: &str, max_lines: Option<usize>) -> String {
-    let cap = max_lines
-        .filter(|&n| n > 0)
-        .unwrap_or_else(resolve_max_lines);
+fn slice_claude_md(claude_md_path: &str, spec_path: &str) -> String {
     let Some(spec_text) = read_file_safe(Path::new(spec_path)) else {
         return String::new();
     };
@@ -602,14 +590,8 @@ fn slice_claude_md(claude_md_path: &str, spec_path: &str, max_lines: Option<usiz
     if kept.is_empty() {
         return String::new();
     }
-    let joined = kept.join("\n\n");
-    let all_lines: Vec<&str> = joined.split('\n').collect();
-    if all_lines.len() <= cap {
-        format!("## CLAUDE.md (slice)\n{joined}")
-    } else {
-        let trimmed = all_lines[..cap].join("\n");
-        format!("## CLAUDE.md (slice)\n{trimmed}{TRUNCATE_TAIL}")
-    }
+    // No line cap — every relevance-matched section is kept in full.
+    format!("## CLAUDE.md (slice)\n{}", kept.join("\n\n"))
 }
 
 
@@ -671,7 +653,6 @@ mod tests {
         let result = slice_context(
             &[ctx.to_string_lossy().to_string()],
             &spec.to_string_lossy(),
-            None,
         );
         assert_eq!(result.block_count, 1);
         assert!(result.slice.contains("Widget"));
@@ -680,7 +661,7 @@ mod tests {
 
     #[test]
     fn slice_context_missing_spec_is_empty() {
-        let result = slice_context(&["nope.md".to_string()], "missing-spec.md", None);
+        let result = slice_context(&["nope.md".to_string()], "missing-spec.md");
         assert_eq!(result.block_count, 0);
         assert!(result.slice.is_empty());
     }

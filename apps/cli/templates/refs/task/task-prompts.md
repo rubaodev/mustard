@@ -6,7 +6,7 @@
 
 ## Step 1 — slice the subproject CLAUDE.md + glossary (once per scope)
 
-`context-slice` produces the `{context_md}` slice that `agent-prompt-render` injects. It is relevance-filtered and capped (`MUSTARD_GLOSSARY_MAX_LINES`, default 250) — the subproject `CLAUDE.md` (and a `CONTEXT.md` glossary, when one exists) is **never** pasted whole into the prompt. The subproject `## Guards` ride in separately as `{guards_summary}` — they are *not* a `--context` source here.
+`context-slice` produces the `{context_md}` slice that `agent-prompt-render` injects. It is relevance-filtered — no size cap; only the blocks/sections whose terms match the active spec are kept (every matched one, in full). The subproject `## Guards` ride in separately as `{guards_summary}` — they are *not* a `--context` source here.
 
 ```bash
 # If a domain glossary exists for the scope, append: --context {subproject}/CONTEXT.md
@@ -18,7 +18,7 @@ The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-
 
 ## Step 2 — render the dispatch prompt per action
 
-`--mode first` is the dispatch (non-retry) render; swap to `--mode granular` / `--mode fix-loop` on a retry. `--budget-tokens N` trims bulky placeholders so the rendered prompt stays under ≈N model tokens (use it on `implement` to keep the single-dispatch cheap).
+`--mode first` is the dispatch (non-retry) render; swap to `--mode granular` / `--mode fix-loop` on a retry. No size budget — relevance is the only filter on what the renderer injects (the spec-memory gate, the relevance-sliced context); nothing is trimmed by token count.
 
 | Action | `--role` | `subagent_type` | Render invocation |
 |--------|----------|-----------------|-------------------|
@@ -28,7 +28,7 @@ The slice is cached at `.claude/.pipeline-states/{scope}.context-md.md`; `agent-
 | `audit` | `audit` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role audit --subproject {subproject} --mode first --emit ref` |
 | `refactor` (plan) | `plan` | `Plan` | `mustard-rt run agent-prompt-render --spec {scope} --role plan --subproject {subproject} --mode first --emit ref` |
 | `refactor` (execute) | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --emit ref` |
-| `implement` | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --budget-tokens 4000 --emit ref` |
+| `implement` | `implement` | `general-purpose` | `mustard-rt run agent-prompt-render --spec {scope} --role implement --subproject {subproject} --mode first --emit ref` |
 
 ### Dispatch shape
 
@@ -53,6 +53,6 @@ Every render also passes `--task-text "<the action's work>"` — `/task` is spec
 - **audit** — first load the `improve-codebase-architecture` skill and select the domain checklist (`copy` / `design` / `a11y` / `i18n` / `consistency` / `api-contract`; default `consistency`). The checklist is the *task description* the auditor works through; the rendered prompt carries the guards + standardization context.
 - **compare** — render one prompt **per subproject** (each with its own `--subproject`, `--role explore`) and dispatch them PARALLEL in a single message. Then render a consolidation prompt (`--role plan`) that merges the explorer results and surfaces discrepancies.
 - **refactor** — two-phase: render+dispatch the `plan` role, print the plan verbatim, AskUserQuestion (Approve / Adjust / Cancel), then on approval render+dispatch the `implement` role.
-- **implement** — single dispatch, `--budget-tokens 4000`, return cap ≤30 lines (Files Changed / Build result / Status). ON CONCERN → surface + offer `/feature` Light.
+- **implement** — single dispatch, return cap ≤30 lines (Files Changed / Build result / Status). ON CONCERN → surface + offer `/feature` Light.
 
 Persistent tracking is **N/A** — `/task` is spec-less by design. Promote to `/feature` Light or `/tactical-fix` if a tracked spec is needed.

@@ -33,14 +33,14 @@
 //!   `.claude/knowledge/{slug}.md` via [`mustard_core::io::atomic_md::MarkdownStore`].
 //!   YAML frontmatter carries `kind`, `captured_at`, `source_event`, and `spec`.
 
-use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::io::atomic_md::frontmatter::Frontmatter;
 use mustard_core::io::fs;
+use mustard_core::io::knowledge_store::KnowledgeStore;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::model::knowledge::{Kind, Knowledge, Origin, Scope, Status};
 use mustard_core::ClaudePaths;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -69,9 +69,6 @@ fn session_id(input: &HookInput) -> String {
         .clone()
         .unwrap_or_else(|| "unknown".to_string())
 }
-
-/// Current time as milliseconds since the Unix epoch.
-
 
 // ===========================================================================
 // Friction extraction — port of _lib/knowledge-extract.js
@@ -564,13 +561,11 @@ fn extract_memory_items(content: &str) -> Vec<MemoryItem> {
     out
 }
 
-/// Compute a short SHA-256-style hash of a string. The JS uses `crypto`'s
-/// SHA-256 truncated to 16 hex chars; matching that exactly would need a hash
-/// crate. The idempotency file (`.memory-seen.json`) is a runtime cache that
-/// is never compared cross-implementation — a stable FNV-1a 64-bit hash gives
-/// the same idempotency guarantee within the Rust port. The hash function only
-/// needs to be deterministic and collision-resistant *enough*; correctness of
-/// the gate does not depend on matching the JS digest.
+/// Compute a short FNV-1a hash of a string (16 hex chars). Used only for the
+/// `.memory-seen.json` idempotency cache (a runtime cache never compared
+/// cross-implementation), so any deterministic, collision-resistant-enough hash
+/// is sufficient — correctness of the gate does not depend on matching any
+/// particular digest.
 fn content_hash(s: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes() {
@@ -580,54 +575,47 @@ fn content_hash(s: &str) -> String {
     format!("{h:016x}")
 }
 
-/// Slug strategy: `{captured_at_iso8601_compact}-{hash8}` where `hash8` is the
-/// first 8 hex chars of the FNV-1a 64-bit hash of the content string.
-/// Deterministic and collision-resistant within a session; no random/UUID used.
-fn knowledge_slug(captured_at: &str, content: &str) -> String {
-    // Compact the timestamp: strip non-alphanumeric so it is filename-safe.
-    let ts_compact: String = captured_at
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    let hash = &content_hash(content)[..8];
-    format!("{ts_compact}-{hash}")
-}
-
-/// Persist one extracted memory item to `.claude/knowledge/{slug}.md` via
-/// [`MarkdownStore::write_atomic`]. YAML frontmatter carries `kind`,
-/// `captured_at`, `source_event`, and `spec`. Body is the decision text.
+/// Persist one extracted memory item via the unified [`KnowledgeStore`]. The
+/// item is a [`Kind::Decision`] / [`Kind::Lesson`] scoped to its origin spec,
+/// so the store lands it under `.claude/memory/{decisions,lessons}/` (the
+/// canonical home — which `session_start_inject` already scans recursively under
+/// `.claude/memory/`). `source` has the form `spec:{name}` → `origin.spec`.
 /// Returns `true` on success, `false` on any IO failure (fail-open).
 fn persist_memory(item: &MemoryItem, cwd: &str, source: &str) -> bool {
-    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
-        return false;
+    let store = KnowledgeStore::new(
+        match ClaudePaths::for_project(Path::new(cwd)) {
+            Ok(p) => p.claude_dir(),
+            Err(_) => return false,
+        },
+    );
+    let spec = source.strip_prefix("spec:").unwrap_or(source).to_string();
+    let kind = if item.item_type == "decision" {
+        Kind::Decision
+    } else {
+        Kind::Lesson
     };
-    let knowledge_dir = paths.claude_dir().join("knowledge");
-    if fs::create_dir_all(&knowledge_dir).is_err() {
-        return false;
-    }
-    let captured_at = now_iso8601();
-    let slug = knowledge_slug(&captured_at, &item.content);
-    let dest = knowledge_dir.join(format!("{slug}.md"));
-
-    // Build YAML frontmatter: { kind, captured_at, source_event, spec }.
-    let mut fm_map = Map::new();
-    fm_map.insert("kind".into(), json!(item.item_type));
-    fm_map.insert("captured_at".into(), json!(captured_at));
-    fm_map.insert("source_event".into(), json!(source));
-    // `spec` comes from the source string format "spec:{name}".
-    let spec_val = source
-        .strip_prefix("spec:")
-        .unwrap_or(source)
-        .to_string();
-    fm_map.insert("spec".into(), json!(spec_val));
-
-    let body = format!("{}\n", item.content);
-    let doc = MarkdownDoc {
-        path: dest.clone(),
-        frontmatter: Some(Frontmatter(Value::Object(fm_map))),
-        body,
+    let k = Knowledge {
+        kind,
+        scope: if spec.is_empty() {
+            Scope::Global
+        } else {
+            Scope::Spec { spec: spec.clone() }
+        },
+        label: item.content.chars().take(200).collect(),
+        content: item.content.clone(),
+        origin: Origin {
+            spec: (!spec.is_empty()).then_some(spec),
+            captured_at: now_iso8601(),
+            ..Origin::default()
+        },
+        confidence: 0.0,
+        status: Status::Active,
     };
-    MarkdownStore::write_atomic(&dest, &doc).is_ok()
+    // `true` only when a record was actually persisted: the store's quality
+    // gate may skip a non-substantive record (`Ok(None)`), which must NOT count
+    // as a persist (it would otherwise mark the dedup hash seen and bump the
+    // per-session counter for nothing).
+    matches!(store.write(&k), Ok(Some(_)))
 }
 
 /// `memory-auto-extract`: on `SessionEnd`, scan active specs for Decisions /
@@ -934,9 +922,10 @@ mod tests {
     }
 
     #[test]
-    fn memory_extract_writes_knowledge_md() {
-        // persist_memory now writes to .claude/knowledge/ via MarkdownStore —
-        // no memory.js required. A decision bullet must produce a .md file.
+    fn memory_extract_writes_decision_md() {
+        // persist_memory routes through the unified KnowledgeStore: a decision
+        // bullet (kind=decision) lands under .claude/memory/decisions/ — the
+        // canonical decision home, which session_start_inject scans recursively.
         let dir = tempdir().unwrap();
         let active = dir.path().join(".claude/spec/demo");
         std::fs::create_dir_all(&active).unwrap();
@@ -950,14 +939,14 @@ mod tests {
             ..HookInput::default()
         };
         SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, dir.path().to_str().unwrap()));
-        // At least one .md file must have been written to .claude/knowledge/.
-        let knowledge_dir = dir.path().join(".claude").join("knowledge");
-        let md_count = std::fs::read_dir(&knowledge_dir)
+        // The decision .md must land under .claude/memory/decisions/.
+        let decisions_dir = dir.path().join(".claude").join("memory").join("decisions");
+        let md_count = std::fs::read_dir(&decisions_dir)
             .map(|rd| rd.flatten().filter(|e| {
                 e.path().extension().and_then(|x| x.to_str()) == Some("md")
             }).count())
             .unwrap_or(0);
-        assert!(md_count >= 1, "expected at least one knowledge .md written");
+        assert!(md_count >= 1, "expected at least one decision .md written");
     }
 
     #[test]

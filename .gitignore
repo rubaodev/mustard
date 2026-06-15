@@ -95,6 +95,19 @@ packages/cli/templates/.claude/.metrics/
 **/.claude/.dispatch/
 **/.claude/spec/*/.dispatch/
 
+# Relevance-gate output: approved spec-memory names (regenerable per spec)
+**/.claude/spec/*/.memory-approved
+
+# Python bytecode (skill-creator scripts)
+**/__pycache__/
+
+# Runtime knowledge store + local session/editor data (per-project, regenerable — not code)
+**/.claude/knowledge/
+**/.claude/memory/
+**/.claude/agent-memory/
+**/.claude/.session/
+**/.claude/.obsidian/
+
 # Per-spec QA reports (W2 path catalog: moved out of .claude/.qa-reports/)
 **/.claude/spec/*/qa-report.json
 **/.claude/spec/*/qa-report.html

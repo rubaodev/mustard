@@ -464,9 +464,11 @@ impl Registry {
             // ── W9 deep-refactor: Stop + Notification triggers ───────────────
             Module {
                 id: "session_stop_observer",
-                // `Stop` lifecycle observer — persists an `interrupted at wave N`
-                // agent_memory row when there has been a recent edit, with a
-                // 5-minute anti-spam guard between consecutive Stops.
+                // `Stop` lifecycle observer — touches the 5-minute anti-spam
+                // marker AND captures the orchestrator's own `<MEMORY>…</MEMORY>`
+                // blocks from its final output as Knowledge (the capture point
+                // for light, direct `/task`/bugfix work that dispatches no
+                // subagent). Main session only — never SubagentStop.
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(SessionStopObserver)),
