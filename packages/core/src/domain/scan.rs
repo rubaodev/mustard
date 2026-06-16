@@ -126,6 +126,14 @@ pub struct DigestReport {
     pub total: usize,
     #[serde(default)]
     pub reason: String,
+    /// `true` when a `weak` answer is weak ONLY because no term hit exact/fold,
+    /// yet a CURATED lexicon bridge (seed or the project's own overlay) carried
+    /// a non-thin query (`matched*2 >= total`) — the request vocabulary
+    /// translated onto the code's. The consumer keeps the planning fields (with
+    /// a caveat) instead of forcing a re-query; speculative `stem`-only weakness
+    /// stays `false`. Defaulted `false` for payloads that predate the marker.
+    #[serde(default)]
+    pub bridged: bool,
     #[serde(default)]
     pub terms: Vec<TermReport>,
 }
@@ -507,6 +515,18 @@ mod tests {
         assert_eq!(q.report.reason, "");
         assert_eq!(q.report.total, 0);
         assert!(q.report.terms.is_empty());
+        assert!(!q.report.bridged, "the bridged marker defaults false for payloads that predate it");
+    }
+
+    #[test]
+    fn digest_query_deserializes_bridged_marker() {
+        // The scan binary flags a `weak` answer a CURATED lexicon bridge carried
+        // (no exact/fold hit, non-thin) with `report.bridged: true`. The consumer
+        // (feature) reads it to keep the planning fields instead of withholding.
+        let json = r#"{"query":["cancelado"],"matched_terms":[{"term":"cancel","count":3,"samples":["b.cs"]}],"files":["b.cs"],"miss":false,"report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["b.cs"]}]}}"#;
+        let q: DigestQuery = serde_json::from_str(json).expect("valid bridged digest json");
+        assert_eq!(q.report.reason, "weak");
+        assert!(q.report.bridged, "the curated-bridge marker round-trips from the scan binary's JSON");
     }
 
     #[test]

@@ -53,8 +53,15 @@ pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
 /// `slicesOmitted`) still report what existed, and the successful re-query
 /// returns the fields. The recorded `feature.query` event keeps the full
 /// report either way — it goes to NDJSON, not to context.
-fn withhold_planning(reason: &str) -> bool {
-    matches!(reason, "weak" | "none")
+///
+/// Exception: a `bridged` weak answer is NOT withheld. There the weakness is
+/// only "no literal hit", and a CURATED lexicon bridge already translated the
+/// user's vocabulary onto the code's — a re-query in the repo's own words would
+/// merely re-find what the supervised lexicon bridged. So the planning fields
+/// ride along (the note flags the translated hit and how to promote it), which
+/// is the whole point of teaching the bridge via `lexicon-suggest --accept`.
+fn withhold_planning(reason: &str, bridged: bool) -> bool {
+    matches!(reason, "weak" | "none") && !bridged
 }
 
 /// Max evidence files rendered per report term on stdout. The per-term files
@@ -68,7 +75,7 @@ const REPORT_TERM_FILES_MAX: usize = 3;
 /// IO) so the payload shape — including the `stacks` passthrough — is
 /// unit-testable without the scan binary.
 fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value {
-    let withhold = withhold_planning(q.report.reason.as_str());
+    let withhold = withhold_planning(q.report.reason.as_str(), q.report.bridged);
     json!({
         "intent": intent,
         "queryTerms": terms,
@@ -123,6 +130,10 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
             "matched": q.report.matched,
             "total": q.report.total,
             "reason": q.report.reason,
+            // Additive marker: a `weak` answer a curated lexicon bridge carried
+            // (translated, not literal) — the planning fields are kept, not
+            // withheld. See `withhold_planning` and `note`.
+            "bridged": q.report.bridged,
             "terms": q.report.terms.iter().map(|t| json!({
                 "term": t.term, "tier": t.tier, "lang": t.lang,
                 // Evidence cap — see `REPORT_TERM_FILES_MAX`.
@@ -225,6 +236,14 @@ fn emit_digest_used_event(payload: serde_json::Value) {
 /// reason (the truth); an empty reason means the payload came from an older
 /// scan binary, so it falls back to the legacy `miss` flag.
 fn note(q: &DigestQuery) -> &'static str {
+    // A curated lexicon bridge carried this answer — translated, not literal.
+    // The planning fields are RETURNED (not withheld): the supervised glossary
+    // already mapped the request vocabulary onto the code's, so a re-query in
+    // the repo's words would only re-find the same files. Read the anchors as
+    // evidence; promote the bridge so future queries land on exact/fold.
+    if q.report.bridged {
+        return "repo precedent found via a CURATED lexicon bridge — your request vocabulary translated onto the code's own (report.terms[].lang names the pair). `anchors` are EVIDENCE, returned not withheld: pick the files that fit and read them, and read the `hubs` (the computing logic often lives in a generically-named central service). The hit is translated, not literal — to make future queries land directly without this bridge, promote it with `mustard-rt run lexicon-suggest --accept`";
+    }
     match q.report.reason.as_str() {
         "none" => {
             "no repo precedent matched — treat as net-new; the report names each missed term, so re-query the digest in the code's own vocabulary or dispatch an Explore before concluding 'absent'"
@@ -532,5 +551,40 @@ mod tests {
         let v = payload("cancel title", &["cancel".to_string()], &strong);
         assert_eq!(v["planningWithheld"], json!(false));
         assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "strong keeps anchors: {v}");
+    }
+
+    #[test]
+    fn bridged_weak_returns_planning_with_a_promote_note() {
+        // A `weak` answer the scan flagged `bridged: true`: the only missing
+        // strength is the absence of an exact/fold hit, and a CURATED lexicon
+        // bridge carried a non-thin query (the user's vocabulary translated
+        // onto the code's). Unlike a plain weak, the planning fields are NOT
+        // withheld — re-querying in the repo's words would just re-find what
+        // the supervised lexicon already bridged. The note explains the
+        // translated hit and how to promote it (`lexicon-suggest --accept`).
+        let bridged: DigestQuery = serde_json::from_str(
+            r#"{"query":["cancelado"],
+                "matched_terms":[{"term":"cancel","count":3,"samples":["src/cancel.cs"]}],
+                "slices":[{"label":"crud","recurrence":4,"entities":["Title"]}],
+                "contracts":[{"name":"ITenant","implementors":2}],
+                "hubs":[{"module":"src/service.cs","degree":9}],
+                "files":["src/cancel.cs"],
+                "files_detail":[{"file":"src/cancel.cs","score_x1024":2048,"terms":["cancel"]}],
+                "miss":false,
+                "report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[
+                    {"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["src/cancel.cs"]}]}}"#,
+        )
+        .expect("bridged digest payload");
+        let v = payload("cancelar titulo", &["cancelado".to_string()], &bridged);
+        assert_eq!(v["planningWithheld"], json!(false), "a curated bridge is not withheld: {v}");
+        assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "anchors returned for the bridged hit: {v}");
+        assert_eq!(v["report"]["bridged"], json!(true), "the marker rides along: {v}");
+        assert_eq!(v["sliceMatchCount"], 1, "honest counts stay: {v}");
+        assert_ne!(v["slices"], json!([]), "planning fields survive the bridge: {v}");
+        let note = v["note"].as_str().expect("note");
+        assert!(note.contains("lexicon-suggest --accept"), "note explains how to promote the bridge: {v}");
+        // The bridged note must NOT steer a re-query (the plain-weak note does):
+        // the supervised lexicon already bridged the vocabulary.
+        assert!(!note.contains("re-query"), "bridged note does not steer a re-query: {v}");
     }
 }

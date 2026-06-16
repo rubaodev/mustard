@@ -123,6 +123,7 @@ fn cancelado_needs_the_glossary_and_reports_its_tier() {
     let (_, without) = run_query(&model, "cancelado", "", "q-nolex.json");
     assert!(without["matched_terms"].as_array().unwrap().is_empty(), "no glossary, no bridge: {without}");
     assert_eq!(sole_report_term(&without)["tier"], "none");
+    assert_eq!(without["report"]["bridged"], false, "an unbridged miss is not flagged bridged: {without}");
 
     let (_, with) = run_query(&model, "cancelado", "pt-BR", "q-lex.json");
     let matched: Vec<&str> =
@@ -137,6 +138,9 @@ fn cancelado_needs_the_glossary_and_reports_its_tier() {
     assert_eq!(with["report"]["total"], 1);
     // A lexicon-only answer is honest about its strength: no exact/fold hit.
     assert_eq!(with["report"]["reason"], "weak", "derived-only evidence is weak, not false confidence: {with}");
+    // ...but a CURATED bridge carried a non-thin query, so it is `bridged`: the
+    // consumer keeps the planning fields instead of forcing a re-query.
+    assert_eq!(with["report"]["bridged"], true, "a curated lexicon bridge over a non-thin query is bridged: {with}");
     let files: Vec<&str> = with["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert!(files.contains(&"src/billing/cancel.rs"), "anchor still lands: {with}");
 
@@ -158,6 +162,7 @@ fn whole_identifier_matches_exactly() {
     assert_eq!(t["tier"], "exact");
     assert_eq!(t["lang"], "", "exact equality carries no language evidence");
     assert_eq!(q["report"]["reason"], "strong");
+    assert_eq!(q["report"]["bridged"], false, "a literal exact hit is strong, never bridged: {q}");
     let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
     assert_eq!(files, vec!["src/titles/parent.rs"], "ident match anchors its defining file: {q}");
 
@@ -178,6 +183,12 @@ fn same_language_stem_bridges_real_morphology_only() {
     let t = sole_report_term(&q);
     assert_eq!(t["tier"], "stem");
     assert_eq!(t["lang"], "en", "the stemmer language is the evidence: {q}");
+    // A `stem`-only answer is weak AND NOT bridged: morphological guesses are
+    // speculative, not curated, so the planning fields stay withheld (re-query
+    // in the code's vocabulary is the right steer). This is the line between a
+    // curated bridge (returned) and a derived guess (withheld).
+    assert_eq!(q["report"]["reason"], "weak", "stem-only is weak: {q}");
+    assert_eq!(q["report"]["bridged"], false, "a stem guess is never a curated bridge: {q}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -276,6 +287,10 @@ fn report_aggregates_matched_k_of_n_and_is_byte_stable() {
 
     assert_eq!(q["report"]["matched"], 1);
     assert_eq!(q["report"]["total"], 2);
+    // matched 1/2 (k*2 >= n, not thin) carried by a curated lexicon bridge with
+    // no exact/fold hit: weak yet bridged — the matched half is real evidence.
+    assert_eq!(q["report"]["reason"], "weak", "no literal hit -> weak: {q}");
+    assert_eq!(q["report"]["bridged"], true, "half the vocabulary bridged via the curated lexicon: {q}");
     let terms = q["report"]["terms"].as_array().unwrap();
     assert_eq!(terms.len(), 2);
     assert_eq!(terms[0]["term"], "cancelado");

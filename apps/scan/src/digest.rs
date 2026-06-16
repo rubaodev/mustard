@@ -210,6 +210,13 @@ pub struct MatchReport {
     pub matched: usize,
     pub total: usize,
     pub reason: String,
+    /// `true` when `reason == "weak"` ONLY because no term reached exact/fold,
+    /// yet a CURATED lexicon bridge (seed or project overlay) carried a non-thin
+    /// query (`matched*2 >= total`) — the request vocabulary translated onto the
+    /// code's own. The consumer keeps the planning fields (with a caveat)
+    /// instead of forcing a re-query in the repo's words; speculative `stem`-
+    /// only weakness stays `false` (morphological guesses are not curated).
+    pub bridged: bool,
     pub terms: Vec<TermReport>,
 }
 
@@ -397,6 +404,7 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // derived) — the caller should re-query in the code's own vocabulary (the
     // matched terms/files show it) or explore before trusting the answer.
     let has_solid = report_terms.iter().any(|t| t.tier == "exact" || t.tier == "fold");
+    let has_curated_bridge = report_terms.iter().any(|t| t.tier == "lexicon");
     let reason_word = if n == 0 || (k == 0 && !structural) {
         "none"
     } else if generated_only {
@@ -406,7 +414,16 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     } else {
         "strong"
     };
-    let report = MatchReport { matched: k, total: n, reason: reason_word.into(), terms: report_terms };
+    // A `weak` answer whose ONLY missing strength is the absence of an
+    // exact/fold hit — not thinness (`k*2 >= n`, at least half the request
+    // vocabulary found a rung) — that a CURATED lexicon bridge carried (the
+    // supervised glossary: embedded seed OR the project's own overlay; never
+    // speculative `stem`). It is the user's vocabulary translated onto the
+    // code's: real evidence, just not literal. The consumer keeps the planning
+    // fields (with a caveat) instead of forcing a re-query that would only
+    // re-find what the supervised lexicon already bridged.
+    let bridged = reason_word == "weak" && k * 2 >= n && has_curated_bridge;
+    let report = MatchReport { matched: k, total: n, reason: reason_word.into(), bridged, terms: report_terms };
 
     QueryResult {
         query: ql,
