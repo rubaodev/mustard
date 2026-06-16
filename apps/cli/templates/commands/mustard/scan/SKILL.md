@@ -6,7 +6,7 @@ source: manual
 <!-- mustard:generated -->
 # /scan — Codebase model
 
-`/scan`, `/scan --root <dir>`, `/scan --out <path>`, `/scan --full`, `/scan --enrich` (opt-in AI Guards).
+`/scan`, `/scan --root <dir>`, `/scan --out <path>`, `/scan --full`, `/scan --enrich` (opt-in AI: Guards + lexicon).
 
 ## Process
 
@@ -38,11 +38,19 @@ through `mustard-rt run feature` (the digest research step) and `mustard-rt run 
 Parse the JSON result (`{ ok, model, regenerated?, oversized? }`); report the model path
 and surface any `oversized` warnings or `regenerated` paths.
 
-### Enrich the pending Guards (opt-in, AI)
+Then run `mustard-rt run lexicon-enrich --check [--root <dir>]` (deterministic, AI-free, read-only)
+and, if its `unbridged` list is non-empty, surface a **one-line nudge** — e.g. *"N domain terms have
+no lexicon bridge — run `/scan --enrich` to fill them."* This only LISTS the gap; it never calls AI
+and never writes. Fail-open: an empty list, no model, or no vendored pair → say nothing.
+
+### Enrich (opt-in, AI): Guards + lexicon
 
 This is the **only** step where `/scan` uses AI, and it runs **only on explicit opt-in** —
-`/scan --enrich` (or the user confirming "fill the guards now"). Without that trigger, `/scan`
-stays purely deterministic and cheap; it never dispatches an agent. When opted in:
+`/scan --enrich` (or the user confirming "enrich now"). Without that trigger, `/scan` stays purely
+deterministic and cheap. `--enrich` fills **two** things: the subprojects' `## Guards` prose (**A**,
+below) and the project lexicon bridges (**B**, after). When opted in:
+
+#### A) Guards
 
 1. **Seed the placeholders.** Run `mustard-rt run scan` (or `scan --full` to regenerate the
    maps too) so subprojects carry a `pending` `## Guards` block. The root is excluded.
@@ -68,9 +76,33 @@ stays purely deterministic and cheap; it never dispatches an agent. When opted i
 5. **Root never enters** — `scan-guards-list` already excludes it, so no agent ever authors
    guards for the workspace root.
 
+#### B) Lexicon
+
+The lexicon overlay bridges the user's vocabulary onto the code's (e.g. `titulo→payable`), closing the
+digest's first-query gap **proactively** (its reactive sibling is `lexicon-suggest`). The rt prepares
+and applies deterministically; **you** (the orchestrator) propose the bridges — no sub-agent, it is
+cheap inline reasoning:
+
+1. **List the gap.** `mustard-rt run lexicon-enrich --check [--root <dir>]` → `{pair, language,
+   unbridged: [{term, count, samples}]}` (the top mined CODE terms nothing maps a user word onto).
+   Empty `unbridged` or no `pair` → nothing to do, skip.
+2. **Propose bridges.** For each unbridged CODE term that is a genuine DOMAIN concept (a thing a user
+   would name in `language`), give the user-side word(s). **SKIP technical noise** — framework/plumbing
+   tokens like `dto`, `response`, `request`, `base`, `service`, `handler`, generic suffixes. Be
+   conservative: propose only where confident; proposing nothing is a valid outcome.
+3. **Apply, gated.** Write the proposals to a temp file as
+   `[{"userWord": "...", "codeTerms": ["..."]}]` and run `mustard-rt run lexicon-enrich --apply <file>
+   [--root <dir>]`. The rt validates each target EXISTS as a mined term (rejects hallucinations
+   deterministically) and writes the valid ones to `.claude/lexicons/<pair>.toml`. Parse `{applied,
+   rejected}` and surface a one-line summary (e.g. "added 8 bridges, 1 rejected").
+
+Fail-open: no model, headless, or an empty proposal → skip silently; the digest keeps using the
+committed overlay. The lexicon write touches ONLY `.claude/lexicons/` — never the embedded seed,
+never source.
+
 ## INVIOLABLE RULES
 
-- Default `/scan` produces only `grain.model.json` and never writes into subprojects; it may *warn* about oversized subproject `CLAUDE.md` files.
+- Default `/scan` produces only `grain.model.json`, never writes into subprojects, and never calls AI; it may *warn* about oversized subproject `CLAUDE.md` files and *list* (never fill) unbridged lexicon terms via the deterministic `lexicon-enrich --check`.
 - `--full` only (re)writes a deterministic, lean `CLAUDE.md` map per subproject, preserves hand-written `## Guards`, and seeds a `pending` block where none exists. The deterministic model + render never invoke AI.
-- **AI is opt-in and Guards-only.** Only `/scan --enrich` (or explicit user confirmation) invokes AI, and only to author the `## Guards` prose of **subprojects** — never the workspace root, never system prompts. Each apply is capped (~6 lines) and non-destructive. `/scan` without `--enrich` never calls AI.
+- **AI is opt-in.** Only `/scan --enrich` (or explicit user confirmation) invokes AI, for exactly two things: authoring the `## Guards` prose of **subprojects** (never the workspace root, never system prompts; each apply capped ~6 lines, non-destructive) and proposing **lexicon bridges** (each validated against the mined model before any write, into `.claude/lexicons/` only — never the seed, never source). `/scan` without `--enrich` never proposes or writes; at most it runs the deterministic `lexicon-enrich --check` to LIST the gap.
 - No confirmation prompts for the deterministic pass — `/scan` is the approval. The enrich step is the lone exception (its opt-in trigger *is* the confirmation).

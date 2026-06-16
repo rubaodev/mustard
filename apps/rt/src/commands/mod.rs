@@ -30,7 +30,7 @@ pub mod scan_guards;
 pub mod feature;
 pub mod glossary_coverage;
 pub mod lexicon_suggest;
-pub mod enrich;
+pub mod lexicon_enrich;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -143,7 +143,7 @@ pub enum RunCmd {
     /// preserved) — never the embedded seed. Rejected targets
     /// (`target_not_in_model`) are reported, never written. Pair resolved like
     /// the digest: root `specLang`/`lang` primary subtag + `en`.
-    Enrich {
+    LexiconEnrich {
         /// Read-only mode (the default): list the unbridged mined vocabulary.
         #[arg(long)]
         check: bool,
@@ -1714,7 +1714,7 @@ pub fn dispatch(cmd: RunCmd) {
             root,
         } => glossary_coverage::run(&intent, &context, &root),
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
-        RunCmd::Enrich { check, apply, root } => enrich::run(check, apply.as_deref(), &root),
+        RunCmd::LexiconEnrich { check, apply, root } => lexicon_enrich::run(check, apply.as_deref(), &root),
         RunCmd::DiffContext {
             parent,
             subproject,

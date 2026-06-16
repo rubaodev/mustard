@@ -18,7 +18,7 @@ esse arquivo congelado. (Guard de `apps/scan/CLAUDE.md` preservado: nada de IA e
 **Achado do ANALYZE:** o `mustard-rt` hoje é 100% Rust determinístico — **zero** shell-out
 de LLM (o `prd-build` é port puro-Rust; o `claude -p` vive só no dashboard).
 
-- **Opção A — `mustard-rt run enrich` shella `claude -p`.** Auto-contido, roda headless
+- **Opção A — `mustard-rt run lexicon-enrich` shella `claude -p`.** Auto-contido, roda headless
   (com chave). **Custo:** introduz a PRIMEIRA dependência de LLM + chave de API no binário
   `rt` (hoje determinístico), e acopla a um provedor/modelo. Fere o roadmap Codex.
 
@@ -35,7 +35,7 @@ provedor. O resto da spec assume B (A seria uma variação do passo 2).
 ## Fluxo (Opção B)
 
 ```
-1. mustard-rt run enrich --check --root <dir>        [rt, DETERMINÍSTICO]
+1. mustard-rt run lexicon-enrich --check --root <dir>        [rt, DETERMINÍSTICO]
      lê grain.model.json (TermD: term/count/samples)
      diff contra as chaves do overlay atual + seed
      → emite JSON dos termos de domínio NOVOS/sem-ponte (incremental)
@@ -47,7 +47,7 @@ provedor. O resto da spec assume B (A seria uma variação do passo 2).
      propõe pontes: <palavra-do-usuário> = [<termos-do-código>]
         │
         ▼
-3. mustard-rt run enrich --apply <proposals.json>    [rt, DETERMINÍSTICO + GATE]
+3. mustard-rt run lexicon-enrich --apply <proposals.json>    [rt, DETERMINÍSTICO + GATE]
      valida cada termo-código-alvo CONTRA o modelo real (rejeita alvo inexistente
        = mata alucinação deterministicamente)
      escreve em .claude/lexicons/<par>.toml (alfabético, atômico, preserva comentários)
@@ -85,8 +85,18 @@ O `lexicon-suggest` (reativo: corrige depois de 2 queries correlacionadas) é a 
   do overlay+seed), determinística, emite JSON estruturado. Reusa índice de termos + leitor de overlay.
 - **Onda 2 (rt) — `enrich --apply <json>`:** valida alvos contra o modelo (gate), escrita via
   `upsert_term` (atômica/alfabética), reporta diff. Reusa o writer do lexicon-suggest.
-- **Onda 3 (prosa/SKILL):** liga o passo do orquestrador — o fluxo scan/feature roda
-  check→propor→apply por padrão; contrato do prompt pro modelo; fail-open quando headless.
+- **Onda 3 (prosa/SKILL) — DECIDIDO (Opção A, mantém o invariante AI-free do /scan):**
+  o comando foi renomeado `enrich` → `lexicon-enrich` (a flag `/scan --enrich` já existia, e é
+  a autoria de Guards por IA — colisão de nome resolvida). O wiring:
+  - **/scan padrão (sem IA):** roda `lexicon-enrich --check` (determinístico) e mostra um aviso de
+    1 linha no relatório ("N termos de domínio sem ponte — `/scan --enrich` preenche"). Surge a
+    oportunidade em todo scan sem chamar IA.
+  - **/scan --enrich (opt-in, IA):** o mesmo gatilho que preenche os Guards passa a preencher
+    TAMBÉM o léxico — o orquestrador lê o `--check`, propõe pontes pros termos de DOMÍNIO (pulando
+    ruído técnico tipo `dto`/`response`), escreve num arquivo temporário e roda `lexicon-enrich
+    --apply`. Sem sub-agente (é raciocínio barato, inline). Fail-open: headless → pula.
+  - Descartada a Opção B (auto-preencher em todo scan) por quebrar o invariante "/scan padrão nunca
+    chama IA" (load-bearing p/ custo/velocidade/CI).
 - **Onda 4 (opcional):** marker de model-hash em `.claude/.harness/` p/ pular quando nada mudou.
 
 ## Acceptance Criteria (cada um com comando)

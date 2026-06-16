@@ -1,5 +1,5 @@
-//! `mustard-rt run enrich` — PROACTIVE population of the project lexicon
-//! overlay with code→user-word bridges, the sibling of the REACTIVE
+//! `mustard-rt run lexicon-enrich` — PROACTIVE population of the project
+//! lexicon overlay with code→user-word bridges, the sibling of the REACTIVE
 //! [`crate::commands::lexicon_suggest`].
 //!
 //! ## Why
@@ -206,7 +206,7 @@ fn apply_report(root: &Path, proposals_path: &Path) -> Value {
     })
 }
 
-/// Dispatch `mustard-rt run enrich [--check | --apply <proposals.json>] --root <dir>`.
+/// Dispatch `mustard-rt run lexicon-enrich [--check | --apply <proposals.json>] --root <dir>`.
 ///
 /// `--check` lists the unbridged mined vocabulary (read-only). `--apply` writes
 /// the orchestrator's validated bridges to the project overlay (gated). Exactly
