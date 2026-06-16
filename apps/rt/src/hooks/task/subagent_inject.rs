@@ -45,6 +45,51 @@ use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, V
 pub struct SubagentInject;
 
 
+/// What a dispatch prompt's `--emit ref` stub resolved to.
+///
+/// The discriminator is the `MUSTARD-PROMPT-REF:` marker: a prompt WITHOUT it
+/// is a normal ad-hoc Task (`NoMarker` — stays silent), while a prompt WITH it
+/// is a ref dispatch the hook is contracted to expand, so any failure to do so
+/// is attributable and surfaced (`Unexpanded` carries the reason).
+#[derive(Debug, PartialEq)]
+enum RefStub {
+    NoMarker,
+    Unexpanded { rel: String, reason: &'static str },
+    Expanded { rel: String, body: String },
+}
+
+/// Classify the dispatch prompt's `--emit ref` stub against the project tree.
+/// Pure but for the single file read — deterministic and unit-testable with a
+/// tempdir (no env, no event sink). The reasons name exactly which link of the
+/// render→stub→hook chain broke: `invalid_path` (a malformed/escaping stub),
+/// `file_missing` (the render never wrote it or it was lost), `file_empty`
+/// (an empty render). The path rules are unchanged: project-relative only —
+/// `has_root` also catches Windows' drive-less `\foo` that `is_absolute` misses.
+fn classify_ref_stub(project: &Path, prompt: &str) -> RefStub {
+    let Some(raw) = prompt
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER))
+    else {
+        return RefStub::NoMarker;
+    };
+    let rel = raw.trim().to_string();
+    if rel.is_empty()
+        || Path::new(&rel).has_root()
+        || Path::new(&rel).is_absolute()
+        || rel.contains(':')
+        || rel.split(['/', '\\']).any(|seg| seg == "..")
+    {
+        return RefStub::Unexpanded { rel, reason: "invalid_path" };
+    }
+    let Ok(body) = fs::read_to_string(project.join(&rel)) else {
+        return RefStub::Unexpanded { rel, reason: "file_missing" };
+    };
+    if body.trim().is_empty() {
+        return RefStub::Unexpanded { rel, reason: "file_empty" };
+    }
+    RefStub::Expanded { rel, body }
+}
+
 /// Expand a `--emit ref` dispatch stub into the full rendered prompt.
 ///
 /// `agent-prompt-render --emit ref` prints a 2-line stub whose first line is
@@ -53,33 +98,46 @@ pub struct SubagentInject;
 /// context. This hook is the other half of that contract: it reads the file
 /// and returns a [`Verdict::Rewrite`] with the prompt replaced.
 ///
-/// Fail-open: no marker, an empty/absolute/`..`-escaping path, or an
-/// unreadable/empty file all yield `None` — the dispatch proceeds with the
-/// stub, whose own fallback line tells the subagent to Read the file.
-fn expand_prompt_ref(project: &Path, input: &HookInput) -> Option<Verdict> {
-    let prompt = dispatch_prompt(input);
-    let rel = prompt.lines().find_map(|line| {
-        line.trim().strip_prefix(crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER)
-    })?;
-    let rel = rel.trim();
-    // Project-relative only: reject absolute/rooted paths (has_root also
-    // catches Windows' drive-less `\foo`, which `is_absolute` does not) and
-    // any `..` segment — the stub may only name a file under the project.
-    if rel.is_empty()
-        || Path::new(rel).has_root()
-        || Path::new(rel).is_absolute()
-        || rel.contains(':')
-        || rel.split(['/', '\\']).any(|seg| seg == "..")
-    {
-        return None;
+/// Fail-open AND transparent: a missing/invalid/empty ref still yields `None`
+/// (the dispatch proceeds — the stub's own fallback line tells the subagent to
+/// Read the file), but now emits a diagnostic via [`report_unexpanded`] so a
+/// downstream "tool error" on a ref-dispatched agent is attributable to this
+/// link instead of mistaken for a harness flake. No marker = silent (a normal
+/// ad-hoc Task, not a ref dispatch).
+fn expand_prompt_ref(project: &Path, cwd: &str, input: &HookInput) -> Option<Verdict> {
+    match classify_ref_stub(project, &dispatch_prompt(input)) {
+        RefStub::NoMarker => None,
+        RefStub::Unexpanded { rel, reason } => {
+            report_unexpanded(cwd, &rel, reason);
+            None
+        }
+        RefStub::Expanded { body, .. } => {
+            let mut tool_input = input.tool_input.clone();
+            tool_input.as_object_mut()?.insert("prompt".to_string(), serde_json::Value::String(body));
+            Some(Verdict::Rewrite { tool_input })
+        }
     }
-    let body = fs::read_to_string(project.join(rel)).ok()?;
-    if body.trim().is_empty() {
-        return None;
-    }
-    let mut tool_input = input.tool_input.clone();
-    tool_input.as_object_mut()?.insert("prompt".to_string(), serde_json::Value::String(body));
-    Some(Verdict::Rewrite { tool_input })
+}
+
+/// Surface a ref stub the hook could NOT expand — transparency, never a block.
+/// The decision stays fail-open (the caller returns `None` and the dispatch
+/// proceeds on the stub's fallback line); this only makes the failure VISIBLE
+/// and attributable: stderr for a live session, plus an economy event so it
+/// lands in the dashboard trace next to the agent it belongs to. Mirrors the
+/// success-side `prompt_ref_expand` telemetry, completing the attribution
+/// triad (expanded / unexpanded / neither = no marker or the hook never ran).
+fn report_unexpanded(cwd: &str, rel: &str, reason: &str) {
+    eprintln!(
+        "subagent_inject: WARN: dispatch stub NOT expanded ({reason}): {rel} — subagent falls back to reading the file; surfacing for attribution"
+    );
+    economy::emit(
+        cwd,
+        ActorKind::Hook,
+        "subagent_inject",
+        "pipeline.economy.operation.invoked",
+        None,
+        serde_json::json!({"operation": "subagent_inject.prompt_ref_unexpanded", "reason": reason, "ref": rel, "duration_ms": 0, "tokens_used": 0}),
+    );
 }
 
 /// `true` when the dispatch prompt already declares a SKILL block, in which
@@ -321,7 +379,7 @@ impl Check for SubagentInject {
         // further injection is needed — and this module is the LAST
         // PreToolUse(Task) check in the registry, so the Rewrite verdict
         // survives the outcome fold.
-        if let Some(verdict) = expand_prompt_ref(&project, input) {
+        if let Some(verdict) = expand_prompt_ref(&project, &cwd, input) {
             economy::emit(&cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.prompt_ref_expand", "duration_ms": 0, "tokens_used": 0}));
             return Ok(verdict);
         }
@@ -492,6 +550,56 @@ mod tests {
             let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
             assert!(!matches!(v, Verdict::Rewrite { .. }), "path {evil} must not expand");
         }
+    }
+
+    /// The transparency seam: `classify_ref_stub` stays silent when there is no
+    /// ref marker (a normal ad-hoc Task), and otherwise names exactly which
+    /// link of the render→stub→hook chain broke — so a failure is attributable
+    /// instead of a silent fall-through. (The fall-through itself is covered by
+    /// the two tests above; this pins the REASON the diagnostic reports.)
+    #[test]
+    fn classify_ref_stub_names_the_broken_link() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+
+        // No marker → a plain Task, never surfaced.
+        assert_eq!(classify_ref_stub(project, "just do the thing"), RefStub::NoMarker);
+
+        // Marker + valid file → expands, carrying the rel and body.
+        let rel = ".claude/spec/demo/.dispatch/wave-1-rt.first.prompt.md";
+        let full = project.join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "ROLE: impl\nreal body").unwrap();
+        match classify_ref_stub(project, &format!("MUSTARD-PROMPT-REF: {rel}\nfallback")) {
+            RefStub::Expanded { rel: r, body } => {
+                assert_eq!(r, rel);
+                assert!(body.contains("real body"), "carries the file body: {body}");
+            }
+            other => panic!("expected Expanded, got {other:?}"),
+        }
+
+        // Marker + missing file → attributable as file_missing (render lost it).
+        assert_eq!(
+            classify_ref_stub(project, "MUSTARD-PROMPT-REF: .claude/spec/demo/.dispatch/ghost.md\nfallback"),
+            RefStub::Unexpanded { rel: ".claude/spec/demo/.dispatch/ghost.md".into(), reason: "file_missing" }
+        );
+
+        // Marker + escaping/rooted/drive path → invalid_path, before any IO.
+        for evil in ["../outside.md", ".claude/../../leak.md", "/etc/passwd", "C:/Windows/x.md"] {
+            assert_eq!(
+                classify_ref_stub(project, &format!("MUSTARD-PROMPT-REF: {evil}\nfallback")),
+                RefStub::Unexpanded { rel: evil.into(), reason: "invalid_path" },
+                "evil path {evil}"
+            );
+        }
+
+        // Marker + empty render → file_empty.
+        let empty_rel = ".claude/spec/demo/.dispatch/empty.md";
+        std::fs::write(project.join(empty_rel), "   \n").unwrap();
+        assert_eq!(
+            classify_ref_stub(project, &format!("MUSTARD-PROMPT-REF: {empty_rel}\nfallback")),
+            RefStub::Unexpanded { rel: empty_rel.into(), reason: "file_empty" }
+        );
     }
 
     #[test]
