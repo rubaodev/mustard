@@ -1295,7 +1295,7 @@ pub fn run(opts: DoctorOpts) {
         // produce native JSON shapes (not the generic `CheckResult` envelope).
         // They short-circuit BEFORE the legacy match below so their JSON form
         // is the only output.
-        if matches!(check_name.as_str(), "claude-paths" | "workspace-leaks" | "i1") {
+        if matches!(check_name.as_str(), "claude-paths" | "workspace-leaks" | "i1" | "superseded") {
             run_typed_check(check_name, &cwd, opts.format == "json");
             economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
             return;
@@ -1307,7 +1307,7 @@ pub fn run(opts: DoctorOpts) {
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded"
                 );
                 std::process::exit(1);
             }
@@ -1346,13 +1346,17 @@ pub fn run(opts: DoctorOpts) {
     let cp_report = crate::commands::doctor::doctor_claude_paths::run(&cwd);
     let wl_report = crate::commands::doctor::doctor_workspace_leaks::run(&cwd);
     let i1_report = crate::commands::doctor::doctor_i1::run(&cwd);
+    // Roadmap #6 — prune/accumulation linter. Read-only; never blocks (WARN at
+    // most) — its job is to surface archivable / likely-superseded specs.
+    let sup_report = crate::commands::doctor::superseded_check::run(&cwd);
 
     if opts.format == "json" {
-        render_combined_json(&results, &cp_report, &wl_report, &i1_report);
+        render_combined_json(&results, &cp_report, &wl_report, &i1_report, &sup_report);
     } else {
         results.push(claude_paths_to_check_result(&cp_report));
         results.push(workspace_leaks_to_check_result(&wl_report));
         results.push(i1_to_check_result(&i1_report));
+        results.push(superseded_to_check_result(&sup_report));
         render_report(&results);
     }
 
@@ -1378,6 +1382,7 @@ fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
     let value = match name {
         "claude-paths" => serde_json::to_value(crate::commands::doctor::doctor_claude_paths::run(cwd)),
         "workspace-leaks" => serde_json::to_value(crate::commands::doctor::doctor_workspace_leaks::run(cwd)),
+        "superseded" => serde_json::to_value(crate::commands::doctor::superseded_check::run(cwd)),
         "i1" => {
             let report = crate::commands::doctor::doctor_i1::run(cwd);
             let exit_non_zero = !report.ok;
@@ -1411,6 +1416,7 @@ fn render_combined_json(
     cp: &crate::commands::doctor::doctor_claude_paths::ClaudePathsReport,
     wl: &crate::commands::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
     i1: &crate::commands::doctor::doctor_i1::I1Report,
+    sup: &crate::commands::doctor::superseded_check::SupersededReport,
 ) {
     let checks: Vec<serde_json::Value> = legacy
         .iter()
@@ -1435,7 +1441,8 @@ fn render_combined_json(
     let any_fail = legacy.iter().any(|r| r.status == Status::Fail) || !i1.ok;
     let any_warn = legacy.iter().any(|r| r.status == Status::Warn)
         || !cp.divergences.is_empty()
-        || !wl.leaks.is_empty();
+        || !wl.leaks.is_empty()
+        || !sup.ok;
     let overall = if any_fail { "fail" } else if any_warn { "warn" } else { "ok" };
 
     let violations: Vec<String> = legacy
@@ -1453,6 +1460,8 @@ fn render_combined_json(
         "claude_paths": cp,
         "workspace_leaks": wl,
         "i1": i1,
+        // Roadmap #6 — prune/accumulation linter, keyed verbatim.
+        "superseded": sup,
     });
     println!(
         "{}",
@@ -1493,6 +1502,36 @@ fn workspace_leaks_to_check_result(
         .map(|l| format!("{} -> {}", l.path, l.leaked_entries.join(", ")))
         .collect();
     CheckResult::warn("workspace-leaks", details)
+}
+
+/// Project a `SupersededReport` onto the legacy `CheckResult` envelope. Roadmap
+/// #6 is a WARN-only linter — surfacing prune candidates never blocks the
+/// doctor run. OK when nothing is archivable / stale.
+fn superseded_to_check_result(
+    report: &crate::commands::doctor::superseded_check::SupersededReport,
+) -> CheckResult {
+    if report.ok {
+        let mut r = CheckResult::ok("superseded");
+        r.details.push(format!(
+            "{} spec(s): {} active, {} terminal — nothing to prune",
+            report.total_specs, report.active, report.terminal
+        ));
+        return r;
+    }
+    let mut details: Vec<String> = report
+        .prune_candidates
+        .iter()
+        .map(|c| format!("prune {} ({}, {})", c.slug, c.outcome, c.reason))
+        .collect();
+    details.extend(report.stale_active.iter().map(|c| {
+        format!(
+            "stale-active {} (ratio {}/1000): {}",
+            c.slug,
+            c.stale_ratio_x1000,
+            c.stale_files.join(", ")
+        )
+    }));
+    CheckResult::warn("superseded", details)
 }
 
 /// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard

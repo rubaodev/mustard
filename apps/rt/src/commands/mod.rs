@@ -885,7 +885,8 @@ pub enum RunCmd {
         residue: bool,
         /// Run a specific named check in isolation: `skill-discovery`,
         /// `wave-integrity`, `claude-paths` (W3.T3.4), `workspace-leaks`
-        /// (W3.T3.8), or `i1` (W3.T3.9).
+        /// (W3.T3.8), `i1` (W3.T3.9), or `superseded` (prune candidates —
+        /// terminal / stale-anchored specs the maintainer can archive).
         #[arg(long)]
         check: Option<String>,
         /// Output format: `text` (default) or `json`.
