@@ -230,7 +230,6 @@ pub struct MetricsWaveRow {
     pub tokens_saved: i64,
     pub duration_ms: i64,
     pub retries: i64,
-    pub cross_wave_memory_bytes: i64,
     pub model: Option<String>,
 }
 
@@ -1689,28 +1688,96 @@ pub fn dashboard_wikilink_extract_run(
     }
 }
 
-/// Wave-3 — invoke `mustard-rt run memory cross-wave --spec <name> --wave <n>`
-/// and return the markdown payload (stdout). Empty string when the subprocess
-/// has nothing to report (the most common case — earlier waves carry no
-/// memory). `Err` is reserved for spawn failures.
+/// Cross-wave memory for a spec, sourced from the LIVE unified knowledge store
+/// (markdown rows under `.claude/memory/`, ranked by the recall decay curve) via
+/// `mustard-rt run memory search --spec <name>`. The dead `memory cross-wave`
+/// verb (which read the removed `agent.memory` SQLite path) no longer exists; the
+/// `search` verb is the live equivalent — it returns every active memory row
+/// carrying this spec across ALL its waves (`--spec` filters on the frontmatter
+/// `spec` field, so wave-scoped summaries surface here), ranked by effective
+/// confidence. `search` emits a JSON array of rows; this function renders that
+/// into a compact markdown block (rendering is a dashboard concern — the ranking
+/// is owned by rt and reused as-is). The `wave` parameter is no longer consulted:
+/// the live verb has no per-wave reach — it returns the spec's full accumulated
+/// memory and the drawer shows priors regardless of the current wave.
+///
+/// Empty string when the spec has no memory rows (the common case — early waves
+/// carry no priors). `Err` is reserved for spawn failures, matching the prior
+/// contract; an unparseable payload degrades to an empty block.
 pub fn dashboard_memory_cross_wave_run(
     repo_path: &str,
     spec: &str,
-    wave: u32,
+    _wave: u32,
 ) -> Result<String, String> {
     if spec.is_empty() || spec.contains('/') || spec.contains('\\') || spec.contains("..") {
         return Err(format!("invalid spec name: {spec}"));
     }
-    let wave_str = wave.to_string();
-    let mut cmd = mustard_rt_command(&[
-        "run", "memory", "cross-wave", "--spec", spec, "--wave", &wave_str,
-    ]);
+    let mut cmd = mustard_rt_command(&["run", "memory", "search", "--spec", spec]);
     cmd.current_dir(repo_path);
     let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => return Err(format!("spawn mustard-rt: {e}")),
     };
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(render_memory_rows_markdown(slice_json_array(&stdout)))
+}
+
+/// One row of `mustard-rt run memory search` output. Mirrors the producer's
+/// `SearchRow` (knowledge/memory.rs); only the fields the drawer renders are
+/// decoded, and every field tolerates absence so a shape change never makes the
+/// drawer error (it just renders less). Field names are the JSON keys the
+/// producer emits (snake_case via serde default).
+#[derive(Deserialize, Default)]
+struct MemorySearchRow {
+    #[serde(default)]
+    wave: Option<i64>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    details: Option<String>,
+}
+
+/// Trim leading log/banner noise so `serde_json::from_str` sees a pure JSON
+/// document starting at the first `[` (the `search` payload is an array; the
+/// object-oriented [`slice_json`] would stop at a stray `{` inside it).
+fn slice_json_array(stdout: &str) -> &str {
+    match stdout.find('[') {
+        Some(i) => &stdout[i..],
+        None => stdout,
+    }
+}
+
+/// Render the `memory search` JSON rows into the markdown block the cross-wave
+/// drawer expects. Empty (or unparseable) input yields an empty string so the
+/// frontend renders its empty state, preserving the prior "empty when nothing to
+/// report" contract. Each row becomes a bullet tagged with its wave/role; the
+/// `details` body, when present, follows as an indented note.
+fn render_memory_rows_markdown(json: &str) -> String {
+    let rows: Vec<MemorySearchRow> = serde_json::from_str(json).unwrap_or_default();
+    let mut out = String::new();
+    for row in rows {
+        let summary = row.summary.trim();
+        if summary.is_empty() {
+            continue;
+        }
+        let tag = match (row.wave, row.role.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
+            (Some(w), Some(r)) => format!("wave {w} · {r}"),
+            (Some(w), None) => format!("wave {w}"),
+            (None, Some(r)) => r.to_string(),
+            (None, None) => String::new(),
+        };
+        if tag.is_empty() {
+            out.push_str(&format!("- {summary}\n"));
+        } else {
+            out.push_str(&format!("- **{tag}** — {summary}\n"));
+        }
+        if let Some(details) = row.details.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            out.push_str(&format!("  {details}\n"));
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — payload for

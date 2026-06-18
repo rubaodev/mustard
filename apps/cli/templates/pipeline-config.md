@@ -54,7 +54,10 @@ A tactical fix discovered during REVIEW/QA CANNOT become a silent follow-up or a
 
 ## Diff Context Interpolation
 
-All Task dispatches inside an active pipeline are prefixed with current git state. Source: `mustard-rt run diff-context` — cached to `.claude/spec/{spec}/wave-N-{role}/diff.md` once per phase, read back via the wave's `diff.md`. The script emits `## Branch` / `## Staged Changes` / `## Unstaged Changes` / `## Untracked Files` / `## Commits since {parent}` / `### Changed files since divergence`; output capped at 3000 chars. Skip the prefix when the file is empty/missing.
+Task dispatches inside an active pipeline are prefixed with current git state. Two **distinct** artifacts produce it — do not conflate them (the per-wave cache is NOT `diff-context`):
+
+- **Per-wave `diff.md`** (`.claude/spec/{spec}/wave-N-{role}/diff.md`): the single writer is `mustard-rt run wave-done`, which caches the just-committed wave's `git diff HEAD~1 HEAD --stat` (an atomic LF write — no shell redirect). `agent-prompt-render` reads it back so the next round's agents see the prior wave's changes. Skip the prefix when the file is empty/missing.
+- **`mustard-rt run diff-context`**: a richer git-state summary on **stdout** (`## Branch` / `## Staged Changes` / `## Unstaged Changes` / `## Untracked Files` / `## Commits since {parent}` / `### Changed files since divergence`, capped at 3000 chars), consumed by the review dispatch. It does **not** write the per-wave `diff.md`.
 
 ## Diagnostic Failure Routing
 

@@ -453,7 +453,13 @@ fn patch_wave_plan_single(spec_dir: &Path, wave1: &WaveDir) {
     // The collapsed `wave-plan.md` follows the project's configured language
     // (root-wins); no plan-carried `lang` here, so the workspace config decides.
     let locale = effective_locale(spec_dir, None);
-    let md = render_wave_plan(&plan, &headings(locale), None);
+    // The parent slug seeds the wave-plan's `id:` frontmatter (rename-proof
+    // identity handle); it is the spec directory name.
+    let parent_slug = spec_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let md = render_wave_plan(&plan, &headings(locale), None, &parent_slug);
     let path = spec_dir.join("wave-plan.md");
     if let Err(e) = fs::write_atomic(&path, md.as_bytes()) {
         eprintln!(

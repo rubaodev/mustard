@@ -119,6 +119,32 @@ pub struct EmitPipelineOpts {
     pub allow_no_qa: bool,
 }
 
+/// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.
+///
+/// PowerShell single-quotes are literal, so a caller using the bash habit of
+/// backslash-escaping the inner quotes — `--payload '{\"wave\":1}'` — has those
+/// backslashes PRESERVED: the arg arrives as the literal `{\"wave\":1}`, invalid
+/// JSON ("key must be a string at line 1 column 2", the `\` right after `{`),
+/// and the orchestrator burns a round-trip re-emitting (recurring field case,
+/// sialia). Recover: if the first parse fails AND the raw still carries the `\"`
+/// artefact, strip it and retry. A correctly-quoted payload (bash, or PowerShell
+/// single-quoted *without* the escaping) parses on the first attempt, so a JSON
+/// string value that legitimately contains `\"` is never reached by the fallback
+/// and the original parse error is preserved when recovery also fails.
+fn parse_payload_tolerant(raw: &str) -> Result<Value, serde_json::Error> {
+    match serde_json::from_str::<Value>(raw) {
+        Ok(v) => Ok(v),
+        Err(first_err) => {
+            if raw.contains("\\\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(&raw.replace("\\\"", "\"")) {
+                    return Ok(v);
+                }
+            }
+            Err(first_err)
+        }
+    }
+}
+
 /// Run `mustard-rt run emit-pipeline --kind <name> --spec <name> [--payload <json>]`.
 ///
 /// Validates `kind` and the optional JSON payload, then appends the event to
@@ -170,7 +196,7 @@ pub fn run(opts: EmitPipelineOpts) {
     let payload: Value = match opts.payload.as_deref() {
         None if opts.kind == EVENT_PIPELINE_COMPLETE => json!({}),
         None => Value::Null,
-        Some(raw) => match serde_json::from_str(raw) {
+        Some(raw) => match parse_payload_tolerant(raw) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("emit-pipeline: invalid JSON payload: {e}");
@@ -397,7 +423,7 @@ fn is_terminal_event(kind: &str, payload: &Value) -> bool {
 
 /// Resolve the `wave-{N}-*` directory path for a spec. Returns `None` when
 /// the spec directory does not exist or no matching wave subdirectory is found.
-fn wave_spec_path(cwd: &Path, spec: &str, wave: u64) -> Option<std::path::PathBuf> {
+pub(crate) fn wave_spec_path(cwd: &Path, spec: &str, wave: u64) -> Option<std::path::PathBuf> {
     let spec_dir = ClaudePaths::for_project(cwd)
         .and_then(|p| p.for_spec(spec))
         .ok()?
@@ -909,6 +935,31 @@ mod tests {
             Some(s) => serde_json::from_str(s).unwrap(),
         };
         assert_eq!(v, Value::Null);
+    }
+
+    /// Field bug (sialia, recurring): PowerShell single-quotes preserve the
+    /// bash-style `\"` escaping literally, so `--payload '{\"wave\":1}'` reaches
+    /// the binary as `{\"wave\":1}` and `serde_json` rejects it ("key must be a
+    /// string at line 1 column 2"). The tolerant parser recovers it instead of
+    /// forcing the orchestrator to re-emit.
+    #[test]
+    fn parse_payload_tolerant_recovers_powershell_escaped_json() {
+        let ps = r#"{\"wave\":1,\"duration_ms\":536342}"#;
+        let v = super::parse_payload_tolerant(ps).expect("recovers escaped payload");
+        assert_eq!(v["wave"], json!(1));
+        assert_eq!(v["duration_ms"], json!(536342));
+
+        // A correctly-quoted payload parses on the first try (unchanged path).
+        assert_eq!(super::parse_payload_tolerant(r#"{"wave":1}"#).unwrap()["wave"], json!(1));
+
+        // Genuinely broken JSON (no `\"` artefact) still errors — no masking.
+        assert!(super::parse_payload_tolerant("{not json").is_err());
+
+        // A JSON string value that legitimately holds `\"` parses first try, so
+        // the fallback never fires and the value is preserved exactly.
+        let with_quote = r#"{"note":"she said \"hi\""}"#;
+        let decoded = super::parse_payload_tolerant(with_quote).expect("valid escaped string");
+        assert_eq!(decoded["note"], json!("she said \"hi\""));
     }
 
     // -----------------------------------------------------------------------

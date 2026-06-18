@@ -45,6 +45,7 @@
 //! ├── agents/
 //! ├── agent-memory/
 //! ├── graph/
+//! ├── capabilities/
 //! └── spec/
 //!     └── {name}/
 //!         ├── spec.md
@@ -167,6 +168,7 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "agent-memory",
     "spec",
     "graph",
+    "capabilities",
 ];
 
 /// File names under `<root>/.claude/.cache/` that Mustard owns. Single source
@@ -314,6 +316,14 @@ impl ClaudePaths {
     #[must_use]
     pub fn graph_dir(&self) -> PathBuf {
         self.claude_dir().join("graph")
+    }
+
+    /// `<root>/.claude/capabilities/` — durable capability docs
+    /// (`cap.{slug}.md`). Parent of every `.claude/capabilities/{slug}.md`
+    /// authored by `mustard-rt run capability create`.
+    #[must_use]
+    pub fn capabilities_dir(&self) -> PathBuf {
+        self.claude_dir().join("capabilities")
     }
 
     /// `<root>/.claude/.pipeline-states/` — legacy pipeline-state JSON
@@ -852,6 +862,7 @@ mod tests {
             "agent-memory",
             "spec",
             "graph",
+            "capabilities",
         ] {
             assert!(dirs.contains(&expected), "missing {expected} from documented_dirs");
         }

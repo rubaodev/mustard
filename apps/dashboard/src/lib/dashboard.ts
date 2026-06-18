@@ -799,7 +799,6 @@ export interface MetricsWaveRow {
   tokens_saved: number;
   duration_ms: number;
   retries: number;
-  cross_wave_memory_bytes: number;
   model: string | null;
 }
 

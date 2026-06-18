@@ -1295,7 +1295,10 @@ pub fn run(opts: DoctorOpts) {
         // produce native JSON shapes (not the generic `CheckResult` envelope).
         // They short-circuit BEFORE the legacy match below so their JSON form
         // is the only output.
-        if matches!(check_name.as_str(), "claude-paths" | "workspace-leaks" | "i1" | "superseded") {
+        if matches!(
+            check_name.as_str(),
+            "claude-paths" | "workspace-leaks" | "i1" | "superseded" | "capability-drift"
+        ) {
             run_typed_check(check_name, &cwd, opts.format == "json");
             economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
             return;
@@ -1307,7 +1310,7 @@ pub fn run(opts: DoctorOpts) {
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift"
                 );
                 std::process::exit(1);
             }
@@ -1349,14 +1352,29 @@ pub fn run(opts: DoctorOpts) {
     // Roadmap #6 — prune/accumulation linter. Read-only; never blocks (WARN at
     // most) — its job is to surface archivable / likely-superseded specs.
     let sup_report = crate::commands::doctor::superseded_check::run(&cwd);
+    // Roadmap #6 — capability/grain drift advisory. ADVISORY ONLY (WARN at
+    // most, never blocks): surfaces capabilities that cover code no longer in
+    // the grain model + emits `capability.drift` events. `None` when there is
+    // no grain model (cannot judge drift → silent no-op).
+    let drift_report = crate::commands::doctor::capability_drift_check::run(&cwd);
 
     if opts.format == "json" {
-        render_combined_json(&results, &cp_report, &wl_report, &i1_report, &sup_report);
+        render_combined_json(
+            &results,
+            &cp_report,
+            &wl_report,
+            &i1_report,
+            &sup_report,
+            drift_report.as_ref(),
+        );
     } else {
         results.push(claude_paths_to_check_result(&cp_report));
         results.push(workspace_leaks_to_check_result(&wl_report));
         results.push(i1_to_check_result(&i1_report));
         results.push(superseded_to_check_result(&sup_report));
+        if let Some(ref drift) = drift_report {
+            results.push(capability_drift_to_check_result(drift));
+        }
         render_report(&results);
     }
 
@@ -1383,6 +1401,17 @@ fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
         "claude-paths" => serde_json::to_value(crate::commands::doctor::doctor_claude_paths::run(cwd)),
         "workspace-leaks" => serde_json::to_value(crate::commands::doctor::doctor_workspace_leaks::run(cwd)),
         "superseded" => serde_json::to_value(crate::commands::doctor::superseded_check::run(cwd)),
+        "capability-drift" => {
+            // Advisory: `None` when there is no grain model (cannot judge
+            // drift). Surface that explicitly so a direct `--check` is honest.
+            match crate::commands::doctor::capability_drift_check::run(cwd) {
+                Some(report) => serde_json::to_value(report),
+                None => Ok(json!({
+                    "ok": true,
+                    "skipped": "no grain.model.json — cannot judge capability drift",
+                })),
+            }
+        }
         "i1" => {
             let report = crate::commands::doctor::doctor_i1::run(cwd);
             let exit_non_zero = !report.ok;
@@ -1417,6 +1446,7 @@ fn render_combined_json(
     wl: &crate::commands::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
     i1: &crate::commands::doctor::doctor_i1::I1Report,
     sup: &crate::commands::doctor::superseded_check::SupersededReport,
+    drift: Option<&crate::commands::doctor::capability_drift_check::CapabilityDriftReport>,
 ) {
     let checks: Vec<serde_json::Value> = legacy
         .iter()
@@ -1439,10 +1469,13 @@ fn render_combined_json(
         .collect();
 
     let any_fail = legacy.iter().any(|r| r.status == Status::Fail) || !i1.ok;
+    // Capability drift is ADVISORY: it can raise WARN but NEVER FAIL.
+    let drift_warn = drift.is_some_and(|d| !d.ok);
     let any_warn = legacy.iter().any(|r| r.status == Status::Warn)
         || !cp.divergences.is_empty()
         || !wl.leaks.is_empty()
-        || !sup.ok;
+        || !sup.ok
+        || drift_warn;
     let overall = if any_fail { "fail" } else if any_warn { "warn" } else { "ok" };
 
     let violations: Vec<String> = legacy
@@ -1452,7 +1485,7 @@ fn render_combined_json(
         .cloned()
         .collect();
 
-    let body = json!({
+    let mut body = json!({
         "checks": checks,
         "overall": overall,
         "violations": violations,
@@ -1463,6 +1496,17 @@ fn render_combined_json(
         // Roadmap #6 — prune/accumulation linter, keyed verbatim.
         "superseded": sup,
     });
+    // Roadmap #6 — capability/grain drift advisory, keyed verbatim. Only
+    // present when a grain model exists (otherwise the check is a no-op and
+    // the key is omitted so consumers can tell "no model" from "no drift").
+    if let Some(d) = drift {
+        if let serde_json::Value::Object(ref mut map) = body {
+            map.insert(
+                "capability_drift".to_string(),
+                serde_json::to_value(d).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
@@ -1532,6 +1576,28 @@ fn superseded_to_check_result(
         )
     }));
     CheckResult::warn("superseded", details)
+}
+
+/// Project a `CapabilityDriftReport` onto the legacy `CheckResult` envelope.
+/// Roadmap #6 capability-drift is ADVISORY: drifted covers become WARN, never
+/// FAIL. OK when nothing drifted.
+fn capability_drift_to_check_result(
+    report: &crate::commands::doctor::capability_drift_check::CapabilityDriftReport,
+) -> CheckResult {
+    if report.ok {
+        let mut r = CheckResult::ok("capability-drift");
+        r.details.push(format!(
+            "{} capabilit(ies) checked — none cover missing entities",
+            report.total_capabilities
+        ));
+        return r;
+    }
+    let details: Vec<String> = report
+        .drifted
+        .iter()
+        .map(|d| format!("drift {} covers {} (no longer in grain)", d.id, d.entity))
+        .collect();
+    CheckResult::warn("capability-drift", details)
 }
 
 /// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard

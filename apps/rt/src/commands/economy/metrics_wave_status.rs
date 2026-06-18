@@ -15,8 +15,7 @@
 //!   "status": "completed",
 //!   "tokens_saved": 1234,
 //!   "duration_ms": 56789,
-//!   "retries": 0,
-//!   "cross_wave_memory_bytes": 0
+//!   "retries": 0
 //! }
 //! ```
 //!
@@ -31,7 +30,6 @@
 
 use mustard_core::time::parse_iso_millis;
 use crate::shared::context::project_dir;
-use crate::commands::knowledge::memory_cross_wave;
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use mustard_core::EventReader;
@@ -48,7 +46,6 @@ struct WaveStatus {
     tokens_saved: i64,
     duration_ms: i64,
     retries: i64,
-    cross_wave_memory_bytes: usize,
 }
 
 /// Parse the wave-plan table into the ordered list of wave names from the
@@ -157,11 +154,7 @@ fn fallback_wave_dirs(parent_dir: &Path) -> Vec<String> {
 ///   and `retry.attempt` events attributed to this wave pipeline.
 ///
 /// Fail-open: a missing events dir or unreadable file yields zeroed counters.
-fn aggregate_wave(
-    project: &Path,
-    wave_name: &str,
-    cross_wave_bytes: usize,
-) -> WaveStatus {
+fn aggregate_wave(project: &Path, wave_name: &str) -> WaveStatus {
     let events_dir = ClaudePaths::for_project(project)
         .ok()
         .and_then(|p| p.for_spec(wave_name).ok())
@@ -252,7 +245,6 @@ fn aggregate_wave(
         tokens_saved,
         duration_ms,
         retries,
-        cross_wave_memory_bytes: cross_wave_bytes,
     }
 }
 
@@ -272,23 +264,6 @@ fn collect_ndjson_events(events_dir: &Path) -> Vec<mustard_core::Event> {
         out.extend(EventReader::stream(&p));
     }
     out
-}
-
-/// Compute the byte length of the cross-wave memory markdown that would land
-/// in wave N's agent prompt — exactly what `memory cross-wave --wave N` would
-/// emit. Returns 0 for wave 1 (no prior waves) or when nothing is in memory.
-fn cross_wave_bytes_for(
-    project: &Path,
-    all_wave_names: &[String],
-    n: u32,
-    spec: &str,
-) -> usize {
-    if n <= 1 {
-        return 0;
-    }
-    let n_prior = (n as usize).saturating_sub(1).min(all_wave_names.len());
-    let prior: Vec<String> = all_wave_names.iter().take(n_prior).cloned().collect();
-    memory_cross_wave::render(&prior, project, spec).len()
 }
 
 /// Build the full result JSON for `--spec <parent>`.
@@ -312,12 +287,8 @@ fn build_result(project: &Path, parent: &str) -> Value {
 
     let waves: Vec<Value> = wave_names
         .iter()
-        .enumerate()
-        .map(|(idx, name)| {
-            let n = wave_number(name);
-            let n = if n == 0 { (idx + 1) as u32 } else { n };
-            let bytes = cross_wave_bytes_for(project, &wave_names, n, parent);
-            serde_json::to_value(aggregate_wave(project, name, bytes))
+        .map(|name| {
+            serde_json::to_value(aggregate_wave(project, name))
                 .unwrap_or(Value::Null)
         })
         .collect();
@@ -442,14 +413,14 @@ mod tests {
         write_ndjson_event(&ev2_dir, "token.saved", "2026-05-20T11:00:05.000Z",
             json!({ "pipeline": "wave-2-skill-template", "saved": 50 }));
 
-        let w1 = aggregate_wave(project, "wave-1-rt-infra", 0);
+        let w1 = aggregate_wave(project, "wave-1-rt-infra");
         assert_eq!(w1.status.as_deref(), Some("completed"));
         assert_eq!(w1.tokens_saved, 300);
         assert_eq!(w1.retries, 1);
         // Duration spans the min/max of the token/retry events (10:00:05 → 10:01:00).
         assert!(w1.duration_ms >= 55_000);
 
-        let w2 = aggregate_wave(project, "wave-2-skill-template", 0);
+        let w2 = aggregate_wave(project, "wave-2-skill-template");
         assert_eq!(w2.status.as_deref(), Some("draft"));
         assert_eq!(w2.tokens_saved, 50);
         assert_eq!(w2.retries, 0);

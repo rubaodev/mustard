@@ -102,6 +102,9 @@ Review enters the same `wave-advance` loop: once every impl wave completes, `wav
 
 APPROVED (zero CRITICAL) → CLOSE. REJECTED (any CRITICAL) → fix agent dispatched (max 2 fix loops), then re-review.
 
+**7. Capabilities (OPTIONAL — only when this feature created/changed a user-visible behaviour):**
+Most small specs touch no capability — skip this. When the feature DID add or change one, author/update its durable capability doc: `mustard-rt run capability create --slug {slug} --title "{title}"`, then edit `.claude/capabilities/{slug}.md` (its `### Requirement:` / `#### Scenario:` blocks with when/then[/command] + `## Covers` entity links), and link it in the spec's `## Capabilities` section as a `- [[cap.{slug}]]` bullet. On CLOSE the merge folds each linked doc back (adds the `spec.*` backlink + emits `capability.declared`). Absent section = no-op.
+
 ### CLOSE Phase (collapses old COMPLETE)
 
 1. `mustard-rt run scan` (refresh `grain.model.json` if the codebase changed)

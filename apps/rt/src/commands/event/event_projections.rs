@@ -546,9 +546,11 @@ fn build_spec_node(
 
 /// `buildPRMetrics` — DORA-style metrics from `pr.opened` / `pr.merged` /
 /// `review.start` / `review.complete` events within the last `days`.
-fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64) -> Value {
+fn build_pr_metrics(events: &[HarnessEvent], cwd: &Path, days: i64, now_ms: i64) -> Value {
     let _ = cwd;
-    let now_ms = mustard_core::time::now_unix_millis() as u128 as i64;
+    // `now_ms` is injected (not read from the wall clock here) so the window is
+    // a pure function of the inputs — deterministically testable. The production
+    // caller passes `now_unix_millis()`.
     let from_ms = now_ms - days * 86_400_000;
     let in_window = |ts: &str| -> bool {
         mustard_core::time::parse_iso_millis(ts)
@@ -862,7 +864,7 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
         "pr-metrics" => {
             // `--wave` doubles as the optional `--days` window for this view.
             let days = wave.map_or(30, i64::from);
-            build_pr_metrics(&read_workspace_events(cwd), cwd, days)
+            build_pr_metrics(&read_workspace_events(cwd), cwd, days, mustard_core::time::now_unix_millis() as u128 as i64)
         }
         "active-pipelines" => build_active_pipelines(&read_workspace_events(cwd), cwd),
         other => json!({ "error": format!("Unknown view: {other}") }),
@@ -1345,7 +1347,14 @@ mod tests {
             },
         ];
         let dir = tempfile::tempdir().unwrap();
-        let m = build_pr_metrics(&events, dir.path(), 30);
+        // Deterministic window: anchor "now" just after the fixtures so the
+        // opened (2026-05-19T00:00Z, the `ev` default) and merged
+        // (2026-05-19T01:00Z) events both fall inside the 30-day window — no
+        // dependence on the wall clock. This test once rotted silently: the
+        // projection read the real clock, so once it passed 2026-05-19 + 30d the
+        // hardcoded fixtures fell out of the window and `opened` dropped to 0.
+        let now_ms = mustard_core::time::parse_iso_millis("2026-05-19T02:00:00.000Z").unwrap();
+        let m = build_pr_metrics(&events, dir.path(), 30, now_ms);
         assert_eq!(m["totals"]["opened"], json!(1));
         assert_eq!(m["totals"]["merged"], json!(1));
         assert_eq!(m["leadTimeMs"]["count"], json!(1));

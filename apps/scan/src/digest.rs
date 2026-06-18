@@ -91,6 +91,11 @@ pub struct SliceD {
     pub confidence: f32,
     pub entities: Vec<String>,
     pub optional_roles: Vec<String>,
+    /// Real file paths that EXEMPLIFY this slice — the "street": the actual
+    /// reference-implementation files to mirror, drawn from the convention's
+    /// exemplars (most complex first), deduped, capped. Lets a consumer go
+    /// straight to the files to copy instead of only the pattern name.
+    pub exemplar_files: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -263,11 +268,22 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // against the term index nor against paths/labels via `hit`. Natural-
     // language glue in the active languages (vendored stoplists) is dropped
     // by the same contract.
-    let ql: Vec<String> = terms
+    let mut ql: Vec<String> = terms
         .iter()
         .map(|s| s.trim().to_lowercase())
         .filter(|s| s.len() >= 3 && !stop.contains(s) && !ladder.query_stopword(s))
         .collect();
+    // Order-preserving dedup of the lowercased query tokens. The orchestration
+    // layer now passes the cross-lingual translation INSIDE the intent
+    // (`--intent "<PT words> <english translation>"`), so the same token often
+    // arrives twice; collapsing it to one keeps `report.terms` / `matched_terms`
+    // DISTINCT (a term is reported once) and saves redundant ladder work. A
+    // BTreeSet seen-guard (not `.dedup()`, which only folds ADJACENT dups)
+    // removes any repeat regardless of position; first occurrence wins, so the
+    // surviving order stays deterministic (stable tie-break, per the miner's
+    // contract).
+    let mut seen = BTreeSet::new();
+    ql.retain(|t| seen.insert(t.clone()));
     let qsigs: Vec<crate::matching::Sig> = ql.iter().map(|q| ladder.sig(q)).collect();
     // A name/path "hits" when any of its tokens matches any query token on
     // any rung of the ladder.
@@ -326,12 +342,25 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
     // byte-stable. A module enters ONLY through a term's declaration samples
     // (`catalog` filters machine-written out), so a path-only hub never anchors;
     // the grouped per-term evidence still rides in `report.terms[].files`.
+    //
+    // A declaration in a test/fixture file is honest EVIDENCE (it stays in
+    // `report.terms[].files`) but never an ANCHOR — you read and edit the
+    // production file, not its test, and a strong-by-coverage query whose rare
+    // terms only stem-collide inside tests/seeders (field case: sialia client
+    // tabs, `create`→`creates` in `*Tests.cs`) must not seat those as the files
+    // to touch. Skipped here via the canonical agnostic detector
+    // (`domain::ast::is_test_path` — dir-segment AND filename convention,
+    // polyglot), the same primitive the AST layer uses and the same stance the
+    // graph takes on its edges.
     let n_docs = model.modules.len();
     // path -> (Σ IDF ×1024 over the terms declaring it, best/lowest tier seen).
     let mut scored: std::collections::BTreeMap<String, (u64, u8)> = std::collections::BTreeMap::new();
     for (tier, t) in &matched {
         let idf = mustard_core::domain::ranking::idf_x1024(t.count, n_docs);
         for s in &t.samples {
+            if mustard_core::domain::ast::is_test_path(s) {
+                continue;
+            }
             let e = scored.entry(s.clone()).or_insert((0, u8::MAX));
             e.0 = e.0.saturating_add(idf);
             e.1 = e.1.min(*tier);
@@ -486,6 +515,24 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
             confidence: c.confidence,
             entities: c.entities.iter().take(5).cloned().collect(),
             optional_roles: c.optional_roles.clone(),
+            // The "street": the real files that exemplify this slice. Exemplars
+            // are stored simple→complex (mine.rs push order), so iterate in
+            // REVERSE to put the most complete reference first; DROP test/fixture
+            // files (you mirror the production file, not its test builder — the
+            // same `is_test_path` exclusion the anchors use); union across
+            // exemplars, DEDUP preserving order, cap at 4 paths.
+            exemplar_files: {
+                let mut seen = std::collections::HashSet::new();
+                c.exemplars
+                    .iter()
+                    .rev()
+                    .flat_map(|e| e.files.iter())
+                    .filter(|&f| !mustard_core::domain::ast::is_test_path(f))
+                    .filter(|f| seen.insert((*f).clone()))
+                    .take(4)
+                    .cloned()
+                    .collect()
+            },
         })
         .collect();
     slices.sort_by(|a, b| b.recurrence.cmp(&a.recurrence).then(a.label.cmp(&b.label)));

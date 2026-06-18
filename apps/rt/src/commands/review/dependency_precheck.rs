@@ -927,28 +927,37 @@ fn parse_wave_dir_number(dir_name: &str) -> Option<WaveNumber> {
 
 /// Dispatch `mustard-rt run dependency-precheck`.
 pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
-    let emit = |v: Value| {
+    let Some(spec_arg) = spec_arg else {
         // Single-line JSON for parser stability (orchestrator reads stdout).
-        println!("{v}");
+        println!(
+            "{}",
+            json!({
+                "missing": [],
+                "ok": true,
+                "promise_violations": [],
+                "spec": null,
+                "subproject": null,
+                "suggested_tactical_fix_files": [],
+                "would_be_created_here": [],
+                "error": "no-spec-arg",
+            })
+        );
+        return;
     };
+    println!("{}", check(spec_arg, subproject_override));
+}
 
+/// Compute the dependency-precheck report for a spec — the core of
+/// `dependency-precheck`, returned as the byte-stable JSON Value the CLI face
+/// prints. Extracted from [`run`] so `wave-advance` can embed the same verdict
+/// per impl wave (one annotation that rides in the round it already returns)
+/// instead of the orchestrator paying a separate CLI round-trip per wave.
+/// Identical logic and shape — single source of the precheck truth, honouring
+/// `MUSTARD_DEPENDENCY_PRECHECK_MODE` (`off` → forced `ok: true`).
+pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value {
     let mode = std::env::var("MUSTARD_DEPENDENCY_PRECHECK_MODE")
         .unwrap_or_else(|_| "block".to_string())
         .to_lowercase();
-
-    let Some(spec_arg) = spec_arg else {
-        emit(json!({
-            "missing": [],
-            "ok": true,
-            "promise_violations": [],
-            "spec": null,
-            "subproject": null,
-            "suggested_tactical_fix_files": [],
-            "would_be_created_here": [],
-            "error": "no-spec-arg",
-        }));
-        return;
-    };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let spec_path_raw = if Path::new(spec_arg).is_absolute() {
@@ -970,7 +979,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
         .map_or_else(|_| spec_arg.to_string(), |p| p.to_string_lossy().replace('\\', "/"));
 
     let Ok(spec_text) = fs::read_to_string(&spec_path) else {
-        emit(json!({
+        return json!({
             "missing": [],
             "ok": true,
             "promise_violations": [],
@@ -979,13 +988,12 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
             "suggested_tactical_fix_files": [],
             "would_be_created_here": [],
             "error": "spec-not-readable",
-        }));
-        return;
+        });
     };
 
     let files = parse_files_section(&spec_text);
     if files.is_empty() {
-        emit(json!({
+        return json!({
             "missing": [],
             "ok": true,
             "promise_violations": [],
@@ -994,8 +1002,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
             "suggested_tactical_fix_files": [],
             "would_be_created_here": [],
             "reason": "no-files-section",
-        }));
-        return;
+        });
     }
 
     let self_created = parse_self_created(&spec_text);
@@ -1112,7 +1119,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
         Vec::new()
     };
 
-    emit(json!({
+    json!({
         "missing": missing,
         "mode": mode,
         "ok": effective_ok,
@@ -1121,7 +1128,7 @@ pub fn run(spec_arg: Option<&str>, subproject_override: Option<&str>) {
         "subproject": subproject_field,
         "suggested_tactical_fix_files": suggested.into_iter().collect::<Vec<_>>(),
         "would_be_created_here": would_be_created_here.into_iter().collect::<Vec<_>>(),
-    }));
+    })
 }
 
 #[cfg(test)]

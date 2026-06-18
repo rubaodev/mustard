@@ -48,6 +48,16 @@ Signals are heuristics — the pipeline detects what makes sense for the project
 
 **Verdict rule:** a runtime symptom the user reported cannot be refuted by static reading — a subagent may say "origin not located", never "it does not exist". When a subagent's conclusion contradicts what the user observed (or any established fact), verify by reading directly before relaying it.
 
+## Efficiency — never pay twice for the same tokens
+
+The biggest cost in this pipeline is **re-fetching data you ALREADY HOLD**. Before any Read/Grep/Bash, ask "is this already in my context?" — if yes, USE it, never re-fetch.
+
+- **Trust a subagent's briefing** — it IS the answer you act on (Anthropic's sub-agent contract: a condensed summary), not a hint to re-verify. NEVER re-Grep/re-Read to re-confirm a finding it gave with `file:line`. Re-read directly ONLY for the Verdict rule above (a conclusion that contradicts the user, or an absence claim) — that re-verification of already-answered findings is the single biggest waste here.
+- **Run a deterministic command ONCE** — a `mustard-rt run …` output is deterministic: capture it to a file once, then read/slice the FILE. NEVER re-run the same command to read a different part (each re-run re-computes it and re-floods your context).
+- **Never re-Read an unchanged file** already in context this turn, and never Read back a spec/scaffold/`meta.json` you just wrote (Write/Edit already confirmed it).
+- **One precise search, not many widening ones** — settle a question with a single targeted Grep/Glob, not 3-4 near-identical refinements.
+- **Standard shell commands go through `rtk`** (`rtk git`, `rtk grep`, `rtk ls`, `rtk cat`, `rtk head`/`tail`/`wc`, `rtk cargo`) — a token-filtering wrapper (60-90% off those outputs) and a hard mustard dependency. `mustard-rt run …` stays BARE (its JSON is byte-stable and rtk has no filter for it). Do not pipe a `mustard-rt run` digest through bare `head`/`grep` to slice it — capture to a file and read the file (see "run a deterministic command ONCE" above). Seeing `[rtk] No hook installed` printed before a command's output is NOT "rtk is off" — it means rtk DID run (the gate's wrap worked) and the savings are active; it is rtk nagging about its optional shell auto-hook, harmless, ignore it. Never conclude "the economy is not active" from that banner.
+
 ## Pipeline Phases
 
 Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE` for roadmaps). Single source of truth: `refs/canonical-phases.md`.

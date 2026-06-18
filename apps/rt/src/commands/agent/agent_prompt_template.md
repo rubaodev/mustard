@@ -24,8 +24,9 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 ## EFFICIENCY
 - Absolute paths, no cd
 - Read each file once
+- Start from the anchors/context already handed to you above (`## REFERENCE`, `## TASK`) — do NOT re-derive or re-Grep what you were given; locate from them, then read
 - Max 3 build attempts, then STOP + report
-- Return cap: follow pipeline-config.md Max Return limits (impl 40, explore 30, review 60, plan 80 lines). Focus on: files changed + non-obvious decisions + blockers only.
+- Return cap: follow pipeline-config.md Max Return limits (impl 40, explore 30, review 60, plan 80 lines). Return a condensed summary (files changed + non-obvious decisions + blockers) — not a re-grounding of what you read.
 
 ## CROSS-WAVE MEMORY
 {cross_wave_memory}

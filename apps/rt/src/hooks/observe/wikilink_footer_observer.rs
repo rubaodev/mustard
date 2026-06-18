@@ -1,5 +1,5 @@
 //! `wikilink_footer_observer` — PostToolUse(Write|Edit) auto-footer renderer for
-//! `.claude/{memory,knowledge,spec}/**/*.md` files.
+//! `.claude/{memory,knowledge,spec,capabilities,graph}/**/*.md` files.
 //!
 //! ## Scope (W3E, wave-11-rt of `2026-05-26-no-sqlite-git-source-of-truth`)
 //!
@@ -44,8 +44,9 @@ fn file_path_of(input: &HookInput) -> Option<String> {
 }
 
 
-/// Detect whether `path` lives under one of `.claude/{memory,knowledge,spec}/`
-/// **and** ends in `.md`. Works with forward- or back-slash separators.
+/// Detect whether `path` lives under one of
+/// `.claude/{memory,knowledge,spec,capabilities,graph}/` **and** ends in `.md`.
+/// Works with forward- or back-slash separators.
 fn is_atomic_md_path(path: &Path) -> bool {
     // Normalise to forward slashes for the substring check; the path may be
     // absolute (`C:\…`) or relative (`.claude/memory/foo.md`).
@@ -56,17 +57,25 @@ fn is_atomic_md_path(path: &Path) -> bool {
     normalised.contains("/.claude/memory/")
         || normalised.contains("/.claude/knowledge/")
         || normalised.contains("/.claude/spec/")
+        || normalised.contains("/.claude/capabilities/")
+        || normalised.contains("/.claude/graph/")
         // Also accept the bare-prefix case (relative path that does not start
         // with `/`): e.g. `.claude/memory/foo.md`.
         || normalised.starts_with(".claude/memory/")
         || normalised.starts_with(".claude/knowledge/")
         || normalised.starts_with(".claude/spec/")
+        || normalised.starts_with(".claude/capabilities/")
+        || normalised.starts_with(".claude/graph/")
 }
 
 /// Compute the search-dir set the renderer resolves wikilinks against.
 ///
-/// All three canonical trees are searched in order: `memory/`, `knowledge/`,
-/// `spec/`. Missing directories are tolerated by `resolve` (it returns `None`).
+/// All canonical trees are searched in order: `memory/`, `knowledge/`,
+/// `spec/`, `capabilities/`, `graph/`. Missing directories are tolerated by
+/// `resolve` (it returns `None`), so adding `graph/` ahead of the next task
+/// is harmless. Searching `capabilities/`/`graph/` lets a `[[cap.X]]` or
+/// `[[rt.entity.Y]]` link resolve to a capability/graph node by frontmatter
+/// `id:` just like a spec reference does.
 fn search_dirs(project: &str) -> Vec<PathBuf> {
     let claude = match ClaudePaths::for_project(project) {
         Ok(p) => p,
@@ -77,6 +86,8 @@ fn search_dirs(project: &str) -> Vec<PathBuf> {
         claude_dir.join("memory"),
         claude_dir.join("knowledge"),
         claude.spec_dir(),
+        claude.capabilities_dir(),
+        claude.graph_dir(),
     ]
 }
 
@@ -152,6 +163,15 @@ mod tests {
             "/repo/.claude/spec/2026-05-26/spec.md"
         )));
         assert!(is_atomic_md_path(Path::new(".claude/memory/baz.md")));
+        // Capability docs + graph nodes are also covered.
+        assert!(is_atomic_md_path(Path::new(
+            "/repo/.claude/capabilities/durable-store.md"
+        )));
+        assert!(is_atomic_md_path(Path::new(".claude/capabilities/x.md")));
+        assert!(is_atomic_md_path(Path::new(
+            "/repo/.claude/graph/rt.entity.user.md"
+        )));
+        assert!(is_atomic_md_path(Path::new(".claude/graph/node.md")));
     }
 
     #[test]
@@ -200,6 +220,47 @@ mod tests {
         assert!(
             rewritten.contains("⚠ unresolved"),
             "orphan annotation must be present: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn observe_stamps_capability_doc_resolving_against_capabilities_dir() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let caps_dir = project.join(".claude").join("capabilities");
+        fs::create_dir_all(&caps_dir).unwrap();
+
+        // A sibling capability the `[[cap.knowledge]]` link must resolve to,
+        // matched by its frontmatter `id:` (filename differs).
+        fs::write(
+            caps_dir.join("knowledge.md"),
+            "---\nid: cap.knowledge\nstatus: active\n---\n# Knowledge\n",
+        )
+        .unwrap();
+
+        // The capability doc we simulate a Write on, linking a sibling + a ghost.
+        let doc = caps_dir.join("durable-store.md");
+        fs::write(
+            &doc,
+            "---\nid: cap.durable-store\n---\n# Durable store\n\n## Related\n- [[cap.knowledge]]\n- [[cap.ghost]]\n",
+        )
+        .unwrap();
+
+        WikilinkFooterObserver.observe(
+            &write_input(doc.to_str().unwrap()),
+            &ctx(project.to_str().unwrap()),
+        );
+
+        let rewritten = fs::read_to_string(&doc).unwrap();
+        assert!(rewritten.contains("<!-- wikilinks-footer-start -->"));
+        // The sibling resolves (by frontmatter id) and the ghost is flagged.
+        assert!(
+            rewritten.contains("[cap.knowledge](knowledge.md)"),
+            "cap link must resolve against capabilities/: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("⚠ unresolved"),
+            "unknown cap link must be flagged: {rewritten}"
         );
     }
 

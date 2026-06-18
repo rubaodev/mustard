@@ -2314,9 +2314,12 @@ fn dashboard_wikilink_extract(
     spec_views::dashboard_wikilink_extract_run(&repo_path, &spec_name)
 }
 
-/// Wave 3 (2026-05-20) — shell out to `mustard-rt run memory cross-wave
-/// --spec <name> --wave <n>` and return the markdown stdout. Empty string
-/// when there is no cross-wave memory yet (the common case for early waves).
+/// Cross-wave memory for a spec — shells out to `mustard-rt run memory search
+/// --spec <name>` (the live unified knowledge store) and returns a markdown
+/// block of the spec's accumulated memory across its waves, ranked by recall.
+/// Empty string when there is none yet (the common case for early waves). The
+/// `wave` arg is retained for the frontend contract but no longer narrows the
+/// query — the live verb returns the spec's full memory regardless of wave.
 #[tauri::command]
 fn dashboard_memory_cross_wave(
     repo_path: String,

@@ -333,11 +333,11 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
         ("placeholder.fill_files", Locale::EnUs) => "fill in affected files.",
 
-        // Trackable `## Checklist` item labels (`spec_draft::build_checklist`).
-        // `touch_file` carries a ` → <path>` auto-mark anchor; `first_task` is
-        // the path-less fallback when the scan surfaced no precedent.
-        ("checklist.touch_file", Locale::PtBr) => "Implementar a mudança em",
-        ("checklist.touch_file", Locale::EnUs) => "Implement the change in",
+        // Trackable `## Checklist` item label (`spec_draft::build_checklist`).
+        // `first_task` is the single hand-trackable task the draft seeds; the
+        // draft no longer materialises per-anchor `touch_file` items (a digest
+        // anchor is a READ candidate, never an implementation target — seeding
+        // write-tracking from it baked lexical noise into the artifact).
         ("checklist.first_task", Locale::PtBr) => "T1 — primeira tarefa rastreável.",
         ("checklist.first_task", Locale::EnUs) => "T1 — first trackable task.",
 

@@ -207,6 +207,12 @@ pub struct SliceHit {
     pub recurrence: usize,
     #[serde(default)]
     pub entities: Vec<String>,
+    /// Real file paths that exemplify this slice (the reference-implementation
+    /// files to mirror), passed through verbatim from the scan digest's
+    /// per-slice `exemplar_files`. `default` so an older scan payload without
+    /// the field still deserializes (empty).
+    #[serde(default)]
+    pub exemplar_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

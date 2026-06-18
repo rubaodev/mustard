@@ -22,11 +22,14 @@
 
 use crate::shared::context::session_id;
 use mustard_core::io::fs;
-use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
+use mustard_core::view::projection::{read_harness_events_from_ndjson_dir, read_workspace_events};
 use mustard_core::ClaudePaths;
+use mustard_core::domain::capability::{
+    diff_requirements, CapabilityDeclared, EVENT_CAPABILITY_DECLARED, EVENT_CAPABILITY_UPDATE,
+};
 use mustard_core::domain::model::event::{
-    EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS, PipelineCompletePayload,
-    PipelineStatusPayload,
+    Actor, ActorKind, HarnessEvent, EVENT_PIPELINE_COMPLETE, EVENT_PIPELINE_STATUS,
+    PipelineCompletePayload, PipelineStatusPayload, SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -220,6 +223,14 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
     // Fail-open: a missing spec dir or write error is a silent no-op.
     crate::commands::event::emit_pipeline::patch_meta_complete(cwd, spec, &now);
 
+    // Merge-on-close: for every `cap.{slug}` linked in the spec's
+    // `## Capabilities` section whose doc exists, ensure the spec backlink and
+    // emit a `capability.declared` carrying the capability's current state. The
+    // capability DOC is the living source — we never parse delta lines.
+    // FAIL-OPEN: any capability error here is swallowed; the close already
+    // landed above and must succeed regardless.
+    merge_capabilities_on_close(cwd, spec, &now);
+
     // Drop the session→spec binding now that the spec is terminal: events in
     // the gap after the close must not inherit this just-finished spec. Only on
     // the completed close, and only when a real session is resolvable (a
@@ -235,6 +246,145 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
     })
 }
 
+
+// ---------------------------------------------------------------------------
+// Merge-on-close — fold the spec's declared capabilities into their docs.
+//
+// Analogous to OpenSpec's `archive`: when a spec closes, the capabilities it
+// authored are folded back into the durable record. The capability DOC under
+// `.claude/capabilities/{slug}.md` is the single living source — we read its
+// CURRENT full state and re-publish it, never parsing fragile delta lines.
+// ---------------------------------------------------------------------------
+
+/// For every `cap.{slug}` linked in `<spec>/spec.md`'s `## Capabilities`
+/// section whose `.claude/capabilities/{slug}.md` exists:
+///   1. ensure the capability's `specs` backlink includes `spec.{spec}` (load
+///      via `capability::parse`, add if absent, dedup + sort, re-render + atomic
+///      write ONLY when changed), then
+///   2. **compute** the per-requirement change-log by diffing the doc's CURRENT
+///      state against the capability's PRIOR declared snapshot
+///      ([`diff_requirements`]) and emit one `capability.update` per delta
+///      (Added / Modified / Removed) — the change-log is computed, never
+///      hand-authored as fragile delta lines, then
+///   3. emit `capability.declared` carrying the CURRENT full state, attributed
+///      to this spec, so the projection folds it (newest declaration wins).
+///
+/// Order is updates-then-declared. First declaration (no prior snapshot) ⇒
+/// `diff_requirements` returns empty ⇒ only `capability.declared` (creation is
+/// carried by the snapshot, not per-requirement Added noise).
+///
+/// PRIOR state is read ONCE before the loop from the workspace events
+/// ([`read_workspace_events`] over `project_capabilities`) — the doc snapshot is
+/// authoritative, so the prior `capability.declared` (from whatever spec last
+/// declared it) is the baseline. Reading once is correct: the snapshot we emit
+/// in this loop for one capability never feeds another capability's `prev`.
+///
+/// A linked `cap.*` whose doc is missing is skipped + warned (never invents a
+/// doc). FAIL-OPEN: every error path is a `continue` / silent no-op — this can
+/// never block the close, which has already landed by the time it runs.
+fn merge_capabilities_on_close(cwd: &Path, spec: &str, ts: &str) {
+    let linked = crate::commands::capability::linked_capability_ids(cwd, spec);
+    if linked.is_empty() {
+        return; // no `## Capabilities` section (or no `cap.*` links) ⇒ no-op.
+    }
+
+    let Ok(paths) = ClaudePaths::for_project(cwd) else {
+        return;
+    };
+    let caps_dir = paths.capabilities_dir();
+    let spec_backlink = format!("spec.{spec}");
+
+    // Prior state per capability, read ONCE: the last declared snapshot for each
+    // id (doc-faithful baseline for the computed delta). `None` for any id never
+    // declared before ⇒ first declaration ⇒ empty delta.
+    //
+    // Sort by `ts` before folding: `read_workspace_events` returns events in
+    // filesystem (read_dir) order across spec dirs, but `project_capabilities`
+    // is event-order-faithful ("newest declaration wins"), so the caller must
+    // feed chronological order — the same discipline epic_fold / verify_emit use.
+    let mut workspace = read_workspace_events(cwd);
+    workspace.sort_by(|a, b| a.ts.cmp(&b.ts));
+    let prior = mustard_core::view::projection::project_capabilities(&workspace);
+    let prior_of = |id: &str| -> Option<mustard_core::domain::capability::Capability> {
+        prior
+            .capabilities
+            .iter()
+            .find(|c| c.capability.id == id)
+            .map(|c| c.capability.clone())
+    };
+
+    for id in linked {
+        // `cap.{slug}` → `{slug}` (the doc file stem). A malformed id with no
+        // slug after the prefix is skipped.
+        let Some(slug) = id.strip_prefix("cap.").map(str::trim).filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let doc_path = caps_dir.join(format!("{slug}.md"));
+        if !fs::exists(&doc_path) {
+            // Linked but missing — do NOT invent a doc; surface a warning.
+            eprintln!(
+                "[complete-spec] capability {id} linked by spec {spec} has no doc at {} — skipped",
+                doc_path.display()
+            );
+            continue;
+        }
+        let Ok(md) = fs::read_to_string(&doc_path) else {
+            continue; // unreadable ⇒ fail-open skip.
+        };
+
+        // The doc is the living source: parse its CURRENT state.
+        let mut cap = crate::commands::capability::parse(&md);
+
+        // 1. Ensure the spec backlink (dedup + sorted); re-render ONLY if it
+        //    actually changed so an unrelated re-close is byte-stable.
+        if !cap.specs.iter().any(|s| s == &spec_backlink) {
+            cap.specs.push(spec_backlink.clone());
+            cap.specs.sort();
+            cap.specs.dedup();
+            let body = crate::commands::capability::render(&cap);
+            let _ = fs::write_atomic(&doc_path, body.as_bytes());
+        }
+
+        // 2. COMPUTE the per-requirement change-log against the prior snapshot
+        //    and emit one `capability.update` per delta (updates BEFORE the
+        //    declared snapshot). First declaration ⇒ empty ⇒ no updates.
+        let prev = prior_of(&id);
+        for delta in diff_requirements(prev.as_ref(), &cap) {
+            let payload = serde_json::to_value(delta).unwrap_or(Value::Null);
+            emit_capability_event(cwd, spec, ts, EVENT_CAPABILITY_UPDATE, payload);
+        }
+
+        // 3. Emit `capability.declared` with the capability's current full state,
+        //    attributed to this spec. The projection folds it (newest wins), so
+        //    the event log + recall reflect the capability as of this close.
+        let payload = serde_json::to_value(CapabilityDeclared { capability: cap })
+            .unwrap_or(Value::Null);
+        emit_capability_event(cwd, spec, ts, EVENT_CAPABILITY_DECLARED, payload);
+    }
+}
+
+/// Route one `capability.*` event for `spec` through the canonical sink. Shared
+/// by the computed `capability.update` deltas and the `capability.declared`
+/// snapshot so the envelope (actor / spec attribution / ts) is built once.
+/// Fail-open: a routing error is swallowed by the caller's discard.
+fn emit_capability_event(cwd: &Path, spec: &str, ts: &str, event_name: &str, payload: Value) {
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: ts.to_string(),
+        session_id: session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("complete-spec".to_string()),
+            actor_type: None,
+        },
+        event: event_name.to_string(),
+        payload,
+        spec: Some(spec.to_string()),
+    };
+    let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
+}
 
 /// `--archive` — idempotent alias of the single complete. Re-runs
 /// [`mark_complete`] (a no-op flip when the spec is already terminal) and drops
@@ -371,7 +521,308 @@ fn run_qa_fail_open(_cwd: &Path, spec: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::domain::capability::{Capability, CapabilityUpdate, Requirement, Scenario};
+    use mustard_core::view::projection::project_capabilities;
     use tempfile::tempdir;
+
+    /// Seed `<cwd>/.claude/spec/{spec}/spec.md` with `body`.
+    fn seed_spec_md(cwd: &Path, spec: &str, body: &str) {
+        let dir = cwd.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), body).unwrap();
+    }
+
+    /// Seed `<cwd>/.claude/capabilities/{slug}.md` from a `Capability`.
+    fn seed_capability(cwd: &Path, slug: &str, cap: &Capability) {
+        let dir = cwd.join(".claude").join("capabilities");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{slug}.md")),
+            crate::commands::capability::render(cap),
+        )
+        .unwrap();
+    }
+
+    fn sample_cap(slug: &str) -> Capability {
+        Capability {
+            id: format!("cap.{slug}"),
+            title: "Sample capability".into(),
+            status: "active".into(),
+            requirements: vec![Requirement {
+                statement: "The system SHALL do the thing.".into(),
+                scenarios: vec![Scenario {
+                    name: "happy".into(),
+                    when: "x".into(),
+                    then: "y".into(),
+                    command: Some("true".into()),
+                }],
+            }],
+            ..Capability::default()
+        }
+    }
+
+    /// On close, a spec linking `[[cap.x]]` (doc present) gains the `spec.*`
+    /// backlink in the capability doc AND emits a `capability.declared` event
+    /// the projection folds (newest-declaration-wins) to the current state.
+    #[test]
+    fn close_merges_linked_capability_backlink_and_declares() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "invoicing-feature";
+
+        seed_capability(cwd, "invoicing", &sample_cap("invoicing"));
+        seed_spec_md(
+            cwd,
+            spec,
+            "# Invoicing\n\nNarrative.\n\n## Capabilities\n- [[cap.invoicing]]\n",
+        );
+
+        mark_complete(cwd, spec);
+
+        // 1. The capability doc gained the spec backlink (dedup + sorted).
+        let cap_md = std::fs::read_to_string(
+            cwd.join(".claude").join("capabilities").join("invoicing.md"),
+        )
+        .unwrap();
+        let cap = crate::commands::capability::parse(&cap_md);
+        assert_eq!(
+            cap.specs,
+            vec!["spec.invoicing-feature".to_string()],
+            "spec backlink added to the capability doc"
+        );
+
+        // 2. A `capability.declared` event landed under the spec; the projection
+        //    folds it to the capability's current full state.
+        let events = read_events_for_spec(cwd, spec);
+        assert!(
+            events.iter().any(|e| e.event == EVENT_CAPABILITY_DECLARED),
+            "capability.declared emitted on close"
+        );
+        // First declaration ⇒ NO computed `capability.update` (creation rides on
+        // the snapshot, not per-requirement Added noise).
+        assert!(
+            !events.iter().any(|e| e.event == EVENT_CAPABILITY_UPDATE),
+            "first declaration emits no capability.update deltas"
+        );
+        let rollup = project_capabilities(&events);
+        assert_eq!(rollup.capabilities.len(), 1, "projection shows the capability");
+        let st = &rollup.capabilities[0];
+        assert_eq!(st.capability.id, "cap.invoicing");
+        assert_eq!(st.capability.title, "Sample capability");
+        assert!(st.history.is_empty(), "no change-log on first declaration");
+        // The declared state carries the backlink we just wrote.
+        assert_eq!(st.capability.specs, vec!["spec.invoicing-feature".to_string()]);
+        // Attribution: the event envelope names the spec.
+        let declared = events
+            .iter()
+            .find(|e| e.event == EVENT_CAPABILITY_DECLARED)
+            .unwrap();
+        assert_eq!(declared.spec.as_deref(), Some(spec));
+    }
+
+    /// End-to-end computed delta convention across three closes against one
+    /// living capability doc (the doc is the single source; the change-log is
+    /// COMPUTED by diffing on close):
+    ///   - spec A declares the cap (R1) → only `capability.declared`, no update.
+    ///   - spec B closes after the doc grew to R1+R2 → one
+    ///     `capability.update{Added: R2}` + `declared`; projection state = {R1,R2}
+    ///     with history ending in [Added R2].
+    ///   - spec C closes after the doc dropped R1 → `update{Removed: R1}`;
+    ///     projection state = {R2}.
+    ///
+    /// Drives `merge_capabilities_on_close` with explicit, strictly increasing
+    /// timestamps so the prior-snapshot fold (`project_capabilities` is
+    /// newest-declaration-wins, hence `ts`-order-sensitive) is deterministic —
+    /// `mark_complete`'s wall-clock `ts` would tie across same-millisecond
+    /// closes. The full diff → emit → project path is exercised verbatim.
+    #[test]
+    fn close_computes_capability_delta_against_prior_declaration() {
+        use mustard_core::domain::capability::UpdateOp;
+
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+
+        let req = |s: &str| Requirement { statement: s.into(), scenarios: vec![] };
+        let doc_path = cwd.join(".claude").join("capabilities").join("orders.md");
+        let updates_in = |spec: &str| -> Vec<(UpdateOp, String)> {
+            read_events_for_spec(cwd, spec)
+                .into_iter()
+                .filter(|e| e.event == EVENT_CAPABILITY_UPDATE)
+                .map(|e| {
+                    let u: CapabilityUpdate =
+                        serde_json::from_value(e.payload).unwrap_or_default();
+                    (u.op, u.requirement.statement)
+                })
+                .collect()
+        };
+        // Workspace projection over `ts`-sorted events (the same discipline the
+        // production close uses) — deterministic newest-declaration-wins.
+        let project_workspace = || {
+            let mut ws = read_workspace_events(cwd);
+            ws.sort_by(|a, b| a.ts.cmp(&b.ts));
+            project_capabilities(&ws)
+        };
+
+        // --- spec A: first declaration (doc has R1 only) -------------------
+        let mut cap = Capability { id: "cap.orders".into(), ..Capability::default() };
+        cap.requirements = vec![req("R1")];
+        seed_capability(cwd, "orders", &cap);
+        seed_spec_md(cwd, "spec-a", "# A\n\n## Capabilities\n- [[cap.orders]]\n");
+        merge_capabilities_on_close(cwd, "spec-a", "2026-06-17T00:00:01.000Z");
+
+        assert!(updates_in("spec-a").is_empty(), "first declaration ⇒ no delta");
+        assert!(
+            read_events_for_spec(cwd, "spec-a")
+                .iter()
+                .any(|e| e.event == EVENT_CAPABILITY_DECLARED),
+            "spec A still emits the declared snapshot (creation)"
+        );
+
+        // --- spec B: doc now R1+R2 → Added R2 ------------------------------
+        // The doc is the living source: grow it, then close spec B.
+        cap = crate::commands::capability::parse(&std::fs::read_to_string(&doc_path).unwrap());
+        cap.requirements = vec![req("R1"), req("R2")];
+        std::fs::write(&doc_path, crate::commands::capability::render(&cap)).unwrap();
+        seed_spec_md(cwd, "spec-b", "# B\n\n## Capabilities\n- [[cap.orders]]\n");
+        merge_capabilities_on_close(cwd, "spec-b", "2026-06-17T00:00:02.000Z");
+
+        assert_eq!(
+            updates_in("spec-b"),
+            vec![(UpdateOp::Added, "R2".to_string())],
+            "exactly one Added(R2) delta on spec B"
+        );
+        // Updates precede the declared snapshot in the event stream.
+        let b_events = read_events_for_spec(cwd, "spec-b");
+        let upd_pos = b_events.iter().position(|e| e.event == EVENT_CAPABILITY_UPDATE);
+        let dec_pos = b_events.iter().position(|e| e.event == EVENT_CAPABILITY_DECLARED);
+        assert!(upd_pos < dec_pos, "capability.update emitted before capability.declared");
+
+        // Workspace projection: current state = {R1,R2}; history = [Added R2].
+        let st = project_workspace()
+            .capabilities
+            .into_iter()
+            .find(|c| c.capability.id == "cap.orders")
+            .expect("capability present");
+        let state_reqs: Vec<&str> =
+            st.capability.requirements.iter().map(|r| r.statement.as_str()).collect();
+        assert_eq!(state_reqs, vec!["R1", "R2"], "state from declared snapshot");
+        assert_eq!(st.history.len(), 1, "one change-log entry across all closes so far");
+        assert_eq!(st.history[0].op, UpdateOp::Added);
+        assert_eq!(st.history[0].requirement.statement, "R2");
+        assert_eq!(st.history[0].spec.as_deref(), Some("spec-b"));
+
+        // --- spec C: doc now R2 only → Removed R1 --------------------------
+        cap = crate::commands::capability::parse(&std::fs::read_to_string(&doc_path).unwrap());
+        cap.requirements = vec![req("R2")];
+        std::fs::write(&doc_path, crate::commands::capability::render(&cap)).unwrap();
+        seed_spec_md(cwd, "spec-c", "# C\n\n## Capabilities\n- [[cap.orders]]\n");
+        merge_capabilities_on_close(cwd, "spec-c", "2026-06-17T00:00:03.000Z");
+
+        assert_eq!(
+            updates_in("spec-c"),
+            vec![(UpdateOp::Removed, "R1".to_string())],
+            "exactly one Removed(R1) delta on spec C"
+        );
+        // Final state = {R2}; full change-log = [Added R2, Removed R1].
+        let st = project_workspace()
+            .capabilities
+            .into_iter()
+            .find(|c| c.capability.id == "cap.orders")
+            .expect("capability present");
+        let state_reqs: Vec<&str> =
+            st.capability.requirements.iter().map(|r| r.statement.as_str()).collect();
+        assert_eq!(state_reqs, vec!["R2"], "newest declared snapshot wins");
+        let log: Vec<(UpdateOp, &str)> =
+            st.history.iter().map(|h| (h.op, h.requirement.statement.as_str())).collect();
+        assert_eq!(
+            log,
+            vec![(UpdateOp::Added, "R2"), (UpdateOp::Removed, "R1")],
+            "history is the full computed change-log in event order"
+        );
+    }
+
+    /// Re-closing a spec whose backlink already exists does NOT rewrite the doc
+    /// (byte-stable) but still re-declares (idempotent on the projection).
+    #[test]
+    fn close_is_idempotent_on_capability_doc() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "idem-feature";
+
+        let mut cap = sample_cap("idem");
+        cap.specs = vec!["spec.idem-feature".into()]; // backlink already present.
+        seed_capability(cwd, "idem", &cap);
+        let before =
+            std::fs::read_to_string(cwd.join(".claude").join("capabilities").join("idem.md"))
+                .unwrap();
+        seed_spec_md(cwd, spec, "# Idem\n\n## Capabilities\n- [[cap.idem]]\n");
+
+        // Call the merge directly (mark_complete short-circuits a 2nd close).
+        merge_capabilities_on_close(cwd, spec, "2026-06-17T00:00:00Z");
+        let after =
+            std::fs::read_to_string(cwd.join(".claude").join("capabilities").join("idem.md"))
+                .unwrap();
+        assert_eq!(before, after, "no rewrite when the backlink is already present");
+    }
+
+    /// A linked-but-missing capability is skipped and the close still succeeds
+    /// (no doc invented, no panic, projection has nothing to show).
+    #[test]
+    fn close_skips_missing_capability_doc_and_still_completes() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "ghost-feature";
+
+        // Link a capability whose doc was never authored.
+        seed_spec_md(cwd, spec, "# Ghost\n\n## Capabilities\n- [[cap.ghost]]\n");
+
+        let out = mark_complete(cwd, spec);
+        assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true), "close succeeds");
+
+        // No doc was invented.
+        assert!(
+            !cwd.join(".claude").join("capabilities").join("ghost.md").exists(),
+            "missing capability doc must NOT be invented"
+        );
+        // No capability.declared event for the missing cap.
+        let events = read_events_for_spec(cwd, spec);
+        assert!(
+            !events.iter().any(|e| e.event == EVENT_CAPABILITY_DECLARED),
+            "missing capability ⇒ no declared event"
+        );
+        // The spec still reached `completed`.
+        let view = crate::commands::event::event_projections::pipeline_state_from_events(
+            &events, spec, None,
+        )
+        .expect("projection exists after close");
+        assert_eq!(view.status.as_deref(), Some("completed"));
+    }
+
+    /// A spec with no `## Capabilities` section is a clean no-op: no
+    /// capability.* events, no error, close completes.
+    #[test]
+    fn close_with_no_capabilities_section_is_a_noop() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "plain-feature";
+
+        seed_spec_md(cwd, spec, "# Plain\n\nJust narrative, no capabilities.\n");
+
+        let out = mark_complete(cwd, spec);
+        assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
+
+        let events = read_events_for_spec(cwd, spec);
+        assert!(
+            !events.iter().any(|e| e.event.starts_with("capability.")),
+            "no capabilities section ⇒ no capability.* events"
+        );
+        assert!(project_capabilities(&events).capabilities.is_empty());
+        let view = crate::commands::event::event_projections::pipeline_state_from_events(
+            &events, spec, None,
+        )
+        .expect("projection exists after close");
+        assert_eq!(view.status.as_deref(), Some("completed"));
+    }
 
     #[test]
     fn parse_iso_millis_round_trips() {

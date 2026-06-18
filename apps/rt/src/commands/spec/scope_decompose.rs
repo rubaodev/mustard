@@ -10,7 +10,8 @@
 //! is that every Full spec has ≥1 wave: the parent spec is the *orchestrator*,
 //! the wave is the executing *subagent*. So `decompose: false` for a Full spec
 //! means **one** wave, never zero. Callers map the verdict to a wave count via
-//! [`wave_floor_for_full`], which floors a Full spec at 1. (Light is unchanged
+//! [`wave_floor_for_full`], which floors a Full spec at 1 (single-wave) or 2
+//! (multi-wave). (Light is unchanged
 //! — a single spec with an inline checklist, no waves.)
 //!
 //! ## Two input paths
@@ -236,18 +237,27 @@ pub fn decide(input: &Value) -> Value {
 ///   NOT zero. A Full spec is never wave-less; "reject decomposition" collapses
 ///   to a single wave, not to a wave-less parent.
 /// - `decompose == true` (multi-layer / roadmap / history / wide-and-new) ⇒ the
-///   floor is still ≥ 1; the caller picks the actual N (≥ 2 in practice) from
-///   the plan it builds. This helper only guarantees the spec never floors
-///   below 1.
+///   floor is **2** — a multi-wave spec cannot floor at 1, and emitting `1`
+///   beside `decompose:true` made the number contradict the verdict. The caller
+///   still picks the actual N (≥ 2) from the plan it builds; this helper only
+///   guarantees the emitted count never lies about single-vs-multi.
 ///
 /// Light scope does not call this — Light is a single spec with an inline
 /// checklist and no waves.
 #[must_use]
 pub fn wave_floor_for_full(decompose: bool) -> u32 {
-    // Either way a Full spec floors at 1 wave; a multi-wave decision lets the
-    // caller raise N above this floor. The floor is the load-bearing invariant.
-    let _ = decompose;
-    1
+    // A single-wave Full spec floors at 1 (parent orchestrator + one subagent
+    // wave); a multi-wave verdict (`decompose:true`) floors at 2. A "multi"
+    // decision that still emitted `waves:1` contradicted itself and misled the
+    // reader into distrusting the number (field case: a 9-layer feature came
+    // back `decompose:true` beside `waves:1`, so the orchestrator overrode it by
+    // hand). The caller still raises N above this floor from the plan it builds;
+    // the floor only guarantees the emitted count never lies about single-vs-multi.
+    if decompose {
+        2
+    } else {
+        1
+    }
 }
 
 /// Compute the deterministic signals JSON for `spec_text`, resolving overrides
@@ -719,8 +729,9 @@ pub fn decide_from_spec(spec_file: &Path) -> Value {
 /// (waves):
 ///   - `scope`: light | extended-light | full
 ///   - `decompose` / `reason`: the multi-vs-single-wave decision (from `decide`)
-///   - `waves`: the wave-count FLOOR — `wave_floor_for_full` for Full (1; a
-///     `decompose:true` tells the Plan agent to raise N), `0` for light
+///   - `waves`: the wave-count FLOOR — `wave_floor_for_full` for Full (1 single-
+///     wave, 2 when `decompose:true` so the number agrees with the verdict; the
+///     Plan agent raises N above the floor), `0` for light
 ///   - `signals` + `filesSectionEmpty`: identical to `scope-classify`
 ///
 /// Fail-open: an unreadable spec yields the conservative `full` / single-wave
@@ -851,10 +862,11 @@ mod tests {
         assert_eq!(prep["decompose"], decide["decompose"], "decompose must match scope-decompose: {prep}");
         assert_eq!(prep["reason"], decide["reason"], "reason must match scope-decompose: {prep}");
         assert_eq!(prep["signals"]["layerCount"], classify["signals"]["layerCount"], "signals shared: {prep}");
-        // Multi-layer ⇒ full + decompose + a wave floor ≥ 1.
+        // Multi-layer ⇒ full + decompose + a wave floor of 2 (the number must
+        // agree with the multi verdict, not show the misleading 1).
         assert_eq!(prep["scope"], json!("full"));
         assert_eq!(prep["decompose"], json!(true));
-        assert!(prep["waves"].as_u64().unwrap_or(0) >= 1, "Full floors at >=1 wave: {prep}");
+        assert_eq!(prep["waves"].as_u64().unwrap_or(0), 2, "multi-layer Full shows waves:2: {prep}");
 
         // A genuinely tiny spec (one file) → light, no waves.
         let tiny = dir.path().join("tiny.md");
@@ -946,8 +958,8 @@ mod tests {
     fn full_wave_floor_is_one_when_not_decomposed() {
         // decompose:false ⇒ exactly 1 wave (single-wave, not wave-less).
         assert_eq!(wave_floor_for_full(false), 1, "Full + single-layer ⇒ 1 wave");
-        // decompose:true ⇒ still floors at ≥ 1 (caller raises N).
-        assert!(wave_floor_for_full(true) >= 1, "Full + multi-wave ⇒ floor ≥ 1");
+        // decompose:true ⇒ floors at 2 (never the misleading 1 beside the verdict).
+        assert_eq!(wave_floor_for_full(true), 2, "Full + multi-wave ⇒ floor 2");
     }
 
     #[test]

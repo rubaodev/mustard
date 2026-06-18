@@ -24,22 +24,32 @@ source: manual
 
 Parent NEVER reads source, NEVER implements. All work inside Task contexts. The agent prompt is **always** produced by `mustard-rt run agent-prompt-render` — NEVER hand-assembled (same inviolable rule as `/feature` and `/tactical-fix`). The subproject `## Guards` ride in as `{guards_summary}`; the relevance-sliced domain glossary (the subproject `CLAUDE.md`, plus a `CONTEXT.md` when one exists) rides in as `{context_md}` — both filled by the renderer, never hand-Grepped into the prompt string.
 
-## Prompt rendering (mandatory)
+## Research + Prompt rendering (mandatory)
 
-`/task` is spec-less, so there is no wave plan and no `dispatch-plan`. Render each action's prompt directly with `agent-prompt-render`, choosing `--role` from the action and `--subproject` from the scope. Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
+`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first via the scan digest (the same step `/feature` and `/bugfix` run), then render each action's prompt with `agent-prompt-render`. **Dispatching without the digest sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
 
 ```bash
-# 1. Slice the subproject CLAUDE.md for the scope (cached, relevance-filtered — never the whole file).
-#    If a domain glossary exists, append: --context {subproject}/CONTEXT.md
-mustard-rt run context-slice --spec {scope} \
-  --context-claude-md {subproject}/CLAUDE.md
+# 1. LOCATE via the scan digest — NEVER dispatch blind. Returns anchors (~12 real files),
+#    reason (strong|weak|none|generated_only), stacks. LAPIDATE the request into code-shaped terms
+#    YOURSELF: strip the glue (prepositions/articles — content words only), translate into the code's
+#    vocabulary, and shape it how code NAMES things — verbs infinitive (create/list/update), collection
+#    nouns plural (clients/contracts/receivables); when unsure, include both forms (the digest dedups).
+#    Code-shaped terms hit EXACT, not stem (where the noise lives). ONE call, pure deterministic.
+mustard-rt run feature --intent "<lapidated code-shaped terms + the user's content words>"
+#    Prune, then read ONLY the surviving anchors: anchorsDetail shows each anchor's matched terms —
+#    drop the tangential (a seeder on `pagos`), keep the central (route/form/datatable). On weak/none
+#    the digest returns a `candidates` array (the REAL code vocabulary) — sharpen your translation and
+#    re-call, or fall back to Glob+Grep. Each query feeds lexicon-suggest (bridge → deterministic).
 
-# 2. Render the dispatch prompt (one process call → Task-ready string on stdout).
+# 2. Render the dispatch prompt — fold the located anchor paths into --task-text so the agent
+#    starts from them instead of searching the repo from zero.
 mustard-rt run agent-prompt-render --spec {scope} --role {action} \
-  --subproject {subproject} --task-text "<the action's task>" --mode first --emit ref [--budget-tokens 4000]
+  --subproject {subproject} \
+  --task-text "<the action's task> — start from these anchors: <anchor file list>" \
+  --mode first --emit ref
 ```
 
-Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`), `{context_md}` (the `context-slice` output above) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work rides in via `--task-text`.
+Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
 
 ## Flow
 
@@ -51,7 +61,7 @@ Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`,
 - **audit** — load `improve-codebase-architecture` → `--role audit`, `subagent_type: general-purpose`; pass the domain checklist as the task via `--task-text "<checklist>"` (the renderer folds it into `## TASK` — no hand-appending) → severity-classified report.
 - **compare** — one explorer per subproject in PARALLEL (single message), each rendered with its own `--subproject` (`--role explore`) → Task(Plan) merges + surfaces discrepancies.
 - **refactor** — load `improve-codebase-architecture` → render `--role plan` (Plan) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → render `--role implement` (general-purpose) → validate.
-- **implement** — render `--role implement` (general-purpose) with `--budget-tokens 4000`, return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
+- **implement** — render `--role implement` (general-purpose), return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
 
 → See `../../../refs/task/task-prompts.md` for the per-action render invocations.
 

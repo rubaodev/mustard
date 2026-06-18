@@ -82,6 +82,20 @@ pub(crate) struct AcItem {
     command: String,
 }
 
+impl AcItem {
+    /// The parsed AC id (`AC-1`, `AC-G1`, `AC-W4-3`, …). Read-only accessor so
+    /// other `run` modules (e.g. `spec-lint`) can inspect the parsed items
+    /// without a parallel parser — the fields stay private.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The parsed runnable command for this AC.
+    pub(crate) fn command(&self) -> &str {
+        &self.command
+    }
+}
+
 /// One AC execution outcome.
 ///
 /// `pub(crate)` so `close-pipeline` can carry the criteria of its in-process
@@ -804,6 +818,54 @@ thread_local! {
     };
 }
 
+/// Gather the executable ACs of every capability the spec links in its
+/// `## Capabilities` section.
+///
+/// Reuses the SINGLE `## Capabilities` scanner
+/// ([`crate::commands::capability::linked_capability_ids`]) — the same one
+/// `complete-spec` uses on close — so qa-run and merge-on-close can never drift
+/// on which capabilities a spec links. For each linked `cap.{slug}` whose
+/// `.claude/capabilities/{slug}.md` exists, the doc is parsed
+/// ([`crate::commands::capability::parse`]) and its command-bearing scenarios are
+/// compiled into [`AcceptanceCriterion`]s via the EXISTING
+/// [`mustard_core::domain::capability::Capability::acceptance_criteria`] (no
+/// parallel AC type). The compiled ids are already stable + namespaced
+/// (`cap.{slug}-{scenario}`), so they merge cleanly beside the spec's own AC ids.
+///
+/// Returns `(id, command)` pairs — exactly the two fields [`run_ac_command`]
+/// needs — so the capability ACs run through the SAME execution path as the
+/// spec's own. FAIL-OPEN: a linked-but-missing or unreadable / garbage
+/// capability doc is skipped (never aborts QA), and a documentary scenario with
+/// no command is naturally not compiled.
+fn gather_capability_acs(cwd: &Path, spec: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let linked = crate::commands::capability::linked_capability_ids(cwd, spec);
+    if linked.is_empty() {
+        return out; // no `## Capabilities` section (or no `cap.*` links) ⇒ none.
+    }
+    let Ok(caps_dir) = ClaudePaths::for_project(cwd).map(|p| p.capabilities_dir()) else {
+        return out;
+    };
+    for id in linked {
+        // `cap.{slug}` → `{slug}` (the doc file stem). A malformed id with no
+        // slug after the prefix is skipped.
+        let Some(slug) = id.strip_prefix("cap.").map(str::trim).filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let doc_path = caps_dir.join(format!("{slug}.md"));
+        // Missing doc ⇒ skip (do NOT invent ACs); fail-open like complete-spec.
+        let Ok(md) = fs::read_to_string(&doc_path) else {
+            continue;
+        };
+        let cap = crate::commands::capability::parse(&md);
+        for ac in cap.acceptance_criteria() {
+            out.push((ac.id, ac.command));
+        }
+    }
+    out
+}
+
 /// Run QA for `spec` under `cwd`. Always emits the event + metric.
 fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let Some(spec_file) = find_spec_file(cwd, spec) else {
@@ -819,15 +881,33 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
             return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
         }
     };
-    let Some(section) = extract_ac_section(&markdown) else {
-        eprintln!("[qa-run] WARN: No \"Acceptance Criteria\" section found in spec");
-        emit_qa_event(cwd, spec, "skip", &[]);
-        emit_qa_metric(cwd, spec, "skip", &[]);
-        return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
-    };
-    let items = parse_ac_items(&section);
+
+    // The spec's OWN ACs — parsed exactly as before. An absent / unparseable
+    // `## Acceptance Criteria` section yields none (it is no longer a hard skip
+    // on its own, because the spec may still carry executable capability ACs).
+    let mut items: Vec<(String, String)> = extract_ac_section(&markdown)
+        .map(|section| {
+            parse_ac_items(&section)
+                .into_iter()
+                .map(|it| (it.id, it.command))
+                .collect()
+        })
+        .unwrap_or_default();
+    let own_ac_count = items.len();
+
+    // Append the executable ACs of every linked capability (F5). A spec with no
+    // `## Capabilities` section adds nothing here, so its run is unchanged.
+    let capability_acs = gather_capability_acs(cwd, spec);
+    items.extend(capability_acs);
+
     if items.is_empty() {
-        eprintln!("[qa-run] WARN: Acceptance Criteria section found but no parseable AC items");
+        // Nothing to run from either source ⇒ skip (preserves the historical
+        // contract for specs that carry no ACs and link no capabilities).
+        if own_ac_count == 0 {
+            eprintln!("[qa-run] WARN: No \"Acceptance Criteria\" section and no linked capability ACs");
+        } else {
+            eprintln!("[qa-run] WARN: Acceptance Criteria section found but no parseable AC items");
+        }
         emit_qa_event(cwd, spec, "skip", &[]);
         emit_qa_metric(cwd, spec, "skip", &[]);
         return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
@@ -835,9 +915,9 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
 
     let mut criteria = Vec::new();
     let (mut fail_count, mut skip_count) = (0usize, 0usize);
-    for item in &items {
-        let mut res = run_ac_command(&item.command, cwd);
-        res.id.clone_from(&item.id);
+    for (id, command) in &items {
+        let mut res = run_ac_command(command, cwd);
+        res.id.clone_from(id);
         if res.status == "fail" {
             fail_count += 1;
         } else if res.status == "skip" {
@@ -1314,6 +1394,162 @@ mod tests {
             "cargo must have actually run: {}",
             res.stderr_excerpt
         );
+    }
+
+    // --- F5: linked-capability scenario ACs run in QA --------------------
+
+    /// Seed `<cwd>/.claude/spec/{spec}/spec.md` with `body`.
+    fn seed_spec_md(cwd: &Path, spec: &str, body: &str) {
+        let dir = cwd.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), body).unwrap();
+    }
+
+    /// Seed `<cwd>/.claude/capabilities/{slug}.md` by rendering a `Capability`
+    /// through the canonical renderer (so the doc round-trips the parser qa-run
+    /// uses).
+    fn seed_capability(cwd: &Path, slug: &str, cap: &mustard_core::domain::capability::Capability) {
+        let dir = cwd.join(".claude").join("capabilities");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{slug}.md")),
+            crate::commands::capability::render(cap),
+        )
+        .unwrap();
+    }
+
+    /// A spec linking a capability whose scenario carries a command runs that
+    /// scenario as an AC in QA; a documentary scenario (no command) is NOT run.
+    /// The capability AC uses the SAME `run_ac_command` path as the spec's own
+    /// AC, and the compiled id (`cap.{slug}-{scenario}`) appears in the result.
+    #[test]
+    fn linked_capability_command_scenario_runs_doc_scenario_skipped() {
+        use mustard_core::domain::capability::{Capability, Requirement, Scenario};
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "billing-feature";
+
+        // The capability: one command-bearing scenario (`cd .` → exit 0 pass,
+        // a builtin in BOTH cmd.exe and sh so the test is cross-platform) and
+        // one pure-doc scenario (no command → must NOT be run).
+        let cap = Capability {
+            id: "cap.billing".into(),
+            title: "Billing".into(),
+            status: "active".into(),
+            requirements: vec![Requirement {
+                statement: "The system SHALL bill.".into(),
+                scenarios: vec![
+                    Scenario {
+                        name: "charges".into(),
+                        when: "an order ships".into(),
+                        then: "the card is charged".into(),
+                        command: Some("cd .".into()),
+                    },
+                    Scenario {
+                        name: "documentary".into(),
+                        when: "described only".into(),
+                        then: "no command".into(),
+                        command: None,
+                    },
+                ],
+            }],
+            ..Capability::default()
+        };
+        seed_capability(cwd, "billing", &cap);
+        // The spec has its OWN AC plus a `## Capabilities` link to the cap.
+        seed_spec_md(
+            cwd,
+            spec,
+            "# Billing\n\n## Acceptance Criteria\n- **AC-1** — own.\n  Command: `cd .`\n\n## Capabilities\n- [[cap.billing]]\n",
+        );
+
+        let result = run_qa(cwd, spec);
+        let ids: Vec<&str> = result.criteria.iter().map(|c| c.id.as_str()).collect();
+        // Spec's own AC ran (unchanged behaviour).
+        assert!(ids.contains(&"AC-1"), "spec's own AC ran: {ids:?}");
+        // The command-bearing capability scenario ran, with its compiled id.
+        assert!(
+            ids.contains(&"cap.billing-charges"),
+            "command-bearing capability scenario ran as an AC: {ids:?}"
+        );
+        // The documentary scenario (no command) was NOT compiled / NOT run.
+        assert!(
+            !ids.iter().any(|id| id.starts_with("cap.billing-documentary")),
+            "documentary scenario (no command) must not run: {ids:?}"
+        );
+        // Both runnable ACs are `true` → overall pass.
+        assert_eq!(result.overall, "pass");
+        assert_eq!(result.criteria.len(), 2, "exactly own AC + one capability AC");
+    }
+
+    /// A spec with NO `## Capabilities` section runs exactly its own ACs — the
+    /// capability gather adds nothing (the unchanged-behaviour guarantee).
+    #[test]
+    fn spec_without_capabilities_section_runs_only_own_acs() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "plain-feature";
+        seed_spec_md(
+            cwd,
+            spec,
+            "# Plain\n\n## Acceptance Criteria\n- **AC-1** — own.\n  Command: `cd .`\n",
+        );
+        let result = run_qa(cwd, spec);
+        assert_eq!(result.criteria.len(), 1, "only the spec's own AC ran");
+        assert_eq!(result.criteria[0].id, "AC-1");
+        assert_eq!(result.overall, "pass");
+    }
+
+    /// A linked-but-MISSING (or unreadable) capability doc is skipped and never
+    /// aborts QA: the spec's own ACs still run and the run completes.
+    #[test]
+    fn missing_linked_capability_doc_is_skipped_not_fatal() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "ghost-cap-feature";
+        // Link a capability whose doc was never authored.
+        seed_spec_md(
+            cwd,
+            spec,
+            "# Ghost\n\n## Acceptance Criteria\n- **AC-1** — own.\n  Command: `cd .`\n\n## Capabilities\n- [[cap.ghost]]\n",
+        );
+        let result = run_qa(cwd, spec);
+        // Only the spec's own AC ran; the missing cap added nothing, no panic.
+        assert_eq!(result.criteria.len(), 1);
+        assert_eq!(result.criteria[0].id, "AC-1");
+        assert_eq!(result.overall, "pass");
+    }
+
+    /// A spec with NO own `## Acceptance Criteria` section but a linked
+    /// capability that DOES carry a command-bearing scenario still runs that
+    /// scenario — the executable capability AC is the whole point of the link.
+    #[test]
+    fn capability_ac_runs_even_without_own_ac_section() {
+        use mustard_core::domain::capability::{Capability, Requirement, Scenario};
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let spec = "caps-only-feature";
+        let cap = Capability {
+            id: "cap.only".into(),
+            status: "active".into(),
+            requirements: vec![Requirement {
+                statement: "R".into(),
+                scenarios: vec![Scenario {
+                    name: "runs".into(),
+                    when: "x".into(),
+                    then: "y".into(),
+                    command: Some("cd .".into()),
+                }],
+            }],
+            ..Capability::default()
+        };
+        seed_capability(cwd, "only", &cap);
+        seed_spec_md(cwd, spec, "# Caps Only\n\nNarrative.\n\n## Capabilities\n- [[cap.only]]\n");
+
+        let result = run_qa(cwd, spec);
+        assert_eq!(result.criteria.len(), 1, "the capability AC ran");
+        assert_eq!(result.criteria[0].id, "cap.only-runs");
+        assert_eq!(result.overall, "pass");
     }
 
     /// The `--workspace` rewrite path is unchanged by the direct-form guard:

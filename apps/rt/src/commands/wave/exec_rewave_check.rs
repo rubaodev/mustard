@@ -291,7 +291,7 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
             "acceptanceCriteria",
         );
 
-        let wave_plan_content = render_wave_plan(&plan, &hd, ac_block.as_deref());
+        let wave_plan_content = render_wave_plan(&plan, &hd, ac_block.as_deref(), &spec_name);
         if fs::write_atomic(&wave_plan_path, wave_plan_content.as_bytes()).is_err() {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "cannot-write-wave-plan" });
         }
@@ -411,7 +411,7 @@ mod tests {
         let hd = headings(mustard_core::SupportedLocale::PtBr);
         // Path A: the re-wave converter + canonical renderer.
         let plan_a = dag_to_plan(&waves, lang);
-        let rendered_a = render_wave_plan(&plan_a, &hd, None);
+        let rendered_a = render_wave_plan(&plan_a, &hd, None, "epic-x");
         // Path B: a Plan built directly with the same canonical fields (what a
         // PLAN-time scaffold of the same shape would feed the renderer).
         let plan_b = Plan {
@@ -438,7 +438,7 @@ mod tests {
             total_waves: Some(2),
             lang: Some(lang.to_string()),
         };
-        let rendered_b = render_wave_plan(&plan_b, &hd, None);
+        let rendered_b = render_wave_plan(&plan_b, &hd, None, "epic-x");
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");
         // The wave-plan.md follows the spec's `lang` (pt-BR here) → PT heading,
         // plus the wikilinks.

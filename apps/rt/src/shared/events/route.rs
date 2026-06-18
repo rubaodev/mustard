@@ -85,6 +85,8 @@ pub fn classify_kind(event_name: &str) -> &'static str {
         "hygiene"
     } else if event_name.starts_with("review.") {
         "review"
+    } else if event_name.starts_with("capability.") {
+        "capability"
     } else if event_name.starts_with("boundary.") {
         "boundary"
     } else if event_name.starts_with("spec.")
@@ -260,6 +262,9 @@ mod tests {
         assert_eq!(classify_kind("session.start"), "session");
         assert_eq!(classify_kind("pipeline.scope"), "pipeline");
         assert_eq!(classify_kind("review.result"), "review");
+        assert_eq!(classify_kind("capability.declared"), "capability");
+        assert_eq!(classify_kind("capability.update"), "capability");
+        assert_eq!(classify_kind("capability.drift"), "capability");
         assert_eq!(classify_kind("hygiene.spec.archived"), "hygiene");
         assert_eq!(classify_kind("boundary.expansion"), "boundary");
         assert_eq!(classify_kind("spec.link"), "scope");

@@ -400,3 +400,78 @@ fn wide_query_target_survives_in_the_grouped_per_term_evidence() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Field case (sialia, client tabs): a `strong`-by-coverage query whose rare
+/// terms only collide INSIDE tests (`create`→`creates` in `*Tests.cs`) surfaced
+/// those tests as anchors, which the scaffold then baked as "implement here"
+/// targets. A test/fixture declaration is honest EVIDENCE (it stays under its
+/// term in `report.terms[].files`) but never an ANCHOR — you read and edit the
+/// production file, not its test. Exercises BOTH detector modes: a
+/// filename-convention test (`*.test.ts`, no test dir) and a test-DIR file.
+#[test]
+fn test_tree_declarations_are_evidence_never_anchors() {
+    let modules = serde_json::json!([
+        module("m/feat/ledger.rs", &["LedgerReport"]),                    // production
+        module("m/feat/ledger.test.ts", &["LedgerReportSpec"]),           // filename convention
+        module("m/feat/__tests__/ledger_more.rs", &["LedgerReportCase"]), // test directory
+    ]);
+    let (dir, model) = write_model("test-exclusion", modules);
+    let (_, q) = run_query(&model, "ledger", "query.json");
+
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert!(files.contains(&"m/feat/ledger.rs"), "the production file anchors: {q}");
+    assert!(!files.contains(&"m/feat/ledger.test.ts"), "a filename-convention test never anchors: {q}");
+    assert!(!files.contains(&"m/feat/__tests__/ledger_more.rs"), "a test-dir file never anchors: {q}");
+
+    // Honesty: the test declarations are EXCLUDED from anchors, not HIDDEN —
+    // they still ride under the term in the grouped per-term evidence.
+    let report_terms = q["report"]["terms"].as_array().unwrap();
+    let ledger = report_terms.iter().find(|t| t["term"] == "ledger").expect("`ledger` in the grouped report");
+    let tfiles: Vec<&str> = ledger["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert!(tfiles.contains(&"m/feat/ledger.rs"), "evidence lists the production file: {q}");
+    assert!(
+        tfiles.iter().any(|f| f.ends_with(".test.ts") || f.contains("__tests__")),
+        "evidence STILL carries the test declarations (excluded from anchors, not the report): {q}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The orchestration layer now passes the cross-lingual translation INSIDE the
+/// intent (`--intent "<PT words> <english translation>"`), so the same concept
+/// arrives as overlapping/duplicate query tokens (e.g. `client client cliente`).
+/// The query's order-preserving dedup collapses each lowercased token to one, so
+/// `report.terms` reports a term ONCE — never a repeated row — while the DISTINCT
+/// union still covers every concept the caller asked about.
+#[test]
+fn duplicate_query_terms_yield_distinct_report_terms() {
+    // Two modules: one declares `Client`-ish names (matched by "client"), the
+    // other `Cliente`-ish names (matched by "cliente"). The query repeats
+    // "client" and adds the PT "cliente" — the union must cover both, deduped.
+    let modules = serde_json::json!([
+        module("m/client/service.rs", &["ClientService", "ClientRepository"]),
+        module("m/cliente/servico.rs", &["ClienteServico", "ClienteRepositorio"]),
+    ]);
+    let (dir, model) = write_model("distinct-terms", modules);
+    let (_, q) = run_query(&model, "client,client,cliente", "query.json");
+
+    // `report.terms` carries no repeated term: the duplicate "client" collapsed.
+    let report_terms = q["report"]["terms"].as_array().unwrap();
+    let terms: Vec<&str> = report_terms.iter().map(|t| t["term"].as_str().unwrap()).collect();
+    let mut deduped = terms.clone();
+    deduped.sort_unstable();
+    deduped.dedup();
+    assert_eq!(terms.len(), deduped.len(), "no repeated term in the report: {terms:?}");
+    assert_eq!(terms.iter().filter(|t| **t == "client").count(), 1, "the duplicate 'client' collapsed to one: {q}");
+
+    // The DISTINCT union still covers BOTH concepts the caller asked about.
+    assert!(terms.contains(&"client"), "english concept present: {q}");
+    assert!(terms.contains(&"cliente"), "portuguese concept present: {q}");
+
+    // And both concepts still anchor their declaring file (union covers both).
+    let files: Vec<&str> = q["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert!(files.contains(&"m/client/service.rs"), "english concept's file in the union: {q}");
+    assert!(files.contains(&"m/cliente/servico.rs"), "portuguese concept's file in the union: {q}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

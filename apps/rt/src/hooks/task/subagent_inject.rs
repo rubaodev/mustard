@@ -393,6 +393,25 @@ impl Check for SubagentInject {
         // CONTEXT.md + regression vocab. No size cap — relevance decides what
         // enters; nothing is trimmed by char count.
         let mut sections: Vec<String> = Vec::new();
+
+        // Epistemic-contract FLOOR for investigative read-only dispatches.
+        // The explore contract (settle existence by enumeration; never refute a
+        // runtime symptom) normally rides in via the rendered prompt
+        // (`expand_prompt_ref`, handled above). An Explore dispatched OUTSIDE the
+        // renderer — ad-hoc `Task(Explore)`, `/task` vibe, or cross-repo where the
+        // stub cannot resolve against this cwd — bypasses that path silently and
+        // lands here with no contract. Re-assert the clause as a floor so the
+        // discipline is never lost to the dispatch route. Idempotent: a rendered
+        // prompt declares a SKILL block (returns above) and never reaches here;
+        // the guard only defends against a caller that already inlined the clause.
+        if role.eq_ignore_ascii_case("explore")
+            && !prompt.contains("never refute a symptom")
+        {
+            sections.push(format!(
+                "## Epistemic contract\n{}",
+                crate::commands::agent::agent_prompt_render::EPISTEMIC_FLOOR
+            ));
+        }
         // Relevance-slice CONTEXT.md against the dispatch prompt — the SAME
         // term-block filter the renderer runs, so the hook injects only the
         // matching blocks (in full), never the raw whole file. Relevance, not
@@ -640,6 +659,50 @@ mod tests {
         }
     }
 
+    /// Field defect (cross-repo dogfood): an Explore dispatched OUTSIDE the
+    /// renderer (no `MUSTARD-PROMPT-REF` stub, no SKILL block) reached the
+    /// subagent with NO epistemic contract — and returned a confident verdict
+    /// that refuted a symptom the user had observed at runtime. The floor closes
+    /// that bypass: any ad-hoc Explore still gets the clause, regardless of cwd
+    /// or active spec.
+    #[test]
+    fn ad_hoc_explore_dispatch_gets_epistemic_floor() {
+        let dir = tempdir().unwrap();
+        let input = task_input("trace why future-dated titles show as overdue", "Explore");
+        match SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap() {
+            Verdict::Inject { context } => {
+                assert!(
+                    context.contains("never refute a symptom"),
+                    "epistemic floor missing for ad-hoc Explore: {context}"
+                );
+                assert!(context.contains("Epistemic contract"), "floor heading missing: {context}");
+                assert!(
+                    !context.contains("Regression vocabulary"),
+                    "explore stays read-only — the floor must not drag in regression-vocab noise: {context}"
+                );
+            }
+            other => panic!("expected Inject with epistemic floor, got {other:?}"),
+        }
+    }
+
+    /// The floor is scoped to the investigative `explore` role — a
+    /// general-purpose dispatch (a code author) must NOT get the read-only
+    /// epistemic clause, whether it resolves to Allow or to an Inject carrying
+    /// only other sections.
+    #[test]
+    fn non_explore_dispatch_gets_no_epistemic_floor() {
+        let dir = tempdir().unwrap();
+        let input = task_input("implement the user module", "general-purpose");
+        if let Verdict::Inject { context } =
+            SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap()
+        {
+            assert!(
+                !context.contains("never refute a symptom"),
+                "epistemic floor must not fire for general-purpose: {context}"
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // W5 — span-level review (T5.1, T5.2, T5.7)
     // -----------------------------------------------------------------------
@@ -795,10 +858,14 @@ mod tests {
         }
     }
 
-    /// A read-only role (Explore) authors no plan/diff the gate scores, so the
-    /// regression vocabulary must NOT be injected. With no CONTEXT.md and no
-    /// active spec, the only candidate section was the vocab — so the decisive
-    /// verdict degrades to `Allow` (nothing in the child's window).
+    /// A read-only role authors no plan/diff the gate scores, so the regression
+    /// vocabulary must NOT be injected. With no CONTEXT.md and no active spec,
+    /// the only candidate section was the vocab — so the decisive verdict
+    /// degrades to `Allow`. Uses `mustard-guards` (not `explore`) because the
+    /// `explore` role now also carries the epistemic-contract floor, which on
+    /// its own resolves to an Inject — covered by
+    /// `ad_hoc_explore_dispatch_gets_epistemic_floor` (which also asserts the
+    /// vocab stays absent for explore).
     #[test]
     fn readonly_role_skips_vocabulary_and_allows_when_nothing_else_resolves() {
         let dir = tempdir().unwrap();
@@ -806,7 +873,7 @@ mod tests {
         std::fs::create_dir_all(&claude).unwrap();
         std::fs::write(claude.join("mustard.json"), "{\"lang\":\"en-US\"}").unwrap();
 
-        let input = task_input("grep the codebase for the user module", "Explore");
+        let input = task_input("grep the codebase for the user module", "mustard-guards");
         let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
         assert_eq!(v, Verdict::Allow, "read-only role gets no regression-vocab noise");
     }

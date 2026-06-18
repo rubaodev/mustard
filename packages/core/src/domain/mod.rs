@@ -4,6 +4,7 @@ pub mod command_detect;
 pub mod meta;
 pub mod scan;
 pub mod knowledge;
+pub mod capability;
 pub mod vocabulary;
 pub mod spec;
 pub mod skill;

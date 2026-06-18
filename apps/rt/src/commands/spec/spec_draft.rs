@@ -152,19 +152,18 @@ pub fn run(opts: SpecDraftOpts) {
 
     // ---- Enrich the Context section with the scan digest (the same insumos
     // `feature::run` emits). Deterministic, token-free, fail-open: a missing
-    // model or empty match degrades to the plain placeholder. The same digest
-    // also seeds the trackable `## Checklist` (one item per scan anchor) —
-    // EXCEPT when the digest's honest match report flags the answer as
-    // low-confidence (`weak`/`none`): the anchors are then mostly noise, so
-    // NOTHING is materialised (no labelled noise in the artifact) and the
-    // checklist falls back to its single hand-trackable item. `--query-terms`
-    // lets the orchestrator pass the repo-vocabulary terms that produced a
-    // strong report (a PT intent re-tokenised raw repeats the weak query). ----
+    // model or empty match degrades to the plain placeholder. A low-confidence
+    // answer (`weak`/`none`) materialises NOTHING (no labelled noise in the
+    // artifact). `--query-terms` lets the orchestrator pass the repo-vocabulary
+    // terms that produced a strong report (a PT intent re-tokenised raw repeats
+    // the weak query). The digest does NOT seed the `## Checklist`: an anchor is
+    // a READ candidate (evidence), never an implementation target — the
+    // checklist drafts as a single hand-trackable task and the real file census
+    // is authored in ANALYZE/PLAN (`## Files`). ----
     let digest = scan_digest(&opts.intent, opts.query_terms.as_deref());
     let context_block = digest
         .as_ref()
         .and_then(|q| render_context_block(q, lang_locale));
-    let anchors: &[String] = digest.as_ref().map_or(&[], checklist_anchors);
 
     // ---- Build the canonical input + validate before writing. ----
     let input = build_input(
@@ -176,7 +175,6 @@ pub fn run(opts: SpecDraftOpts) {
         lang_locale,
         &build_command,
         context_block.as_deref(),
-        anchors,
     );
     if let Err(violations) = mustard_core::domain::spec::contract::validate(&input) {
         let detail = violations
@@ -433,7 +431,6 @@ fn build_input(
     lang_locale: Locale,
     build_command: &str,
     context_block: Option<&str>,
-    anchors: &[String],
 ) -> SpecInput {
     SpecInput {
         slug: slug.to_string(),
@@ -477,48 +474,36 @@ fn build_input(
             statement: "Pipeline build green".to_string(),
             command: build_command.to_string(),
         }],
-        checklist: build_checklist(scope, anchors, lang_locale),
+        checklist: build_checklist(lang_locale),
     }
 }
 
-/// Max trackable checklist items materialised at draft time. The scan digest
-/// already caps anchors at [`SCAN_ANCHOR_CAP`]; full scope mirrors that, light
-/// scope keeps the list short (a Light spec touches ≤5 files by definition).
-const CHECKLIST_LIGHT_CAP: usize = 5;
-
-/// Build the trackable `## Checklist` for a fresh draft. One item per scan
-/// anchor (the auto-mark hook keys off the ` → <path>` arrow), so a `Write` of
-/// that file flips the box automatically. Falls back to a single task item when
-/// the scan surfaced no anchors (fail-open: the checklist is never empty, so the
-/// contract's `ChecklistEmpty` rule and the close-gate checklist gate always
-/// have something to track). Full scope keeps every anchor; Light caps the list.
-fn build_checklist(scope: Scope, anchors: &[String], lang: Locale) -> Vec<ChecklistItem> {
-    let cap = if matches!(scope, Scope::Full) {
-        SCAN_ANCHOR_CAP
-    } else {
-        CHECKLIST_LIGHT_CAP
-    };
-    let items: Vec<ChecklistItem> = anchors
-        .iter()
-        .take(cap)
-        .map(|path| ChecklistItem {
-            label: translate("checklist.touch_file", lang).to_string(),
-            path: Some(path.clone()),
-            done: false,
-        })
-        .collect();
-    if items.is_empty() {
-        // No precedent from the scan — seed a single hand-trackable task item
-        // mirroring the `tasks` plan placeholder (`T1`). No path ⇒ no auto-mark
-        // anchor, but the gate + `mark-checklist-item` still track it by text.
-        vec![ChecklistItem {
-            label: translate("checklist.first_task", lang).to_string(),
-            path: None,
-            done: false,
-        }]
-    } else {
-        items
-    }
+/// Build the trackable `## Checklist` for a fresh draft: a single hand-trackable
+/// task item (`T1`, mirroring the `tasks` plan placeholder).
+///
+/// The draft deliberately does NOT seed one item per scan anchor. A digest
+/// anchor is a READ candidate (evidence to read before deciding), never an
+/// implementation target — seeding write-tracking from it baked lexical noise
+/// into the artifact as "implement the change in → <file>" items. Field case
+/// (sialia, client-tabs): a `strong`-by-coverage answer (every query term found
+/// a rung) whose anchors were stem-matched neighbours (`receivable`→`receiver`,
+/// `create`→`creates`: Safe2Pay DTOs, seeders, tests) — none of them the files
+/// actually touched, all of which the orchestrator then deleted by hand. A
+/// strong MATCH report measures term COVERAGE, not anchor PRECISION, so it is
+/// not a licence to treat anchors as a verdict.
+///
+/// The real file census is authored in ANALYZE/PLAN (`## Files`), and the
+/// `checklist-auto-mark` hook tracks whatever ` → <path>` items land there —
+/// keyed off the files DECIDED, not the files the digest guessed. The single
+/// fallback item keeps the contract's `ChecklistEmpty` rule and the close-gate
+/// checklist gate satisfied. Anchors still ride the draft as READ evidence in
+/// the Context block ([`render_context_block`]).
+fn build_checklist(lang: Locale) -> Vec<ChecklistItem> {
+    vec![ChecklistItem {
+        label: translate("checklist.first_task", lang).to_string(),
+        path: None,
+        done: false,
+    }]
 }
 
 /// Default body for a PRD section. `name` is a canonical contract key — a
@@ -576,10 +561,9 @@ const ANCHOR_TERM_CAP: usize = 4;
 /// Query the scan digest for the intent — the same deterministic insumos
 /// `feature::run` emits, recomputed here. It costs no tokens (a local query
 /// against `grain.model.json`, not an AI call). The answer feeds the Context
-/// enrichment block ([`render_context_block`]) and the trackable
-/// `## Checklist` seeding ([`checklist_anchors`]). Returns `None` when the
-/// model is absent or the query failed (fail-open: both consumers degrade to
-/// their placeholder).
+/// enrichment block ([`render_context_block`]). Returns `None` when the model
+/// is absent or the query failed (fail-open: the consumer degrades to its
+/// placeholder).
 fn scan_digest(intent: &str, query_terms: Option<&str>) -> Option<DigestQuery> {
     let model = PathBuf::from(project_dir())
         .join(".claude")
@@ -611,20 +595,6 @@ fn scan_digest(intent: &str, query_terms: Option<&str>) -> Option<DigestQuery> {
 /// behaviour, and `strong`/`generated_only` are trusted.
 fn digest_low_confidence(q: &DigestQuery) -> bool {
     matches!(q.report.reason.as_str(), "weak" | "none")
-}
-
-/// Anchors eligible to seed the trackable `## Checklist`: the digest's anchor
-/// files — EXCEPT on a low-confidence answer, where seeding would gate the
-/// pipeline on noise files (field case: 9/12 anchors were a neighbour
-/// domain's). [`render_context_block`] withholds the same answer entirely,
-/// so neither artifact surface carries noise; the checklist falls back to its
-/// single hand-trackable item in [`build_checklist`].
-fn checklist_anchors(q: &DigestQuery) -> &[String] {
-    if digest_low_confidence(q) {
-        &[]
-    } else {
-        q.files.as_slice()
-    }
 }
 
 /// The matched index terms that carried `file` into the anchor list, from the
@@ -900,12 +870,10 @@ mod tests {
 
     /// Roundtrip (tightened after the field case where labelled weak anchors
     /// still had to be overwritten by hand) — a `weak` digest answer
-    /// materialises NO Context block at all (noise never enters the
-    /// artifact, labelled or not) and withholds every anchor from the
-    /// checklist seeding (the draft falls back to the single hand-trackable
-    /// item). `none` behaves identically.
+    /// materialises NO Context block at all (noise never enters the artifact,
+    /// labelled or not). `none` behaves identically.
     #[test]
-    fn roundtrip_weak_digest_materialises_nothing_and_skips_checklist() {
+    fn roundtrip_weak_digest_materialises_no_context_block() {
         let weak = digest(
             r#"{"query":["payables"],
                 "files":["src/financial/accounts.rs","src/financial/codes.rs"],
@@ -922,23 +890,18 @@ mod tests {
             "weak answer must materialise no Context block"
         );
         assert!(render_context_block(&weak, Locale::EnUs).is_none());
-        // Checklist: weak anchors stay OUT → build_checklist falls back.
-        assert!(checklist_anchors(&weak).is_empty(), "weak anchors must not seed");
-        let items = build_checklist(Scope::Light, checklist_anchors(&weak), Locale::PtBr);
-        assert_eq!(items.len(), 1);
-        assert!(items[0].path.is_none(), "fallback item carries no anchor path");
 
         let none = digest(r#"{"files":["src/x.rs"],"miss":true,"report":{"matched":0,"total":2,"reason":"none","terms":[]}}"#);
         assert!(digest_low_confidence(&none));
         assert!(render_context_block(&none, Locale::PtBr).is_none());
-        assert!(checklist_anchors(&none).is_empty());
     }
 
-    /// Roundtrip (robustez-ancoras fase 2) — a `strong` answer keeps the
-    /// plain anchor label, seeds the checklist, and annotates each anchor
-    /// with the matched terms from `files_detail` (lote 1's audit trail).
+    /// Roundtrip (robustez-ancoras fase 2) — a `strong` answer keeps the plain
+    /// anchor label and annotates each anchor with the matched terms from
+    /// `files_detail` (lote 1's audit trail). The checklist is no longer seeded
+    /// from anchors — see [`build_checklist`].
     #[test]
-    fn roundtrip_strong_digest_annotates_anchor_terms_and_seeds_checklist() {
+    fn roundtrip_strong_digest_annotates_anchor_terms() {
         let strong = digest(
             r#"{"query":["payable","nature"],
                 "files":["src/payables/page.rs","src/payables/list.rs","src/tail.rs"],
@@ -963,17 +926,16 @@ mod tests {
         // A touchpoint-tail anchor (no terms) renders bare — no `()` noise.
         assert!(s.contains("- src/tail.rs\n") || s.ends_with("- src/tail.rs"), "bare tail anchor:\n{s}");
         assert!(!s.contains("src/tail.rs ("), "no empty annotation:\n{s}");
-        // Checklist seeding keeps ALL anchors on a strong answer.
-        assert_eq!(checklist_anchors(&strong), strong.files.as_slice());
-        // An old-binary payload (empty reason) keeps the legacy behaviour.
+        // An old-binary payload (empty reason) is treated as confident, so the
+        // Context block still renders (legacy compat).
         let old = digest(r#"{"files":["src/a.rs"],"miss":false}"#);
         assert!(!digest_low_confidence(&old));
-        assert_eq!(checklist_anchors(&old), old.files.as_slice());
+        assert!(render_context_block(&old, Locale::EnUs).is_some());
     }
 
     #[test]
     fn build_input_validates() {
-        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build", None, &[]);
+        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build", None);
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
@@ -988,7 +950,7 @@ mod tests {
         for waves in [0u32, 1, 2, 7] {
             let input = build_input(
                 "demo", "Demo", Scope::Full, "pt-BR", waves, Locale::PtBr,
-                "rtk cargo build", None, &[],
+                "rtk cargo build", None,
             );
             // total_waves is floored to ≥ 1 for Full.
             assert_eq!(
@@ -1013,7 +975,7 @@ mod tests {
         // Light: no waves, no wave-plan flag (invariant is Full-only).
         let light = build_input(
             "demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs,
-            "rtk cargo build", None, &[],
+            "rtk cargo build", None,
         );
         assert_eq!(light.total_waves, None, "Light carries no waves");
         let light_meta = build_meta_from_input(&light);
@@ -1024,7 +986,7 @@ mod tests {
     #[test]
     fn build_input_validates_in_en_us() {
         // Section *keys* are canonical EN identifiers; bodies are localised.
-        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build", None, &[]);
+        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build", None);
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
         // Body strings should be EN, not PT.
         let users = input
@@ -1038,7 +1000,7 @@ mod tests {
     #[test]
     fn build_input_ac_uses_build_command_not_hardcoded() {
         // AC command comes from the resolved build command, not `rtk cargo build`.
-        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build", None, &[]);
+        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build", None);
         assert_eq!(input.acceptance_criteria[0].command, "pnpm build");
         // Neutral fallback flows through verbatim when no buildCommand is set.
         let input2 = build_input(
@@ -1050,7 +1012,6 @@ mod tests {
             Locale::EnUs,
             mustard_core::BUILD_COMMAND_FALLBACK,
             None,
-            &[],
         );
         assert_eq!(
             input2.acceptance_criteria[0].command,
@@ -1059,29 +1020,16 @@ mod tests {
     }
 
     #[test]
-    fn build_checklist_full_one_item_per_anchor() {
-        let anchors = vec!["src/list.rs".to_string(), "src/view.rs".to_string()];
-        let items = build_checklist(Scope::Full, &anchors, Locale::EnUs);
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].path.as_deref(), Some("src/list.rs"));
+    fn build_checklist_is_a_single_trackable_task() {
+        // The draft never seeds checklist items from scan anchors (an anchor is
+        // a READ candidate, not an implementation target) — it always drafts the
+        // single hand-trackable fallback so the close-gate has something to track.
+        let items = build_checklist(Locale::EnUs);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].path.is_none(), "no auto-mark path on the fallback item");
         assert!(!items[0].label.is_empty());
-    }
-
-    #[test]
-    fn build_checklist_light_caps_items() {
-        let anchors: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
-        let items = build_checklist(Scope::Light, &anchors, Locale::EnUs);
-        assert_eq!(items.len(), CHECKLIST_LIGHT_CAP);
-    }
-
-    #[test]
-    fn build_checklist_falls_back_to_single_task_when_no_anchors() {
-        // No scan precedent → never empty (contract requires ≥1 item).
-        let light = build_checklist(Scope::Light, &[], Locale::EnUs);
-        assert_eq!(light.len(), 1);
-        assert!(light[0].path.is_none());
-        let full = build_checklist(Scope::Full, &[], Locale::PtBr);
-        assert_eq!(full.len(), 1);
+        // Localised label resolves for the other locale too.
+        assert_eq!(build_checklist(Locale::PtBr).len(), 1);
     }
 
     /// D1/D2: a Light spec OWNS its execution → it keeps a parseable
@@ -1281,7 +1229,7 @@ mod tests {
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("spec.md"), spec_body).unwrap();
         let full_input = build_input(
-            slug, "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None, &[],
+            slug, "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None,
         );
         let meta = build_meta_from_input(&full_input);
         spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();
@@ -1444,7 +1392,7 @@ mod tests {
         let spec_dir = dir.path().join(".claude").join("spec").join("ghost");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let full_input = build_input(
-            "ghost", "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None, &[],
+            "ghost", "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build", None,
         );
         let meta = build_meta_from_input(&full_input);
         spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();

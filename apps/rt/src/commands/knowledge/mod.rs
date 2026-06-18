@@ -9,7 +9,6 @@
 //! in, so a test can pin the timestamp and the result is byte-stable.
 
 pub mod memory;
-pub mod memory_cross_wave;
 pub mod memory_ingest;
 pub mod prune;
 pub mod recall;

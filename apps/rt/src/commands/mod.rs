@@ -28,6 +28,7 @@ pub mod scan;
 pub mod scan_claude;
 pub mod scan_guards;
 pub mod feature;
+pub mod capability;
 pub mod digest_precision;
 pub mod glossary_coverage;
 pub mod lexicon_suggest;
@@ -74,7 +75,10 @@ pub enum RunCmd {
     /// source reading) and emit the structured insumos for decomposition +
     /// `scan spec`. The grounding step of the elicitation loop.
     Feature {
-        /// The free-text feature/bugfix request to research.
+        /// The free-text feature/bugfix request to research. The orchestration
+        /// layer passes any cross-lingual translation INSIDE this text
+        /// (`--intent "<user prompt> <english translation>"`); the command stays
+        /// pure deterministic and queries the DISTINCT union of the tokens.
         #[arg(long)]
         intent: String,
         /// Workspace root. Defaults to the current directory.
@@ -237,6 +241,25 @@ pub enum RunCmd {
         #[arg(long = "allow-no-qa")]
         allow_no_qa: bool,
     },
+    /// Finalize a completed wave in ONE call (token-economy composite): emit
+    /// `pipeline.wave.complete` (the completion event + the wave's
+    /// `meta.json`/`spec.md` → Close + the parent progress bump, reusing
+    /// `emit-pipeline` verbatim) AND cache the wave diff
+    /// (`git diff HEAD~1 HEAD --stat` → `wave-{N}-{role}/diff.md`, atomic LF
+    /// write). Folds the two bookkeeping steps the orchestrator did by hand
+    /// after a committed wave; the diff cache replaces a fragile shell redirect
+    /// (no CRLF / absolute-path-redirect footgun).
+    WaveDone {
+        /// Spec the completed wave belongs to.
+        #[arg(long)]
+        spec: String,
+        /// The completed wave number.
+        #[arg(long)]
+        wave: u64,
+        /// Wall-clock duration of the wave in milliseconds (telemetry only).
+        #[arg(long = "duration-ms")]
+        duration_ms: Option<u64>,
+    },
     /// Rewrite legacy spec headers (`### Status:` + `### Phase:`) into the
     /// canonical `### Stage:` / `### Outcome:` / `### Flags:` triple
     /// (spec-lifecycle-unification Wave 7). Dry-run by default; `--apply`
@@ -366,26 +389,23 @@ pub enum RunCmd {
         apply: bool,
     },
     /// Persist agent memory, decisions/lessons, or knowledge entries.
-    /// `cross-wave` is the read-side: emits markdown summarising prior waves.
     /// `list` emits all memory entries (knowledge_patterns + decisions + lessons).
     ///
     /// W7 (deep-refactor) adds three subcommands sharing this clap variant:
     /// `write` (`agent_memory` insert + `--verify` round-trip), `search`
     /// (FTS5 + scope filter on `agent_memory`), and `feedback`
     /// (`memory_feedback` append for `deprecate|bump|supersede|use`).
-    /// `cross-wave` gains `--cluster <C>` to scope to a single role across
-    /// prior waves.
     Memory {
-        /// Subcommand: `agent`, `decision`, `knowledge`, `list`, `cross-wave`,
+        /// Subcommand: `agent`, `decision`, `knowledge`, `list`,
         /// `write`, `search`, or `feedback`.
         subcommand: String,
         /// Input JSON (Windows-friendly form; stdin is the POSIX fallback).
         #[arg(long)]
         json: Option<String>,
-        /// `agent` / `cross-wave` / `write` / `search` — spec name.
+        /// `agent` / `write` / `search` — spec name.
         #[arg(long)]
         spec: Option<String>,
-        /// `agent` / `cross-wave` / `write` — wave number (1-based).
+        /// `agent` / `write` — wave number (1-based).
         #[arg(long)]
         wave: Option<u32>,
         /// `agent` only — agent identifier/role (becomes `agent_type`).
@@ -404,8 +424,7 @@ pub enum RunCmd {
         /// `list` only — output format: `json` (default) or `table`.
         #[arg(long, default_value = "json")]
         format: String,
-        /// `cross-wave` / `search` — scope to a single cluster (role suffix
-        /// of `wave-N-<role>` for cross-wave; `agent_memory.role` for search).
+        /// `search` — scope to a single cluster (`agent_memory.role`).
         #[arg(long)]
         cluster: Option<String>,
         /// `search` only — FTS5 query string.
@@ -1383,6 +1402,57 @@ pub enum RunCmd {
         #[arg(long)]
         description: Option<String>,
     },
+    /// Author or read a durable capability doc under `.claude/capabilities/`.
+    ///
+    /// `create --slug X --title Y [--status active]` writes
+    /// `.claude/capabilities/{slug}.md` (id `cap.{slug}`) — frontmatter
+    /// (`id` / `status`) + title + the structural `### Requirement:` /
+    /// `#### Scenario:` body + `## Covers` / `## Specs` / `## Related` link
+    /// sections. Errors (JSON, exit 0) if the doc already exists.
+    ///
+    /// `show --slug X` parses the doc and prints the
+    /// [`mustard_core::domain::capability::Capability`] as byte-stable JSON.
+    ///
+    /// `sync-nodes --slug X` materializes a `.claude/graph/{id}.md` node (with
+    /// frontmatter `id: {id}`) for each `entity.{name}` cover that exists in the
+    /// grain registry, so the EXISTING wikilink resolver dereferences the cover
+    /// link; an unknown / typo'd cover is skipped (stays `⚠ unresolved`).
+    /// All reuse the core type + the single `[[ ]]` scanner; fail-open.
+    Capability {
+        /// Verb: `create` (default), `show`, or `sync-nodes`.
+        subcommand: Option<String>,
+        /// Capability slug (the `{slug}` in `cap.{slug}` and the file name).
+        #[arg(long)]
+        slug: String,
+        /// `create` only — human-readable title (narrative locale).
+        #[arg(long, default_value = "")]
+        title: String,
+        /// `create` only — lifecycle word (defaults to `active`).
+        #[arg(long, default_value = "active")]
+        status: String,
+    },
+    /// ADVISORY structural linter for a capability or spec document.
+    ///
+    /// `--capability {slug}` lints `.claude/capabilities/{slug}.md`; `--spec
+    /// {slug}` lints `.claude/spec/{slug}/spec.md`. Pass exactly one (neither /
+    /// both prints a usage-error JSON). Catches the brittle-markdown failures
+    /// the project keeps hitting: an Acceptance-Criterion the qa-run parser
+    /// cannot read, a blank `command:`, a `[[..]]` that resolves to nothing.
+    ///
+    /// Reuses `capability::parse`, the qa-run AC parser (`parse_ac_items` /
+    /// `extract_ac_section`), and the single `[[ ]]` scanner + resolver — no
+    /// parallel parser/scanner. Prints byte-stable JSON
+    /// `{ ok, doc, issues: [{level, rule, message}] }` (issues sorted by rule
+    /// then message; `ok` = no error-level issue) and ALWAYS exits 0. Not wired
+    /// into any gate — the owner may wire it into `doctor` later.
+    SpecLint {
+        /// Lint `.claude/capabilities/{slug}.md`.
+        #[arg(long)]
+        capability: Option<String>,
+        /// Lint `.claude/spec/{slug}/spec.md`.
+        #[arg(long)]
+        spec: Option<String>,
+    },
     /// Sweep terminal, idle spec directories under `.claude/spec/` (W5.T5.5).
     ///
     /// Default is **dry-run**: enumerates every spec whose `meta.json` reports
@@ -1675,16 +1745,6 @@ pub enum RunCmd {
         #[arg(long)]
         spec: Option<String>,
     },
-    /// W5.T5.16 — Consolidate per-phase prelude (diff-context snapshot).
-    #[command(name = "pipeline-prelude")]
-    PipelinePrelude {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// Phase: `ANALYZE` / `PLAN` / `EXECUTE`.
-        #[arg(long)]
-        phase: String,
-    },
     /// Composite PLAN materialisation: wave-scaffold + analyze-validation +
     /// `pipeline.scope` (full) + `pipeline.phase` PLAN, all in-process.
     /// Pressupposes `spec.md`/`meta.json` already drafted by `spec-draft`.
@@ -1763,6 +1823,9 @@ pub fn dispatch(cmd: RunCmd) {
                 payload,
                 allow_no_qa,
             });
+        }
+        RunCmd::WaveDone { spec, wave, duration_ms } => {
+            pipeline::wave_done::run(&spec, wave, duration_ms);
         }
         RunCmd::MigrateSpecHeaders {
             dry_run,
@@ -2176,6 +2239,21 @@ pub fn dispatch(cmd: RunCmd) {
                 },
             );
         }
+        RunCmd::Capability {
+            subcommand,
+            slug,
+            title,
+            status,
+        } => {
+            capability::dispatch(
+                subcommand.as_deref(),
+                &slug,
+                capability::CapabilityCreateOpts { slug: slug.clone(), title, status },
+            );
+        }
+        RunCmd::SpecLint { capability, spec } => {
+            spec::spec_lint::run(capability.as_deref(), spec.as_deref());
+        }
         RunCmd::SpecClear {
             repo,
             age_days,
@@ -2330,9 +2408,6 @@ pub fn dispatch(cmd: RunCmd) {
                 std::process::exit(1);
             }
         },
-        RunCmd::PipelinePrelude { spec, phase } => {
-            pipeline::pipeline_prelude::run(pipeline::pipeline_prelude::PreludeOpts { spec, phase });
-        }
         RunCmd::PlanMaterialize { spec_dir, plan } => {
             pipeline::plan_materialize::run(pipeline::plan_materialize::PlanMaterializeOpts {
                 spec_dir,

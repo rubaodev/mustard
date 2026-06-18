@@ -12,12 +12,14 @@
 //! cache) convert them with [`harness_events_from_values`] instead — the disk
 //! walk is the caller's responsibility, never repeated here.
 
+mod capability;
 mod card;
 mod quality;
 mod timeline;
 mod waves;
 mod workspace;
 
+pub use capability::{project_capabilities, CapabilityRollup, CapabilityState};
 pub use card::{project_spec_view, project_spec_view_with_header};
 pub use quality::project_quality;
 pub use timeline::{

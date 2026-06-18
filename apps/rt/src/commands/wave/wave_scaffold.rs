@@ -228,8 +228,24 @@ pub(crate) fn effective_locale(spec_dir: &Path, plan_lang: Option<&str>) -> Supp
 /// Render the wave-plan markdown index. Lifecycle metadata (stage / scope /
 /// total waves) lives only in the `meta.json` sidecar — the markdown is pure
 /// narrative + the wave table.
-pub(crate) fn render_wave_plan(plan: &Plan, hd: &Headings<'_>, ac_block: Option<&str>) -> String {
+///
+/// `parent_slug` is the parent spec's directory name; it seeds the leading
+/// `id: wave.{slug}.plan` frontmatter — the rename-proof identity handle that
+/// makes `[[wave.{slug}.plan]]` a mustard-resolvable wikilink
+/// (`atomic_md::wikilink::resolve` prefers a frontmatter `id:` over the
+/// filename). Identity is NOT lifecycle metadata, so it does not violate the
+/// "pure narrative" rule. A blank `parent_slug` (defensive) omits the block so
+/// the document still parses.
+pub(crate) fn render_wave_plan(
+    plan: &Plan,
+    hd: &Headings<'_>,
+    ac_block: Option<&str>,
+    parent_slug: &str,
+) -> String {
     let mut out = String::new();
+    if !parent_slug.is_empty() {
+        let _ = write!(out, "---\nid: wave.{parent_slug}.plan\n---\n\n");
+    }
     out.push_str(hd.wave_plan_title);
     out.push_str("\n\n");
     out.push_str(hd.wave_table_caption);
@@ -288,6 +304,15 @@ pub(crate) fn wave_name(w: &WavePlanEntry) -> String {
 pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
     let name = wave_name(w);
     let mut out = String::new();
+    // Leading `id:` frontmatter — the rename-proof identity handle, derived from
+    // the parent spec slug plus this wave's `{n}-{role}` (the same tokens
+    // `wave_name` builds the folder from). `[[wave.{slug}.{n}-{role}]]` resolves
+    // to this file via `atomic_md::wikilink::resolve`'s frontmatter-id
+    // precedence. Identity is not lifecycle metadata (which stays in
+    // `meta.json`). A blank `parent` (defensive) omits the block.
+    if !parent.is_empty() {
+        let _ = write!(out, "---\nid: wave.{parent}.{n}-{role}\n---\n\n", n = w.n, role = w.role);
+    }
     let _ = writeln!(out, "# {name}\n");
     // Lifecycle metadata (stage / parent) lives only in the `meta.json` sidecar;
     // the parent is still surfaced as a body link in the `## Network` section.
@@ -601,7 +626,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     let ac_block = build_ac_block(&plan, &hd);
 
     // wave-plan.md.
-    let wave_plan_md = render_wave_plan(&plan, &hd, ac_block.as_deref());
+    let wave_plan_md = render_wave_plan(&plan, &hd, ac_block.as_deref(), &parent_name);
     emit(&spec_dir.join("wave-plan.md"), wave_plan_md);
 
     // Per-wave spec. A wave the Plan agent left with no `tasks` is a visible
@@ -778,7 +803,7 @@ mod tests {
         // either language; EN keeps the literal block here readable.
         let hd = headings(SupportedLocale::EnUs);
         let ac = "## Acceptance Criteria\n- **AC-1** — works.\n  Command: `true`";
-        let md = render_wave_plan(&sample_plan(), &hd, Some(ac));
+        let md = render_wave_plan(&sample_plan(), &hd, Some(ac), "epic-x");
         // The QA gate reads global ACs back from `wave-plan.md` via the shared
         // `section_block` extractor once `spec.md` is renamed away — it must find
         // the carried section.
@@ -789,7 +814,7 @@ mod tests {
 
         // `None` (the /feature scaffold path, where `spec.md` survives) appends
         // no AC section — the table stays byte-identical.
-        let bare = render_wave_plan(&sample_plan(), &hd, None);
+        let bare = render_wave_plan(&sample_plan(), &hd, None, "epic-x");
         assert!(spec_sections::section_block(&bare, "acceptanceCriteria").is_none());
     }
 
@@ -799,18 +824,21 @@ mod tests {
         // effective language, so a PT locale yields PT headings (per the i18n
         // rule — every generated file follows the configured language).
         let hd = headings(SupportedLocale::PtBr);
-        let md = render_wave_plan(&sample_plan(), &hd, None);
+        let md = render_wave_plan(&sample_plan(), &hd, None, "epic-x");
         assert!(md.contains("[[wave-1-general]]"));
         assert!(md.contains("[[wave-2-frontend]]"));
         assert!(md.contains("foundations"));
         assert!(md.contains("[[wave-1-general]]"));
+        // The wave-plan carries its rename-proof identity handle as leading
+        // `id:` frontmatter (parent slug + `.plan`).
+        assert!(md.starts_with("---\nid: wave.epic-x.plan\n---\n\n"), "{md}");
         // PT locale → PT headings.
         assert!(md.contains("# Plano de Waves"));
         assert!(md.contains("Depende de"));
         assert!(!md.contains("# Wave Plan"));
 
         // The EN locale renders the EN headings for the same plan.
-        let en = render_wave_plan(&sample_plan(), &headings(SupportedLocale::EnUs), None);
+        let en = render_wave_plan(&sample_plan(), &headings(SupportedLocale::EnUs), None, "epic-x");
         assert!(en.contains("# Wave Plan"));
         assert!(en.contains("Depends on"));
         assert!(!en.contains("Plano de Waves"));
@@ -822,8 +850,11 @@ mod tests {
         let hd = headings(SupportedLocale::PtBr);
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
-        // Lifecycle metadata is NOT in the markdown — no `### Stage:`/`### Parent:`
-        // header lines. The parent is surfaced only as a body link in `## Rede`.
+        // Identity (allowed) IS present as leading `id:` frontmatter, while
+        // lifecycle metadata is NOT — no `### Stage:`/`### Parent:` header lines.
+        // The two are distinct: `id:` is a rename-proof handle, lifecycle lives
+        // in `meta.json`. The parent is surfaced only as a body link in `## Rede`.
+        assert!(s1.starts_with("---\nid: wave.epic-x.1-general\n---\n\n"), "{s1}");
         assert!(!s1.contains("### Stage:"));
         assert!(!s1.contains("### Outcome:"));
         assert!(!s1.contains("### Parent:"));
@@ -833,6 +864,7 @@ mod tests {
         assert!(s1.contains("## Resumo"));
         assert!(!s1.contains("## Summary"));
         let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
+        assert!(s2.starts_with("---\nid: wave.epic-x.2-frontend\n---\n\n"), "{s2}");
         assert!(!s2.contains("### Stage:"));
         assert!(s2.contains("[[wave-1-general]]"));
         assert!(s2.contains("## Rede"));
@@ -1181,7 +1213,7 @@ mod tests {
         };
         let hd = headings(SupportedLocale::EnUs);
         let ac_block = build_ac_block(&plan, &hd);
-        let md = render_wave_plan(&plan, &hd, ac_block.as_deref());
+        let md = render_wave_plan(&plan, &hd, ac_block.as_deref(), "epic-x");
         let block = spec_sections::section_block(&md, "acceptanceCriteria")
             .expect("AC union must be carried into wave-plan.md");
         assert!(block.contains("AC-1"), "{block}");
@@ -1194,7 +1226,7 @@ mod tests {
         }
         let no_ac_block = build_ac_block(&no_ac, &hd);
         assert!(no_ac_block.is_none(), "no AC → no block synthesized");
-        let bare = render_wave_plan(&no_ac, &hd, no_ac_block.as_deref());
+        let bare = render_wave_plan(&no_ac, &hd, no_ac_block.as_deref(), "epic-x");
         assert!(spec_sections::section_block(&bare, "acceptanceCriteria").is_none());
     }
 

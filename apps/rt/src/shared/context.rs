@@ -330,10 +330,9 @@ fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathB
 
 /// Resolve the active wave number from `MUSTARD_ACTIVE_WAVE` — the convention the
 /// harness sets on every wave dispatch and that `route` already stamps on each
-/// emitted event. Co-located with [`current_spec`] so the automatic
-/// PostToolUse(Task) observer can attribute an `agent.memory` event to its wave
-/// WITHOUT the orchestrator having to call `memory agent` explicitly. `None` when
-/// unset / not numeric (a spec-less or non-wave dispatch).
+/// emitted event. Co-located with [`current_spec`] so a hook (e.g. the
+/// change-request logger) can attribute its emitted event to the active wave.
+/// `None` when unset / not numeric (a spec-less or non-wave dispatch).
 #[must_use]
 pub fn current_wave() -> Option<i64> {
     std::env::var("MUSTARD_ACTIVE_WAVE")

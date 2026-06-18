@@ -9,5 +9,28 @@
   "defaultViewMode": "preview",
   "readableLineLength": true,
   "strictLineBreaks": false,
-  "showFrontmatter": true
+  "showFrontmatter": true,
+  "userIgnoreFilters": [
+    "agent-memory/",
+    "agents/",
+    "commands/",
+    "context/",
+    "lexicons/",
+    "plans/",
+    "refs/",
+    "skills/",
+    ".harness/",
+    ".session/",
+    ".metrics/",
+    ".cache/",
+    ".agent-state/",
+    ".dispatch/",
+    ".pipeline-states/",
+    "grain.model.json",
+    "grammars-suggestions.json",
+    "pipeline-config.md",
+    "scheduled_tasks.lock",
+    "settings.json",
+    "settings.local.json"
+  ]
 }

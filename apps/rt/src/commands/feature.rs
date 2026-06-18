@@ -7,8 +7,8 @@
 //! unit. It is the deterministic grounding for the elicitation loop — the
 //! "pesquisa no scan" that replaces reading files by hand.
 //!
-//! Output (stdout, pretty JSON): the intent, the domain terms queried, the
-//! digest findings (matched terms, recurring slices, shared contracts, hubs),
+//! Output (stdout, pretty JSON): the intent, the digest findings (recurring
+//! slices, shared contracts, hubs),
 //! the anchor files to read (plus the per-anchor `anchorsDetail` audit —
 //! score/terms — and the `report.reason` strength, so the orchestrator never
 //! opens the scan JSON), and a `miss` flag + note. `miss=true` means no repo
@@ -18,14 +18,25 @@
 
 use std::path::Path;
 
-use mustard_core::domain::scan::DigestQuery;
+use mustard_core::domain::scan::{DigestQuery, DigestTerm};
 use mustard_core::Scan;
 use serde_json::json;
 
 /// Extract domain terms from a free-text intent: lowercased alphanumeric runs
-/// >=3 chars, deduped, capped. The digest matches by token, so over-querying is
-/// harmless (it ORs); the AI refines. No language/framework knowledge.
+/// >=3 chars, DEDUPED (first-occurrence order preserved), capped. The digest
+/// matches by token, so over-querying is harmless (it ORs); the AI refines. No
+/// language/framework knowledge.
+///
+/// The orchestration layer now passes the cross-lingual translation INSIDE the
+/// intent (`--intent "<PT words> <english translation>"`), so the same concept
+/// arrives twice (e.g. "fornecedor … supplier"). The dedup collapses each
+/// lowercased token to a single query term — a token appears once regardless of
+/// how many times it (or its casing) recurs in the intent.
 pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
+    // `seen` keys on the LOWERCASED form (the same value pushed), so a token
+    // that recurs — including a PT word echoed by its EN translation when both
+    // fold to the same lowercased string — is queried exactly once, in
+    // first-occurrence order. BTreeSet keeps the guard deterministic.
     let mut seen = std::collections::BTreeSet::new();
     let mut out: Vec<String> = Vec::new();
     for raw in intent.split(|c: char| !c.is_alphanumeric()) {
@@ -49,9 +60,9 @@ pub(crate) fn domain_terms(intent: &str) -> Vec<String> {
 /// the planning fields (anchors, anchorsDetail, slices, contracts, hubs,
 /// matchedTerms) would charge the orchestrator's context for content the
 /// contract tells it to discard. They are withheld from stdout (empty arrays
-/// plus `planningWithheld: true`); the honest counts (`sliceMatchCount`,
-/// `slicesOmitted`) still report what existed, and the successful re-query
-/// returns the fields. The recorded `feature.query` event keeps the full
+/// plus `planningWithheld: true`); the honest `sliceMatchCount` still reports
+/// what existed, and the successful re-query returns the withheld fields. The
+/// recorded `feature.query` event keeps the full
 /// report either way — it goes to NDJSON, not to context.
 ///
 /// Exception: a `bridged` weak answer is NOT withheld. There the weakness is
@@ -64,21 +75,65 @@ fn withhold_planning(reason: &str, bridged: bool) -> bool {
     matches!(reason, "weak" | "none") && !bridged
 }
 
-/// Max evidence files rendered per report term on stdout. The per-term files
-/// are re-query evidence ("where does this vocabulary live"), not an
-/// exhaustive index — three are plenty, and a 32-term prose intent times an
-/// uncapped list is exactly the "gigantic weak JSON" the field run paid for.
-/// The `feature.query` event keeps the full list for `lexicon-suggest`.
-const REPORT_TERM_FILES_MAX: usize = 3;
+/// Max `candidates` rows emitted on a NON-strong result — the menu the
+/// orchestration-layer translator (a Haiku step that lives OUTSIDE this
+/// command) selects from to re-query in the code's own vocabulary. The source
+/// is the PUBLISHED domain-term index (`Scan::digest().terms`, already
+/// `build_terms`-ranked and capped at the scan tool's `MAX_TERMS`); this is the
+/// emission-side bound on top of that, so the menu stays a few KB regardless of
+/// the catalogue's published cap. The published order is preserved verbatim
+/// (byte-stable), never re-derived or re-sorted here.
+const CANDIDATES_MAX: usize = 80;
+
+/// `true` when the report's strength is NOT `strong` — i.e. the orchestrator
+/// must re-query in the code's own vocabulary before planning. Drives whether
+/// `candidates` (the translator's menu) is attached: emitted on
+/// `weak`/`none`/`generated_only` or any legacy `miss`, omitted on `strong`
+/// (the strong path stays lean — the anchors already ARE the evidence).
+fn non_strong(reason: &str, miss: bool) -> bool {
+    reason != "strong" && (matches!(reason, "weak" | "none" | "generated_only") || miss || reason.is_empty())
+}
+
+/// Project the PUBLISHED domain-term index into the bounded `candidates` menu:
+/// each row is `{ term, count }` drawn verbatim from the catalogue
+/// (`Scan::digest().terms`) — REUSED, never re-derived or re-sorted, so the
+/// published rank order (frequency/rank desc, term asc) carries through
+/// byte-stably. Bounded by [`CANDIDATES_MAX`] (rows). Pure (no spawn, no IO) so
+/// the shape is unit-testable without the scan binary.
+///
+/// `samples` (a couple of "where this vocabulary lives" paths) was DROPPED from
+/// stdout: the consumer — the orchestration layer that re-queries against this
+/// menu — reads the `term` column ONLY, never the samples; they were emitted
+/// solely for a manual fallback. Dropping them trims the weak/none JSON without
+/// affecting the term menu.
+fn candidates_from_index(index: &[DigestTerm]) -> Vec<serde_json::Value> {
+    index
+        .iter()
+        .take(CANDIDATES_MAX)
+        .map(|t| {
+            json!({
+                "term": t.term,
+                "count": t.count,
+            })
+        })
+        .collect()
+}
 
 /// Build the insumos payload for a successful digest query. Pure (no spawn, no
-/// IO) so the payload shape — including the `stacks` passthrough — is
-/// unit-testable without the scan binary.
-fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value {
+/// IO) so the payload shape — including the `stacks` passthrough and the
+/// `candidates` menu — is unit-testable without the scan binary. `index` is the
+/// PUBLISHED domain-term catalogue (`Scan::digest().terms`), used ONLY on a
+/// non-strong result to build `candidates`; on a strong result it is ignored
+/// (and the caller passes an empty slice, skipping the extra fetch).
+fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::Value {
     let withhold = withhold_planning(q.report.reason.as_str(), q.report.bridged);
-    json!({
+    let mut out = json!({
         "intent": intent,
-        "queryTerms": terms,
+        // `queryTerms` (the echoed tokenization of `--intent`) was dropped from
+        // STDOUT — the orchestrator already holds the intent it passed in, and
+        // the report names every term that mattered. The recorded
+        // `feature.query` / `analyze.digest.used` EVENTS keep `queryTerms` for
+        // `lexicon-suggest` / adherence; only the stdout payload loses it.
         // Stacks the scan inferred for the model (registry-driven, see
         // `mustard_core::domain::vocabulary::stacks`) — copied into every
         // payload, hit or miss, so the orchestrator can specialize guidance.
@@ -100,7 +155,12 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         "planningWithheld": withhold,
         // `matchedTerms` (term+count) was dropped — it duplicated `report.terms`
         // (which carries term + tier + the files), so it was pure payload weight.
-        "slices": if withhold { Vec::new() } else { q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities })).collect::<Vec<_>>() },
+        // `exemplarFiles`: the real reference-implementation files that
+        // exemplify each slice — so the orchestrator opens the files to mirror
+        // directly, not just the pattern label. Passed through from the scan
+        // digest's per-slice `exemplar_files` (already most-complex-first,
+        // deduped, capped at 4 by the scan tool).
+        "slices": if withhold { Vec::new() } else { q.slices.iter().map(|s| json!({ "label": s.label, "recurrence": s.recurrence, "entities": s.entities, "exemplarFiles": s.exemplar_files })).collect::<Vec<_>>() },
         // Count of matched recurring slices — the deterministic signal the
         // scope classifier consumes: 1 = "mirrors a matched slice"
         // (light/extended-light); >=2 = multi-slice vocabulary overlap, which
@@ -108,9 +168,10 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
         // scope-classify) — alone it is precedent, not layer spanning.
         // Additive: the `slices` array is unchanged for existing consumers.
         "sliceMatchCount": q.slices.len(),
-        // Slices the per-query cap trimmed (additive; 0 from an older scan
-        // binary) — honest "there was more" signal next to the count above.
-        "slicesOmitted": q.slices_omitted,
+        // `slicesOmitted` (the per-query cap's trimmed-tail counter) was dropped
+        // from STDOUT — a debug-only "there was more" signal the orchestrator
+        // never acts on. The scan struct still carries it (the scan tests read
+        // it directly); only this stdout payload stops emitting it.
         "contracts": if withhold { Vec::new() } else { q.contracts.iter().map(|c| json!({ "name": c.name, "implementors": c.implementors })).collect::<Vec<_>>() },
         "hubs": if withhold { Vec::new() } else { q.hubs.iter().map(|h| json!({ "module": h.module, "degree": h.degree })).collect::<Vec<_>>() },
         "anchors": if withhold { &[] as &[String] } else { &q.files[..] },
@@ -134,14 +195,32 @@ fn payload(intent: &str, terms: &[String], q: &DigestQuery) -> serde_json::Value
             // (translated, not literal) — the planning fields are kept, not
             // withheld. See `withhold_planning` and `note`.
             "bridged": q.report.bridged,
+            // `files` was dropped from STDOUT — it duplicated `anchorsDetail`
+            // (the file→terms evidence map already in stdout), so it was pure
+            // payload weight on a wide query (32 terms × N files each). The
+            // `feature.query` EVENT keeps the full per-term `files` for
+            // `lexicon-suggest`; only stdout loses them. Same precedent as the
+            // `matchedTerms` drop above.
             "terms": q.report.terms.iter().map(|t| json!({
                 "term": t.term, "tier": t.tier, "lang": t.lang,
-                // Evidence cap — see `REPORT_TERM_FILES_MAX`.
-                "files": t.files.iter().take(REPORT_TERM_FILES_MAX).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         }),
         "note": note(q),
-    })
+    });
+    // On a NON-strong result, attach the translator's menu: a bounded slice of
+    // the PUBLISHED domain-term index so an orchestration-layer (Haiku) step can
+    // map a cross-lingual intent onto the repo's real code vocabulary and
+    // re-query. Omitted on `strong` — there the anchors already ARE the
+    // evidence, and the strong path stays lean. No LLM call here: this command
+    // only PUBLISHES the menu, deterministically. The non-strong fallback path
+    // (scan unavailable) has no catalogue, so it passes an empty slice → an
+    // empty `candidates`, honestly signalling "no vocabulary to offer".
+    if non_strong(q.report.reason.as_str(), q.miss) {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("candidates".to_string(), json!(candidates_from_index(index)));
+        }
+    }
+    out
 }
 
 /// Compact `feature.query` event payload: the RAW `--intent` text + the
@@ -314,6 +393,14 @@ fn note(q: &DigestQuery) -> &'static str {
 }
 
 /// Run the research step: print the feature insumos JSON for `intent`.
+///
+/// PURE DETERMINISTIC — no `claude` subprocess. Cross-lingual translation now
+/// lives in the ORCHESTRATION layer: the caller passes the english translation
+/// INSIDE `--intent` (`--intent "<user prompt PT> <english translation>"`), so
+/// this command only tokenizes the DISTINCT union of the terms it receives
+/// (`domain_terms` dedups), queries the digest once, and prints the insumos. On
+/// a NON-strong result the `candidates` menu still rides along — a deterministic
+/// fallback the orchestration layer can re-query against.
 pub fn run(intent: &str, root: &Path) {
     let terms = domain_terms(intent);
     let model = root.join(".claude").join("grain.model.json");
@@ -332,24 +419,37 @@ pub fn run(intent: &str, root: &Path) {
             // the `feature_outcome_observer` reads to attribute each later
             // Read/Edit/Write to this query's anchors. Fail-open side effect.
             drop_research_marker(&terms, &q);
-            payload(intent, &terms, &q)
+            // On a NON-strong result, fetch the PUBLISHED domain-term catalogue
+            // (the `build_terms`-ranked, scan-capped index) so `payload` can
+            // attach the `candidates` fallback menu. The fetch is gated on
+            // non-strong so the strong (lean) path pays for no extra spawn; a
+            // failed fetch degrades to an empty menu (fail-open). On `strong`,
+            // `payload` ignores the slice, so an empty one is correct.
+            let index: Vec<DigestTerm> = if non_strong(q.report.reason.as_str(), q.miss) {
+                Scan::locate().digest(&model).map(|d| d.terms).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            payload(intent, &q, &index)
         }
         Err(err) => {
             eprintln!("feature: scan digest unavailable: {err}");
             json!({
                 "intent": intent,
-                "queryTerms": terms,
                 "stacks": [],
                 "miss": true,
                 "planningWithheld": true,
                 "slices": [],
                 "sliceMatchCount": 0,
-                "slicesOmitted": 0,
                 "contracts": [],
                 "hubs": [],
                 "anchors": [],
                 "anchorsDetail": [],
                 "report": { "matched": 0, "total": 0, "reason": "none", "terms": [] },
+                // Non-strong (`none`/`miss`), so the `candidates` key is present
+                // for a stable shape — but empty: the scan model is unavailable,
+                // so there is no published vocabulary to offer the translator.
+                "candidates": [],
                 "note": "scan model unavailable — run `mustard-rt run scan` first; treat as net-new until then",
             })
         }
@@ -400,7 +500,7 @@ mod tests {
             r#"{"query":["page"],"detected_stacks":[{"name":"nextjs","confidence":0.65,"signals":["dep:next","path:next.config.js"]},{"name":"laravel","confidence":0.95,"signals":["dep:laravel/framework"]}],"files":["pages/index.tsx"],"miss":false}"#,
         )
         .expect("digest payload with detected_stacks");
-        let v = payload("add a page", &["page".to_string()], &q);
+        let v = payload("add a page", &q, &[]);
         let stacks = v["stacks"].as_array().expect("stacks array");
         assert_eq!(stacks.len(), 2, "both detections carried: {v}");
         assert_eq!(stacks[0]["name"], "nextjs");
@@ -408,6 +508,11 @@ mod tests {
         assert_eq!(stacks[0]["signals"], json!(["dep:next", "path:next.config.js"]));
         assert_eq!(stacks[1]["name"], "laravel");
         assert_eq!(stacks[1]["confidence"], 0.95);
+        // The echoed `queryTerms` and the debug-only `slicesOmitted` counter are
+        // NOT in stdout — they were dropped to trim the payload (the orchestrator
+        // holds the intent; the `feature.query` EVENT still keeps `queryTerms`).
+        assert!(v.get("queryTerms").is_none(), "queryTerms dropped from stdout: {v}");
+        assert!(v.get("slicesOmitted").is_none(), "slicesOmitted dropped from stdout: {v}");
         // Byte-stability: the serialized payload carries the clean decimals.
         let s = serde_json::to_string(&v).expect("payload serializes");
         assert!(s.contains("0.65"), "clean confidence missing: {s}");
@@ -415,8 +520,10 @@ mod tests {
 
         // No detections → an empty array, same shape as the fallback payload.
         let bare: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("bare digest");
-        let v = payload("anything", &[], &bare);
+        let v = payload("anything", &bare, &[]);
         assert_eq!(v["stacks"], json!([]), "empty stacks must stay an empty array: {v}");
+        assert!(v.get("queryTerms").is_none(), "queryTerms stays dropped on the miss shape: {v}");
+        assert!(v.get("slicesOmitted").is_none(), "slicesOmitted stays dropped on the miss shape: {v}");
     }
 
     #[test]
@@ -520,7 +627,7 @@ mod tests {
             r#"{"query":["refund"],"files":["src/refund.cs","src/tail.cs"],"files_detail":[{"file":"src/refund.cs","score_x1024":2048,"terms":["refund"]},{"file":"src/tail.cs","score_x1024":0,"terms":[]}],"miss":false,"report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
         )
         .expect("digest payload with files_detail");
-        let v = payload("refund", &["refund".to_string()], &q);
+        let v = payload("refund", &q, &[]);
         let detail = v["anchorsDetail"].as_array().expect("anchorsDetail array");
         assert_eq!(detail.len(), 2, "one provenance row per anchor: {v}");
         assert_eq!(detail[0]["file"], "src/refund.cs");
@@ -533,7 +640,7 @@ mod tests {
         // Old scan binary (no files_detail): the field degrades to an empty
         // array, mirroring the miss-fallback payload's shape.
         let old: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("old digest");
-        let v = payload("anything", &[], &old);
+        let v = payload("anything", &old, &[]);
         assert_eq!(v["anchorsDetail"], json!([]), "older payloads keep the shape: {v}");
     }
 
@@ -567,7 +674,7 @@ mod tests {
             r#"{"query":["cancelado"],"matched_terms":[{"term":"cancel","count":3,"samples":["src/cancel.cs"]}],"miss":false,"report":{"matched":1,"total":2,"reason":"weak","terms":[{"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["src/cancel.cs"]},{"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
         )
         .expect("digest payload with report");
-        let v = payload("cancelar titulo", &["cancelado".to_string(), "hierarquia".to_string()], &weak);
+        let v = payload("cancelar titulo", &weak, &[]);
         assert_eq!(v["report"]["matched"], 1);
         assert_eq!(v["report"]["total"], 2);
         assert_eq!(v["report"]["reason"], "weak");
@@ -582,25 +689,26 @@ mod tests {
             r#"{"query":["zzz"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"zzz","tier":"none","lang":"","files":[]}]}}"#,
         )
         .expect("none-reason digest");
-        let v = payload("zzz", &["zzz".to_string()], &none);
+        let v = payload("zzz", &none, &[]);
         let note = v["note"].as_str().expect("note");
         assert!(note.contains("net-new") && note.contains("Explore"), "none note: {note}");
 
         // Old binary (empty reason): the legacy miss flag still drives the note.
         let old: DigestQuery = serde_json::from_str(r#"{"miss":true}"#).expect("old digest payload");
-        let v = payload("anything", &[], &old);
+        let v = payload("anything", &old, &[]);
         assert_eq!(v["report"]["reason"], "", "old payload exposes the defaulted report honestly: {v}");
         assert!(v["note"].as_str().expect("note").contains("net-new"), "miss fallback note: {v}");
     }
 
     #[test]
-    fn weak_report_withholds_planning_fields_and_caps_term_evidence() {
+    fn weak_report_withholds_planning_fields_and_drops_term_files() {
         // On `weak` the note forbids planning on top of the payload, so the
         // planning fields are withheld from stdout (the orchestrator would
         // pay for them and then discard them by contract): empty arrays +
-        // `planningWithheld: true`. The honest counts keep the true sizes
-        // and the per-term evidence files cap at REPORT_TERM_FILES_MAX (the
-        // recorded `feature.query` event keeps the full report).
+        // `planningWithheld: true`. The honest counts keep the true sizes.
+        // The per-term `files` are DROPPED from stdout (redundant with
+        // `anchorsDetail`); only `{term, tier, lang}` remain. The recorded
+        // `feature.query` event keeps the full per-term report incl. files.
         let weak: DigestQuery = serde_json::from_str(
             r#"{"query":["cancelado"],
                 "matched_terms":[{"term":"cancel","count":3,"samples":["src/cancel.cs"]}],
@@ -615,16 +723,20 @@ mod tests {
                     {"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
         )
         .expect("weak digest payload");
-        let v = payload("cancelar titulo", &["cancelado".to_string()], &weak);
+        let v = payload("cancelar titulo", &weak, &[]);
         assert_eq!(v["planningWithheld"], json!(true));
         for field in ["slices", "contracts", "hubs", "anchors", "anchorsDetail"] {
             assert_eq!(v[field], json!([]), "{field} must be withheld on weak: {v}");
         }
         // Honest counts survive the withholding.
         assert_eq!(v["sliceMatchCount"], 2, "true slice count stays visible: {v}");
-        // Re-query evidence stays, capped at REPORT_TERM_FILES_MAX.
-        let files = v["report"]["terms"][0]["files"].as_array().expect("files");
-        assert_eq!(files.len(), REPORT_TERM_FILES_MAX, "evidence cap: {v}");
+        // The per-term report keeps {term, tier, lang} but DROPS `files` on
+        // stdout (the evidence lives in `anchorsDetail` / the event).
+        let row = &v["report"]["terms"][0];
+        assert_eq!(row["term"], "cancelado");
+        assert_eq!(row["tier"], "lexicon");
+        assert_eq!(row["lang"], "pt-en");
+        assert!(row.get("files").is_none(), "per-term files dropped from stdout: {v}");
         assert!(
             v["note"].as_str().expect("note").contains("withheld"),
             "weak note must explain the withholding: {v}"
@@ -637,7 +749,7 @@ mod tests {
                 "report":{"matched":1,"total":1,"reason":"strong","terms":[]}}"#,
         )
         .expect("strong digest payload");
-        let v = payload("cancel title", &["cancel".to_string()], &strong);
+        let v = payload("cancel title", &strong, &[]);
         assert_eq!(v["planningWithheld"], json!(false));
         assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "strong keeps anchors: {v}");
     }
@@ -664,7 +776,7 @@ mod tests {
                     {"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["src/cancel.cs"]}]}}"#,
         )
         .expect("bridged digest payload");
-        let v = payload("cancelar titulo", &["cancelado".to_string()], &bridged);
+        let v = payload("cancelar titulo", &bridged, &[]);
         assert_eq!(v["planningWithheld"], json!(false), "a curated bridge is not withheld: {v}");
         assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "anchors returned for the bridged hit: {v}");
         assert_eq!(v["report"]["bridged"], json!(true), "the marker rides along: {v}");
@@ -675,5 +787,147 @@ mod tests {
         // The bridged note must NOT steer a re-query (the plain-weak note does):
         // the supervised lexicon already bridged the vocabulary.
         assert!(!note.contains("re-query"), "bridged note does not steer a re-query: {v}");
+    }
+
+    /// Build a published-index slice (`Scan::digest().terms`) for the candidate
+    /// tests — the catalogue order is preserved verbatim by the projection.
+    fn idx(rows: &[(&str, usize, &[&str])]) -> Vec<DigestTerm> {
+        rows.iter()
+            .map(|(term, count, samples)| DigestTerm {
+                term: (*term).to_string(),
+                count: *count,
+                samples: samples.iter().map(|s| (*s).to_string()).collect(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn non_strong_predicate_gates_the_candidates_menu() {
+        // The menu rides on every NON-strong outcome and only those: weak,
+        // none, generated_only, a legacy `miss`, and an empty reason (older
+        // scan binary). `strong` is the single case that omits it.
+        assert!(non_strong("weak", false));
+        assert!(non_strong("none", false));
+        assert!(non_strong("generated_only", false));
+        assert!(non_strong("", true), "legacy miss with empty reason is non-strong");
+        assert!(non_strong("", false), "empty reason (old binary) is non-strong");
+        assert!(!non_strong("strong", false), "strong omits the menu");
+        // A `miss` flag never overrides an explicit `strong` reason.
+        assert!(!non_strong("strong", true), "explicit strong wins over the legacy flag");
+    }
+
+    #[test]
+    fn candidates_from_index_is_bounded_byte_stable_and_reuses_publish_order() {
+        // The menu is the PUBLISHED term index projected verbatim: {term, count}
+        // in the catalogue's own order (NOT re-sorted here), bounded to
+        // CANDIDATES_MAX rows. `samples` is NOT emitted — the translator reads
+        // the `term` column only. Catalogue order is rank-desc (the scan tool's
+        // `build_terms`) — kept as given so the menu matches byte-for-byte.
+        let index = idx(&[
+            ("supplier", 40, &["src/supplier.cs", "src/supplier_repo.cs", "src/extra.cs"]),
+            ("contract", 22, &["src/contract.cs"]),
+            ("payable", 9, &[]),
+        ]);
+        let c = candidates_from_index(&index);
+        assert_eq!(c.len(), 3, "one row per catalogue term: {c:?}");
+        // Order preserved verbatim from the catalogue (no re-sort).
+        assert_eq!(c[0]["term"], "supplier");
+        assert_eq!(c[1]["term"], "contract");
+        assert_eq!(c[2]["term"], "payable");
+        // Shape: term + count ONLY — samples dropped from stdout.
+        assert_eq!(c[0]["count"], 40);
+        assert!(c[0].get("samples").is_none(), "samples dropped from stdout: {c:?}");
+        let row = c[0].as_object().expect("candidate row is an object");
+        assert_eq!(row.len(), 2, "exactly term + count per row: {c:?}");
+        // Row cap: a catalogue past CANDIDATES_MAX trims to the bound, head-first.
+        let big: Vec<DigestTerm> = (0..CANDIDATES_MAX + 25)
+            .map(|i| DigestTerm { term: format!("t{i:04}"), count: 1, samples: Vec::new() })
+            .collect();
+        let cb = candidates_from_index(&big);
+        assert_eq!(cb.len(), CANDIDATES_MAX, "row count bounded by CANDIDATES_MAX");
+        assert_eq!(cb[0]["term"], "t0000", "head of the published order survives the cap");
+        // Byte-stable for the same input.
+        let a = serde_json::to_string(&json!(candidates_from_index(&index))).expect("ser");
+        let b = serde_json::to_string(&json!(candidates_from_index(&index))).expect("ser");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn weak_result_includes_a_nonempty_bounded_candidates_menu() {
+        // On a weak result the payload attaches `candidates` — the translator's
+        // menu drawn from the PUBLISHED term index — even though the planning
+        // fields are withheld. The menu is the repo's real code vocabulary, so
+        // an orchestration-layer (Haiku) step can map a cross-lingual intent
+        // onto it and re-query. Bounded, byte-stable shape.
+        let weak: DigestQuery = serde_json::from_str(
+            r#"{"query":["cancelado"],
+                "files":["src/cancel.cs"],
+                "miss":false,
+                "report":{"matched":1,"total":2,"reason":"weak","terms":[
+                    {"term":"cancelado","tier":"stem","lang":"pt","files":["src/cancel.cs"]},
+                    {"term":"hierarquia","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("weak digest payload");
+        let index = idx(&[
+            ("supplier", 40, &["src/supplier.cs", "src/supplier_repo.cs"]),
+            ("contract", 22, &["src/contract.cs"]),
+        ]);
+        let v = payload("cancelar titulo", &weak, &index);
+        // Planning is withheld (plain weak) but the menu is present.
+        assert_eq!(v["planningWithheld"], json!(true), "weak still withholds planning: {v}");
+        let cands = v["candidates"].as_array().expect("candidates present on weak");
+        assert!(!cands.is_empty(), "candidates is the real vocabulary menu, not empty: {v}");
+        assert_eq!(cands.len(), 2, "one row per published term: {v}");
+        assert_eq!(cands[0]["term"], "supplier", "publish order preserved: {v}");
+        assert_eq!(cands[0]["count"], 40);
+        assert!(cands[0].get("samples").is_none(), "samples dropped from stdout: {v}");
+        // Byte-stable: the same inputs serialize identically.
+        let a = serde_json::to_string(&payload("cancelar titulo", &weak, &index)).expect("ser");
+        let b = serde_json::to_string(&payload("cancelar titulo", &weak, &index)).expect("ser");
+        assert_eq!(a, b, "candidates payload is byte-stable");
+    }
+
+    #[test]
+    fn none_and_bridged_results_also_carry_the_candidates_menu() {
+        // `none` (no precedent) is exactly when the translator needs the menu
+        // most — it must be present and non-empty when a catalogue exists.
+        let none: DigestQuery = serde_json::from_str(
+            r#"{"query":["zzz"],"miss":true,"report":{"matched":0,"total":1,"reason":"none","terms":[{"term":"zzz","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("none digest");
+        let index = idx(&[("supplier", 40, &["src/supplier.cs"]), ("contract", 22, &[])]);
+        let v = payload("zzz", &none, &index);
+        let cands = v["candidates"].as_array().expect("candidates present on none");
+        assert_eq!(cands.len(), 2, "none carries the full menu: {v}");
+        assert_eq!(cands[0]["term"], "supplier");
+
+        // A bridged weak is still NON-strong by reason, so the menu rides along
+        // too (harmless — the translator can ignore it given the bridge).
+        let bridged: DigestQuery = serde_json::from_str(
+            r#"{"query":["cancelado"],"files":["src/cancel.cs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"weak","bridged":true,"terms":[
+                    {"term":"cancelado","tier":"lexicon","lang":"pt-en","files":["src/cancel.cs"]}]}}"#,
+        )
+        .expect("bridged digest");
+        let v = payload("cancelar titulo", &bridged, &index);
+        assert!(v.get("candidates").is_some(), "bridged weak is non-strong → menu present: {v}");
+        // The bridge still returns planning fields (the existing contract).
+        assert_eq!(v["planningWithheld"], json!(false), "bridge keeps planning: {v}");
+    }
+
+    #[test]
+    fn strong_result_omits_candidates() {
+        // On `strong` the anchors already ARE the evidence; the menu is omitted
+        // to keep the strong path lean — even if a catalogue is handed in.
+        let strong: DigestQuery = serde_json::from_str(
+            r#"{"query":["supplier"],"files":["src/supplier.cs"],"miss":false,
+                "report":{"matched":1,"total":1,"reason":"strong","terms":[
+                    {"term":"supplier","tier":"exact","lang":"","files":["src/supplier.cs"]}]}}"#,
+        )
+        .expect("strong digest");
+        let index = idx(&[("supplier", 40, &["src/supplier.cs"]), ("contract", 22, &[])]);
+        let v = payload("supplier", &strong, &index);
+        assert!(v.get("candidates").is_none(), "strong omits the candidates menu: {v}");
+        assert_eq!(v["anchors"], json!(["src/supplier.cs"]), "strong keeps anchors: {v}");
     }
 }

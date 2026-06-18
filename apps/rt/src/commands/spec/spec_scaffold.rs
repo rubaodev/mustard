@@ -41,6 +41,22 @@ pub fn write_spec_md(
     tone: Tone,
 ) -> Result<(), String> {
     let mut body = String::new();
+    // Leading YAML frontmatter carrying ONLY a stable `id:` — the rename-proof
+    // identity handle. `[[spec.{slug}]]` is simultaneously an Obsidian wikilink
+    // AND a mustard-resolvable handle (`atomic_md::wikilink::resolve` prefers a
+    // frontmatter `id:` over the filename). This is NOT a lifecycle field — the
+    // "pure narrative" invariant forbids only `### Stage:`/`### Outcome:`/… which
+    // live in `meta.json`; identity is allowed. The `{slug}` is the spec
+    // directory name (the parent of `spec.md`). When the output dir has no file
+    // name (defensive: never happens for a real spec dir) the block is omitted
+    // so the document still parses.
+    let slug = output
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !slug.is_empty() {
+        let _ = write!(body, "---\nid: spec.{slug}\n---\n\n");
+    }
     let _ = write!(body, "# {}\n\n", input.title);
     // Drafter tone hint — picked up by the LLM that fleshes out section bodies.
     // Hidden in an HTML comment so it never renders in rendered markdown.
@@ -371,6 +387,70 @@ mod tests {
                 .unwrap();
         assert_eq!(v["stage"], serde_json::json!("Close"));
         assert_eq!(v["flags"], serde_json::json!(["followup_open"]));
+    }
+
+    /// `write_spec_md` prepends a leading YAML frontmatter block carrying ONLY a
+    /// stable `id: spec.{slug}` — the rename-proof identity handle — while the
+    /// body stays pure narrative (no lifecycle `### Stage:`/`### Outcome:`
+    /// header). The `{slug}` is the output directory name.
+    #[test]
+    fn write_spec_md_prepends_id_frontmatter_and_stays_narrative() {
+        use mustard_core::domain::spec::contract::SpecInput;
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("my-feature-slug");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let input = SpecInput {
+            title: "My Feature".to_string(),
+            ..SpecInput::default()
+        };
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+            .expect("write spec.md");
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        // Frontmatter is the very first bytes (the resolver requires `---\n`).
+        assert!(
+            body.starts_with("---\nid: spec.my-feature-slug\n---\n\n"),
+            "leading id frontmatter missing:\n{body}"
+        );
+        // The H1 title still renders (pushed below the frontmatter).
+        assert!(body.contains("# My Feature"), "{body}");
+        // No lifecycle header leaked in — identity is allowed, lifecycle is not.
+        assert!(!body.contains("### Stage:"), "{body}");
+        assert!(!body.contains("### Outcome:"), "{body}");
+        // Frontmatter carries ONLY `id:` — no other key.
+        let fm_end = body.find("\n---\n").expect("frontmatter close");
+        let fm = &body["---\n".len()..fm_end];
+        assert_eq!(fm.trim(), "id: spec.my-feature-slug", "frontmatter must carry only id:");
+    }
+
+    /// The dual link: a `[[spec.{slug}]]` reference resolves to the generated
+    /// `spec.md` via its frontmatter `id:` (not its filename, which is the
+    /// generic `spec.md`). This is the whole point of the convention — the
+    /// artifact is addressable by a rename-proof id through the SAME resolver
+    /// (`atomic_md::wikilink::resolve`) that Obsidian-style links use.
+    #[test]
+    fn id_frontmatter_makes_spec_resolvable_by_dual_link() {
+        use mustard_core::domain::spec::contract::SpecInput;
+        use mustard_core::io::atomic_md::resolve;
+        let dir = tempdir().unwrap();
+        // The spec lives at `<root>/spec.my-slug/spec.md` (filename is `spec.md`,
+        // identity is `spec.my-slug`).
+        let spec_dir = dir.path().join("my-slug");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let input = SpecInput {
+            title: "Resolvable Spec".to_string(),
+            ..SpecInput::default()
+        };
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+            .expect("write spec.md");
+
+        // `[[spec.my-slug]]` resolves to the spec.md by frontmatter id, even
+        // though no file is named `spec.my-slug.md`.
+        let resolved = resolve("spec.my-slug", &[dir.path()])
+            .expect("dual link must resolve via frontmatter id");
+        assert_eq!(resolved, spec_dir.join("spec.md"));
+        assert_eq!(resolved.file_name().and_then(|n| n.to_str()), Some("spec.md"));
+        // A bogus id does not resolve (no false positive).
+        assert!(resolve("spec.not-a-slug", &[dir.path()]).is_none());
     }
 
     #[test]

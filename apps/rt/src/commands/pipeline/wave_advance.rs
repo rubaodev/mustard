@@ -57,11 +57,12 @@
 
 use crate::commands::agent::agent_prompt_render::{self, RenderMode};
 use crate::commands::pipeline::dispatch_plan;
+use crate::commands::review::dependency_precheck;
 use mustard_core::domain::model::event::{HarnessEvent, EVENT_PIPELINE_WAVE_COMPLETE};
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -82,6 +83,16 @@ pub struct AdvanceItem {
     /// it to the full rendered prompt. Falls back to the full inline text
     /// when the stub file could not be written.
     pub prompt: String,
+    /// Pre-dispatch dependency verdict for this wave's spec — impl waves only
+    /// (`None` for the review round and the wave-less fallback). Folds the
+    /// per-wave `dependency-precheck` the orchestrator used to call separately:
+    /// `{ok:true}` when clean, else `{ok:false, missing,
+    /// suggested_tactical_fix_files, promise_violations}`. The orchestrator
+    /// reads this instead of one CLI round-trip per wave; the `ok:false` →
+    /// AskUserQuestion decision (and the skip on a `continued` resume /
+    /// `MODE=off`) stays with the orchestrator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precheck: Option<Value>,
 }
 
 /// CLI entry — `mustard-rt run wave-advance --spec <slug>`.
@@ -131,12 +142,19 @@ pub(crate) fn advance(project: &Path, spec: &str) -> Vec<AdvanceItem> {
                 Path::new(&it.subproject),
                 RenderMode::First,
             );
+            // Fold the per-wave dependency-precheck into the round: compute the
+            // same verdict the orchestrator used to fetch via a separate CLI
+            // call per wave, and annotate the item. The `ok:false` →
+            // AskUserQuestion decision (and the skip on a `continued` resume)
+            // stays with the orchestrator — here we only surface the fact.
+            let precheck = wave_precheck(&spec_dir, it.wave, &it.role, &it.subproject);
             AdvanceItem {
                 wave: it.wave,
                 role: it.role,
                 subproject: it.subproject,
                 subagent_type: it.subagent_type,
                 prompt,
+                precheck,
             }
         })
         .collect()
@@ -233,9 +251,50 @@ fn review_round(
                 subagent_type: agent_prompt_render::recommended_subagent_type("review")
                     .to_string(),
                 prompt,
+                // Review-round items have no `wave-N-{role}/spec.md` to precheck.
+                precheck: None,
             }
         })
         .collect()
+}
+
+/// Compute the lean dependency-precheck annotation for an impl wave's spec.
+/// Resolves `wave-{N}-{role}/spec.md` under `spec_dir`, runs the shared
+/// [`dependency_precheck::check`] (scoped to the wave's subproject), and trims
+/// the verdict to what the orchestrator needs to decide. `None` for the
+/// wave-less fallback (`wave == 0`) or when the wave dir does not resolve —
+/// fail-open, never blocks the round.
+fn wave_precheck(spec_dir: &Path, wave: u32, role: &str, subproject: &str) -> Option<Value> {
+    if wave == 0 {
+        return None;
+    }
+    let wave_dir = spec_dir.join(format!("wave-{wave}-{role}"));
+    if !wave_dir.is_dir() {
+        return None;
+    }
+    let full = dependency_precheck::check(&wave_dir.to_string_lossy(), Some(subproject));
+    Some(lean_precheck(&full))
+}
+
+/// Trim a [`dependency_precheck::check`] verdict to the decision-relevant
+/// subset: `{ok:true}` when clean, else the missing symbols plus tactical-fix
+/// suggestions and any cross-wave promise violations. Keeps the round
+/// annotation lean — the verbose `would_be_created_here` / `spec` /
+/// `subproject` / `mode` fields are dropped (the orchestrator needs none of
+/// them to decide whether to surface a tactical-fix).
+fn lean_precheck(full: &Value) -> Value {
+    let ok = full.get("ok").and_then(Value::as_bool).unwrap_or(true);
+    if ok {
+        return json!({ "ok": true });
+    }
+    json!({
+        "ok": false,
+        "missing": full.get("missing").cloned().unwrap_or_else(|| json!([])),
+        "suggested_tactical_fix_files":
+            full.get("suggested_tactical_fix_files").cloned().unwrap_or_else(|| json!([])),
+        "promise_violations":
+            full.get("promise_violations").cloned().unwrap_or_else(|| json!([])),
+    })
 }
 
 #[cfg(test)]
@@ -343,6 +402,36 @@ mod tests {
                 !item.prompt.contains("agent-prompt-render"),
                 "prompt must not be a prompt_cmd shell line"
             );
+        }
+    }
+
+    /// Fold #2: each impl-wave item carries the dependency-precheck verdict
+    /// inline (`wave-advance` runs the check, so the orchestrator does not call
+    /// `dependency-precheck` per wave). Seeded waves have no `## Files`, so the
+    /// verdict is the clean `{ok:true}`; review-round items carry no precheck.
+    #[test]
+    fn impl_items_carry_inline_precheck_review_items_do_not() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let project = dir.path();
+        seed_three_waves(project, "pc");
+
+        let items = advance(project, "pc");
+        assert_eq!(items.len(), 2, "level 0 carries the two parallel waves");
+        for item in &items {
+            let pc = item.precheck.as_ref().expect("impl item carries an inline precheck");
+            assert_eq!(pc["ok"], json!(true), "clean spec (no ## Files) ⇒ ok:true: {pc}");
+        }
+
+        // Complete every impl wave → the review round; its items carry none.
+        for n in [1u32, 2, 3] {
+            complete_wave(project, "pc", n);
+        }
+        let review = advance(project, "pc");
+        assert!(!review.is_empty(), "review round emitted once impl waves complete");
+        for item in &review {
+            assert_eq!(item.role, "review");
+            assert!(item.precheck.is_none(), "review-round items carry no precheck");
         }
     }
 

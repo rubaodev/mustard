@@ -8,6 +8,7 @@ pub mod spec_draft;
 pub mod spec_extract;
 pub mod spec_lang_resolve;
 pub mod spec_link;
+pub mod spec_lint;
 pub mod spec_memory;
 pub mod spec_scaffold;
 pub mod spec_sections;
