@@ -3,17 +3,39 @@
   "respectGitignore": true,
   "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
-  "attribution": { "commit": "assistant", "pr": "assistant" },
-
+  "attribution": {
+    "commit": "assistant",
+    "pr": "assistant"
+  },
+  "worktree": {
+    "bgIsolation": "none"
+  },
   "env": {
-    "MUSTARD_DUPLICATION_MODE": "off",
-    "MUSTARD_CONVENTION_MODE": "off",
-    "MUSTARD_REGRESSION_MODE": "off",
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
-    "MUSTARD_SKILL_VALIDATE_LINES_MODE": "warn"
+    "MUSTARD_SKILL_VALIDATE_LINES_MODE": "warn",
+    "MUSTARD_CHECKLIST_GATE_MODE": "strict",
+    "MUSTARD_BOUNDARY_MODE": "warn",
+    "MUSTARD_MAIN_BUDGET_MODE": "warn",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+    "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
+    "MUSTARD_HARNESS_DUAL_EMIT": "1"
   },
-
+  "mcpServers": {
+    "mustard-memory": {
+      "command": "mustard-rt",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "MUSTARD_DB_PATH": ".claude/.harness/mustard.db"
+      }
+    }
+  },
   "permissions": {
     "allow": [
       "Read",
@@ -34,8 +56,9 @@
       "WebFetch",
       "WebSearch",
       "Bash",
-      "Bash(node .claude/scripts/harness-views.js:*)",
-      "Bash(node .claude/scripts/qa-run.js:*)"
+      "Bash(mustard-rt run event-projections:*)",
+      "Bash(mustard-rt run qa-run:*)",
+      "Bash(mustard-rt run refresh-claude:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",
@@ -51,10 +74,33 @@
       "Bash(dd if=:*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",
-      "Bash(format C:*)"
+      "Bash(format C:*)",
+      "Read(**/node_modules/**)",
+      "Grep(**/node_modules/**)",
+      "Read(**/bin/**)",
+      "Grep(**/bin/**)",
+      "Read(**/obj/**)",
+      "Grep(**/obj/**)",
+      "Read(**/dist/**)",
+      "Grep(**/dist/**)",
+      "Read(**/.next/**)",
+      "Grep(**/.next/**)",
+      "Read(**/__pycache__/**)",
+      "Grep(**/__pycache__/**)",
+      "Read(**/.venv/**)",
+      "Grep(**/.venv/**)",
+      "Read(**/venv/**)",
+      "Grep(**/venv/**)",
+      "Read(**/target/**)",
+      "Grep(**/target/**)",
+      "Read(**/build/**)",
+      "Grep(**/build/**)",
+      "Read(**/migrations/**)",
+      "Grep(**/migrations/**)",
+      "Read(**/Migrations/**)",
+      "Grep(**/Migrations/**)"
     ]
   },
-
   "hooks": {
     "PreToolUse": [
       {
@@ -62,404 +108,124 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-use-counter.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bash-native-redirect.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/rtk-rewrite.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/review-gate.js",
-            "timeout": 312
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/close-gate.js",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreToolUse",
             "timeout": 310
           }
         ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/spec-size-gate.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/skill-size-gate.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bash-safety.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/file-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/enforce-registry.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/context-budget.js",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/model-routing-gate.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/recommended-skills-audit.js",
-            "timeout": 3000
-          }
-        ]
       }
     ],
-
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/auto-format.js",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-verify.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash|Write|Edit|Task|Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/metrics-tracker.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/output-budget.js",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge-inc.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/debug-loop-guard.js",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pipeline-phase.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/epic-detect.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/duplication-check.js",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/convention-check.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/regression-guard.js",
-            "timeout": 120
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PostToolUse",
+            "timeout": 30
           }
         ]
       }
     ],
-
     "SessionStart": [
       {
         "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/harness-init.js",
-            "statusMessage": "Initializing harness event bus...",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
-            "statusMessage": "Cleaning up previous session state...",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-memory.js",
-            "statusMessage": "Loading persistent memory...",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/mcp-budget.js",
-            "statusMessage": "Checking MCP tool budget...",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/spec-hygiene.js",
-            "statusMessage": "Auditing stale specs...",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-use-counter.js",
-            "statusMessage": "Clearing tool budgets...",
-            "timeout": 3
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SessionStart",
+            "statusMessage": "Initializing harness, memory, and budgets...",
+            "timeout": 15
           }
         ]
       }
     ],
-
     "PreCompact": [
       {
         "matcher": "auto|manual",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.js",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on PreCompact",
             "timeout": 10
           }
         ]
       }
     ],
-
     "SessionEnd": [
       {
         "matcher": "prompt_input_exit|clear|other",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-knowledge.js",
-            "statusMessage": "Extracting session patterns...",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "prompt_input_exit|clear|other",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-cleanup.js",
-            "timeout": 5
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SessionEnd",
+            "statusMessage": "Extracting knowledge and cleaning state...",
+            "timeout": 15
           }
         ]
       }
     ],
-
     "SubagentStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SubagentStart",
             "statusMessage": "Registering agent...",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-use-counter.js",
-            "statusMessage": "Initializing tool budget...",
-            "timeout": 3
+            "timeout": 5
           }
         ]
       }
     ],
-
     "SubagentStop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-tracker.js",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on SubagentStop",
             "statusMessage": "Agent completed",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-use-counter.js",
-            "timeout": 3
+            "timeout": 5
           }
         ]
       }
     ],
-
     "UserPromptSubmit": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-hint.js",
-            "timeout": 2000
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe on Notification",
+            "timeout": 5
           }
         ]
       }
     ]
   },
-
   "statusLine": {
     "type": "command",
-    "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/scripts/statusline.js",
+    "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe run statusline",
     "padding": 1
   }
 }

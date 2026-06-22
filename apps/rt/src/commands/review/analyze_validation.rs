@@ -1,0 +1,486 @@
+//! `mustard-rt run analyze-validation` — a port of `scripts/analyze-validation.js`.
+//!
+//! WARN-level spec validator (never blocks the pipeline). Checks layer
+//! coverage, file-reference resolvability, task-count sanity, and the
+//! extended-light scope ↔ model constraint. Emits one JSON line:
+//! `{ "ok": bool, "issues": [{ severity, type, message, file? }] }`.
+
+use crate::commands::spec::spec_sections::is_heading;
+use mustard_core::io::fs;
+use mustard_core::platform::i18n;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+/// File extensions expected per declared agent layer.
+fn layer_extensions(layer: &str) -> &'static [&'static str] {
+    match layer {
+        "Backend" => &[".ts", ".cs", ".py", ".go", ".rs"],
+        "Frontend" => &[".tsx", ".jsx", ".vue", ".svelte", ".html", ".css"],
+        "Database" => &[".sql", ".prisma", "schema.ts"],
+        "Mobile" => &[".swift", ".kt", ".dart"],
+        _ => &[],
+    }
+}
+
+/// Emit a fatal `validator-crash` result and exit 1.
+fn crash(message: &str) -> ! {
+    let out = json!({
+        "ok": false,
+        "issues": [{ "severity": "ERROR", "type": "validator-crash", "message": message }],
+    });
+    println!("{out}");
+    std::process::exit(1);
+}
+
+/// Extract the body lines of the `## Files` section.
+fn files_section_lines(lines: &[&str]) -> Vec<String> {
+    let mut in_files = false;
+    let mut out = Vec::new();
+    for line in lines {
+        if is_heading(line, "files") {
+            in_files = true;
+            continue;
+        }
+        if in_files && line.starts_with("##") {
+            in_files = false;
+        }
+        if in_files {
+            out.push((*line).to_string());
+        }
+    }
+    out
+}
+
+/// Find every `### {Word} Agent` header and return the agent name + the body
+/// up to the next `##`/`###` heading.
+fn agent_blocks(content: &str) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    let lines: Vec<&str> = content.split('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
+        // `###\s+(\S.*?)\s+Agent`
+        let Some(rest) = line.strip_prefix("###") else {
+            continue;
+        };
+        if !rest.starts_with([' ', '\t']) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let Some(agent_pos) = rest.find(" Agent") else {
+            continue;
+        };
+        let name = rest[..agent_pos].trim();
+        if name.is_empty() {
+            continue;
+        }
+        let mut body = String::new();
+        for next in lines.iter().skip(i + 1) {
+            let t = next.trim_start();
+            if t.starts_with("## ") || t.starts_with("### ") {
+                break;
+            }
+            body.push_str(next);
+            body.push('\n');
+        }
+        blocks.push((name.to_string(), body));
+    }
+    blocks
+}
+
+/// Extract the first capture of a simple `key:\s*["']?value["']?` pattern,
+/// case-insensitive. `value_chars` controls which chars belong to the value.
+fn extract_kv<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+    let lower = content.to_lowercase();
+    let key_lower = key.to_lowercase();
+    let mut search = 0;
+    while let Some(rel) = lower[search..].find(&key_lower) {
+        let at = search + rel;
+        let after = &content[at + key.len()..];
+        let after_t = after.trim_start_matches([' ', '\t']);
+        if !after_t.starts_with(':') {
+            search = at + key.len();
+            continue;
+        }
+        let mut val = after_t[1..].trim_start_matches([' ', '\t']);
+        val = val.strip_prefix(['"', '\'']).unwrap_or(val);
+        let end = val
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .unwrap_or(val.len());
+        let token = &val[..end];
+        if !token.is_empty() {
+            return Some(token);
+        }
+        search = at + key.len();
+    }
+    None
+}
+
+/// Count `- [ ]` / `- [x]` checkbox markers in a block.
+fn count_tasks(block: &str) -> usize {
+    let mut count = 0;
+    let bytes = block.as_bytes();
+    let needle = b"- [";
+    let mut i = 0;
+    while i + 5 <= bytes.len() {
+        if &bytes[i..i + 3] == needle {
+            let c = bytes[i + 3];
+            if (c == b' ' || c == b'x') && bytes[i + 4] == b']' {
+                count += 1;
+                i += 5;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    count
+}
+
+/// Scan a string for `` `path.ext` `` tokens (backtick-wrapped file refs).
+fn backtick_file_refs(text: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('`') {
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find('`') {
+            let token = &after[..close];
+            // `[\w./-]+\.\w+` — path chars then a dotted extension.
+            let ok = !token.is_empty()
+                && token.contains('.')
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '-' | '_'))
+                && token
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+            if ok {
+                refs.push(token.to_string());
+            }
+            rest = &after[close + 1..];
+        } else {
+            break;
+        }
+    }
+    refs
+}
+
+/// Whether a `## Files` ref resolves on disk: under the spec dir, the cwd, or
+/// any subproject root. The subproject roots quiet false "missing" WARNs for
+/// existing-but-extended files declared with a subproject-relative or
+/// abbreviated path (e.g. a git-submodule backend).
+fn ref_resolves(r: &str, spec_dir: &Path, project_roots: &[PathBuf]) -> bool {
+    fs::exists(spec_dir.join(r))
+        || fs::exists(Path::new(r))
+        || project_roots.iter().any(|root| fs::exists(root.join(r)))
+}
+
+/// Run the validation. Returns the issues list.
+///
+/// `pub(crate)` so `plan-materialize` composes the same checks in-process
+/// (single validator source — no subprocess, no drift) while the CLI entry
+/// [`run`] keeps the stdout/exit contract.
+pub(crate) fn validate(abs_path: &Path, content: &str) -> Vec<Value> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut issues: Vec<Value> = Vec::new();
+
+    let file_lines = files_section_lines(&lines);
+    let files_text = file_lines.join("\n");
+
+    // Validation 1: layer coverage.
+    for layer in ["Backend", "Frontend", "Database", "Mobile"] {
+        let header = format!("### {layer} Agent");
+        if !content.contains(&header) {
+            continue;
+        }
+        let exts = layer_extensions(layer);
+        let has_match = exts.iter().any(|ext| files_text.contains(ext));
+        if !has_match {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "layer-gap",
+                "message": format!("Spec declares {layer} Agent but Files has no {layer} extensions"),
+            }));
+        }
+    }
+
+    // Validation 2: file refs resolvable.
+    let spec_dir = abs_path.parent().unwrap_or_else(|| Path::new("."));
+    // Subproject roots from the scan model: resolve existing-but-extended files
+    // declared with a subproject-relative / abbreviated path so they are not
+    // reported as false "missing" WARNs. An absent model yields no extra roots,
+    // so resolution matches the historical two-path behaviour when no model is
+    // present.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let model = cwd.join(".claude").join("grain.model.json");
+    let project_roots: Vec<PathBuf> = mustard_core::read_projects(&model)
+        .into_iter()
+        .map(|p| cwd.join(p.dir))
+        .collect();
+    for r in backtick_file_refs(&files_text) {
+        let line_with_ref = file_lines
+            .iter()
+            .find(|l| l.contains(&format!("`{r}`")))
+            .map_or("", String::as_str);
+        // Localized marker recognition: the drafter writes the create marker
+        // in the spec's narrative locale (`(novo)`/`(criar)` in pt-BR), so the
+        // check goes through the core i18n catalogue — the single origin of
+        // the marker synonyms — instead of the historical EN-only literal
+        // (which flagged every pt-BR net-new file as `missing-file`).
+        let is_create = i18n::line_has_file_marker(line_with_ref, i18n::FileMarker::Create);
+        let resolved = ref_resolves(&r, spec_dir, &project_roots);
+        if !is_create && !resolved {
+            let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "missing-file",
+                "file": r,
+                "message": format!("File referenced but not found and not marked {accepted}"),
+            }));
+        }
+    }
+
+    // Validation 3: task decomposition sane.
+    for (agent_name, block) in agent_blocks(content) {
+        let tasks = count_tasks(&block);
+        if !(2..=10).contains(&tasks) {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "task-count",
+                "message": format!("{agent_name} Agent has {tasks} tasks (expected 2-10)"),
+            }));
+        }
+    }
+
+    // Validation 4: extended-light scope requires the entity to already exist in
+    // the repo model (grain.model.json declaration names, read via the scan tool —
+    // this crate never parses the model's schema itself).
+    if let Some(scope) = extract_kv(content, "scope") {
+        if scope.eq_ignore_ascii_case("extended-light") {
+            if let Some(entity) = extract_kv(content, "entity") {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let model = cwd.join(".claude").join("grain.model.json");
+                let known = mustard_core::read_entity_names(&model);
+                if !known.iter().any(|k| k.eq_ignore_ascii_case(entity)) {
+                    let message = if known.is_empty() {
+                        "Extended Light scope requires the entity in grain.model.json, but no model/declarations were found. Reclassify as Full.".to_string()
+                    } else {
+                        format!("Extended Light scope requires entity \"{entity}\" in grain.model.json, but not found. Reclassify as Full.")
+                    };
+                    issues.push(json!({ "severity": "WARN", "type": "scope-mismatch", "message": message }));
+                }
+            }
+        }
+    }
+
+    // Validation 5: AC format parseability. The AC section heading resolves
+    // (EN `## Acceptance Criteria` / PT `## Critérios de Aceitação`, via the
+    // shared i18n-aware extractor) but ZERO items survive the exact parser
+    // qa-run executes — qa-run would later degrade to `overall: skip`, so the
+    // format problem is surfaced here, at ANALYZE time. An absent section is
+    // deliberately NOT flagged: behaviour stays unchanged for specs that carry
+    // no ACs at this stage.
+    if let Some(section) = crate::commands::review::qa_run::extract_ac_section(content) {
+        if crate::commands::review::qa_run::parse_ac_items(&section).is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "unparseable-ac",
+                "message": "Acceptance Criteria section found but no parseable AC items. \
+                            Expected format: `**AC-N** — title` followed by a line \
+                            `Command: `<runnable command>``.",
+            }));
+        }
+    }
+
+    issues
+}
+
+/// Dispatch `mustard-rt run analyze-validation`.
+pub fn run(spec: Option<&str>) {
+    let Some(spec) = spec else {
+        crash("No spec path provided. Use --spec <path>");
+    };
+    let abs_path = std::fs::canonicalize(spec)
+        .unwrap_or_else(|_| PathBuf::from(spec));
+    if !fs::exists(&abs_path) {
+        crash(&format!("Spec file not found: {}", abs_path.display()));
+    }
+    let content = match fs::read_to_string(&abs_path) {
+        Ok(c) => c,
+        Err(e) => crash(&format!("{e}")),
+    };
+    let issues = validate(&abs_path, &content);
+    let out = json!({ "ok": issues.is_empty(), "issues": issues });
+    println!("{out}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn clean_spec_has_no_issues() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let issues = validate(&path, &content);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn ref_resolves_against_subproject_root() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // An existing file under a subproject root, referenced with a path
+        // relative to the subproject (not the spec dir or cwd).
+        let backend = dir.path().join("backend");
+        std::fs::create_dir_all(backend.join("src")).unwrap();
+        std::fs::write(backend.join("src").join("Payable.cs"), "// existing").unwrap();
+        let roots = vec![backend.clone()];
+
+        // Resolves via the subproject root — no false "missing".
+        assert!(ref_resolves("src/Payable.cs", &spec_dir, &roots));
+        // A genuinely-absent file still does NOT resolve — the fix must not mask
+        // true misses/typos.
+        assert!(!ref_resolves("src/Ghost.cs", &spec_dir, &roots));
+        // With no subproject roots it falls back to the historical two paths.
+        assert!(!ref_resolves("src/Payable.cs", &spec_dir, &[]));
+    }
+
+    #[test]
+    fn flags_task_count_out_of_range() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(&path, "### Backend Agent\n- [ ] only one\n").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let issues = validate(&path, &content);
+        assert!(issues.iter().any(|i| i["type"] == json!("task-count")));
+    }
+
+    /// A well-formed AC section (the drafter shape: `- **AC-N** — title` +
+    /// indented `Command:` line) must NOT raise `unparseable-ac`.
+    #[test]
+    fn ac_format_validation_parseable_section_is_clean() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — workspace builds green.\n  Command: `cargo build`\n\
+                    - **AC-2** — tests pass.\n  Command: `cargo test`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
+            "{issues:?}"
+        );
+    }
+
+    /// An AC section whose items the qa-run parser cannot read (no `Command:`
+    /// anywhere) yields a WARN `unparseable-ac` with the format hint — the
+    /// exact situation where qa-run later degrades to `overall: skip`.
+    #[test]
+    fn ac_format_validation_malformed_section_warns() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - AC um: roda os testes sem comando declarado\n\
+                    - criterio solto sem id\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        let issue = issues
+            .iter()
+            .find(|i| i["type"] == json!("unparseable-ac"))
+            .unwrap_or_else(|| panic!("expected unparseable-ac WARN: {issues:?}"));
+        assert_eq!(issue["severity"], json!("WARN"));
+        let msg = issue["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("**AC-N**"), "hint must show the exact format: {msg}");
+        assert!(msg.contains("Command:"), "hint must mention the Command: line: {msg}");
+    }
+
+    /// Roundtrip (TF marcador localizado): the pt-BR drafter marks net-new
+    /// files `(novo)`/`(criar)` — both must suppress `missing-file` exactly
+    /// like the EN canonical `(create)` (the run that motivated the fix
+    /// produced 7 false `missing-file` WARNs from `(novo)` lines).
+    #[test]
+    fn roundtrip_localized_create_marker_suppresses_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Arquivos\n\
+                    - `ghost_a.rs` (novo)\n\
+                    - `ghost_b.rs` (criar)\n\
+                    - `ghost_c.rs` (create)\n\
+                    ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("missing-file")),
+            "localized markers recognised: {issues:?}"
+        );
+        // The localized set must NOT mask true misses: an unmarked absent
+        // file (and an `(editar)`-marked one, which claims to exist) still WARN.
+        let body2 = "# Spec\n## Arquivos\n- `ghost.rs`\n- `gone.rs` (editar)\n\
+                     ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body2).unwrap();
+        let issues2 = validate(&path, body2);
+        let missing: Vec<&Value> = issues2
+            .iter()
+            .filter(|i| i["type"] == json!("missing-file"))
+            .collect();
+        assert_eq!(missing.len(), 2, "true misses still flagged: {issues2:?}");
+        // The hint names the accepted markers from the shared i18n origin.
+        let msg = missing[0]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("(create)") && msg.contains("(novo)"), "hint lists synonyms: {msg}");
+    }
+
+    /// Roundtrip (leitor defensivo): a LEGACY spec already on disk with the
+    /// duplicated AC heading (placeholder first, real list second) still
+    /// validates clean — the defensive `section_block` returns the parseable
+    /// section instead of the placeholder that used to trigger
+    /// `unparseable-ac`.
+    #[test]
+    fn roundtrip_legacy_duplicated_ac_heading_still_validates() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Critérios de Aceitação\n\nVer abaixo.\n\n\
+                    ## Critérios de Aceitação\n\n\
+                    - **AC-1** — workspace builds green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
+            "legacy duplicated AC section parses: {issues:?}"
+        );
+        assert!(issues.is_empty(), "legacy spec validates ok:true: {issues:?}");
+    }
+
+    /// No AC section at all → behaviour unchanged (no `unparseable-ac`).
+    #[test]
+    fn ac_format_validation_absent_section_unchanged() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Files\n- `a.rs` (create)\n### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(&path, body);
+        assert!(
+            !issues.iter().any(|i| i["type"] == json!("unparseable-ac")),
+            "{issues:?}"
+        );
+        // The clean-spec baseline stays clean overall.
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn flags_layer_gap() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "## Files\n- `a.txt` (create)\n### Frontend Agent\n- [ ] t1\n- [ ] t2\n",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let issues = validate(&path, &content);
+        assert!(issues.iter().any(|i| i["type"] == json!("layer-gap")));
+    }
+}

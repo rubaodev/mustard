@@ -1,59 +1,18 @@
 {
-  "name": "mustard-claude",
-  "version": "3.1.35",
-  "description": "Framework-agnostic CLI for Claude Code project setup",
-  "type": "module",
-  "bin": {
-    "mustard": "./bin/mustard.js"
-  },
-  "main": "dist/cli.js",
-  "types": "dist/cli.d.ts",
-  "files": [
-    "bin/",
-    "dist/",
-    "templates/"
-  ],
+  "name": "mustard-monorepo",
+  "private": true,
+  "version": "0.0.0",
   "scripts": {
-    "start": "node bin/mustard.js",
-    "build": "tsc",
-    "clean": "rimraf dist",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test",
-    "release": "npm version patch && npm run build && npm publish"
-  },
-  "keywords": [
-    "claude",
-    "claude-code",
-    "ai",
-    "cli",
-    "scaffold"
-  ],
-  "author": "rubensrpj",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/rubensrpj/mustard.git"
-  },
-  "homepage": "https://github.com/rubensrpj/mustard#readme",
-  "bugs": {
-    "url": "https://github.com/rubensrpj/mustard/issues"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "dependencies": {
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "inquirer": "^9.2.15",
-    "ora": "^8.0.1"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "devDependencies": {
-    "@types/inquirer": "^9.0.9",
-    "@types/node": "^25.2.1",
-    "rimraf": "^6.1.2",
-    "typescript": "^5.9.3"
+    "build": "cargo build --workspace && pnpm --filter mustard-dashboard build",
+    "build:rust": "cargo build --workspace",
+    "build:dashboard": "pnpm --filter mustard-dashboard build",
+    "build:release": "cargo build --workspace --release",
+    "test": "cargo test --workspace && pnpm --filter mustard-dashboard test",
+    "test:rust": "cargo test --workspace",
+    "test:dashboard": "pnpm --filter mustard-dashboard test",
+    "lint": "cargo clippy --workspace && pnpm --filter mustard-dashboard lint",
+    "lint:rust": "cargo clippy --workspace",
+    "dashboard:dev": "pnpm --filter mustard-dashboard tauri:dev",
+    "dashboard:build": "pnpm --filter mustard-dashboard tauri:build"
   }
 }

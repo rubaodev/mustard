@@ -1,56 +1,76 @@
-# /scan - Agnostic Code Analyzer
+---
+name: mustard-scan
+description: Use when the user runs /scan or asks to analyze, discover, or rescan the codebase. Mines the repo into grain.model.json (deterministic, language-agnostic, no AI) — the durable model the feature/spec pipeline consumes.
+source: manual
+---
+<!-- mustard:generated -->
+# /scan — Codebase model
 
-> ALWAYS before making any change. Search on the web for the newest documentation and only implement if you are 100% sure it will work.
-
-## Trigger
-
-`/scan`, `/scan <subproject>`, `/scan --force`, `/scan <subproject> --force`
-
-## Flags
-
-- `--force` — discards all `<!-- mustard:generated -->` content and regenerates from scratch. Bypasses incremental skip, always regenerates CLAUDE.md and registry. → See `../../../refs/scan/scan-protocol.md` for full semantics.
-
-## Execution Model
-
-**CRITICAL — Context Protection:** Orchestrator MUST NOT analyze directly. ALL analysis delegated to Task agents.
-
-**CRITICAL — Read-Before-Write:** Every `Write`/`Edit` on an existing file MUST be preceded by a `Read` call in the same context. Applies to `.claude/CLAUDE.md`, root `CLAUDE.md`, `.claude/docs/*.md`, and subproject `CLAUDE.md` edits.
-
-→ See `../../../refs/scan/scan-protocol.md` for full execution model details.
+`/scan`, `/scan --root <dir>`, `/scan --out <path>`, `/scan --full`, `/scan --enrich` (opt-in AI Guards).
 
 ## Process
 
-**1. Discover & Incremental Detection** — Read old cache → `sync-detect.js --no-cache` → compare hashes + gitDirty → build agent list (skip unchanged; process mismatch/dirty). → See `../../../refs/scan/scan-protocol.md §Step 1`.
+One deterministic step — no AI, and you do NOT read source:
 
-**2.5. Cleanup Stale Subprojects** — Remove directories, cache entries, agent files, skills, and registry entries for subprojects no longer detected. → See `../../../refs/scan/scan-protocol.md §Step 2.5`.
-
-**2.6. Bootstrap (if needed)** — Fast-path: skip if root `CLAUDE.md` + `entity-registry.json` exist and `--force` not active. Otherwise create `.claude/CLAUDE.md`, root `CLAUDE.md`, `entity-registry.json`, and per-subproject `CLAUDE.md`. → See `../../../refs/scan/scan-protocol.md §Step 2.6`.
-
-**2.7. Scan Product Docs** — If `.claude/docs/` has `.md` files, inject YAML frontmatter (name, description, topics, scanned-at). Orchestrator does this inline (no Task agent needed). → See `../../../refs/scan/scan-protocol.md §Step 2.7`.
-
-**3. Launch Agents** — Launch ALL agents in a SINGLE message (parallel tool calls). Each agent receives the EVIDENCE RULE prompt. **Never `run_in_background: true`.** → See `../../../refs/scan/evidence-rules.md` for full agent prompt template and EVIDENCE RULE 1-5.
-
-**4. Update CLAUDE.md files** — Regenerate `.claude/CLAUDE.md` (always overwrite); update root `CLAUDE.md` (Project Structure table, commands, Ignore Paths). → See `../../../refs/scan/scan-protocol.md §Step 4`.
-
-**4.5. Generate Agents** — Generate `{subproject.name}-impl.md` and `{subproject.name}-explorer.md` per subproject. → See `../../../refs/scan/scan-protocol.md §Step 4.5`.
-
-**4.6. Generate Granular Skills** — One skill per cluster (skill-creator methodology). → See `../../../refs/scan/scan-protocol.md §Step 4.6` and `scan-format.md §10`.
-
-**4.7. Refresh Registry** — `node .claude/scripts/sync-registry.js --force`. → See `../../../refs/scan/scan-protocol.md §Step 4.7`.
-
-**5. Update Cache** — `node .claude/scripts/sync-detect.js` (with cache write). → See `../../../refs/scan/scan-protocol.md §Step 5`.
-
-**6. Validate Skills** — `node .claude/scripts/skill-validate.js --factual`. Control: `MUSTARD_SKILL_VALIDATE_MODE=strict|warn|off`. → See `../../../refs/scan/evidence-rules.md §Validate Skills Step`.
-
-**Security Scan** — Run after step 3 or via `/scan --security`. `node .claude/scripts/security-scan.js "$PROJECT_DIR"`. → See `../../../refs/scan/scan-protocol.md §Security Scan Phase`.
-
-## Return Format
-
-```json
-{
-  "scanned": ["{subproject-1}", "{subproject-2}"],
-  "generated": { "{subproject-1}": ["stack.md", "modules.md", "guards.md"] },
-  "skills_generated": { "{subproject-1}": ["api-endpoint-wiring", "api-service-base"] },
-  "errors": []
-}
+```bash
+mustard-rt run scan [--root <dir>] [--out <path>] [--full]
 ```
+
+Always writes `.claude/grain.model.json` — the rich, language-agnostic model (modules,
+declarations, dependency graph, mined roles, recurring vertical slices, shared
+contracts, touchpoints, projects). It is the durable product: run once per repo,
+re-run when the code changes materially. Downstream (`/feature`, `/bugfix`) consumes it
+through `mustard-rt run feature` (the digest research step) and `mustard-rt run scan spec`
+— never by reading the model or the repo directly.
+
+### Per-subproject CLAUDE.md
+
+- **Default (no `--full`)**: writes NOTHING into subprojects. It only *measures* each
+  subproject's `CLAUDE.md`; if one is large enough to weigh on token usage when
+  auto-injected, the JSON `oversized[]` lists it and a warning suggests `--full`.
+- **`--full`**: deterministically (re)generates a lean `CLAUDE.md` per subproject from the
+  grain model (a small orientation map), creating `{subproject}/.claude/` if absent. It
+  **preserves** any hand-written `## Guards` section, and for subprojects without one it
+  seeds a `## Guards` block with a `<!-- mustard:guards pending -->` … `<!-- /mustard:guards -->`
+  placeholder (the hand-off the optional enrich step fills). The workspace **root** is
+  excluded — its human-seeded guards are never touched. Still no AI, still no source reading.
+
+Parse the JSON result (`{ ok, model, regenerated?, oversized? }`); report the model path
+and surface any `oversized` warnings or `regenerated` paths.
+
+### Enrich the pending Guards (opt-in, AI)
+
+This is the **only** step where `/scan` uses AI, and it runs **only on explicit opt-in** —
+`/scan --enrich` (or the user confirming "fill the guards now"). Without that trigger, `/scan`
+stays purely deterministic and cheap; it never dispatches an agent. When opted in:
+
+1. **Seed the placeholders.** Run `mustard-rt run scan` (or `scan --full` to regenerate the
+   maps too) so subprojects carry a `pending` `## Guards` block. The root is excluded.
+2. **Build the worklist.** `mustard-rt run scan-guards-list` emits a JSON array
+   `[{path, subproject, kind, frameworks}]` of every subproject `CLAUDE.md` still `pending`
+   (root already excluded). Fail-open: on error it returns `[]` (exit 0) — nothing to do.
+   Parse it.
+3. **Render one prompt per subproject.** For each worklist item:
+   `mustard-rt run agent-prompt-render --role guards --subproject <subproject> --emit ref` — this
+   path is **spec-less** (no `--spec`): the renderer reads the pending block's facts and derives
+   the project's language/tone from `mustard.json`. Pass its stdout to the Task **verbatim** —
+   with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands at dispatch (never
+   read the `.dispatch/` file in the parent; that would pay the prompt back into your context);
+   never hand-craft the prompt.
+4. **Dispatch in parallel + relay.** Dispatch **one agent per subproject**, `subagent_type`
+   `mustard-guards` (read-only — it has no Edit/Write/Bash, so it cannot write a file; it
+   returns the lines as its final message), all in a **single message** so they run in
+   parallel. Relay each agent's
+   authored guards to `mustard-rt run scan-guards-apply --path <path> --guards -` (text on
+   stdin). The apply is non-destructive (only the block's span changes), capped at ~6 lines,
+   and idempotent (it flips the marker off `pending`, so a re-run of `scan-guards-list`
+   skips it).
+5. **Root never enters** — `scan-guards-list` already excludes it, so no agent ever authors
+   guards for the workspace root.
+
+## INVIOLABLE RULES
+
+- Default `/scan` produces only `grain.model.json` and never writes into subprojects; it may *warn* about oversized subproject `CLAUDE.md` files.
+- `--full` only (re)writes a deterministic, lean `CLAUDE.md` map per subproject, preserves hand-written `## Guards`, and seeds a `pending` block where none exists. The deterministic model + render never invoke AI.
+- **AI is opt-in and Guards-only.** Only `/scan --enrich` (or explicit user confirmation) invokes AI, and only to author the `## Guards` prose of **subprojects** — never the workspace root, never system prompts. Each apply is capped (~6 lines) and non-destructive. `/scan` without `--enrich` never calls AI.
+- No confirmation prompts for the deterministic pass — `/scan` is the approval. The enrich step is the lone exception (its opt-in trigger *is* the confirmation).

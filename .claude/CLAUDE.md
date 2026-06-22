@@ -2,99 +2,87 @@
 # Orchestrator Rules
 
 ## Role
-You do NOT implement code — you delegate via Task tool.
+You are the orchestrator. Coordinate pipelines and route intent. Delegate non-trivial code work via Task — do trivial work directly to avoid pointless overhead.
+
+## Response Style
+
+When talking to the user (chat, AskUserQuestion options, banners, errors), be didactic — expand abbreviations on first use, prefer common words over jargon. Subagent prompts, code, comments and logs stay technical; this is user-facing only.
+
+When asking the user to approve an artifact (spec, wave plan, PRD), the artifact must be visible AT the moment of the question: attach its content as the `preview` of the approval option(s) in AskUserQuestion. Text printed before a tool call is not guaranteed to render — NEVER ask the user to approve something they have not seen.
 
 ## Intent Routing
 
 | Intent | Signals | Action |
 |--------|---------|--------|
-| Feature | create, add, new entity, new CRUD, implement | Pipeline Feature (Full scope) |
+| Feature | create, add, new entity, implement | Pipeline Feature (Full scope) |
 | Enhancement | improve, adjust, change, add field/column, change behavior, optimize, update | Pipeline Feature (auto-detects Light/Full scope) |
 | Bugfix | error, bug, not working, broken, fix, correct | Pipeline Bugfix |
-| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Delegate via /task |
-| Simple | config, docs, small refactor, rename, move | Delegate via Task |
+| Analyze | analyze, audit, evaluate, check, compare, inspect, assess | Direct Grep/Glob OR Task(Explore) if >3 places to search |
+| Vibe / Spike / Prototype | spike, prototype, sketch, throwaway | `/mustard:task` — no spec, no hygiene gates, direct dispatch |
+| Simple | config tweak, single-line edit, rename one file, version bump | Direct (no Task) |
 
-Any change that touches production code (schema, API, UI) → Pipeline Feature.
-Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
+Signals are heuristics — the pipeline detects what makes sense for the project that was scanned. Any change that touches production code → Pipeline Feature. Scope is auto-detected: Light (1-2 layers, ≤5 files, known pattern) vs Full (3+ layers, new entity).
+
+**Routing economy — the full pipeline is the EXCEPTION that must justify itself, not the default.** The pipeline's ceremony (spec → wave → QA → close) is a fixed token cost paid once per run, re-paid as harness context on every turn; it only amortizes on a genuine multi-layer / multi-subproject feature. So pick the CHEAPEST path that fits:
+- **Full pipeline** only when the change genuinely spans **≥2 layers/subprojects OR creates a new entity** (the `scope-classify` `layerCount` is now a deterministic FACT — distinct projects/roles the census spans — so trust it to gate this; a wrong "full" on a small task is the single most expensive routing error).
+- **`/mustard:task` or direct work** for everything single-layer, exploratory, or that you already know where to make — no spec, no gates, no wave ceremony. Most enhancements and nearly all bugfixes that touch 1-2 files land here.
+- The **guide** (subproject rules via `## Guards`, target files via the digest) is available WITHOUT the pipeline — you get the project's rules just by working in the subproject. Don't enter the pipeline merely to get guidance.
+
+## When to delegate via Task (L0)
+
+**MUST delegate (always Task):**
+- Pipeline phases EXECUTE (any scope) and PLAN (Full scope)
+- Exploration touching >3 files or >2 directories
+- New code generation across multiple files
+- Refactor crossing ≥3 files
+- Any agent-typed work (general-purpose, Plan, Explore)
+
+**MAY work directly in parent (no Task overhead):**
+- Read a single file to answer a question
+- Edit ≤2 specific files already identified
+- Bash status/version/list commands
+- Single Grep/Glob to locate a symbol
+- Vibe/Spike/Prototype mode
+
+**Why:** Parent context grows with every direct tool call. When it bloats, hooks force retries and pipelines degrade. Tasks isolate work in fresh sub-contexts. Health metric: aim for ≥50% of code actions delegated when pipelines are active.
+
+**Verdict rule:** a runtime symptom the user reported cannot be refuted by static reading — a subagent may say "origin not located", never "it does not exist". When a subagent's conclusion contradicts what the user observed (or any established fact), verify by reading directly before relaying it.
 
 ## Pipeline Phases
-ANALYZE → PLAN → EXECUTE → QA → CLOSE (Wave 10)
-- Light scope: skip PLAN (ANALYZE → EXECUTE → QA → CLOSE)
+
+Canonical vocabulary: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE` (+ `COORDINATE` for roadmaps). Single source of truth: `refs/canonical-phases.md`.
+
+- **Light scope**: skip PLAN (`ANALYZE → EXECUTE → REVIEW → QA → CLOSE`)
   - ANALYZE: Grep/Glob direct preferred; ≤1 Task(Explore) with ≤10 tool uses allowed
   - Reclassify to Full if >5 files surface
   - All dispatched agents cap returns at ≤50 lines
-- Full scope: ANALYZE → PLAN → /approve → EXECUTE → QA → CLOSE
+- **Full scope**: `ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`
 
 ### QA Phase (Wave 10)
+
 After EXECUTE completes, run QA before CLOSE:
+
 1. Spec PLAN must define `## Acceptance Criteria` (3-8 AC, each with a runnable command)
 2. QA agent reads spec, executes each AC, reports pass/fail
-3. close-gate blocks CLOSE unless `qa.result` with `overall=pass` exists in events log
+3. close-gate blocks CLOSE unless `qa.result` with `overall=pass` exists in the events log
 4. Control: `MUSTARD_QA_GATE_MODE=strict (default) | warn | off`
 
+### Mid-pipeline change requests
+
+A user request to change something while a spec is Active is auto-recorded — hook `change_request_log` writes `.claude/spec/{id}/change-requests.ndjson` (machine) + a human-readable `change-log.md` (documented beside the spec) and emits a `pipeline.change.request` event. Nothing is lost; the frozen `spec.md` narrative is not touched. When a request changes intended behavior:
+
+1. **Document** — it is already in the spec's `change-log.md`; reference it.
+2. **Compose the test** — fold it into `## Acceptance Criteria` as a new/updated AC (free-text → runnable criterion; interpretive, your job — the hook only captures).
+3. **Re-verify** — editing `spec.md`/`wave-plan.md` after a QA pass marks that pass STALE; the close-gate (QA-stale) blocks CLOSE until `/mustard:qa` re-runs against the current criteria.
+
 ## Context Loading
-Agents auto-load skills from `{subproject}/.claude/skills/` based on task description.
-Guards always loaded via `{subproject}/CLAUDE.md`.
 
-## Stack
+Agents auto-load skills from `{subproject}/.claude/skills/` based on task description. Guards always loaded via `{subproject}/CLAUDE.md`. Skill catalog: `.claude/skills/`. Progressive-disclosure refs live in `.claude/refs/{command}/` and are pulled on demand.
 
-Node.js (>=18), CommonJS, no external dependencies. 16 lifecycle hooks, 10 scripts, 16 slash commands, 6 foundation skills.
+## Spec Layout
 
-## Commands
-
-```bash
-# Run hook tests
-node --test hooks/__tests__/hooks.test.js
-
-# Subproject discovery (outputs JSON)
-node scripts/sync-detect.js
-node scripts/sync-detect.js --no-cache
-
-# Entity registry generation
-node scripts/sync-registry.js
-node scripts/sync-registry.js --force
-```
-
-## Guards
-
-- All hooks fail-open (exit 0 on error) — never block due to hook bugs
-- All hooks use only Node.js built-ins — no npm dependencies
-- PreToolUse hooks use `permissionDecision` response format
-- PostToolUse hooks use `decision` response format
-- Every new hook must be registered in `settings.json` with a timeout
-- Task dispatch failures (API overload) are logged to `pipeline-state.lastDispatchFailure`; `/resume` auto-recovers within 10 min
-- Generated files must start with `<!-- mustard:generated -->` header
-- Skills must have YAML frontmatter BEFORE the `<!-- mustard:generated -->` line
-
-## Scan References
-
-| File | Description |
-|------|-------------|
-| `.claude/commands/stack.md` | Technology stack, structure, tooling |
-| `.claude/commands/patterns.md` | 12 recurring code patterns with refs |
-| `.claude/commands/guards.md` | DO/DON'T rules for hooks, scripts, commands, skills |
-| `.claude/commands/recipes.md` | Implementation recipes for new hooks, commands, skills, scripts |
-| `.claude/commands/notes.md` | Manual notes (never overwritten) |
-
-## Recommended Skills
-
-**Directive:** Before first `Edit`/`Write` in code-alteration tasks (implement/refactor/fix/bugfix/review), agent MUST invoke `Skill(karpathy-guidelines)` once. Content stays cached for the rest of the agent's context.
-
-- `karpathy-guidelines` — 4 princípios anti-slop (carrega em toda alteração de código)
-- `templates-hook-protocol` — Hook stdin/stdout JSON protocol
-- `templates-settings-wiring` — settings.json hook registration
-- `templates-sync-detect` — Subproject discovery and role detection
-- `templates-command-authoring` — Slash command SKILL.md structure
-- `templates-skill-authoring` — Foundation/subproject skill creation
-
-## Token Economy
-
-RTK (Rust Token Killer) is integrated as core infrastructure. A PreToolUse hook automatically rewrites Bash commands through `rtk`, reducing token consumption by 60-90% on CLI outputs.
-
-- **Hook**: `hooks/rtk-rewrite.js` — transparent, fail-open
-- **Analytics**: `rtk gain` — view token savings
-- **Statusline**: Shows real-time savings when RTK is active
-- If RTK is not installed, the hook silently passes through (zero impact)
+Specs live under a **flat** directory: `.claude/spec/{name}/`. There are no `active/`, `completed/`, or `superseded/` bucket subdirectories — lifecycle state (`stage` + `outcome` + `flags`) lives in the `meta.json` sidecar beside each `spec.md` (the single source of truth), and archival is semantic-only (recorded as a `pipeline.status` event, not a filesystem move). The `spec.md` is **pure narrative** — it carries no `### Stage:` / `### Outcome:` / `### Flags:` / `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:` / `### Total waves:` header lines; never read or write lifecycle metadata from the markdown. Wave plans add a `wave-plan.md` plus `wave-N-{role}/spec.md` subdirs (each with its own `meta.json`) inside the same `{name}/` directory.
 
 ## Full Reference
-Rules, pipeline, naming: `pipeline-config.md`
+
+Rules, pipeline, naming, role rules, hooks: `pipeline-config.md`.

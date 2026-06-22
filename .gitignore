@@ -3,6 +3,15 @@ node_modules/
 
 # Build output
 dist/
+dist-ssr/
+
+# Rust / Tauri build artifacts
+target/
+apps/dashboard/src-tauri/target/
+
+# CLI payload staged into the Windows installer at build time (CI-only,
+# fed to bundle.resources via packaging/windows/tauri.windows.json)
+apps/dashboard/src-tauri/payload/
 
 # OS files
 .DS_Store
@@ -14,14 +23,24 @@ nul
 .idea/
 *.swp
 *.swo
+*.sw?
 
 # Environment
 .env
 .env.*
+*.local
+
+# Per-build version counter (install.ps1 increments this and feeds it to the
+# cargo build as MUSTARD_BUILD_NUMBER; local-only, regenerable from 1)
+.mustard-build-number
 
 # Logs
 *.log
 npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
 
 # Coverage
 coverage/
@@ -29,11 +48,15 @@ coverage/
 # pnpm
 .pnpm-store/
 
+# TypeScript build cache
+*.tsbuildinfo
+
 # Agent memory (session-scoped, auto-cleaned)
 .claude/.agent-memory/
 
-# Pipeline states (ephemeral, modified by hooks)
-.claude/.pipeline-states/
+# Mustard runtime caches (W2 cache reorg: detect.json, scan-dispatch.json,
+# knowledge-seen.json, memory-seen.json all consolidated under .cache/)
+.claude/.cache/
 
 # Enforcement metrics (append-only, local telemetry)
 .claude/.metrics/
@@ -41,5 +64,63 @@ coverage/
 # Agent runtime state (session-scoped)
 .claude/.agent-state/
 
+# Harness runtime state
+.claude/.harness/
+
+# Compaction memory (session-scoped, ephemeral)
+.claude/.compact-state/
+
+# Nested .claude runtime state (subprojects / imported trees)
+**/.claude/.harness/
+**/.claude/.metrics/
+**/.claude/.compact-state/
+**/.claude/.cache/
+
 # Timestamped backups created by mustard init/update
 .claude.backup.*/
+
+# Dashboard runtime
+.claude/.dashboard.pid
+.claude/.dashboard.port
+dashboard-html.txt
+
+# Playwright MCP snapshots
+.playwright-mcp/
+
+# CLI template fixtures (regenerable runtime state)
+packages/cli/templates/.claude/.harness/
+packages/cli/templates/.claude/.metrics/
+
+# Per-spec event log + blob spill (NDJSON, regenerable)
+**/.claude/spec/*/.events/
+**/.claude/spec/*/.blobs/
+
+# Rendered dispatch prompts (`agent-prompt-render --emit ref`, regenerable)
+**/.claude/.dispatch/
+**/.claude/spec/*/.dispatch/
+
+# Relevance-gate output: approved spec-memory names (regenerable per spec)
+**/.claude/spec/*/.memory-approved
+
+# Python bytecode (skill-creator scripts)
+**/__pycache__/
+
+# Runtime knowledge store + local session/editor data (per-project, regenerable — not code)
+**/.claude/knowledge/
+**/.claude/memory/
+**/.claude/agent-memory/
+**/.claude/.session/
+**/.claude/.obsidian/
+
+# Per-spec QA reports (W2 path catalog: moved out of .claude/.qa-reports/)
+**/.claude/spec/*/qa-report.json
+**/.claude/spec/*/qa-report.html
+
+# Per-spec economy baselines (W2 path catalog: moved out of
+# .claude/.economy-baselines.json)
+**/.claude/spec/*/economy-baselines.json
+
+# Per-wave artefacts (W2 path catalog: moved out of .claude/.pipeline-states/)
+**/.claude/spec/*/wave-*/diff.md
+**/.claude/spec/*/wave-*/prompt.md
+**/.claude/spec/*/wave-*/warnings.txt

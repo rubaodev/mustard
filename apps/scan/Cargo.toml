@@ -1,0 +1,62 @@
+[package]
+name = "scan"
+version = "0.1.0"
+edition = "2021"
+description = "Mine a codebase's recurring conventions into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
+license = "MIT"
+build = "build.rs"
+
+[[bin]]
+name = "scan"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps JSON object keys in document order (IndexMap, not the
+# default alphabetizing BTreeMap), so json_deps reports dependencies as the
+# manifest wrote them — the honest input rank_by_frequency ties break on.
+serde_json = { version = "1", features = ["preserve_order"] }
+ignore = "0.4"
+# Path-glob matching for the machine-written-file catalog and the
+# .gitattributes/.editorconfig overrides (classify.rs). Already in the tree as
+# `ignore`'s own matcher — same 0.4 line, no new code pulled in.
+globset = "0.4"
+petgraph = "0.8"
+regex = "1"
+anyhow = "1"
+# Reads the external manifest registry (manifests.toml) at runtime — build-system
+# detection is data, not a hardcoded list of filenames. The 1.x line matches
+# mustard-core's pin; the `toml::Value` read surface is unchanged from 0.8.
+toml = "1"
+# Snowball stemmers (pure Rust, MIT) for tier-3 of the match ladder. Which
+# NATURAL languages exist is data mirrored in src/stemmers.rs (the approved
+# carve-out module) — the engine itself has no per-language behavior.
+rust-stemmers = "1.2"
+# Stack inference engine + the StackDetection contract live in mustard-core
+# (registry-driven: stacks are DATA in core's stacks.toml, never logic here).
+# Same apps→packages direction as rt/cli; tree-sitter pins are coordinated
+# (both crates sit on the 0.26 core), so `links=tree-sitter` stays unified.
+mustard-core = { path = "../../packages/core" }
+
+# Language parsing is done by tree-sitter. The core runtime is generic; every
+# grammar is wired as DATA (a row in languages.toml + a neutral grammar handle),
+# never as per-language logic. Grammar crates are aliased to neutral names so the
+# source carries no language identifier.
+# Pinned to the workspace's tree-sitter major (mustard-core's regression gate
+# uses the same 0.26 core + the same grammar crates), so the `links=tree-sitter`
+# native lib resolves to a single version across the workspace.
+tree-sitter = "0.26"
+streaming-iterator = "0.1"
+grammar_cs = { package = "tree-sitter-c-sharp", version = "0.23" }
+grammar_ts = { package = "tree-sitter-typescript", version = "0.23" }
+grammar_py = { package = "tree-sitter-python", version = "0.25" }
+grammar_rs = { package = "tree-sitter-rust", version = "0.24" }
+grammar_go = { package = "tree-sitter-go", version = "0.25" }
+grammar_php = { package = "tree-sitter-php", version = "0.24" }
+grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.3" }
+
+[build-dependencies]
+# Used only at build time to read the external language registry and embed the
+# .scm query files. No language knowledge lives in the Rust source.
+toml = "1"

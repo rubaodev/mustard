@@ -1,3 +1,0 @@
-{"v":1,"ts":"2026-04-30T12:50:45.942Z","sessionId":"e855842d-927a-41cb-a005-f011f9ac4a47","wave":0,"actor":{"kind":"hook","id":"harness-init"},"event":"session.start","payload":{"cwd":"/home/user/mustard","source":"startup"}}
-{"v":1,"ts":"2026-04-30T12:52:51.340Z","sessionId":"e855842d-927a-41cb-a005-f011f9ac4a47","wave":0,"actor":{"kind":"hook"},"event":"commit-gate.check","payload":{"mode":"warn","warnings":0,"blockingFindings":[],"hasSensitive":false,"buildOk":null}}
-{"v":1,"ts":"2026-04-30T12:53:11.443Z","sessionId":"e855842d-927a-41cb-a005-f011f9ac4a47","wave":0,"actor":{"kind":"hook"},"event":"commit-gate.check","payload":{"mode":"warn","warnings":1,"blockingFindings":[],"hasSensitive":false,"buildOk":null}}

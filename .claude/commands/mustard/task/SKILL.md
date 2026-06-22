@@ -1,124 +1,88 @@
+---
+name: mustard-task
+description: Use when the user runs /task or asks for a delegated code task (analyze, audit, compare, review, docs, refactor, implement). Delegates each action via separate Task contexts (L0 Universal Delegation).
+source: manual
+---
+<!-- mustard:generated -->
 # /task - Delegated Task Execution
-
-> ALWAYS before making any change. Search on the web for the newest documentation and only implement if you are 100% sure it will work.
-
-> Delegates code tasks via **separate Task contexts** (L0 Universal Delegation).
 
 ## Trigger
 
 `/task <action> <scope>`
 
-## Actions
-
-| Action | Agent | Model | Description |
-|--------|-------|-------|-------------|
-| `analyze` | Explore | haiku | Code exploration and pattern analysis |
-| `audit` | general-purpose | sonnet | Quality audit with domain checklist (copy, design, a11y, i18n, consistency, api-contract) |
-| `compare` | parallel explorers → Plan | haiku + sonnet | Cross-subproject comparison and alignment |
-| `review` | general-purpose | opus | Code quality review (SOLID, security, perf) |
-| `docs` | general-purpose | sonnet | Documentation generation |
-| `refactor` | Plan → general-purpose | sonnet/opus | Plan + approve + implement refactoring |
-| `implement` | general-purpose | sonnet | Single-dispatch implementation with inline guards/patterns/recipes (low-cost, standardized) |
+| Action | Agent | Description |
+|--------|-------|-------------|
+| `analyze` | Explore | Code exploration / pattern analysis |
+| `audit` | general-purpose | Quality audit with domain checklist |
+| `compare` | parallel explorers → Plan | Cross-subproject alignment |
+| `review` | mustard-review | SOLID / security / perf |
+| `docs` | general-purpose | Documentation generation |
+| `refactor` | Plan → general-purpose | Plan + approve + implement |
+| `implement` | general-purpose | Single-dispatch with inline slices |
 
 ## L0 Enforcement
 
-**CRITICAL**: Parent context does NOT read code, does NOT implement. ALL work happens in Task contexts.
+Parent NEVER reads source, NEVER implements. All work inside Task contexts. The agent prompt is **always** produced by `mustard-rt run agent-prompt-render` — NEVER hand-assembled (same inviolable rule as `/feature` and `/tactical-fix`). The subproject `## Guards` ride in as `{guards_summary}`; the relevance-sliced domain glossary (the subproject `CLAUDE.md`, plus a `CONTEXT.md` when one exists) rides in as `{context_md}` — both filled by the renderer, never hand-Grepped into the prompt string.
 
-**Note on `implement`**: the orchestrator may run targeted Greps against `.md` context files (`guards.md`, `patterns.md`, `recipes.md`) to inject standardization slices into the dispatched prompt. Those files are configuration docs, not application code — reading them in the parent is allowed. Source code reads still happen only inside the dispatched Task.
+## Research + Prompt rendering (mandatory)
+
+`/task` is spec-less, so there is no wave plan and no `dispatch-plan` — but spec-less is **not** context-less. LOCATE first via the scan digest (the same step `/feature` and `/bugfix` run), then render each action's prompt with `agent-prompt-render`. **Dispatching without the digest sends the agent in blind — the single most common reason a `/task` returns nothing useful.** Render fail-opens on every empty placeholder, so a spec-less invocation is safe.
+
+```bash
+# 1. LOCATE via the scan digest — NEVER dispatch blind. Returns anchors (~12 real files),
+#    reason (strong|weak|none|generated_only), stacks. LAPIDATE the request into code-shaped terms
+#    YOURSELF: strip the glue (prepositions/articles — content words only), translate into the code's
+#    vocabulary, and shape it how code NAMES things — verbs infinitive (create/list/update), collection
+#    nouns plural (clients/contracts/receivables); when unsure, include both forms (the digest dedups).
+#    Code-shaped terms hit EXACT, not stem (where the noise lives). ONE call, pure deterministic.
+mustard-rt run feature --intent "<lapidated code-shaped terms + the user's content words>"
+#    Prune, then read ONLY the surviving anchors: anchorsDetail shows each anchor's matched terms —
+#    drop the tangential (a seeder on `pagos`), keep the central (route/form/datatable). On weak/none
+#    the digest returns a `candidates` array (the REAL code vocabulary) — sharpen your translation and
+#    re-call, or fall back to Glob+Grep. Each query feeds lexicon-suggest (bridge → deterministic).
+
+# 2. Render the dispatch prompt — fold the located anchor paths into --task-text so the agent
+#    starts from them instead of searching the repo from zero.
+mustard-rt run agent-prompt-render --spec {scope} --role {action} \
+  --subproject {subproject} \
+  --task-text "<the action's task> — start from these anchors: <anchor file list>" \
+  --mode first --emit ref
+```
+
+Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
 
 ## Flow
 
-### analyze / review / docs
+Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`, then dispatches (agents inherit the session model — no model selection):
 
-1. **DELEGATE** — Create Task with scope
-2. **REPORT** — Present findings to user
+- **analyze** — `--role explore`, `subagent_type: Explore` → report.
+- **review** — `--role review`, `subagent_type: mustard-review` (read-only) → report.
+- **docs** — `--role docs`, `subagent_type: general-purpose` → report.
+- **audit** — load `improve-codebase-architecture` → `--role audit`, `subagent_type: general-purpose`; pass the domain checklist as the task via `--task-text "<checklist>"` (the renderer folds it into `## TASK` — no hand-appending) → severity-classified report.
+- **compare** — one explorer per subproject in PARALLEL (single message), each rendered with its own `--subproject` (`--role explore`) → Task(Plan) merges + surfaces discrepancies.
+- **refactor** — load `improve-codebase-architecture` → render `--role plan` (Plan) → print plan verbatim → AskUserQuestion (Approve/Adjust/Cancel) → render `--role implement` (general-purpose) → validate.
+- **implement** — render `--role implement` (general-purpose), return cap 30 lines → agent runs build/type-check. ON CONCERN → surface + offer `/feature` Light.
 
-### audit
+→ See `../../../refs/task/task-prompts.md` for the per-action render invocations.
 
-1. **DELEGATE** — Task(general-purpose, sonnet) with compiled layers + domain checklist
-2. **REPORT** — Present findings with severity classification (CRITICAL / WARNING / NOTE)
-3. **SUGGEST** — Propose actionable next steps (`/task refactor`, pipeline Enhancement, etc.)
+Persistent tracking is **N/A** — `/task` is spec-less by design. Promote to `/feature` Light or `/tactical-fix` if a tracked spec is needed.
 
-### compare
+## Dispatch resilience
 
-1. **DISCOVER** — Identify target subprojects (from scope or all detected)
-2. **PARALLEL** — Launch one explorer per subproject with comparison criteria
-3. **CONSOLIDATE** — Launch Plan agent (sonnet) to merge findings and identify discrepancies
-4. **REPORT** — Present unified comparison with actionable recommendations
+A Task dispatch can fail with a **transient infra error** (`Tool result missing due to internal error`) — that is the Agent tool, NOT a located-files problem. When the digest came back `strong`, the anchors are ALREADY located, so a failed dispatch must **never strand the run**:
 
-### refactor (updated)
+1. **Retry the dispatch ONCE** (same rendered prompt).
+2. If it persists, **proceed from the located anchors** instead of re-routing from zero:
+   - read-only action (`analyze`/`review`/`audit`) → read the handful of anchor files directly and report (reading ≤ a few located files in the parent is allowed — L0 forbids *implementing* in the parent, not reading to answer);
+   - mutating action → dispatch `implement` straight away, folding the anchor paths into `--task-text` (the next dispatch is independent of the failed one).
+3. On a `strong` digest the `analyze`/Explore **mapping pass is often redundant** for concentrated work (a few files, known pattern) — skip it and go straight to `implement` with anchors in `--task-text`. Keep the Explore pass only when the action genuinely needs to MAP an unfamiliar region to graft from (e.g. a `compare`/reuse task where the source pattern must be understood before grafting).
 
-1. **ASSESS** — 3+ files or cross-layer → Plan mode first
-2. **PLAN** — Task(Plan) to analyze and propose strategy
-3. **APPROVE** — Print the ENTIRE plan returned by Task(Plan) verbatim inside a fenced markdown block (```` ```markdown ... ``` ````). Do NOT summarize or truncate — the user asked to read the complete plan before approving. Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust"** / **"Cancel"**.
-4. **IMPLEMENT** — Task(general-purpose) to execute approved plan
-5. **VALIDATE** — Run build/tests
+## Domain Checklists (audit)
 
-> **Note on other `/task` actions:** only `refactor` has a plan-then-approve gate. `implement`, `analyze`, `audit`, `compare`, `review`, `docs` are single-dispatch by design (no plan to review). If you want a review gate before code changes, prefer `/feature` (Full scope) instead of `/task implement`.
+`copy` (tone/grammar/placeholders/CTA), `design` (tokens/reuse/hierarchy/parity), `a11y` (ARIA/contrast/keyboard/focus), `i18n` (missing keys/hardcoded/plurals), `consistency` (naming/structure/adherence), `api-contract` (DTOs/status codes/errors/versioning). Default when ambiguous: `consistency`.
 
-### implement
+## Analysis → Action
 
-1. **GREP SLICES** — Orchestrator runs targeted Greps against `{subproject}/.claude/commands/guards.md`, `patterns.md`, `recipes.md` for the scope keyword. Use `output_mode: content`, `-C 2`, `head_limit: 20` (cap ~500 tokens per file). Greps return small slices, not full files.
-2. **DISPATCH** — Single `Task(general-purpose, sonnet)` with guards/patterns/recipe injected inline in the prompt, naming conventions explicit, and return format capped at 30 lines.
-3. **BUILD** — Agent runs build/type-check at the end and reports the result.
-4. **NO OVERHEAD** — No spec, no pipeline state, no review gate. Surgical.
-5. **ON CONCERN** — If the agent returns CONCERN, orchestrator shows it to the user and offers either `/feature` Light (more gates) or an adjusted `implement` prompt.
+After `audit`/`compare`: parse severity, map each CRITICAL/WARNING to `/task refactor` or Pipeline, present structured list with estimated scope. Do NOT auto-execute — user picks.
 
-## Implementation
-
-Concrete prompt templates for each action (analyze, review, docs, refactor, audit, implement, compare) — including the `implement` Grep-inject pattern that runs guards/patterns/recipe Greps in the parent before single-dispatch.
-
-→ See `../../../refs/task/task-prompts.md`
-
-## Domain Checklists (for `audit`)
-
-Orchestrator infers domain from scope keywords. Multiple domains can be combined.
-
-| Domain | Keywords | Checklist |
-|--------|----------|-----------|
-| `copy` | copy, text, wording, tone, marketing | Tone consistency, grammar, placeholder text, marketing claims accuracy, CTA clarity |
-| `design` | design, tokens, colors, typography, UI | Token usage, component reuse, visual hierarchy, spacing consistency, dark/light parity |
-| `a11y` | accessibility, a11y, aria, contrast | ARIA labels, contrast ratios, keyboard navigation, screen reader support, focus management |
-| `i18n` | i18n, translation, locale, language | Missing keys across locales, hardcoded strings, parameter consistency, pluralization |
-| `consistency` | consistency, naming, structure, patterns | Naming conventions, file structure, pattern adherence across modules |
-| `api-contract` | api, contract, endpoint, dto | DTO completeness, status codes, error response format, endpoint naming, versioning |
-
-Default domain (if ambiguous): `consistency`.
-
-## Analysis → Action Bridge
-
-After receiving results from `audit` or `compare`:
-
-1. **Parse severity** — count CRITICAL / WARNING / NOTE
-2. **Map to intents** — for each CRITICAL/WARNING finding, suggest a concrete command:
-   - Missing i18n key → `/task refactor "add missing i18n keys for {locale}"`
-   - Design token violation → `/task refactor "replace hardcoded values with tokens in {file}"`
-   - Pattern deviation → Pipeline Enhancement for the affected module
-   - Cross-subproject mismatch → `/task compare` with narrower scope, then Pipeline Feature
-3. **Present to user** — structured list with estimated scope (Light/Full)
-4. **Do NOT auto-execute** — user must approve or pick which actions to take
-
-## Examples
-
-```bash
-/task analyze authentication flow
-/task audit "copy quality" {frontend-subproject}
-/task audit "design token usage" {mobile-subproject}
-/task audit "i18n consistency" {mobile-subproject}
-/task audit "api-contract alignment" {api-subproject}
-/task compare "design token naming"
-/task compare "i18n key coverage"
-/task review "Contract entity"
-/task docs "API endpoints"
-/task refactor "extract PaymentService"
-/task implement "add logout button to header"
-/task implement "create GET /api/users endpoint"
-```
-
-Replace `{subproject}` with actual subproject name. Single repo: omit the subproject argument.
-
-## When to use implement vs /feature vs refactor
-
-- `implement` — 1-3 arquivos, pattern conhecido, resultado verificável por build. Baixo custo, sem auditoria.
-- `/feature` Light — mudanças estruturadas com spec auditável e review gate. Custo médio.
-- `refactor` — reorganização sem mudança funcional (split, rename, extract). Tem fase de Plan separada.
+`implement` → 1-3 files, known pattern, build-verifiable (low cost). `/feature` Light → spec + review gate (medium cost). `refactor` → reorganization without functional change.

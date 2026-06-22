@@ -1,200 +1,85 @@
+---
+name: mustard-feature
+description: Use when the user runs /feature or asks to add, create, implement, or enhance a new feature. Starts the feature pipeline (ANALYZE → PLAN → optional inline EXECUTE for Light scope).
+source: manual
+---
+<!-- mustard:generated -->
 # /feature - Feature Pipeline
 
-> ALWAYS before making any change. Search on the web for the newest documentation and only implement if you are 100% sure it will work.
+`/feature <request>` — understand the client, research the repo through the deterministic `scan` tool (never reading source by hand), then plan + implement.
+Heavy lifting delegates to `mustard-rt`; the orchestrator routes phases + emits events. You (the AI) do the reasoning that grain cannot: elicitation, decomposition, lapidation.
 
-## Trigger
-
-`/feature <feature-name>`
-
-## Description
-
-Starts the pipeline to implement a feature or enhancement. Self-contained: ANALYZE → PLAN phases. Light scope may include EXECUTE inline.
+> **Artifact order — read before editing the flow.** The spec dir + `spec.md` + `meta.json` are MATERIALISED by `mustard-rt run spec-draft` in PLAN (step 2). They do **not** exist during ANALYZE. The slug is born from `--intent` at that step. Never reference `.claude/spec/{slug}/spec.md` (or run a command that reads it) before it has been materialised.
 
 ## Action
 
-### Spec Hygiene (automatic, before ANALYZE)
+### 1. Understand + RESEARCH (ANALYZE)
 
-Audit specs in `active/` before starting — steps 1-5: scan, verify completed/cancelled, handle in-progress via AskUserQuestion, no-active path.
+→ `../../../refs/feature/spec-hygiene.md`. (No stage emit here — there is no spec yet; `spec-draft` backfills the `ANALYZE` marker when the slug is born in PLAN.)
 
-→ See `../../../refs/feature/spec-hygiene.md`
+- **Note the client's intent** in your own words (what they actually want, plus every concrete critique from the conversation).
+- **Ensure the model exists/is fresh**: `mustard-rt run scan` produces `.claude/grain.model.json` (the durable repo model). Run it if absent or the codebase changed materially.
+- **Research via the scan digest, not the repo**: before the call, **lapidate the client's intent into code-shaped terms YOURSELF** (you hold the domain context — the project's `CONTEXT.md`, the subproject conventions, and you translate better than any inline model): strip the glue (prepositions/articles/connectors — keep only content words), translate each into the code's vocabulary, and shape them the way code NAMES things — verbs in the infinitive (`create`, `list`, `update`), collection nouns plural (`clients`, `contracts`, `receivables`, `installments`); when unsure of a form, include both (the digest dedups). Code-shaped terms land at the **EXACT** tier instead of leaning on `stem` — exactly where the anchor noise comes from, so this prunes the noise at the source. Then call `mustard-rt run feature --intent "<your lapidated code-shaped terms + the user's content words>"` — ONE call → structured *insumos* (`slices`, `contracts`, `hubs`, `anchors` + `anchorsDetail` — per-anchor provenance: the matched terms that declare each file (file→terms), so you pick what to read — `report.reason` (strong | weak | none | generated_only — the honest match strength), `stacks` — detected stacks with confidence + the signals that grounded them, use to anchor framework-specific decisions — `miss`, `note`). **Read this output ONCE, whole** — if you slice it, capture it to a file and slice the FILE; never re-run the command to read a different part (each re-run re-computes the entire digest). The digest is **pure deterministic** (no model call, no nested `claude`): it tokenises the combined intent and matches the **distinct union** against the repo's term index. Passing BOTH is the point — the user's Portuguese hits the code's Portuguese, your translation hits the code's English, the union covers a mixed-language codebase, and a wrong guess simply matches nothing (the OR-query drops it). `strong` → use the anchors. `weak`/`none` → the digest returns a `candidates` term index (the repo's REAL vocabulary as `{term,samples,count}`); sharpen your translation against it and re-call. NEVER conclude "absent" from a `miss` alone — re-query with the code's words first. (Each query feeds `lexicon-suggest`, so a confirmed bridge becomes deterministic over time — fewer translations needed.)
+- **Promote confirmed bridges**: after a successful re-query that followed a `weak`/`none` report, suggest running `mustard-rt run lexicon-suggest` — it correlates the recorded `feature.query` rounds across the whole workspace telemetry (so it also works from a later session) and lists the confirmed missed→bridged term pairs; nothing is written unless the user accepts one via `--accept <missed>=<bridged>` (project lexicon overlay only).
+- **Prune, then read ONLY the surviving `anchors`** (~12 real files) — never the whole repo, never `grain.model.json` directly. First **prune by provenance**: each anchor in `anchorsDetail` carries the matched terms that surfaced it — drop the ones whose terms are tangential to the request (a seeder matched on `pagos`, a stats-DTO on `partner`), keep the central ones (route, form, datatable). Free judgment from data you already hold — no read, no model call. This is the low-consumption contract. **When the anchors span ≥2 subprojects, do NOT read them in the parent.** Every file you open in a subproject auto-injects that subproject's `CLAUDE.md` + skill catalog into your context — the most expensive, longest-lived one — so reading across N subprojects pays that fixed overhead N×, re-sent on every later turn of ANALYZE+PLAN. Instead dispatch **one `Task(Explore)` per subproject**; each reads only that subproject's anchors and returns ≤40 lines (the pattern to mirror, files to touch, contract wiring). Reserve direct parent reads for a single-subproject feature, and read only the slice you need (`offset`/`limit`), never whole files.
+- **Lead with `slices` for a composition/enhancement.** When the task **reuses existing pieces** (the common enhancement — adding tabs, mirroring a panel), the `slices` are the PRIMARY signal: a slice names the recurring pattern (the route shape `[id]/new/PUT`, the hooks `useXByY`, the datatable) — *what to mirror* — which a flat anchor (a declaration site) cannot. The slice carries its **`exemplarFiles`** — the real files that exemplify the pattern — so go STRAIGHT to those (no Grep). Read the matching slice FIRST; treat the pruned `anchors` as the secondary, noisier signal. Only for a **net-new entity** do a sibling's anchors lead instead. (Field-confirmed across runs: on composition the slices repeatedly beat the flat anchors.)
+- **Glossary nudge (optional, non-blocking)** → `../../../refs/feature/glossary-nudge.md`. After the digest, run `mustard-rt run glossary-coverage --intent "<request>" --context {root}/CONTEXT.md`; ONLY on `verdict ∈ {missing, weak}` surface ONE dismissible suggestion to sharpen the domain glossary via the `grill-with-docs` skill before planning. It never blocks, never grills inline, and writes nothing itself; `ok` / `na` / absent-tool → stay silent and continue.
 
-### ANALYZE Phase
+Scope is decided by the tool, not eyeballed. Once the spec scaffold exists (PLAN step 2 materialises it), run **`mustard-rt run plan-prepare --from-spec .claude/spec/{slug}/spec.md --slice-match-count <sliceMatchCount from the feature digest>`** — the fused decision that returns `scope` AND `decompose`/`waves` in ONE call (one spec read, one turn), so you do NOT call `scope-classify` then `scope-decompose` separately. Use the returned `scope` as the decision. The three labels — light (1-2 layers, ≤5 files, mirrors a matched slice) | extended-light (matched slice + modifies existing, 6-8 files) | full (3+ layers, net-new, spans ≥2 slices *with* ≥2 layers, or >8 files) — are context only; the DECISION is the command's `scope` output, not your judgement. Feed it into `spec-draft --scope`: pass `full` and `light` verbatim; `extended-light` collapses to `--scope light` for the draft (PLAN is skipped either way), but you keep the `extended-light` label to govern the §4 inline EXECUTE (its higher file ceiling). The same output's `decompose`/`waves` drive the PLAN-step wave decision (§3) — no second `scope-decompose` call. MAX 5 reads beyond the anchors in ANALYZE. **Fill the file census BEFORE running plan-prepare**: right after the scaffold exists, `Edit` the census you already hold (anchors + per-unit files from ANALYZE/DECOMPOSE) into `## Files`/`## Arquivos`, THEN run `plan-prepare` once — running it on a placeholder census returns a non-confident `light` and costs a wasted re-run round-trip. Safety net: if the verdict still carries `filesSectionEmpty: true`, fill the census and re-run before trusting it.
 
-**Auto-sync (silent):** Run `node .claude/scripts/sync-detect.js`. If output shows any subproject with `hashChanged: true`, then run `node .claude/scripts/sync-registry.js`. Otherwise skip sync-registry entirely.
+ANALYZE ends at scope detection. There is **no spec file yet**, so nothing is validated here — `analyze-validation` runs in PLAN (step 3, inside `plan-materialize`), after the scaffold exists.
 
-**Diff Context (automatic):** At the start of ANALYZE, PLAN, and EXECUTE, run `node .claude/scripts/diff-context.js --subproject {subproject_path}`. Save to `.claude/.pipeline-states/{specName}.diff-{subproject}.md`. Prepend the subproject diff to every subagent prompt (`## Current Git State\n{diff}\n\n## Your Task\n...`). Skip header if diff empty/missing. Never dispatch without attempting interpolation.
+### 2. DECOMPOSE
 
-1. Read `.claude/pipeline-config.md` — agents, wave transitions, model selection
-2. Grep `entity-registry.json` for the specific entity name — NEVER read the full JSON
-3. Determine layers from signals:
+From the insumos + anchors, split the request into three natures (this is the judgement grain cannot make):
 
-| Signal | Layers |
-|--------|--------|
-| New field/column/relation | DB (+Backend/FE if visible) |
-| New endpoint, business logic | Backend (+FE if visible) |
-| New screen/component | Frontend (+Backend if new endpoint) |
-| New CRUD / sub-entity | DB + Backend + Frontend |
-| Refactoring, bug fix | Root cause layer(s) |
+- **Units with precedent** → each maps to a matched slice. Only a **net-new** unit (it CREATES an entity that does not exist yet) gets a `scan spec` compile (with `--like <sibling>` when one exists) — the compiler emits a *create* mold. An **enhancement** unit (modifies an existing entity/behavior) skips `scan spec` and consumes the feature digest's anchors instead (the `context_enrichment` that `spec-draft` pre-fills into the scaffold's `context` section).
+- **Cross-cutting invariants to obey** → contracts/hubs the repo already enforces (e.g. an injected `ICurrentTenant`); pass each via `scan spec --invariant <Name>` so the draft anchors the real wiring. NEVER invent the mechanism — mirror the anchored consumers.
+- **Net-new gaps** (no precedent; `miss` after a repo-vocabulary re-query) → surface as a design decision; do not let a `scan spec` draft's "deterministic" framing imply a unit that has no precedent is safe to clone.
 
-When in doubt → `AskUserQuestion`: "Which layers?"
+### 3. PLAN
 
-#### Scope Detection
+→ `../../../refs/feature/spec-language.md` (header translation, narrative rules, Component Contract). → `../../../refs/feature/wave-decomposition.md`.
 
-| Signal | → Scope |
-|--------|---------|
-| 1-2 layers, ≤5 files, known pattern, no new entity | **Light** |
-| Entity in registry + modification (add field/column/endpoint/behavior) + ≤8 files, no new entity/table/enum | **Extended Light** |
-| 3+ layers, 5+ files, new entity/CRUD, new pattern | **Full** |
+Resolve Lang via cascade (`meta.json#lang` → `mustard.json#specLang` → AskUserQuestion once) — hold the resolved value for `spec-draft --lang` (step 2 persists it to `meta.json`).
 
-Any **Full** signal → Full. All **Light** or **Extended Light** → skip PLAN. Record scope (`light`, `extended-light`, or `full`) for PLAN phase branching.
+PLAN materialises the spec in a **fixed order** — every artifact exists before the next step consumes it:
 
-**Extended Light** = same flow as Light (skip PLAN, inline EXECUTE):
-- Entity MUST exist in `entity-registry.json` (Grep confirms it)
-- Operation modifies existing entity (NOT creates new one)
-- Up to 8 files, up to 3 layers — pattern is known
-- No new database table, no new enum type, no new module
-- If ANY condition fails → reclassify as Full
-- Reclassify to Full if >8 files surface during ANALYZE
+1. **Lapidate the body (no file yet).** Per **net-new** unit (creation): `mustard-rt run scan spec --entity {Unit} [--like {Sibling}] [--invariant {Contract}] [--ops create,...]` → a draft carrying the auto-chosen pattern menu, per-project sections, the anchors, and acceptance criteria. An **enhancement** unit skips `scan spec` (the compiler only emits a *create* mold) — lapidate it from the feature digest's anchors (the `context_enrichment` `spec-draft` folds into the scaffold's `context` section). Read the draft + its anchors + the client request; resolve the bifurcation, prune, add domain rules, mark assumptions — **in the project's language/tone** (`mustard.json#specLang`/`tone`). The draft's project-unit sections ARE the wave/agent decomposition. Hold the lapidated body in context; do **not** write a file here.
+2. **Materialise the scaffold.** `mustard-rt run spec-draft --intent "<request>" --scope {light|full} --lang <bcp47> [--waves N] [--query-terms "<repo-vocabulary terms>"]` writes `.claude/spec/{slug}/spec.md` + `meta.json` (slug born from `--intent`; `meta.json` is the single lifecycle source; the `context` section is pre-filled with the scan anchors/slices). **When the user's raw words alone came back `weak`/`none` in ANALYZE** (so it was your code-vocabulary translation that carried the strong match), pass `--query-terms` with the comma-separated code-terms that produced the strong report — without it the draft re-tokenises the raw intent, repeats the weak query, and the enrichment withholds itself (a weak answer never materialises anchors into the scaffold). This is the **only** writer of the spec scaffold — never hand-write `spec.md` with the Write tool.
+   Right after the scaffold exists, run `mustard-rt run digest-adherence-finalize --spec {slug}` (the slug just born from `spec-draft`). Fire-and-forget telemetry: it folds the session's events into one `analyze.digest.summary` attributed to the new spec; it never blocks and its output requires no action — continue to step 3 immediately.
+3. **Fold the body in — into the plan JSON, not by hand after the scaffold.** `Edit` the lapidated bodies from step 1 into the scaffold's parent Plan-layer sections (`entities`, `files`, optional `component-contract` UI-only, `tasks`, `dependencies`, `boundaries`). Edit — never overwrite — so the digest-enriched `context` section survives. **Full scope sempre tem ≥1 wave** (`>= 1 wave`): the parent spec is the orchestrator/coordination doc (no own `tasks`/checklist), the wave is the executing subagent. `scope_decompose` decides **1-vs-N** waves — never 0-vs-≥1; "reject decomposition" collapses to a single wave for Full, never to zero (see `refs/spec/approve-only-flow.md`). Do not hard-code thresholds here — use the `decompose`/`waves` the **`plan-prepare`** call from ANALYZE already returned (multi-wave on its signals — multi-layer, roadmap, history, wide+new-entity; otherwise a single wave). No separate `scope-decompose` call: that decision rode in with `scope`. The lapidated `scan spec` project-unit decomposition becomes the **per-wave body of the plan JSON** — each wave carries `tasks` (checklist), `files` (census), and `acceptance` (AC) arrays. **Before materialising**, validate/derive the plan's `depends_on` with `mustard-rt run wave-dependency --plan <plan.json>` (file-based input — it accepts the plan JSON's `{waves:[...]}` shape directly, unioning the per-wave `files`; do not pipe via stdin, which does not survive the `rtk` wrapper). Then materialise with **ONE call**: `mustard-rt run plan-materialize --spec-dir <dir> --plan <plan.json>` — it composes `wave-scaffold` (each `wave-N-{role}/spec.md` gets `## Tasks`/`## Files` in the project language, plus the AC union into `wave-plan.md`) + `analyze-validation` (incl. the AC-format WARN) + the `pipeline.scope` emit + emit-phase PLAN, returning `{events, scaffold, validation}`. Do NOT run those as separate manual steps. NEVER hand-author a wave's `spec.md` body after the scaffold — emit it in the plan JSON. See `refs/feature/wave-decomposition.md` for the `--plan` schema.
+4. **Act on the validation result.** `plan-materialize` (step 3) already ran `analyze-validation` — read its `validation` output and append `issues[]` to `## Concerns` on `ok: false` (non-blocking, WARN-level). Only a Light spec with no plan JSON (so no `plan-materialize`) still runs `mustard-rt run analyze-validation --spec .claude/spec/{slug}/spec.md` directly.
+5. **Concern Coverage Audit.** Every concrete user critique must map to covered by wave/task | non-goal justified | surfaced for decision. Orphaned items block the AskUserQuestion.
 
-Light/Extended Light scope CAN use Task(Explore) ONCE with ≤10 tool uses. Prefer Grep/Glob direct when targets are known. If >5 files surface during ANALYZE on Light, RECLASSIFY to Extended Light (if entity in registry) or Full.
+Spec layout — **canonical section keys** (EN, language-agnostic); the rendered heading localises per `mustard.json#specLang` (e.g. `context` → `## Context` / `## Contexto`): **PRD layer** — `context`, `users`, `metric`, `non-goals`, `acceptance-criteria`; **Plan layer** — `entities`, `files`, optional `component-contract` (UI only), `tasks`, `dependencies`, `boundaries`.
 
-#### Explore (conditional, budget-capped)
+`plan-materialize` already emitted `pipeline.scope` + the PLAN phase — do not re-emit them (Light, no plan JSON: emit `pipeline.scope` + `pipeline.stage: Plan` yourself). Print spec verbatim + `wave-tree`. **The plan must reach the user together with the approval question — NEVER ask about a plan the user has not seen.** Text emitted before a tool call may not be displayed (observed in background sessions), so besides printing the spec in the final message, attach the wave-plan/spec content as the `preview` of the approval option in AskUserQuestion. AskUserQuestion: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
 
-**File budget: MAX 5 reads total in ANALYZE phase (excludes registry/pipeline-config)**
+> **Full scope STOPS here.** For `scope=full`, PLAN is the terminal phase of `/feature` — never proceed to EXECUTE inline, regardless of the user's answer. Approval is granted **only** by running `/spec` (which emits the canonical approval event the hard-gate checks); the `scope_guard` hook denies any production-file Edit/Write until then. On "Approve and implement?" for Full scope, direct the user to `/spec` to approve and dispatch — do **not** emit `pipeline.stage: Execute` yourself. Only Light / Extended-Light continue to §4.
 
-**Path A — SKIP Explore agent** (DEFAULT when entity exists in registry): Entity in registry → skip Explore agent. Read 2-3 reference files directly. Go straight to PLAN.
+> **Materialisation split (no overlap).** `spec-draft` writes ONLY the top-level `spec.md` + `meta.json` (scope/totalWaves/isWavePlan); `wave-scaffold` is the sole owner of the wave breakdown (`wave-plan.md` + per-wave specs + review/qa, plan-driven). Full scope = `spec-draft` (step 2) then `plan-materialize` (step 3 — the single call that runs `wave-scaffold`).
 
-**Path B — Explore agent ("medium")** (ONLY for genuinely new entities/patterns): Entity NOT in registry AND new CRUD/entity → use Explore agent. **Explorer cap: ≤20 tool uses, ≤3 full file reads.** After Explore returns → go straight to PLAN, ZERO additional reads. NEVER duplicate reads the Explore agent already performed.
+### 4. Light/Extended-Light EXECUTE (inline)
 
-**HARD RULE:** If you already understand the change, STOP reading and write the spec. More reads ≠ better spec.
+**Light / Extended-Light only.** Full scope never reaches this step — it stopped at PLAN (see the gate above) and resumes through `/spec`. This inline path applies solely when `scope=light` or `scope=extended-light`.
 
-#### Compact Advisory
+User chooses "Approve and implement now": emit `pipeline.stage: Execute` → `exec-rewave-check` (decomposed → use wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch agents via `agent-prompt-render --emit ref` (NEVER hand-craft; the 2-line stub stdout IS the Task prompt — pass it verbatim, the PreToolUse hook expands it so the full prompt never transits your context; all agents of a wave → one message; the subagent's context is the spec's project section + its anchors; dispatch each with its role's `subagent_type` — `review`→`mustard-review` (read-only), `impl`→`general-purpose`) → per-wave validate + `memory agent` → REVIEW per subproject (`review-result` emit, max 2 fix loops) → QA (`qa-run`; pass → CLOSE; fail → return failing AC; skip → warn + allow CLOSE; max 3 QA iterations).
 
-After ANALYZE, if heavy exploration (>8 file reads, >3 Grep rounds, or multiple Explore agents):
-Suggest: _"Analysis complete. Context is heavy — consider `/compact` before proceeding to implementation, then `/resume`."_ Advisory only.
+Escalations: `Internal error` (transient dispatch failure, e.g. "Tool result missing due to internal error") → re-dispatch once; still failing → STOP (the Light spec is tracked — resume via `/spec`, which retries per `../../../refs/spec/resume-flow.md`). `CONCERN` → `## Concerns`, continue. `BLOCKED` → STOP + AskUserQuestion. `PARTIAL` → granular retry (max 2). `DEFERRED` → note + confirm. → `../../../refs/feature/ac-cross-shell.md`.
 
-### Decomposition Rule (Wave 7)
+## INVIOLABLE RULES
 
-When ANALYZE surfaces >5 files, >3 architectural layers, or multiple independent sub-behaviors: STOP, decompose into child specs (2-5 children, each ≤5 files, ≤2 layers). Link via `spec-link.js`. Parent enters `COORDINATE` phase until all children reach CLOSE.
-
-→ See `../../../refs/feature/wave-decomposition.md`
-
-### End of ANALYZE — Validation
-
-Run: `rtk node .claude/scripts/analyze-validation.js --spec .claude/spec/active/{specName}/spec.md`
-If output `ok: false`, append each `issues[]` entry to the spec under `## Concerns` (non-blocking). Continue to PLAN regardless.
-
-### PLAN Phase
-
-#### Wave Decomposition Pre-Check (Full scope only)
-
-Check whether the work should be decomposed into waves before writing a single spec. Signals: fileCount, layerCount, newEntityCount, knowledgeMatches. Runs `scope-decompose.js` + `wave-dependency.js`. Produces wave-plan.md + per-wave spec.md if decompose=true.
-
-→ See `../../../refs/feature/wave-decomposition.md`
-
-#### Full Scope
-
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with:
-   - Summary, Entity Info, Files, Tasks, Dependencies
-   - Tasks organized by `### {Agent} Agent (Wave {N})`
-   - 3-8 checkboxed steps per agent, decomposed by operation type (NOT by file)
-   - Mark `(parallel-safe)` on frontend tasks with no dependency on new backend endpoints
-   - **MANDATORY: `## Acceptance Criteria` section** (Wave 10) — 3-8 binary, executable items: `- [ ] AC-1: {description} — Command: \`{exact command}\``. Each: exit 0 = pass; runnable from project root; focus on observable behavior (build, endpoint, test). Include `Testable, binary (pass/fail) criteria. Each MUST be executable and independent.` header line.
-2. Add checkpoint fields: `Status: draft`, `Phase: PLAN`, `Scope: full`, `Checkpoint: {now}`
-3. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `phaseName: "PLAN"`, `scope: "full"`
-4. Elegance Check: 3+ files or complex logic → "Is there a more elegant approach?"
-5. **Present full spec to user:** Read spec file and print ENTIRE contents verbatim in a fenced markdown block. Add 1-line change summary (WHAT + WHY). Then `AskUserQuestion`: **"Approve and implement?"** / **"Adjust (give feedback)"** / **"Save for later (stop)"**.
-
-#### Light Scope
-
-1. Create `.claude/spec/active/{date}-{name}/spec.md` with compact format — headers: `# Enhancement: {name}`, `### Status: draft | Phase: PLAN | Scope: light`, `### Checkpoint: {ISO}`, `## Summary` (1-2 lines), `## Checklist` → `### {Agent} Agent` (steps + build/type-check), `## Files (~{N})` (paths), `## Acceptance Criteria` (1-3 items, `- [ ] AC-1: {description} — Command: \`{exact command}\``). At least AC-1 must verify the feature works.
-2. Create `.claude/.pipeline-states/{spec-name}.json`: `specName`, `status: "active"`, `phase: 2`, `scope: "light"`
-3. **Present full spec to user:** Print ENTIRE contents verbatim in fenced markdown block. Then `AskUserQuestion`: **"Approve and implement now"** / **"Approve for later"** / **"Adjust"**.
-
-#### Spec Boundaries
-
-Add `## Boundaries` section before writing tasks: list only paths intentionally touched (exact files, directories, globs). Out-of-boundary edits surface `[BOUNDARY WARNING]` — treat as signal, not error to suppress.
-
-### Pre-EXECUTE Existence Gate (Full scope only)
-
-Dispatch 1 Haiku Task(Explore) to verify work is still needed. Pre-check via `rtk git diff --stat` first (skip if <10 insertions/deletions). Decision: all-no → transparent; mixed → mark done tasks [x], re-dispatch for remaining; all-yes → mandatory AskUserQuestion before closing as already-implemented.
-
-→ See `../../../refs/feature/existence-gate.md`
-
-### EXECUTE Phase (Light scope — same session)
-
-When user chooses "Approve and implement now":
-0. **Pre-EXECUTE Rewave Check:** Run `node .claude/scripts/exec-rewave-check.js --spec .claude/spec/active/{spec-name}/spec.md`. Parse JSON output. If `action: "decomposed"`, the spec was just split into N waves — proceed using wave-1's spec (`wave-1-{role}/spec.md`) instead of the original. If `action: "keep-single"` or `"skip"`, continue with the original spec normally. Silent operation — no AskUserQuestion.
-1. Update spec: `Status: implementing`, `Phase: EXECUTE`. Every agent prompt MUST include: `Return format cap: ≤50 lines. Apply compact Return Format from .claude/pipeline-config.md strictly.`
-2. Update pipeline state: `status: "implementing"`, `phase: 3`
-3. Read `.claude/pipeline-config.md` for agent config. Grep `entity-registry.json` for specific entity block only
-4. Match recipes by title via Grep on `{subproject}/.claude/commands/recipes.md` — do NOT read full file
-4b. **Structured Recipe (if available):** Run `node .claude/scripts/recipe-match.js --entity {entity} --operation {operation} --subproject {subproject_path}`. If non-empty JSON, inject into agent prompt as `{recipe_context}`. Gives agent a 90%-complete skeleton.
-5. Identify relevant skills for `{recommended_skills}`: list skill names most relevant to the task
-6. Dispatch agents (wave rules: DB+Backend parallel, Frontend after Backend UNLESS `(parallel-safe)`)
-7. Wave transitions between waves (from `.claude/pipeline-config.md`)
-8. On return: validate (build/type-check), update spec `[ ]` → `[x]` (line-by-line edits, NEVER copy entire spec blocks)
-8b. **Agent Memory:** `node .claude/scripts/memory-write.js --json '{"agent_type":"{type}","wave":{N},"pipeline":"{spec-name}","summary":"{what}","details":{...}}'` — one per agent. Skip if single-wave pipeline.
-
-#### Escalation Status Handling
-
-After each agent returns, check for escalation before advancing:
-
-- **Internal error** — re-dispatch sequentially (not parallel). Max 1 Internal retry per agent
-- `CONCERN` — record verbatim under `## Concerns`; continue to next step
-- `BLOCKED` — stop immediately; AskUserQuestion with exact blocker; do NOT retry or advance
-- `PARTIAL` — apply Granular Retry Protocol from last completed step; do NOT restart from step 1
-- `DEFERRED` — note in spec with agent justification; ask user if deferred item is load-bearing before closing
-
-If two or more agents in same wave return `CONCERN`, surface all concerns together before starting next wave. See `.claude/pipeline-config.md` Escalation Statuses and Diagnostic Failure Routing.
-
-9. **REVIEW** — dispatch review agent per affected subproject (guards + relevant skills, 7-category checklist). REJECTED → see `resume/SKILL.md § Fix Loop Dispatch Protocol` (max 2 loops). Re-reviews always use `model: "sonnet"`.
-10. All passed + APPROVED → CLOSE flow inline (sync registry, move spec, cleanup state)
-11. Failed → max 2 retries, then STOP + report
-
-#### Failure Routing
-
-Classify before retrying: (1) **Transient?** → retry once immediately. (2) **Resolvable?** (≤3-line patch, no new reads) → apply patch, retry (counts as retry 1). (3) **Structural?** (spec assumed false) → re-analyze 1-2 files, update spec, re-dispatch — does NOT count against 2-retry cap. Retry cap applies to Transient + Resolvable only.
-
-### QA Phase (Wave 10)
-
-After all EXECUTE tasks complete: (1) set `phaseName: "QA"` in pipeline state. (2) Run `node .claude/scripts/qa-run.js --spec {specName}`. (3) `overall=pass` → CLOSE; `overall=fail` → return failing AC list to implementation agent, re-run; `overall=skip` (no AC) → warn + allow CLOSE. Max 3 QA iterations — then `AskUserQuestion`: "QA has failed 3 times. Choose: (a) Fix manually and retry, (b) Relax the AC, (c) Abort pipeline."
-
-Update `## Acceptance Criteria` checkboxes: `[x]` passed, `[ ]` failed. Visual: `[v] ANALYZE  [v] PLAN  [v] EXECUTE  [>] QA  [ ] CLOSE`
-
-## Visual Output
-
-Progress: `[v] ANALYZE  [>] PLAN  [ ] EXECUTE  [ ] QA  [ ] CLOSE` — add `[LIGHT]` or `[FULL]` scope tag after progress line.
-
-## Spec Layout
-
-Specs may grow beyond a manageable size. Apply the same progressive disclosure pattern used in skills:
-
-- **Default:** single `spec.md` (Light OR small Full ≤200 lines).
-- **When spec.md > 200 lines:** extract autonomous sections to `spec-references/{section}.md` in the SAME spec directory; spec.md body keeps `→ See spec-references/{section}.md` pointers.
-- **Hard block at 500 lines:** gate `MUSTARD_SPEC_SIZE_MODE=strict` (default `warn`) — at warn, log `[SPEC-SIZE] {name} is {N} lines; consider splitting`; at strict, block PLAN from writing a spec exceeding 500 lines.
-- **Wave plans already follow this pattern:** `wave-plan.md` + per-wave `spec.md` directories are the canonical multi-file spec form.
-- **Reference:** Anthropic progressive disclosure (skill-creator best practices) — same principle: load detail on demand, keep body scannable.
-
-### Acceptance Criteria — Cross-Shell Pattern
-
-Write AC commands in portable form: prefer `node -e "..."` for multi-step assertions, `bash -c '...'` for shell pipes, or single commands where exit code is the verdict. Avoid raw bash syntax (`for`, `test`, `[...]`) — cmd.exe silently mishandles it on Windows.
-
-→ See `../../../refs/feature/ac-cross-shell.md`
-
-## Rules
-- This command is self-contained — reads `.claude/pipeline-config.md` directly
-- NEVER implement code in Full scope — only PLAN. EXECUTE via `/approve` + `/resume` (or `/approve --resume` to chain inline)
-- NEVER launch Explore agent when entity already exists in registry — read 2-3 files directly
-- NEVER read additional files after Explore agent returns — its output is final
-- NEVER exceed 5 file reads in ANALYZE phase (registry + pipeline-config are free)
-- Light scope + user chose "implement now" → proceed to EXECUTE inline
-- ALWAYS read `.claude/pipeline-config.md` for agent/wave/model info
-- ALWAYS create pipeline state at PLAN phase
-- ALWAYS record `scope` in spec header AND pipeline state
-- ALWAYS go straight to PLAN once you understand the change — more reads ≠ better spec
-- Light scope inline implement follows same dispatch rules as `/resume` (template, waves, retries)
-- Context budget: Grep entity-registry (not full read), Grep recipes (not full read), line-by-line checkbox updates
-- Wave decomposition is opt-in via signals (knowledge matches, layer/file/entity counts) — never force waves on small scopes
-- If wave decomposition is approved, single-spec Full Scope flow is skipped — waves execute sequentially via `/resume`
-ULTRATHINK
+- **Full scope STOPS at PLAN and REQUIRES `/spec` to approve before any EXECUTE.** `/feature` must NEVER emit `pipeline.stage: Execute` — nor dispatch, Edit, or Write production code — for a `scope=full` spec. The only approval that unlocks EXECUTE is the canonical event emitted by `/spec`; the `scope_guard` hard-gate enforces this. The inline §4 EXECUTE path is **Light / Extended-Light only**.
+- ALWAYS research via `mustard-rt run feature` (the scan digest) — never read the repo or `grain.model.json` WHOLE to understand it. The digest finds where to look; it does not replace reading the files it points to.
+- READ ONLY the `anchors` the scan tools point to (~12 files). NEVER bulk-read source — but follow an anchor's references when the question is about composition (a sliced anchor does not show what the files it pulls in contribute). Settle existence/duplication questions by Grep enumeration BEFORE any subagent — sampled reading never proves absence; the Full-scope pre-EXECUTE existence gate is detailed in `../../../refs/feature/existence-gate.md`. When anchors cross ≥2 subprojects, delegate the READING to one `Task(Explore)` per subproject (keeps each subproject's `CLAUDE.md`+skill catalog out of the parent context), rendering each prompt via `agent-prompt-render --role explore --task-text ... --emit ref` (spec-less; pass the 2-line stub stdout verbatim as the Task prompt — the PreToolUse hook expands it, so the full prompt never transits the parent context) so the compiled explore contract rides along. **TRUST each subagent's briefing — it returns a condensed summary you ACT on, not a hint to re-verify (Anthropic's sub-agent contract).** Re-read directly ONLY to settle a conclusion that CONTRADICTS the user or claims something is ABSENT (the Verdict rule); NEVER re-ground a finding it already delivered with `file:line` — re-verifying answered findings is the single biggest token waste in this pipeline.
+- The spec scaffold (`spec.md` + `meta.json`) is materialised ONLY by `mustard-rt run spec-draft`; fold lapidated `scan spec` bodies in with `Edit`. NEVER hand-write `spec.md` with the Write tool.
+- NEVER hand-author a wave's body after `wave-scaffold` — emit it in the plan JSON's per-wave body (`tasks` / `files` / `acceptance`). `wave-scaffold` materialises `## Tasks`/`## Files` into each wave spec and the AC union into `wave-plan.md`; editing a wave's `spec.md` body by hand is PLAN work leaking into the scaffold step.
+- `analyze-validation` runs in PLAN, AFTER `spec-draft` wrote `spec.md` (it `exit(1)`s on a missing file) — NEVER at the end of ANALYZE. With a plan JSON, `plan-materialize` executes it for you — do not call it as a separate step there.
+- NEVER Read back a spec, scaffold, or `meta.json` you just wrote or edited yourself — the content is already in context and Write/Edit confirmed success; re-reading is pure token round-trip. (Reading a *tool-generated* draft from `scan spec` for the first time is fine — that content is new to you.)
+- NEVER hand-craft agent prompts — always `agent-prompt-render`; the subagent's context is the spec section + anchors. Dispatch each agent with the `subagent_type` the tool recommends per role (read-only roles run tool-restricted: `explore`→`Explore`, `review`/`qa`→`mustard-review`, `guards`→`mustard-guards`; writing roles → `general-purpose`).
+- ALWAYS compile each **net-new** unit's draft with `mustard-rt run scan spec` (its mold is create-only); an enhancement unit skips `scan spec` and consumes the feature digest's anchors (`context_enrichment`). Then lapidate in the project's language (`mustard.json#specLang`/`tone`).
+- The digest is **pure deterministic** — it NEVER calls a model. Pass `--intent` with **the user's own words PLUS your code-vocabulary translation** (you do the translation at the orchestration layer; the digest matches the distinct union). The user's words preserve a same-language hit; your translation reaches the code's other language. On `weak`/`none` the digest returns the `candidates` term index — sharpen your translation against it and re-call.
+- A `miss` is NOT "absent": re-query with the code's vocabulary (your translation, sharpened by `candidates`) before concluding net-new; treat true net-new as DESIGN, not recomposition.
+- NEVER skip `analyze-validation` or `dependency-precheck`.
+- ALWAYS emit `pipeline.scope` + `pipeline.stage` at each transition.

@@ -1,0 +1,72 @@
+[package]
+name = "mustard-rt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Mustard enforcement runtime: a single binary that replaces the per-hook `node` processes — a dispatcher running enforcement modules behind the `mustard-core` Check/Observer contract."
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "mustard-rt"
+path = "src/main.rs"
+
+[lib]
+name = "mustard_rt"
+path = "src/lib.rs"
+
+# Dependency versions live in the workspace `[workspace.dependencies]` table
+# (root Cargo.toml); each crate references them with `{ workspace = true }`.
+[dependencies]
+mustard-core = { path = "../../packages/core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+
+# The `otel-collector` / `diagnose-otel` ports (Wave 6) need a local OTLP/JSON
+# receiver. `tiny_http` is a minimal blocking HTTP server with no tokio/async
+# runtime; events land in per-spec NDJSON via the W5 router (no SQLite).
+tiny_http = "0.12"
+
+# The `mcp` face moved to the standalone `mustard-mcp` crate so the long-lived
+# MCP server Claude Code spawns holds a different exe than `mustard-rt`. The
+# `mustard-rt mcp` subcommand is kept as a thin compat alias that delegates to
+# `mustard_mcp::run()`; `rmcp` / `tokio` are no longer DIRECT deps of this crate
+# (they arrive transitively via `mustard-mcp`).
+mustard-mcp = { path = "../mcp" }
+
+# `artifact-update` probes external upstreams (crates.io API, skills.directory
+# registry) over HTTP. `ureq` is the workspace's blocking, runtime-free HTTP
+# client — the same one `mustard-cli` uses; no async runtime is pulled in.
+ureq = { workspace = true }
+
+# `tempfile` is used by the `artifact-update --apply` engine to stage a `git
+# clone` before swapping the vendored tree under `apps/cli/templates/`. Also
+# powers the `bash_guard` parity tests.
+tempfile = { workspace = true }
+
+# `notify` powers the opt-in `transcript-watcher` daemon (Wave 3, economia-moat-
+# unification). The watcher re-ingests `~/.claude/projects/**/*.jsonl` into the
+# economy `spans` table whenever Claude Code appends a turn. Pinned to the same
+# 6.x line as `apps/dashboard/src-tauri` so the workspace shares one `notify`
+# resolution. Production callers are fail-open: a missing/unparseable event is
+# warned via `eprintln!` and the loop continues.
+notify = { workspace = true }
+
+# SHA-256 for the `backup-specs` MANIFEST.json digest. Pulled through the
+# workspace table (centralised in the root Cargo.toml) — shared with
+# `mustard-core`, so the workspace stays on one `sha2` graph.
+sha2 = { workspace = true }
+
+# `lexicon-suggest` parses the lexicon seed/overlay `[terms]` tables (the same
+# tolerant read scan's matcher does). Pinned to the same `1` line as
+# `apps/scan` so the workspace shares one `toml` resolution.
+toml = "1"
+
+[dev-dependencies]
+
+# Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
+# unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.
+[lints]
+workspace = true
