@@ -22,6 +22,7 @@ import { CodeBlock } from "@/components/page/CodeBlock";
 import { Markdown } from "@/components/page/Markdown";
 import { useFileContent } from "@/hooks/useFileContent";
 import { cn } from "@/lib/utils";
+import { isPathInsideRepo } from "@/lib/repo-path";
 import type { OpenTab } from "@/lib/code-viewer-store";
 
 /** Is this a markdown file? Render with the rich Markdown component instead of
@@ -83,6 +84,10 @@ export default function CodeViewerBody({ tab }: { tab: OpenTab }) {
   const content = data?.content ?? "";
   const language = data?.language ?? "";
   const md = isMarkdown(language);
+  // When a read fails, say WHY: an out-of-repo path (a job-tmp / dispatch / temp
+  // artifact) is sandboxed out by `dashboard_read_file`, which is different from
+  // an in-repo file that is simply missing or unreadable.
+  const outsideRepo = !isPathInsideRepo(tab.relPath, tab.repoPath);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -106,7 +111,14 @@ export default function CodeViewerBody({ tab }: { tab: OpenTab }) {
         {isLoading && !data ? (
           <Notice icon={Loader2} text="Carregando…" spin />
         ) : !data?.readable ? (
-          <Notice icon={AlertCircle} text="Não foi possível abrir o arquivo." />
+          <Notice
+            icon={outsideRepo ? FileX2 : AlertCircle}
+            text={
+              outsideRepo
+                ? "Arquivo fora do projeto (temporário/externo) — o visualizador só abre arquivos do repositório."
+                : "Não foi possível abrir (arquivo não encontrado ou ilegível)."
+            }
+          />
         ) : data.is_binary ? (
           <Notice icon={FileX2} text="Arquivo binário (não exibível)." />
         ) : (

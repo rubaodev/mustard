@@ -26,6 +26,7 @@ import {
   AlertCircle,
   History,
   MessageSquare,
+  type LucideIcon,
 } from "lucide-react";
 import { useTrace, type TraceSource } from "@/hooks/useTrace";
 import type {
@@ -38,7 +39,7 @@ import { StatPill } from "@/components/page";
 import { formatTokens } from "@/lib/types/economy";
 import { useT } from "@/lib/i18n";
 import { ToolEventRow } from "../ToolEventRow";
-import { toolIconColorClass } from "../tool-palette";
+import { toolIconColorClass, toolIcon } from "../tool-palette";
 import { cn } from "@/lib/utils";
 
 // Re-exported so call sites can build a `source` without reaching into the
@@ -108,7 +109,7 @@ export function ExecutionTrace({
 
   if (!projectPath || !source) {
     return (
-      <div className={cn("text-[12px] text-[--ds-text-tertiary] px-2 py-3", className)}>
+      <div className={cn("text-[12px] text-muted-foreground px-2 py-3", className)}>
         Nada para rastrear.
       </div>
     );
@@ -119,7 +120,7 @@ export function ExecutionTrace({
         {[0, 1, 2].map((i) => (
           <div
             key={i}
-            className="h-12 bg-[--ds-surface-hover] rounded-[--ds-radius-md] animate-pulse"
+            className="h-12 bg-accent rounded-md animate-pulse"
           />
         ))}
       </div>
@@ -127,14 +128,14 @@ export function ExecutionTrace({
   }
   if (error) {
     return (
-      <div className={cn("text-[12px] text-[--ds-intent-error] px-2 py-3", className)}>
+      <div className={cn("text-[12px] text-intent-error px-2 py-3", className)}>
         Erro ao carregar trace: {error.message}
       </div>
     );
   }
   if (!data) {
     return (
-      <div className={cn("text-[12px] text-[--ds-text-tertiary] px-2 py-3", className)}>
+      <div className={cn("text-[12px] text-muted-foreground px-2 py-3", className)}>
         Nenhum evento registrado ainda.
       </div>
     );
@@ -142,16 +143,16 @@ export function ExecutionTrace({
 
   return (
     <div className={cn("flex flex-col gap-2 font-sans text-[13px]", className)}>
-      <div className="flex items-center gap-1 self-end text-[11px] text-[--ds-text-tertiary]">
+      <div className="flex items-center gap-1 self-end text-[11px] text-muted-foreground">
         <button
           type="button"
           onClick={() =>
             setForced({ open: true, gen: (forced?.gen ?? 0) + 1 })
           }
           className={cn(
-            "inline-flex items-center gap-1 px-2 py-1 rounded-[--ds-radius-sm]",
-            "hover:bg-[--ds-surface-hover] hover:text-[--ds-text-primary]",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+            "inline-flex items-center gap-1 px-2 py-1 rounded-sm",
+            "hover:bg-accent hover:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
           )}
           title="Expandir tudo"
         >
@@ -164,9 +165,9 @@ export function ExecutionTrace({
             setForced({ open: false, gen: (forced?.gen ?? 0) + 1 })
           }
           className={cn(
-            "inline-flex items-center gap-1 px-2 py-1 rounded-[--ds-radius-sm]",
-            "hover:bg-[--ds-surface-hover] hover:text-[--ds-text-primary]",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+            "inline-flex items-center gap-1 px-2 py-1 rounded-sm",
+            "hover:bg-accent hover:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
           )}
           title="Colapsar tudo"
         >
@@ -208,7 +209,7 @@ interface TraceNodeRowProps {
   projectPath: string | null;
 }
 
-const KIND_ICON: Record<TraceKind, typeof Square> = {
+const KIND_ICON: Record<TraceKind, LucideIcon> = {
   spec: Square,
   wave: Layers,
   agent: Cpu,
@@ -221,12 +222,12 @@ const KIND_ICON: Record<TraceKind, typeof Square> = {
  *  (claude-devtools palette: indigo / blue / green / amber). The session root
  *  reuses the spec accent — it's the same "this is the whole run" root tone. */
 const KIND_ICON_COLOR: Record<TraceKind, string> = {
-  spec: "text-[--ds-accent-primary]",
-  wave: "text-[--ds-intent-info]",
-  agent: "text-[--ds-intent-success]",
-  tool: "text-[--ds-status-draft]",
-  session: "text-[--ds-accent-primary]",
-  prompt: "text-[--ds-accent-primary]",
+  spec: "text-primary",
+  wave: "text-intent-info",
+  agent: "text-intent-success",
+  tool: "text-muted-foreground",
+  session: "text-primary",
+  prompt: "text-primary",
 };
 
 /** Pick the icon colour for a trace node: tool nodes colour by tool TYPE
@@ -240,6 +241,16 @@ function iconColorFor(node: TraceNode): string {
     typeof tool === "string" ? tool : null,
     KIND_ICON_COLOR.tool,
   );
+}
+
+/** Pick the icon COMPONENT for a trace node: tool nodes pick by tool TYPE
+ *  (Bash→Terminal, Read→FileText, …) via `toolIcon`, falling back to the
+ *  generic `Wrench` for unknown tools; every non-tool kind keeps its per-kind
+ *  icon (`KIND_ICON`). The tool name comes from `payload.tool`. */
+function iconFor(node: TraceNode): LucideIcon {
+  if (node.kind !== "tool") return KIND_ICON[node.kind];
+  const tool = (node.payload as Record<string, unknown> | null)?.["tool"];
+  return toolIcon(typeof tool === "string" ? tool : null, KIND_ICON.tool);
 }
 
 /** A tool node carries an error when its paired `tool.result` reports a
@@ -276,9 +287,10 @@ const TraceNodeRow = memo(function TraceNodeRow({
   projectPath,
 }: TraceNodeRowProps) {
   const t = useT();
-  const Icon = KIND_ICON[node.kind];
-  // Tool nodes colour by tool TYPE (Bash/Read/Edit/…); everything else keeps
-  // the per-kind colour. Falls back to the kind colour for unknown tools.
+  // Tool nodes pick BOTH icon and colour by tool TYPE (Bash/Read/Edit/…);
+  // everything else keeps the per-kind icon + colour. Falls back to the kind
+  // icon/colour for unknown tools.
+  const Icon = iconFor(node);
   const iconColor = iconColorFor(node);
   // Surface failed commands in the collapsed tree without expanding.
   const nodeHasError = hasError(node);
@@ -331,18 +343,18 @@ const TraceNodeRow = memo(function TraceNodeRow({
   const header: ReactNode = (
     <div
       className={cn(
-        "flex items-start gap-2.5 px-3 py-2 rounded-[--ds-radius-md]",
+        "flex items-start gap-2.5 px-3 py-2 rounded-md",
         "cursor-pointer select-none transition-colors",
         open
-          ? "bg-[--ds-surface-elevated] border border-[--ds-surface-hover]"
-          : "bg-[--ds-surface-base] border border-transparent hover:bg-[--ds-surface-hover]",
+          ? "bg-accent border border-border"
+          : "bg-card border border-transparent hover:bg-accent",
       )}
     >
       {expandable ? (
         <ChevronRight
           size={14}
           className={cn(
-            "text-[--ds-text-tertiary] shrink-0 transition-transform mt-0.5",
+            "text-muted-foreground shrink-0 transition-transform mt-0.5",
             open && "rotate-90",
           )}
           aria-hidden
@@ -352,11 +364,11 @@ const TraceNodeRow = memo(function TraceNodeRow({
       )}
       <Icon size={18} className={cn("shrink-0 mt-0.5", iconColor)} aria-hidden />
       <div className="flex flex-col flex-1 min-w-0">
-        <span className="font-medium text-[13px] text-[--ds-text-primary] truncate">
+        <span className="font-medium text-[13px] text-foreground truncate">
           {node.label}
         </span>
         {motivationPreview ? (
-          <span className="text-[11px] text-[--ds-text-tertiary] italic line-clamp-2 mt-0.5">
+          <span className="text-[11px] text-muted-foreground italic line-clamp-2 mt-0.5">
             {motivationPreview}
           </span>
         ) : null}
@@ -364,9 +376,9 @@ const TraceNodeRow = memo(function TraceNodeRow({
       {node.kind === "agent" && node.subagent_type ? (
         <span
           className={cn(
-            "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",
-            "text-[10px] font-mono text-[--ds-text-tertiary]",
-            "bg-[--ds-surface-sunken]",
+            "shrink-0 px-1.5 py-0.5 rounded-sm",
+            "text-[10px] font-mono text-muted-foreground",
+            "bg-muted",
           )}
           title="subagent type"
         >
@@ -376,15 +388,15 @@ const TraceNodeRow = memo(function TraceNodeRow({
       {nodeHasError ? (
         <AlertCircle
           size={14}
-          className="shrink-0 text-[--ds-intent-error]"
+          className="shrink-0 text-intent-error"
           aria-label={t("trace.tool.error")}
         />
       ) : null}
       <span
         className={cn(
-          "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+          "shrink-0 px-1.5 py-0.5 rounded-sm",
           "text-[10px] tracking-wide font-medium",
-          "bg-[--ds-surface-hover] text-[--ds-text-secondary]",
+          "bg-accent text-muted-foreground",
         )}
         title={`kind: ${node.kind}`}
       >
@@ -393,9 +405,9 @@ const TraceNodeRow = memo(function TraceNodeRow({
       {modelOf(node) ? (
         <span
           className={cn(
-            "shrink-0 px-1.5 py-0.5 rounded-[--ds-radius-sm]",
-            "text-[10px] font-mono text-[--ds-text-tertiary]",
-            "bg-[--ds-surface-sunken]",
+            "shrink-0 px-1.5 py-0.5 rounded-sm",
+            "text-[10px] font-mono text-muted-foreground",
+            "bg-muted",
           )}
           title="model"
         >
@@ -419,7 +431,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
   const childrenContainer = (
     <div
       className={cn(
-        "mt-1.5 ml-4 pl-3 border-l-2 border-[--ds-surface-hover]",
+        "mt-1.5 ml-4 pl-3 border-l-2 border-border",
         "flex flex-col gap-1.5",
       )}
     >
@@ -442,7 +454,7 @@ const TraceNodeRow = memo(function TraceNodeRow({
           })
         : null}
       {node.kind === "tool" ? (
-        <div className="rounded-[--ds-radius-md] overflow-hidden">
+        <div className="rounded-md overflow-hidden">
           <ToolEventRow node={node} projectPath={projectPath} />
         </div>
       ) : null}
@@ -461,8 +473,8 @@ const TraceNodeRow = memo(function TraceNodeRow({
         onClick={() => toggleById(nodeId, defaultOpen)}
         aria-expanded={open}
         className={cn(
-          "block w-full text-left rounded-[--ds-radius-md]",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+          "block w-full text-left rounded-md",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
         )}
       >
         {header}
@@ -486,9 +498,9 @@ function PromptBody({ node }: { node: TraceNode }) {
   return (
     <div
       className={cn(
-        "rounded-[--ds-radius-md] px-3 py-2",
-        "bg-[--ds-surface-sunken] border border-[--ds-surface-hover]",
-        "font-sans text-[13px] leading-relaxed text-[--ds-text-secondary]",
+        "rounded-md px-3 py-2",
+        "bg-muted border border-border",
+        "font-sans text-[13px] leading-relaxed text-muted-foreground",
         "whitespace-pre-wrap break-words",
       )}
     >

@@ -84,20 +84,18 @@ function diffLines(beforeText: string, afterText: string): DiffLine[] {
 }
 
 const ROW = "grid grid-cols-[3rem_3rem_1rem_1fr] gap-2 font-mono text-[12px] leading-[1.55] px-2";
-// TF remap: --ds-text-tertiary → --muted-foreground; no tertiary tier in Binance
-const GUTTER = "text-right text-[--muted-foreground] select-none";
+const GUTTER = "text-right text-muted-foreground select-none";
 
 function Sigil({ op }: { op: Op }) {
   const ch = op === "add" ? "+" : op === "del" ? "-" : " ";
-  // TF remap: --ds-text-tertiary → --muted-foreground
-  return <span className="text-[--muted-foreground] select-none">{ch}</span>;
+  return <span className="text-muted-foreground select-none">{ch}</span>;
 }
 
 function bgFor(op: Op): string {
-  // TF remap: --ds-intent-success → --intent-success; --ds-intent-error → --intent-error; --ds-text-primary → --foreground; --ds-text-secondary → --muted-foreground
-  if (op === "add") return "bg-[--intent-success]/10 text-[--foreground]";
-  if (op === "del") return "bg-[--intent-error]/10 text-[--foreground]";
-  return "text-[--muted-foreground]";
+  // Tint bumped /10 → /15 so split-pane add/del read clearly green/red.
+  if (op === "add") return "bg-intent-success/15 text-foreground";
+  if (op === "del") return "bg-intent-error/15 text-foreground";
+  return "text-muted-foreground";
 }
 
 // ── Unified (GitHub PR) styling ─────────────────────────────────────────────
@@ -105,13 +103,14 @@ function bgFor(op: Op): string {
 // GitHub diff reads. Kept LOCAL to the unified branch so the `split` mode's
 // shared `bgFor`/`<Sigil>` (neutral sigil, per-pane tint) stay untouched.
 
-/** Full-width row tint for the unified view — slightly stronger than the split
- *  pane tint (`/15` vs `/10`) so add/del lines pop like a PR; `equal` is
- *  neutral with no background. */
+/** Full-width row tint for the unified view — stronger than the split pane
+ *  tint (`/20` vs `/15`) so add/del lines pop like a PR diff (the previous
+ *  `/15` read as almost monochrome against the card); `equal` is neutral with
+ *  no background. */
 function unifiedBgFor(op: Op): string {
-  if (op === "add") return "bg-[--intent-success]/15 text-[--foreground]";
-  if (op === "del") return "bg-[--intent-error]/15 text-[--foreground]";
-  return "text-[--muted-foreground]";
+  if (op === "add") return "bg-intent-success/20 text-foreground";
+  if (op === "del") return "bg-intent-error/20 text-foreground";
+  return "text-muted-foreground";
 }
 
 /** Coloured sigil for the unified view: `+` green, `-` red, ` ` muted. */
@@ -119,10 +118,10 @@ function UnifiedSigil({ op }: { op: Op }) {
   const ch = op === "add" ? "+" : op === "del" ? "-" : " ";
   const color =
     op === "add"
-      ? "text-[--intent-success]"
+      ? "text-intent-success"
       : op === "del"
-        ? "text-[--intent-error]"
-        : "text-[--muted-foreground]";
+        ? "text-intent-error"
+        : "text-muted-foreground";
   return <span className={cn("select-none font-semibold", color)}>{ch}</span>;
 }
 
@@ -141,13 +140,11 @@ export function DiffViewer({
     return (
       <div
         className={cn(
-          // TF remap: --ds-radius-md → var(--radius-card); --ds-surface-hover → --accent; --ds-surface-sunken → --background
-          "rounded-[--radius-card] border border-[--accent] bg-[--background] overflow-hidden",
+          "rounded-md border border-accent bg-background overflow-hidden",
           className,
         )}
       >
-        {/* TF remap: --ds-surface-hover → --accent */}
-        <div className="grid grid-cols-2 divide-x divide-[--accent]">
+        <div className="grid grid-cols-2 divide-x divide-accent">
           <div>
             {shown.map((l, idx) => (
               <div
@@ -174,8 +171,7 @@ export function DiffViewer({
           </div>
         </div>
         {truncated && (
-          // TF remap: --ds-text-tertiary → --muted-foreground; --ds-surface-hover → --accent
-          <div className="px-3 py-1.5 text-[11px] text-[--muted-foreground] border-t border-[--accent]">… {lines.length - shown.length} more lines</div>
+          <div className="px-3 py-1.5 text-[11px] text-muted-foreground border-t border-accent">… {lines.length - shown.length} more lines</div>
         )}
       </div>
     );
@@ -184,8 +180,7 @@ export function DiffViewer({
   return (
     <div
       className={cn(
-        // TF remap: --ds-radius-md → var(--radius-card); --ds-surface-hover → --accent; --ds-surface-sunken → --background
-        "rounded-[--radius-card] border border-[--accent] bg-[--background] overflow-hidden",
+        "rounded-md border border-accent bg-background overflow-hidden",
         className,
       )}
     >
@@ -199,7 +194,7 @@ export function DiffViewer({
       ))}
       {truncated && (
         // TF remap: --ds-text-tertiary → --muted-foreground; --ds-surface-hover → --accent
-        <div className="px-3 py-1.5 text-[11px] text-[--muted-foreground] border-t border-[--accent]">… {lines.length - shown.length} more lines</div>
+        <div className="px-3 py-1.5 text-[11px] text-muted-foreground border-t border-accent">… {lines.length - shown.length} more lines</div>
       )}
     </div>
   );

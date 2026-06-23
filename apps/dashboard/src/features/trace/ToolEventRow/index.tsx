@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { DiffViewer, CodeBlock, type CodeLang } from "@/components/page";
 import { useCodeViewerStore } from "@/lib/code-viewer-store";
+import { isPathInsideRepo } from "@/lib/repo-path";
 import { toolPillColorClass } from "../tool-palette";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/time";
@@ -112,9 +113,14 @@ export const ToolEventRow = memo(function ToolEventRow({
 
   const meta: PayloadMeta = { actor, ts, summary };
 
-  // "abrir arquivo" affordance — only when we have both a repo root and a
-  // file path on the event. Opens into the global docked CodeViewerPanel.
-  const canOpen = !!projectPath && !!filePath;
+  // "abrir arquivo" affordance — only when we have a repo root, a file path,
+  // AND that file lives INSIDE the repo. Tool events routinely carry absolute
+  // paths to out-of-repo temp artifacts (a `plan.json` in the job tmp dir, a
+  // dispatch stub); `dashboard_read_file` sandboxes reads to the repo, so an
+  // "abrir" there only led to a "não foi possível abrir". For Write/Read/Edit
+  // the content is already shown inline below, so nothing is lost by hiding it.
+  const canOpen =
+    !!projectPath && !!filePath && isPathInsideRepo(filePath, projectPath);
   const onOpenFile = canOpen
     ? () => openFile(projectPath as string, filePath as string)
     : undefined;
@@ -141,7 +147,7 @@ export const ToolEventRow = memo(function ToolEventRow({
     if (result?.file_after != null) {
       return withViewer(
         <PayloadCard toolName={toolName} subheader={filePath} payload={payload} meta={meta} onOpenFile={onOpenFile}>
-          <p className="mb-1 text-[11px] text-[--ds-text-tertiary]">
+          <p className="mb-1 text-[11px] text-muted-foreground">
             {t("trace.tool.writtenContent")}
           </p>
           <CodeBlock
@@ -204,16 +210,16 @@ export const ToolEventRow = memo(function ToolEventRow({
         {stderr ? (
           <div
             className={cn(
-              "mt-2 rounded-[--ds-radius-sm] overflow-hidden",
-              "ring-1 ring-[--ds-intent-error]/30",
-              "bg-[--ds-intent-error]/10",
+              "mt-2 rounded-sm overflow-hidden",
+              "ring-1 ring-intent-error/30",
+              "bg-intent-error/10",
             )}
           >
             <CodeBlock code={truncate(stderr, 200)} lang="plain" />
           </div>
         ) : null}
         {exitCode != null && exitCode !== 0 ? (
-          <p className="mt-2 text-[11px] text-[--ds-intent-error]">
+          <p className="mt-2 text-[11px] text-intent-error">
             exit {exitCode}
           </p>
         ) : null}
@@ -287,20 +293,20 @@ function PayloadCard({
   return (
     <div
       className={cn(
-        "rounded-[--ds-radius-md] border border-[--ds-surface-hover]",
-        "bg-[--ds-surface-base] overflow-hidden",
+        "rounded-md border border-border",
+        "bg-card overflow-hidden",
       )}
     >
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-[--ds-surface-sunken] border-b border-[--ds-surface-hover]">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border">
         <span
           className={cn(
-            "px-1.5 py-0.5 rounded-[--ds-radius-sm]",
+            "px-1.5 py-0.5 rounded-sm",
             "text-[10px] font-medium tracking-wide uppercase",
             // Colour the pill by tool TYPE (Bash/Read/Edit/…); unknown tools
             // keep the legacy accent pill.
             toolPillColorClass(
               toolName,
-              "bg-[--ds-accent-primary]/15 text-[--ds-accent-primary]",
+              "bg-primary/15 text-primary",
             ),
           )}
         >
@@ -309,7 +315,7 @@ function PayloadCard({
         {subheader ? (
           <span
             className={cn(
-              "text-[11px] text-[--ds-text-tertiary] truncate flex-1 min-w-0",
+              "text-[11px] text-muted-foreground truncate flex-1 min-w-0",
               subheaderMono && "font-mono",
             )}
             title={subheader}
@@ -326,9 +332,9 @@ function PayloadCard({
             aria-label="abrir arquivo"
             className={cn(
               "shrink-0 inline-flex items-center gap-1",
-              "text-[10px] text-[--ds-text-tertiary] hover:text-[--ds-text-secondary]",
-              "px-1 py-0.5 rounded-[--ds-radius-sm]",
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+              "text-[10px] text-muted-foreground hover:text-muted-foreground",
+              "px-1 py-0.5 rounded-sm",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
             )}
           >
             <FileSearch className="h-3 w-3" aria-hidden />
@@ -341,8 +347,8 @@ function PayloadCard({
             onClick={() => setShowRaw((v) => !v)}
             className={cn(
               "shrink-0 inline-flex items-center gap-1",
-              "text-[10px] text-[--ds-text-tertiary] hover:text-[--ds-text-secondary]",
-              "px-1 py-0.5 rounded-[--ds-radius-sm]",
+              "text-[10px] text-muted-foreground hover:text-muted-foreground",
+              "px-1 py-0.5 rounded-sm",
             )}
             aria-expanded={showRaw}
           >
@@ -375,8 +381,8 @@ function PayloadCard({
 function MetaStrip({ meta }: { meta: PayloadMeta }) {
   const { actor, ts, summary } = meta;
   return (
-    <div className="ml-3 mt-1 mr-3 rounded-[--ds-radius-sm] border border-[--ds-surface-hover] bg-[--ds-surface-base]/40 p-2 text-[12px]">
-      <div className="flex items-center gap-2 text-[--ds-text-tertiary] text-[11px]">
+    <div className="ml-3 mt-1 mr-3 rounded-sm border border-border bg-card/40 p-2 text-[12px]">
+      <div className="flex items-center gap-2 text-muted-foreground text-[11px]">
         <span className="font-mono">
           {actor.kind}
           {actor.id ? `:${actor.id}` : ""}
@@ -391,7 +397,7 @@ function MetaStrip({ meta }: { meta: PayloadMeta }) {
         ) : null}
       </div>
       {summary ? (
-        <p className="mt-1 text-[--ds-text-secondary]">{summary}</p>
+        <p className="mt-1 text-muted-foreground">{summary}</p>
       ) : null}
     </div>
   );
@@ -405,12 +411,12 @@ function MetaStrip({ meta }: { meta: PayloadMeta }) {
  *  the row. */
 function MotivationBlock({ text }: { text: string }) {
   return (
-    <div className="ml-3 mt-1 mr-3 flex gap-2 rounded-[--ds-radius-sm] bg-[--ds-surface-sunken]/40 p-2">
+    <div className="ml-3 mt-1 mr-3 flex gap-2 rounded-sm bg-muted/40 p-2">
       <MessageSquareQuote
-        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[--ds-text-tertiary]"
+        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
         aria-hidden
       />
-      <p className="max-h-32 overflow-auto whitespace-pre-wrap text-[12px] italic leading-snug text-[--ds-text-secondary]">
+      <p className="max-h-32 overflow-auto whitespace-pre-wrap text-[12px] italic leading-snug text-muted-foreground">
         {text}
       </p>
     </div>
@@ -442,10 +448,10 @@ function RawPayloadBlock({ payload }: { payload: Record<string, unknown> }) {
         aria-label="Copiar payload"
         className={cn(
           "absolute top-1 right-1 inline-flex items-center gap-1",
-          "px-1.5 py-0.5 rounded-[--ds-radius-sm]",
-          "text-[10px] text-[--ds-text-tertiary]",
-          "bg-[--ds-surface-sunken]/80 hover:text-[--ds-text-secondary]",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[--ds-accent-primary]/60",
+          "px-1.5 py-0.5 rounded-sm",
+          "text-[10px] text-muted-foreground",
+          "bg-muted/80 hover:text-muted-foreground",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
         )}
       >
         {copied ? (
@@ -457,10 +463,10 @@ function RawPayloadBlock({ payload }: { payload: Record<string, unknown> }) {
       </button>
       <pre
         className={cn(
-          "max-h-72 overflow-auto rounded-[--ds-radius-sm]",
-          "bg-[--ds-surface-sunken]/60 p-2 pr-16",
+          "max-h-72 overflow-auto rounded-sm",
+          "bg-muted/60 p-2 pr-16",
           "font-mono text-[11px] leading-tight",
-          "whitespace-pre-wrap break-words text-[--ds-text-secondary]",
+          "whitespace-pre-wrap break-words text-muted-foreground",
         )}
       >
         {truncate(json, 200)}
@@ -485,7 +491,7 @@ function DiffPending({ description }: { description?: string }) {
 
 function EmptyHint({ text }: { text: string }) {
   return (
-    <p className="text-[11px] italic text-[--ds-text-tertiary] px-1 py-1">
+    <p className="text-[11px] italic text-muted-foreground px-1 py-1">
       {text}
     </p>
   );
@@ -502,10 +508,10 @@ function MarkdownBlock({ source }: { source: string }) {
     <div
       className={cn(
         "prose prose-sm max-w-none",
-        "text-[--ds-text-secondary]",
+        "text-muted-foreground",
         // Keep the rendered markdown visually contained within the card.
-        "[&_pre]:bg-[--ds-surface-sunken] [&_pre]:rounded [&_pre]:p-2",
-        "[&_code]:bg-[--ds-surface-sunken] [&_code]:px-1 [&_code]:rounded",
+        "[&_pre]:bg-muted [&_pre]:rounded [&_pre]:p-2",
+        "[&_code]:bg-muted [&_code]:px-1 [&_code]:rounded",
       )}
     >
       <ReactMarkdown>{source}</ReactMarkdown>

@@ -1217,6 +1217,9 @@ export interface OutdatedDep {
  * missing/unscanned model resolves to an all-empty overview.
  */
 export interface ProjectOverview {
+  /** Mustard CLI version stamped into `<repo>/mustard.json`; `null` when the
+   *  config is missing/malformed or carries no `version` key. */
+  version: string | null;
   is_monorepo: boolean;
   project_count: number;
   languages: string[];
@@ -1317,4 +1320,47 @@ export interface FileContent {
  */
 export function fetchReadFile(repoPath: string, relPath: string): Promise<FileContent> {
   return invoke<FileContent>("dashboard_read_file", { repoPath, relPath });
+}
+
+// --- Plan staleness (spec melhorias-pagina-specs, item 4) -------------------
+//
+// Deterministic (no AI, no network) check of whether a spec's PLAN is still
+// viable: do the files its `## Arquivos` census names still exist, and did any
+// change on disk since the plan date (meta.json#checkpoint, else the card's
+// started_at)? Mirrors the Rust `Staleness` struct (serde snake_case).
+
+/**
+ * Result of `dashboard_spec_plan_staleness`. `verdict` is `"stale"` (a file is
+ * missing/changed, or the plan is old), `"fresh"` (census still matches), or
+ * `"unknown"` (no parseable census / no spec.md — `reason` says why; NOT an
+ * invented stale). `missing`/`changed` are repo-relative census paths.
+ */
+export interface Staleness {
+  verdict: "stale" | "fresh" | "unknown";
+  age_days: number;
+  missing: string[];
+  changed: string[];
+  total: number;
+  reason: string;
+  plan_date: string;
+}
+
+/**
+ * On-demand plan-staleness check for one spec. SLOW-ISH (shells out to `git
+ * log` per census file) so it must only run after an explicit user action
+ * ("Reanalisar"), never on a query/poll. Args go over in camelCase
+ * (`repoPath`, `spec`, `startedAt`) and the Rust serde maps them to snake_case
+ * — do not rename. Fail-open: a missing spec / census resolves to
+ * `verdict:"unknown"`, never a rejected Promise.
+ */
+export function dashboardSpecPlanStaleness(
+  repoPath: string,
+  spec: string,
+  startedAt: string | null,
+): Promise<Staleness> {
+  return invoke<Staleness>("dashboard_spec_plan_staleness", {
+    repoPath,
+    spec,
+    startedAt,
+  });
 }
