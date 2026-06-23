@@ -17,23 +17,21 @@ export interface StatPillProps {
 }
 
 const BORDER: Record<Intent, string> = {
-  // TF remap: --ds-surface-hover → --accent; hover surface = Binance accent swatch
-  neutral: "border-[--accent]",
-  // TF remap: --ds-intent-* → --intent-*; intent tokens renamed in Binance pack
-  success: "border-[--intent-success]/40",
-  warning: "border-[--intent-warning]/40",
-  error:   "border-[--intent-error]/40",
-  info:    "border-[--intent-info]/40",
+  // neutral border = the accent swatch; intent borders tint the live --intent-* tokens.
+  neutral: "border-accent",
+  success: "border-intent-success/40",
+  warning: "border-intent-warning/40",
+  error:   "border-intent-error/40",
+  info:    "border-intent-info/40",
 };
 
 const TEXT: Record<Intent, string> = {
-  // TF remap: --ds-text-secondary → --muted-foreground; Binance #848e9c subdued text
-  neutral: "text-[--muted-foreground]",
-  // TF remap: --ds-intent-* → --intent-*
-  success: "text-[--intent-success]",
-  warning: "text-[--intent-warning]",
-  error:   "text-[--intent-error]",
-  info:    "text-[--intent-info]",
+  // neutral text = subdued --muted-foreground; intent text uses the live --intent-* tokens.
+  neutral: "text-muted-foreground",
+  success: "text-intent-success",
+  warning: "text-intent-warning",
+  error:   "text-intent-error",
+  info:    "text-intent-info",
 };
 
 export function StatPill({
@@ -49,16 +47,14 @@ export function StatPill({
       title={title}
       className={cn(
         "inline-flex items-baseline gap-1 rounded-full border px-2 py-0.5",
-        // TF remap: --ds-surface-elevated → --card; card surface in Binance DESIGN.md
-        "bg-[--card] font-mono text-[11px] leading-none",
+        "bg-card font-mono text-[11px] leading-none",
         BORDER[intent],
         TEXT[intent],
         className,
       )}
     >
       <span className="tabular-nums">{value}</span>
-      {/* TF remap: --ds-text-tertiary → --muted-foreground; no tertiary tier in Binance, maps to subdued */}
-      {unit ? <span className="text-[--muted-foreground]">{unit}</span> : null}
+      {unit ? <span className="text-muted-foreground">{unit}</span> : null}
     </span>
   );
 }

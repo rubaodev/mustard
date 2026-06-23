@@ -16,7 +16,7 @@ import {
   PageSurface,
   EditorialBand,
 } from "@/components/page";
-import { SpecRow } from "@/features/specs/SpecRow";
+import { SpecRow, SpecRowColumnsHeader } from "@/features/specs/SpecRow";
 import { SpecGroupHeader } from "@/features/specs/SpecGroupHeader";
 import { SpecChildrenTree } from "@/features/specs/SpecChildrenTree";
 import {
@@ -540,18 +540,21 @@ export function Specs() {
       });
   }, [cards, bucket, stageFilter, staleOnly, dateCutoff, search, suspectSpecs]);
 
-  // Group filtered specs by Stage, dropping empty groups. Within a group,
-  // newest activity first.
+  // Group filtered specs by Stage, dropping empty groups. Within every group,
+  // sort by creation date (`started_at`) newest-first; specs with no
+  // `started_at` sort last. `filteredSpecs` keeps its source order, so the sort
+  // is stable for ties / nulls (the `??` keeps null-vs-null at 0).
   const grouped = useMemo<[GroupKey, SpecCard[]][]>(() => {
     const map = new Map<GroupKey, SpecCard[]>();
     for (const key of GROUP_ORDER) map.set(key, []);
     for (const c of filteredSpecs) map.get(groupKeyForCard(c))!.push(c);
+    const createdAt = (c: SpecCard): number => {
+      if (!c.started_at) return Number.NEGATIVE_INFINITY; // nulls last (desc)
+      const ms = Date.parse(c.started_at);
+      return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+    };
     for (const list of map.values()) {
-      list.sort((a, b) => {
-        const ta = a.last_event_at ? new Date(a.last_event_at).getTime() : 0;
-        const tb = b.last_event_at ? new Date(b.last_event_at).getTime() : 0;
-        return tb - ta;
-      });
+      list.sort((a, b) => createdAt(b) - createdAt(a));
     }
     return GROUP_ORDER.map((k) => [k, map.get(k) ?? []] as [GroupKey, SpecCard[]]).filter(
       ([, list]) => list.length > 0,
@@ -646,6 +649,10 @@ export function Specs() {
               <div className="flex flex-col gap-3">
                 {grouped.map(([key, list]) => {
                   const open = isGroupOpen(key);
+                  // The "Planejando" group ran nothing yet — render the
+                  // created/idle columns + Reanalisar instead of the metric
+                  // columns (spec `melhorias-pagina-specs`, item 3).
+                  const rowVariant = key === "plan" ? "planning" : "default";
                   return (
                     <section key={key} className="flex flex-col">
                       <SpecGroupHeader
@@ -656,6 +663,7 @@ export function Specs() {
                       />
                       {open && (
                         <div className="flex flex-col">
+                          <SpecRowColumnsHeader variant={rowVariant} />
                           {list.map((s) => {
                             const isExpanded = expandedSpecs.has(s.spec);
                             return (
@@ -665,6 +673,8 @@ export function Specs() {
                                   expanded={isExpanded}
                                   onToggle={toggleSpec}
                                   onOpen={openSpec}
+                                  variant={rowVariant}
+                                  repoPath={repoPath}
                                   suspectSpecs={suspectSpecs}
                                 />
                                 {isExpanded && repoPath && (

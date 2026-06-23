@@ -226,7 +226,7 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["workspace.editorialSubtitle", { pt: "Visão geral das pipelines ativas, saúde do projeto e atividade recente para {name}.", en: "Overview of active pipelines, project health and recent activity for {name}." }],
 
   // ── Specs page ────────────────────────────────────────────────────────
-  ["specs.editorialTitle", { pt: "Pipelines e specs", en: "Pipelines and specs" }],
+  ["specs.editorialTitle", { pt: "Specs", en: "Specs" }],
   ["specs.editorialSubtitle", { pt: "Lista de specs do workspace agrupadas por estágio. Use os filtros abaixo para isolar por estado, janela de tempo ou nome.", en: "List of workspace specs grouped by stage. Use the filters below to isolate by state, time window or name." }],
   ["specs.section.specs", { pt: "Specs", en: "Specs" }],
   ["specs.empty.noneFound.title", { pt: "Nenhuma spec encontrada", en: "No specs found" }],
@@ -238,6 +238,25 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["specs.filterBar.searchAria", { pt: "Buscar specs por nome", en: "Search specs by name" }],
   ["specs.filterBar.date.today", { pt: "Hoje", en: "Today" }],
   ["specs.filterBar.date.all", { pt: "Todas", en: "All" }],
+  // Column headers for the spec rows (a discreet header line per group).
+  ["specs.col.model", { pt: "Modelo", en: "Model" }],
+  ["specs.col.waves", { pt: "Ondas", en: "Waves" }],
+  ["specs.col.ac", { pt: "Critérios", en: "Criteria" }],
+  ["specs.col.duration", { pt: "Duração", en: "Duration" }],
+  ["specs.col.created", { pt: "Criada em", en: "Created" }],
+  ["specs.col.stalledFor", { pt: "Parada há", en: "Idle for" }],
+  // Plan-staleness "Reanalisar" affordance (planning rows).
+  ["specs.staleness.button", { pt: "Reanalisar", en: "Re-analyze" }],
+  ["specs.staleness.checking", { pt: "Analisando…", en: "Checking…" }],
+  ["specs.staleness.stale", { pt: "obsoleto", en: "stale" }],
+  ["specs.staleness.fresh", { pt: "ok", en: "ok" }],
+  ["specs.staleness.unknown", { pt: "?", en: "?" }],
+  // Tooltip evidence for the staleness verdict (lists the files that drove it).
+  ["specs.staleness.missing", { pt: "Sumiram", en: "Missing" }],
+  ["specs.staleness.changed", { pt: "Mudaram", en: "Changed" }],
+  ["specs.staleness.age", { pt: "Idade do plano", en: "Plan age" }],
+  ["specs.staleness.days", { pt: "dias", en: "days" }],
+  ["specs.staleness.planDate", { pt: "Data do plano", en: "Plan date" }],
 
   // ── Knowledge page ────────────────────────────────────────────────────
   ["knowledge.editorialTitle", { pt: "Conhecimento e atrito", en: "Knowledge and friction" }],
