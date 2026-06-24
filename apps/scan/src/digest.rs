@@ -197,6 +197,42 @@ pub struct QueryResult {
     /// readers (additive compat).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Concern split: when the query's concepts form ≥2 disconnected groups
+    /// (no shared module, no import bridge), each group is a separate
+    /// CONCERN with its OWN ranked anchors restricted to its concepts —
+    /// so a multi-concern request surfaces the right files per concern
+    /// instead of one blended list dominated by the larger concern. Empty
+    /// for a single-concern query (the flat `files`/`files_detail` already
+    /// are that one concern's view — no regression). Additive: an old reader
+    /// keeps using `files`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub concerns: Vec<ConcernD>,
+}
+
+/// One concern of a multi-concern query — a connected group of the query's
+/// concepts (co-occurrence components) with its own ranked anchors. A
+/// sub-`QueryResult` view: same `files`/`files_detail` shape, scoped to this
+/// concern's concepts only. The `label` joins the concern's concept tokens
+/// (asc) with '+', so a reader names it without re-deriving the grouping.
+#[derive(Serialize)]
+pub struct ConcernD {
+    /// The concern's concept tokens (sorted asc), joined with '+'.
+    pub label: String,
+    /// The query concepts in this concern (sorted asc — the grouping is set
+    /// arithmetic, order is presentation only).
+    pub concepts: Vec<String>,
+    /// Files to read for THIS concern, ranked by BM25F over its concepts only
+    /// (same retrieval as the flat `files`, restricted to the concern).
+    pub files: Vec<String>,
+    /// Audit trail for `files`, same order — per anchor the BM25F score and the
+    /// concern concepts that carry it.
+    pub files_detail: Vec<FileDetail>,
+    /// This concern's strength on the report ladder, derived from its concepts'
+    /// best tiers: `strong` (a concept reached exact/fold), `weak` (matched
+    /// only on derived tiers), `none` (no anchor surfaced). A per-concern echo
+    /// of the aggregate `report.reason`, so a reader trusts each concern on its
+    /// own evidence.
+    pub reason: String,
 }
 
 /// The aggregate match report: `matched` of `total` request terms found a
@@ -385,19 +421,23 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
         best_tier: u8,
         sig: crate::matching::Sig,
         tf: BTreeMap<String, usize>,
+        /// Every module declaring this concept (the document-frequency set,
+        /// NOT just the anchor-eligible `tf` keys) — the surface the
+        /// co-occurrence graph joins concepts over.
+        modules: BTreeSet<String>,
     }
     let concepts: Vec<QConcept> = qhits
         .iter()
         .enumerate()
         .filter_map(|(qi, hits)| {
             let mut tf: BTreeMap<String, usize> = BTreeMap::new();
-            let mut df: BTreeSet<&str> = BTreeSet::new();
+            let mut df: BTreeSet<String> = BTreeSet::new();
             let mut best_tier = u8::MAX;
             for h in hits {
                 best_tier = best_tier.min(h.tier);
                 let Some(per_mod) = c.postings.get(&h.term) else { continue };
                 for (p, (n, _)) in per_mod {
-                    df.insert(p);
+                    df.insert((*p).to_string());
                     if !mustard_core::domain::ast::is_test_path(p) && crate::classify::anchor_eligible(c.class_of.get(p).copied().unwrap_or("")) {
                         *tf.entry((*p).to_string()).or_insert(0) += *n;
                     }
@@ -412,57 +452,129 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
                 best_tier,
                 sig: ladder.sig(&ql[qi]),
                 tf,
+                modules: df,
             })
         })
         .collect();
-    // Candidate anchors: the anchor-eligible modules declaring any concept (a
-    // path hit ALONE never admits — boost only).
-    let mut cand: BTreeSet<String> = BTreeSet::new();
-    for qc in &concepts {
-        cand.extend(qc.tf.keys().cloned());
-    }
-    // Score each candidate via BM25F summed over the query concepts; keep the
-    // score, the best (lowest) tier and the carrying concepts for the audit.
-    let mut ranked: Vec<(String, u64, u8, Vec<String>)> = cand
-        .into_iter()
-        .map(|m| {
-            let dl = c.doc_len.get(m.as_str()).copied().unwrap_or(0);
-            let psigs: Vec<crate::matching::Sig> = c.path_tokens.get(m.as_str()).unwrap_or(&no_tokens).iter().map(|pt| ladder.sig(pt)).collect();
-            let (mut score, mut best_tier, mut terms) = (0u64, u8::MAX, Vec::new());
-            for qc in &concepts {
-                let tf_decl = qc.tf.get(&m).copied().unwrap_or(0);
-                let in_path = psigs.iter().any(|ps| ladder.tier(ps, &qc.sig, false).is_some());
-                if tf_decl == 0 && !in_path {
-                    continue;
+    // Rank the anchor files over a SUBSET of the query concepts (the full set
+    // for the flat view, one co-occurrence component for a concern). The body
+    // is the same BM25F retrieval for both, so the flat list and a concern's
+    // list can never disagree on how a file is scored:
+    //   * candidate = an anchor-eligible module declaring any concept in the
+    //     subset (a path hit ALONE never admits — boost only),
+    //   * BM25F summed over the subset's concepts (idf·BM25 of the boosted
+    //     path/decl tf), score desc / best-tier / path-asc, byte-stable,
+    //   * per-stratum (project) diversity via `stratified_order`, capped.
+    // Returns the ranked `(files, files_detail)` for the subset.
+    let rank_over = |subset: &[&QConcept]| -> (Vec<String>, Vec<FileDetail>) {
+        let mut cand: BTreeSet<String> = BTreeSet::new();
+        for qc in subset {
+            cand.extend(qc.tf.keys().cloned());
+        }
+        let mut ranked: Vec<(String, u64, u8, Vec<String>)> = cand
+            .into_iter()
+            .map(|m| {
+                let dl = c.doc_len.get(m.as_str()).copied().unwrap_or(0);
+                let psigs: Vec<crate::matching::Sig> = c.path_tokens.get(m.as_str()).unwrap_or(&no_tokens).iter().map(|pt| ladder.sig(pt)).collect();
+                let (mut score, mut best_tier, mut terms) = (0u64, u8::MAX, Vec::new());
+                for qc in subset {
+                    let tf_decl = qc.tf.get(&m).copied().unwrap_or(0);
+                    let in_path = psigs.iter().any(|ps| ladder.tier(ps, &qc.sig, false).is_some());
+                    if tf_decl == 0 && !in_path {
+                        continue;
+                    }
+                    score = score.saturating_add(crate::rank::bm25f_contribution_x1024(qc.idf, tf_decl, in_path, dl, c.avgdl_x1024));
+                    best_tier = best_tier.min(qc.best_tier);
+                    terms.push(qc.token.clone());
                 }
-                score = score.saturating_add(crate::rank::bm25f_contribution_x1024(qc.idf, tf_decl, in_path, dl, c.avgdl_x1024));
-                best_tier = best_tier.min(qc.best_tier);
-                terms.push(qc.token.clone());
+                (m, score, best_tier, terms)
+            })
+            .collect();
+        // Rank: score desc, then best (lowest) tier, then path asc — byte-stable.
+        // A candidate scored only by all-zero-idf concepts (a concept in every
+        // indexed file) ranks last but is kept — the declaration is honest
+        // evidence; the per-query cap drops it when enough discriminative
+        // anchors exist.
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+        // Per-stratum (project) diversity: guarantee each project that has a
+        // candidate its BEST anchor an early slot before the global ranking
+        // fills the rest — the same guarantee `rank::select_samples` gives
+        // per-term samples, applied here to the anchor list so one project
+        // cannot monopolize the top-N. Agnostic: stratum = `projects[].dir`.
+        // A single project (or none) carrying candidates degenerates to pure
+        // relevance.
+        let strata: Vec<&str> = ranked.iter().map(|(p, _, _, _)| c.stratum.get(p.as_str()).copied().unwrap_or("")).collect();
+        let ranked: Vec<(String, u64, u8, Vec<String>)> =
+            crate::rank::stratified_order(&strata, Q_MAX_FILES).into_iter().map(|i| ranked[i].clone()).collect();
+        let files: Vec<String> = ranked.iter().map(|(p, _, _, _)| p.clone()).collect();
+        let files_detail: Vec<FileDetail> =
+            ranked.iter().map(|(f, score, _, terms)| FileDetail { file: f.clone(), score_x1024: *score, terms: terms.clone() }).collect();
+        (files, files_detail)
+    };
+
+    // Flat anchor view: every concept, exactly as before (zero regression — a
+    // single-concern query never enters the concern split below).
+    let all_concepts: Vec<&QConcept> = concepts.iter().collect();
+    let (files, files_detail) = rank_over(&all_concepts);
+
+    // Concern split: group the concepts by co-occurrence, then rank each
+    // connected component's anchors over its OWN concepts. An edge joins two
+    // concepts iff their module sets in `postings` INTERSECT (shared evidence),
+    // optionally BRIDGED when a module of one imports a module of the other
+    // (`Corpus::imports`) — so two concepts wired only through a dependency
+    // still group together. A single component (one concern) yields no split:
+    // the flat `files` above already IS that concern, so `concerns` stays empty
+    // and a strong single-concern query is byte-identical to today. ≥2
+    // components surface per-concern lists so a blended request (e.g. "tenant"
+    // + "invoice export") does not let the larger concern bury the smaller
+    // one's files. `is_empty`-skipped in serde so old readers are unaffected.
+    let concerns: Vec<ConcernD> = {
+        let n = concepts.len();
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                // Shared declaring module → direct co-occurrence edge.
+                let shares_module = concepts[i].modules.intersection(&concepts[j].modules).next().is_some();
+                // Import bridge: any module of one concept imports any module of
+                // the other (directed in the model, undirected for grouping).
+                let bridged = !shares_module
+                    && (imports_into(&c, &concepts[i].modules, &concepts[j].modules)
+                        || imports_into(&c, &concepts[j].modules, &concepts[i].modules));
+                if shares_module || bridged {
+                    edges.push((i, j));
+                }
             }
-            (m, score, best_tier, terms)
-        })
-        .collect();
-    // Rank: score desc, then best (lowest) tier, then path asc — byte-stable.
-    // A candidate scored only by all-zero-idf concepts (a concept in every
-    // indexed file) ranks last but is kept — the declaration is honest evidence;
-    // the per-query cap drops it when enough discriminative anchors exist.
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
-    // Per-stratum (project) diversity: guarantee each project that has a
-    // candidate its BEST anchor an early slot before the global ranking fills
-    // the rest — the same guarantee `rank::select_samples` gives per-term
-    // samples, applied here to the anchor list so one project cannot monopolize
-    // the top-N (a less-represented project's best file surfaces even when
-    // another project out-matches it on raw count). Agnostic: stratum =
-    // `projects[].dir`. A single project (or none) carrying candidates
-    // degenerates to pure relevance.
-    let strata: Vec<&str> = ranked.iter().map(|(p, _, _, _)| c.stratum.get(p.as_str()).copied().unwrap_or("")).collect();
-    let ranked: Vec<(String, u64, u8, Vec<String>)> =
-        crate::rank::stratified_order(&strata, Q_MAX_FILES).into_iter().map(|i| ranked[i].clone()).collect();
-    let files: Vec<String> = ranked.iter().map(|(p, _, _, _)| p.clone()).collect();
-    // Audit row per file (same order): the BM25F score and the query concepts
-    // that carry it (by declaration OR path), in query order.
-    let files_detail: Vec<FileDetail> =
-        ranked.iter().map(|(f, score, _, terms)| FileDetail { file: f.clone(), score_x1024: *score, terms: terms.clone() }).collect();
+        }
+        let components = crate::rank::connected_components(n, &edges);
+        // No split when the query is a single concern (≤1 concept, or every
+        // concept co-occurs into one component) — the flat view suffices.
+        if components.len() < 2 {
+            Vec::new()
+        } else {
+            components
+                .into_iter()
+                .map(|comp| {
+                    let subset: Vec<&QConcept> = comp.iter().map(|&i| &concepts[i]).collect();
+                    let mut tokens: Vec<String> = subset.iter().map(|qc| qc.token.clone()).collect();
+                    tokens.sort();
+                    let (files, files_detail) = rank_over(&subset);
+                    // A concern is `strong` if a concept reached exact/fold,
+                    // `none` if it surfaced no anchor, else `weak` (derived
+                    // tiers only) — a per-concern echo of the aggregate reason.
+                    let best_tier = subset.iter().map(|qc| qc.best_tier).min().unwrap_or(u8::MAX);
+                    let reason = if files.is_empty() {
+                        "none"
+                    } else if best_tier <= 2 {
+                        "strong"
+                    } else {
+                        "weak"
+                    };
+                    ConcernD { label: tokens.join("+"), concepts: tokens, files, files_detail, reason: reason.to_string() }
+                })
+                .collect()
+        }
+    };
+
     let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
     let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();
@@ -500,7 +612,12 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
             let (best, lang) = (first.tier, first.lang.clone());
             let mut tfiles: Vec<String> = Vec::new();
             for sample in hits.iter().filter(|h| h.tier == best).flat_map(|h| h.samples.iter()) {
-                if !tfiles.contains(sample) {
+                // A test is never an actionable target — exclude it from the
+                // per-term evidence the same way anchors/hubs already do
+                // (`is_test_path`: polyglot dir-segment + filename convention,
+                // names no language). Closes the test leak the anchor path
+                // already blocked.
+                if !mustard_core::domain::ast::is_test_path(sample) && !tfiles.contains(sample) {
                     tfiles.push(sample.clone());
                 }
             }
@@ -558,7 +675,21 @@ pub fn query(model: &ProjectModel, terms: &[String], request_lang: &str) -> Quer
         miss,
         report,
         reason,
+        concerns,
     }
+}
+
+/// `true` when ANY module in `from` imports ANY module in `to` — the directed
+/// import-bridge test for the concern co-occurrence graph (undirected at the
+/// call site, which tries both directions). Imports are verbatim strings
+/// (`Corpus::imports`), so a bridge holds when an import substring-matches a
+/// target module's path — the same loose join the graph layer uses, kept here
+/// to avoid a second resolution pass. Pure set arithmetic, no name knowledge.
+fn imports_into(c: &Corpus, from: &BTreeSet<String>, to: &BTreeSet<String>) -> bool {
+    from.iter().any(|m| {
+        let Some(imps) = c.imports.get(m.as_str()) else { return false };
+        imps.iter().any(|imp| to.iter().any(|t| t == imp || imp.contains(t.as_str()) || t.contains(imp)))
+    })
 }
 
 /// Project the full model down to the bounded capability digest.

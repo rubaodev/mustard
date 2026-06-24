@@ -282,6 +282,56 @@ pub fn stratified_order(strata: &[&str], max: usize) -> Vec<usize> {
     out
 }
 
+/// Connected components over `n` concept indices `[0, n)` given the undirected
+/// co-occurrence `edges` (each `(a, b)` joins two concepts that share evidence).
+/// Union-find with path compression + union by size; the output is byte-stable:
+/// each component's members are sorted ascending, and the components themselves
+/// are ordered by their smallest member. An isolated concept (no edge) is its
+/// own singleton component, so the partition always covers every index in
+/// `[0, n)`. Pure integer set arithmetic — no name, language or graph knowledge.
+pub fn connected_components(n: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut size: Vec<usize> = vec![1; n];
+    // Iterative find with full path compression (no recursion → no stack bound).
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while parent[root] != root {
+            root = parent[root];
+        }
+        while parent[x] != root {
+            let next = parent[x];
+            parent[x] = root;
+            x = next;
+        }
+        root
+    }
+    for &(a, b) in edges {
+        if a >= n || b >= n {
+            continue;
+        }
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra == rb {
+            continue;
+        }
+        // Union by size; ties break on the lower root so the merge is stable.
+        let (big, small) = if size[ra] >= size[rb] { (ra, rb) } else { (rb, ra) };
+        parent[small] = big;
+        size[big] += size[small];
+    }
+    // Bucket each index under its representative root, then emit byte-stably.
+    let mut by_root: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        by_root.entry(r).or_default().push(i);
+    }
+    // Order components by their smallest member (each bucket is already asc,
+    // built over `0..n`), so the partition is deterministic regardless of which
+    // root union-by-size happened to pick.
+    let mut comps: Vec<Vec<usize>> = by_root.into_values().collect();
+    comps.sort_by_key(|c| c[0]);
+    comps
+}
+
 /// Equal-parts similarity ×1024 between two candidates: path-subtoken
 /// Jaccard + shared-directory depth + import-neighborhood Jaccard, each in
 /// [0, SCALE]. Pure integer arithmetic over repo-relative surfaces — no name
@@ -456,6 +506,36 @@ mod tests {
         // Guards.
         assert!(stratified_order(&[], 5).is_empty());
         assert!(stratified_order(&strata, 0).is_empty());
+    }
+
+    #[test]
+    fn cooccurrence_single_concern_one_cluster() {
+        // One concept, no edges → exactly one singleton component covering it.
+        assert_eq!(connected_components(1, &[]), vec![vec![0]]);
+        // Three concepts fully wired (a chain is enough) collapse to one cluster.
+        assert_eq!(connected_components(3, &[(0, 1), (1, 2)]), vec![vec![0, 1, 2]]);
+    }
+
+    #[test]
+    fn cooccurrence_disjoint_concepts_split() {
+        // Two islands {0,1} and {2,3} with no edge between → two components,
+        // each sorted asc, ordered by smallest member.
+        assert_eq!(connected_components(4, &[(1, 0), (3, 2)]), vec![vec![0, 1], vec![2, 3]]);
+        // Every concept isolated → n singletons, the full partition of [0, n).
+        assert_eq!(connected_components(3, &[]), vec![vec![0], vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn connected_components_is_order_and_oob_stable() {
+        // Edge order must not change the partition (union-by-size + smallest-
+        // member ordering keep it byte-stable).
+        let a = connected_components(5, &[(0, 4), (4, 2), (1, 3)]);
+        let b = connected_components(5, &[(3, 1), (2, 4), (4, 0)]);
+        assert_eq!(a, b);
+        assert_eq!(a, vec![vec![0, 2, 4], vec![1, 3]]);
+        // Out-of-range endpoints are ignored, never panic.
+        assert_eq!(connected_components(2, &[(0, 9), (5, 1)]), vec![vec![0], vec![1]]);
+        assert!(connected_components(0, &[]).is_empty());
     }
 
     #[test]

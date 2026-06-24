@@ -136,6 +136,38 @@ pub struct DigestQuery {
     /// `reason` means "old binary, fall back to `miss`".
     #[serde(default)]
     pub report: DigestReport,
+    /// Concern split: when the query's concepts form ≥2 disconnected groups
+    /// (no shared module, no import bridge), scan returns one [`ConcernHit`]
+    /// per group, each with its OWN ranked `files`/`files_detail` restricted to
+    /// that concern. Empty for a single-concern query (the flat [`Self::files`]
+    /// already IS that one concern). Defaulted so payloads from an older scan
+    /// binary (without the field) keep deserialising.
+    #[serde(default)]
+    pub concerns: Vec<ConcernHit>,
+}
+
+/// One concern of a multi-concern `digest --query` answer — a connected group
+/// of the query's concepts with its own ranked anchors. Mirrors scan's
+/// `ConcernD`; Mustard owns its own view. A consumer reads `files` per concern
+/// instead of the blended [`DigestQuery::files`] when a request mixes concerns.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConcernHit {
+    /// The concern's concept tokens joined with '+' (sorted asc).
+    pub label: String,
+    /// The query concepts in this concern (sorted asc).
+    #[serde(default)]
+    pub concepts: Vec<String>,
+    /// Files to read for THIS concern, ranked over its concepts only.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Audit trail for [`Self::files`], same order (parallel to
+    /// [`DigestQuery::files_detail`]).
+    #[serde(default)]
+    pub files_detail: Vec<FileDetail>,
+    /// This concern's strength on its own evidence: `strong` (a concept hit
+    /// exact/fold), `weak` (derived tiers only), `none` (no anchor surfaced).
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// The aggregate match report of a `digest --query` answer. Reasons:
@@ -576,6 +608,27 @@ mod tests {
         let q: DigestQuery = serde_json::from_str(json).expect("valid bridged digest json");
         assert_eq!(q.report.reason, "weak");
         assert!(q.report.bridged, "the curated-bridge marker round-trips from the scan binary's JSON");
+    }
+
+    #[test]
+    fn digest_query_concerns_serde_compat() {
+        // An OLD payload without `concerns` keeps deserialising — empty.
+        let old = r#"{"query":["tenant"],"files":["a.cs"],"miss":false}"#;
+        let q: DigestQuery = serde_json::from_str(old).expect("old payload without concerns");
+        assert!(q.concerns.is_empty(), "single-concern / old binary → no split");
+
+        // A multi-concern payload round-trips: each concern carries its own
+        // label, concepts and ranked files restricted to that concern.
+        let new = r#"{"query":["tenant","export"],"files":["t.cs","e.cs"],"miss":false,"concerns":[{"label":"tenant","concepts":["tenant"],"files":["t.cs"],"files_detail":[{"file":"t.cs","score_x1024":2048,"terms":["tenant"]}],"reason":"strong"},{"label":"export","concepts":["export"],"files":["e.cs"],"files_detail":[{"file":"e.cs","score_x1024":1024,"terms":["export"]}],"reason":"weak"}]}"#;
+        let q: DigestQuery = serde_json::from_str(new).expect("payload with concerns");
+        assert_eq!(q.concerns.len(), 2);
+        assert_eq!(q.concerns[0].label, "tenant");
+        assert_eq!(q.concerns[0].concepts, vec!["tenant"]);
+        assert_eq!(q.concerns[0].files, vec!["t.cs"]);
+        assert_eq!(q.concerns[0].files_detail[0].score_x1024, 2048);
+        assert_eq!(q.concerns[0].reason, "strong");
+        assert_eq!(q.concerns[1].label, "export");
+        assert_eq!(q.concerns[1].reason, "weak");
     }
 
     #[test]

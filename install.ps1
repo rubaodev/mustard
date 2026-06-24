@@ -16,7 +16,7 @@
 #
 # Usage:
 #   .\install.ps1                  # prompt for the target (default CWD), then `mustard init`
-#   .\install.ps1 -Target ..\app   # scaffold into another project (no prompt)
+#   .\install.ps1 -Target ..\app   # scaffold (new) OR refresh templates (existing, via `update --force`)
 #   .\install.ps1 -Force           # overwrite an existing .claude/ (no backup)
 #   .\install.ps1 -DryRun          # show init actions without writing
 #   .\install.ps1 -SkipBuild       # skip cargo install (binaries already installed)
@@ -159,22 +159,37 @@ if (-not $DryRun -and -not (Get-Command rtk -ErrorAction SilentlyContinue)) {
     Write-Warning '  Windows: scoop install rtk   (or)   cargo install --git https://github.com/rtk-ai/rtk'
 }
 
-$initArgs = @('init', '--yes')
-if ($Force)  { $initArgs += '--force' }
-if ($DryRun) { $initArgs += '--dry-run' }
+# Choose init vs update by whether .claude/ already exists. `init` MERGES and
+# SKIPS existing files, so re-running it on an installed project leaves stale
+# SKILLs/refs (the silent trap: new files land, existing ones never refresh).
+# For an existing .claude/ (and no -Force) use `update --force`: it deletes +
+# recopies the Mustard-owned folders (commands/mustard, skills, scripts, refs)
+# from the templates while PRESERVING user files (CLAUDE.md, mustard.json, spec/,
+# memory/, grain.model.json). -Force still does a full init overwrite; -DryRun
+# stays on init (update has no dry-run).
+$claudeExists = Test-Path (Join-Path $Target '.claude')
+if ($claudeExists -and -not $Force -and -not $DryRun) {
+    $cmdArgs  = @('update', '--force')
+    $cmdLabel = 'mustard update'
+} else {
+    $cmdArgs = @('init', '--yes')
+    if ($Force)  { $cmdArgs += '--force' }
+    if ($DryRun) { $cmdArgs += '--dry-run' }
+    $cmdLabel = 'mustard init'
+}
 
-# Point init at this repo's templates/ payload (see header). Scope the env var
-# to the init child process and restore it afterwards so the script is safe to
-# dot-source.
+# Point the command at this repo's templates/ payload (init AND update both
+# resolve it via MUSTARD_TEMPLATES_DIR). Scope the env var to the child process
+# and restore it afterwards so the script is safe to dot-source.
 $prevTemplates = $env:MUSTARD_TEMPLATES_DIR
 $env:MUSTARD_TEMPLATES_DIR = $TemplatesDir
 
-Write-Host "==> mustard $($initArgs -join ' ')   (target: $Target)"
+Write-Host "==> mustard $($cmdArgs -join ' ')   (target: $Target)"
 Write-Host "    MUSTARD_TEMPLATES_DIR=$TemplatesDir"
 Push-Location $Target
 try {
-    & $MustardExe @initArgs
-    Assert-LastExit 'mustard init'
+    & $MustardExe @cmdArgs
+    Assert-LastExit $cmdLabel
 } finally {
     Pop-Location
     $env:MUSTARD_TEMPLATES_DIR = $prevTemplates
