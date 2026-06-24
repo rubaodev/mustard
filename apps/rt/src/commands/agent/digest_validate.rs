@@ -28,6 +28,20 @@ use serde::Deserialize;
 use crate::commands::agent::concern_judge::{matched_concepts, JudgedConcern};
 use crate::commands::feature::domain_terms;
 
+/// A confirmed-on-re-query bridge from a missed USER-SIDE word to the real
+/// ENGLISH code identifier(s) it maps to in this codebase. A PAIR (not a flat
+/// list) so the orchestrator knows `efetivar -> effectivate`, not a cartesian
+/// of every missed word × every requery term. The shape mirrors the
+/// `lexicon-enrich --apply` proposal (`{userWord, codeTerms}`), so a confirmed
+/// bridge is persisted to the project overlay verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RequeryBridge {
+    #[serde(rename = "userWord", default)]
+    pub user_word: String,
+    #[serde(rename = "codeTerms", default)]
+    pub code_terms: Vec<String>,
+}
+
 /// The validator's verdict — the parse target of [`parse_digest_verdict`].
 /// Every field defaults so a partial LLM reply still deserialises; the caller
 /// validates `route` and degrades to the deterministic anchors when it is absent.
@@ -55,11 +69,14 @@ pub struct DigestVerdict {
     /// retrieval concern, so it never triggers a re-query.
     #[serde(default = "default_central_found", rename = "centralFound")]
     pub central_found: bool,
-    /// When `central_found` is false, the real ENGLISH code identifiers the missed
-    /// concept maps to — what the orchestrator re-queries the digest with to locate
-    /// the right files. Empty when the central concept was found.
-    #[serde(default, rename = "requeryTerms")]
-    pub requery_terms: Vec<String>,
+    /// When `central_found` is false, the PAIRED bridge(s) from each missed
+    /// USER-SIDE word to the real ENGLISH code identifiers it maps to — what the
+    /// orchestrator re-queries the digest with (the flattened `codeTerms`) to
+    /// locate the right files, and what it PERSISTS to the project lexicon when
+    /// that re-query confirms (comes back `strong`). Paired so a confirmed bridge
+    /// persists as `{userWord, codeTerms}`, not a cartesian. Empty when found.
+    #[serde(default, rename = "requeryBridges")]
+    pub requery_bridges: Vec<RequeryBridge>,
 }
 
 /// Default for [`DigestVerdict::central_found`]: an LLM reply (or an older one)
@@ -86,7 +103,7 @@ impl std::fmt::Display for VerdictParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
             Self::NoJsonObject => "no JSON object found in verdict response",
-            Self::InvalidShape => "verdict response is not a {route,scope,dropped,concerns,centralFound,requeryTerms} object",
+            Self::InvalidShape => "verdict response is not a {route,scope,dropped,concerns,centralFound,requeryBridges} object",
             Self::NoRoute => "verdict response carried no route",
         };
         f.write_str(msg)
@@ -100,7 +117,7 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      concepts below for a request and named the anchor files where each concept's vocabulary lives, \
      each tagged with the PROJECT (layer) it sits in. Your job, ONE layer above the scan, is to \
      validate this answer and decide HOW the request runs. Reply with ONLY a JSON object:\n\
-     {\"route\":\"task|feature\",\"scope\":\"light|full|\",\"dropped\":[\"<file>\"],\"concerns\":[{\"label\":\"<short>\",\"concepts\":[\"<concept>\"],\"anchors\":[\"<file>\"]}],\"centralFound\":true|false,\"requeryTerms\":[\"<code term>\"]}\n\
+     {\"route\":\"task|feature\",\"scope\":\"light|full|\",\"dropped\":[\"<file>\"],\"concerns\":[{\"label\":\"<short>\",\"concepts\":[\"<concept>\"],\"anchors\":[\"<file>\"]}],\"centralFound\":true|false,\"requeryBridges\":[{\"userWord\":\"<missed user-side word>\",\"codeTerms\":[\"<real code identifier>\"]}]}\n\
      RULES:\n\
      - dropped: an anchor is INCIDENTAL when its concept is tangential to the INTENT or lives in a \
      layer the change will not touch (e.g. a UI request matching a backend credit-card file on the \
@@ -111,9 +128,10 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      entity that defines the task — NOT generic filler like value/date/status) appears under MISSED / \
      WEAK, meaning the kept anchors likely matched only common vocabulary and point at the WRONG flow. \
      true when the central concept was found at a real tier.\n\
-     - requeryTerms: when centralFound is false, the real ENGLISH code identifiers the missed concept \
-     most likely maps to in this codebase (e.g. Portuguese \"efetivar\" -> [\"effectivate\",\"settle\",\"confirm\"]), \
-     so the orchestrator can re-query the digest and locate the right files. Empty array when centralFound is true.\n\
+     - requeryBridges: when centralFound is false, the bridge(s) from the missed USER-SIDE word(s) to the \
+     real ENGLISH code identifier(s) they map to in this codebase — e.g. \
+     {\"userWord\":\"efetivar\",\"codeTerms\":[\"effectivate\",\"settle\",\"confirm\"]}. The orchestrator re-queries \
+     the digest with the codeTerms; if that re-query confirms, it persists the bridge. Empty array when centralFound is true.\n\
      - route: \"task\" when the real work is single-layer and small (one project, mirrors an existing \
      pattern, no new entity) — the lean path, no spec/wave ceremony. \"feature\" only when it genuinely \
      needs the pipeline.\n\
@@ -371,18 +389,22 @@ mod tests {
         assert_eq!(v.concerns.len(), 1);
         assert_eq!(v.concerns[0].anchors, vec!["packages/ui/card.tsx".to_string()]);
         // A verdict WITHOUT the retrieval fields defaults `central_found` to TRUE
-        // (no re-query) and `requery_terms` to empty — an old reply must not
+        // (no re-query) and `requery_bridges` to empty — an old reply must not
         // trigger a re-query.
         assert!(v.central_found, "absent centralFound defaults to true");
-        assert!(v.requery_terms.is_empty(), "absent requeryTerms defaults to empty");
+        assert!(v.requery_bridges.is_empty(), "absent requeryBridges defaults to empty");
     }
 
     #[test]
-    fn parse_reads_central_found_false_with_requery_terms() {
-        let resp = r#"{"route":"feature","scope":"full","centralFound":false,"requeryTerms":["effectivate"]}"#;
+    fn parse_reads_central_found_false_with_requery_bridges() {
+        let resp = r#"{"route":"feature","scope":"full","centralFound":false,"requeryBridges":[{"userWord":"efetivar","codeTerms":["effectivate"]}]}"#;
         let v = parse_digest_verdict(resp).expect("retrieval-concern verdict parses");
         assert!(!v.central_found, "centralFound:false read");
-        assert_eq!(v.requery_terms, vec!["effectivate".to_string()]);
+        assert_eq!(
+            v.requery_bridges,
+            vec![RequeryBridge { user_word: "efetivar".to_string(), code_terms: vec!["effectivate".to_string()] }],
+            "paired bridge parsed: userWord -> codeTerms"
+        );
     }
 
     #[test]
