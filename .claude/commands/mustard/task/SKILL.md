@@ -51,6 +51,12 @@ mustard-rt run agent-prompt-render --spec {scope} --role {action} \
 
 Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
 
+**Validate the digest FIRST (AI step).** Right after step 1, run the shared digest-validator (**`../../../refs/digest-validate.md`**): `mustard-rt run digest-validate-render --intent "<the user's request>"` → dispatch the prompt to `model: sonnet` → `{route, scope, dropped, concerns, centralFound, requeryTerms}`. This is the lean retrieval-quality guard (no route/scope ceremony on `/task` — you are already on the lean path); act on these only:
+- **`centralFound=false` → RE-QUERY FIRST**, before dispatching: the central concept missed, so the anchors point at the WRONG flow (a `strong` reason is not trustworthy). Re-run `mustard-rt run feature --intent "<requeryTerms joined>"` and dispatch on ITS anchors. (`centralFound=true` or absent → proceed.)
+- **`dropped`** → drop those anchors (incidental / far-layer lexical matches), never read them.
+- **`concerns` (≥2)** → render + dispatch ONE action per concern, each scoped to its OWN anchors, instead of one mixed dispatch.
+Empty render / validator down → fall through to the flat pruned anchors. Pass the user's actual request as `--intent` (never a bare term list — see the INTENT-hygiene rule there).
+
 ## Flow
 
 Each action picks `--role` + `subagent_type`, renders via `agent-prompt-render`, then dispatches (agents inherit the session model — no model selection):
@@ -86,3 +92,13 @@ A Task dispatch can fail with a **transient infra error** (`Tool result missing 
 After `audit`/`compare`: parse severity, map each CRITICAL/WARNING to `/task refactor` or Pipeline, present structured list with estimated scope. Do NOT auto-execute — user picks.
 
 `implement` → 1-3 files, known pattern, build-verifiable (low cost). `/feature` Light → spec + review gate (medium cost). `refactor` → reorganization without functional change.
+
+## Lexicon feedback (end of run)
+
+`/task` has no close, so feed the self-learning dictionary HERE — especially when the digest came back `weak`/`none` and you located the files by **other means** (Glob/Grep). Pure data + gated; fail-open (no `pt-en` pair / no candidates → skip).
+
+```bash
+mustard-rt run lexicon-suggest   # `candidates` (re-query bridges) + `locationCandidates` (found OUTSIDE the digest)
+```
+
+For each `candidates` `{missed, bridged}` accept the confirmed bridge: `--accept {missed}={bridged}`. For each `locationCandidates` `{missed, files}` open the file, pick the code term, and `--accept {missed}={codeTerm}` — only when the mapping is clear (a wrong bridge poisons future queries). Gated (the code term must be a real mined term), idempotent. This makes the next `/task`, `/feature` or `/bugfix` find it deterministically, no LLM.

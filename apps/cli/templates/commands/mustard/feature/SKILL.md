@@ -33,8 +33,9 @@ Heavy lifting delegates to `mustard-rt`; the orchestrator routes phases + emits 
 Before acting on the digest, VALIDATE it — the single AI step, one layer above the deterministic scan. Full contract: → `../../../refs/digest-validate.md`.
 
 1. `mustard-rt run digest-validate-render --intent "<the user's request — the SAME rich intent you gave the digest>" --model .claude/grain.model.json` → a byte-stable prompt. **Empty → skip to the deterministic fallback (step 4).**
-2. Dispatch it VERBATIM to `subagent_type: general-purpose, model: sonnet` (routing-critical → accuracy over cost; the ONLY model pick in this flow). Reply = ONLY `{route, scope, dropped, concerns}`.
+2. Dispatch it VERBATIM to `subagent_type: general-purpose, model: sonnet` (routing-critical → accuracy over cost; the ONLY model pick in this flow). Reply = ONLY `{route, scope, dropped, concerns, centralFound, requeryTerms}`.
 3. Act on the verdict:
+   - **`centralFound=false` → RE-QUERY FIRST.** The central concept missed (it landed under MISSED / WEAK) → a `strong` reason is NOT trustworthy. Re-run `mustard-rt run feature --intent "<requeryTerms joined>"` and use ITS anchors before routing; only THEN apply `dropped`/`route`/`scope` to the re-queried answer. (`centralFound=true` or absent → proceed.)
    - **`dropped`** → drop those anchors; never read them (incidental / far-layer lexical matches, e.g. a backend `card` file in a UI request).
    - **`route="task"`** → the work does NOT need the pipeline → run it as **`/mustard:task`** (lean: no spec, no wave, no QA) on the kept anchors, then STOP. Most enhancements land here — the routing economy.
    - **`route="feature"`, `scope="full"`** → open **`../../../refs/feature/full-plan.md`** and follow PLAN. Stop reading this file.

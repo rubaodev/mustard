@@ -48,6 +48,25 @@ pub struct DigestVerdict {
     /// so a multi-concern request still splits onto its own anchors.
     #[serde(default)]
     pub concerns: Vec<JudgedConcern>,
+    /// Whether the CENTRAL (most-discriminative) concept of the intent was found
+    /// at a real tier. `false` means the kept anchors likely matched only common
+    /// vocabulary and point at the WRONG flow → the orchestrator must re-query.
+    /// Absence MUST default to `true`: an older reply without the field carries no
+    /// retrieval concern, so it never triggers a re-query.
+    #[serde(default = "default_central_found", rename = "centralFound")]
+    pub central_found: bool,
+    /// When `central_found` is false, the real ENGLISH code identifiers the missed
+    /// concept maps to — what the orchestrator re-queries the digest with to locate
+    /// the right files. Empty when the central concept was found.
+    #[serde(default, rename = "requeryTerms")]
+    pub requery_terms: Vec<String>,
+}
+
+/// Default for [`DigestVerdict::central_found`]: an LLM reply (or an older one)
+/// that omits the field carries NO retrieval concern, so it must not trigger a
+/// re-query — absence means "the central concept was found".
+fn default_central_found() -> bool {
+    true
 }
 
 /// Why a verdict could not be parsed — returned instead of panicking so a
@@ -67,7 +86,7 @@ impl std::fmt::Display for VerdictParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
             Self::NoJsonObject => "no JSON object found in verdict response",
-            Self::InvalidShape => "verdict response is not a {route,scope,dropped,concerns} object",
+            Self::InvalidShape => "verdict response is not a {route,scope,dropped,concerns,centralFound,requeryTerms} object",
             Self::NoRoute => "verdict response carried no route",
         };
         f.write_str(msg)
@@ -81,13 +100,20 @@ const VALIDATE_CONTRACT: &str = "You are a digest validator for a code pipeline.
      concepts below for a request and named the anchor files where each concept's vocabulary lives, \
      each tagged with the PROJECT (layer) it sits in. Your job, ONE layer above the scan, is to \
      validate this answer and decide HOW the request runs. Reply with ONLY a JSON object:\n\
-     {\"route\":\"task|feature\",\"scope\":\"light|full|\",\"dropped\":[\"<file>\"],\"concerns\":[{\"label\":\"<short>\",\"concepts\":[\"<concept>\"],\"anchors\":[\"<file>\"]}]}\n\
+     {\"route\":\"task|feature\",\"scope\":\"light|full|\",\"dropped\":[\"<file>\"],\"concerns\":[{\"label\":\"<short>\",\"concepts\":[\"<concept>\"],\"anchors\":[\"<file>\"]}],\"centralFound\":true|false,\"requeryTerms\":[\"<code term>\"]}\n\
      RULES:\n\
      - dropped: an anchor is INCIDENTAL when its concept is tangential to the INTENT or lives in a \
      layer the change will not touch (e.g. a UI request matching a backend credit-card file on the \
      bare word \"card\"). List every such anchor in `dropped`; when the intent makes one sense of an \
      ambiguous concept clear, drop the other sense's anchors. The REAL layers are the distinct \
      projects of the anchors you did NOT drop.\n\
+     - centralFound: false when the MOST DISCRIMINATIVE concept of the intent (the specific action or \
+     entity that defines the task — NOT generic filler like value/date/status) appears under MISSED / \
+     WEAK, meaning the kept anchors likely matched only common vocabulary and point at the WRONG flow. \
+     true when the central concept was found at a real tier.\n\
+     - requeryTerms: when centralFound is false, the real ENGLISH code identifiers the missed concept \
+     most likely maps to in this codebase (e.g. Portuguese \"efetivar\" -> [\"effectivate\",\"settle\",\"confirm\"]), \
+     so the orchestrator can re-query the digest and locate the right files. Empty array when centralFound is true.\n\
      - route: \"task\" when the real work is single-layer and small (one project, mirrors an existing \
      pattern, no new entity) — the lean path, no spec/wave ceremony. \"feature\" only when it genuinely \
      needs the pipeline.\n\
@@ -134,6 +160,29 @@ fn render_validate_prompt(intent: &str, q: &DigestQuery, project_dirs: &[String]
                 layers.insert(p);
             }
             let _ = writeln!(out, "    - {f}  [{}]", if p.is_empty() { "-" } else { p });
+        }
+    }
+    // MISSED / WEAK concepts: every REQUEST term the digest named but did NOT
+    // find at a real tier (tier ∈ {none, trigram} or empty). Surfacing these is
+    // the point — `matched_concepts` filters them out, so without this section
+    // the judge is blind to a missed CENTRAL concept (a request whose specific
+    // action/entity hit `none` while only common vocabulary matched). Iterate
+    // `report.terms` directly (do NOT touch the shared `matched_concepts`).
+    // OMITTED entirely when there are none, so a clean strong query renders
+    // byte-identically to before.
+    let missed: Vec<&mustard_core::domain::scan::TermReport> = q
+        .report
+        .terms
+        .iter()
+        .filter(|t| t.tier.is_empty() || t.tier == "none" || t.tier == "trigram")
+        .collect();
+    if !missed.is_empty() {
+        out.push_str(
+            "\n## MISSED / WEAK CONCEPTS (the request named these but the scan did NOT find them at a real tier — judge whether one is the CENTRAL concept the anchors are missing)\n",
+        );
+        for t in &missed {
+            let tier = if t.tier.is_empty() { "none" } else { t.tier.as_str() };
+            let _ = writeln!(out, "- {} [{}]", t.term, tier);
         }
     }
     let _ = write!(
@@ -276,6 +325,41 @@ mod tests {
         assert_eq!(render_validate_prompt("zzz", &none, &dirs()), "");
     }
 
+    /// The proven "efetivar previsão" failure: a CENTRAL concept (`effectivate`)
+    /// hit `none` while common terms matched, so the digest pointed at the WRONG
+    /// file and the validator — blind to the miss — blindly confirmed it. The
+    /// MISSED / WEAK section surfaces it so the judge can flag `centralFound`.
+    fn missed_central_query() -> DigestQuery {
+        serde_json::from_str(
+            r#"{"query":["payable","effectivate"],"files":["backend/Pay/Payable.cs"],"miss":false,
+                "slices":[],
+                "report":{"matched":1,"total":2,"reason":"strong","terms":[
+                    {"term":"payable","tier":"exact","lang":"","files":["backend/Pay/Payable.cs"]},
+                    {"term":"effectivate","tier":"none","lang":"","files":[]}]}}"#,
+        )
+        .expect("missed-central digest fixture")
+    }
+
+    #[test]
+    fn render_surfaces_a_missed_central_concept() {
+        let q = missed_central_query();
+        let p = render_validate_prompt("efetivar a previsão", &q, &dirs());
+        // The matched concept renders as before…
+        assert!(p.contains("- payable [exact]"), "matched concept present: {p}");
+        // …and the missed CENTRAL concept is surfaced under its own header.
+        assert!(p.contains("## MISSED / WEAK CONCEPTS"), "missed section present: {p}");
+        assert!(p.contains("- effectivate [none]"), "missed term rendered with tier: {p}");
+    }
+
+    #[test]
+    fn render_omits_missed_section_when_clean() {
+        // The all-matched fixture has NO missed term → the section is omitted
+        // entirely, so a clean strong query renders byte-identically to before.
+        let q = ui_query();
+        let p = render_validate_prompt("make the chevron clickable on the card", &q, &dirs());
+        assert!(!p.contains("## MISSED / WEAK CONCEPTS"), "no missed section when clean: {p}");
+    }
+
     #[test]
     fn parse_accepts_a_full_verdict() {
         let resp = r#"{"route":"task","scope":"","dropped":["backend/Pay/CardCharge.cs"],
@@ -286,6 +370,19 @@ mod tests {
         assert_eq!(v.dropped, vec!["backend/Pay/CardCharge.cs".to_string()]);
         assert_eq!(v.concerns.len(), 1);
         assert_eq!(v.concerns[0].anchors, vec!["packages/ui/card.tsx".to_string()]);
+        // A verdict WITHOUT the retrieval fields defaults `central_found` to TRUE
+        // (no re-query) and `requery_terms` to empty — an old reply must not
+        // trigger a re-query.
+        assert!(v.central_found, "absent centralFound defaults to true");
+        assert!(v.requery_terms.is_empty(), "absent requeryTerms defaults to empty");
+    }
+
+    #[test]
+    fn parse_reads_central_found_false_with_requery_terms() {
+        let resp = r#"{"route":"feature","scope":"full","centralFound":false,"requeryTerms":["effectivate"]}"#;
+        let v = parse_digest_verdict(resp).expect("retrieval-concern verdict parses");
+        assert!(!v.central_found, "centralFound:false read");
+        assert_eq!(v.requery_terms, vec!["effectivate".to_string()]);
     }
 
     #[test]

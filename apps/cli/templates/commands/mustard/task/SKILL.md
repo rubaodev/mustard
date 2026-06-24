@@ -51,7 +51,11 @@ mustard-rt run agent-prompt-render --spec {scope} --role {action} \
 
 Pass the `agent-prompt-render` **stdout verbatim** as the Task `prompt` — with `--emit ref` that stdout is a 2-line stub the PreToolUse hook expands to the full prompt at dispatch, so the full text never transits your context. `{guards_summary}` (subproject `## Guards`) and `{reference_files}` are filled by the renderer — do not duplicate them in the prompt. Spec-less, so the action's work + the located anchors ride in via `--task-text`.
 
-**Validate the digest FIRST (AI step).** Right after step 1, run the shared digest-validator (**`../../../refs/digest-validate.md`**): `mustard-rt run digest-validate-render --intent "<the user's request>"` → dispatch the prompt to `model: sonnet` → `{route, scope, dropped, concerns}`. Act: **`dropped`** → drop those anchors (incidental / far-layer lexical matches), never read them. **`concerns` (≥2)** → render + dispatch ONE action per concern, each scoped to its OWN anchors, instead of one mixed dispatch. (`route`/`scope` are feature signals — on `/task` you are already on the lean path.) Empty render / validator down → fall through to the flat pruned anchors. Pass the user's actual request as `--intent` (never a bare term list — see the INTENT-hygiene rule there).
+**Validate the digest FIRST (AI step).** Right after step 1, run the shared digest-validator (**`../../../refs/digest-validate.md`**): `mustard-rt run digest-validate-render --intent "<the user's request>"` → dispatch the prompt to `model: sonnet` → `{route, scope, dropped, concerns, centralFound, requeryTerms}`. This is the lean retrieval-quality guard (no route/scope ceremony on `/task` — you are already on the lean path); act on these only:
+- **`centralFound=false` → RE-QUERY FIRST**, before dispatching: the central concept missed, so the anchors point at the WRONG flow (a `strong` reason is not trustworthy). Re-run `mustard-rt run feature --intent "<requeryTerms joined>"` and dispatch on ITS anchors. (`centralFound=true` or absent → proceed.)
+- **`dropped`** → drop those anchors (incidental / far-layer lexical matches), never read them.
+- **`concerns` (≥2)** → render + dispatch ONE action per concern, each scoped to its OWN anchors, instead of one mixed dispatch.
+Empty render / validator down → fall through to the flat pruned anchors. Pass the user's actual request as `--intent` (never a bare term list — see the INTENT-hygiene rule there).
 
 ## Flow
 
