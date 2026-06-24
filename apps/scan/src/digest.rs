@@ -140,6 +140,14 @@ pub struct HubD {
 pub struct TermD {
     pub term: String,
     pub count: usize,
+    /// Domain specificity ×1024: the term's TF·IDF over the corpus
+    /// (`ranking::domain_specificity_x1024`). A discriminative-power signal that
+    /// PEAKS IN THE MIDDLE of the frequency range — it demotes the ubiquitous
+    /// term (seen in nearly every module) AND the hapax (one stray occurrence),
+    /// so a mid-frequency domain word ranks above both. ADDITIVE: published
+    /// alongside `count`; the term ORDER (and the `MAX_TERMS` cut) still follow
+    /// the kind-weighted rank, never this field.
+    pub specificity_x1024: u64,
     pub samples: Vec<String>,
 }
 
@@ -934,6 +942,9 @@ fn corpus(model: &ProjectModel) -> Corpus<'_> {
 fn build_terms(c: &Corpus) -> Vec<TermD> {
     let class = |p: &str| c.class_of.get(p).copied().unwrap_or("");
     let (no_tokens, no_imports) = (BTreeSet::new(), BTreeSet::new());
+    // Corpus size for the specificity IDF: the total number of indexed modules,
+    // the same denominator the anchor ranking uses (`query`'s `n_docs`).
+    let n_docs = c.doc_len.len();
     let mut terms: Vec<(u64, TermD)> = c
         .postings
         .iter()
@@ -941,6 +952,14 @@ fn build_terms(c: &Corpus) -> Vec<TermD> {
             // Machine-written occurrences are demoted by the catalog
             // multiplier (classify::index_weight) — present, never dominant.
             let count = per_module.iter().map(|(p, (n, _))| crate::classify::index_weight(*n, class(p))).sum();
+            // Domain specificity (TF·IDF ×1024): the term's RAW occurrence
+            // total times its corpus rarity. `df` is the document frequency
+            // (modules the term appears in); the raw `count` (NOT the catalog-
+            // demoted one) is the true TF. Additive signal — never reorders the
+            // index (the sort below stays on `rank_key`).
+            let raw_count: usize = per_module.iter().map(|(_, (n, _))| *n).sum();
+            let df = per_module.len();
+            let specificity_x1024 = mustard_core::domain::ranking::domain_specificity_x1024(raw_count, df, n_docs);
             // The catalog rank key: per module, the kind-weighted occurrence
             // sum (rank::weighted_count) under the SAME machine-class
             // demotion as `count`. Not serialized — ranking only.
@@ -960,7 +979,7 @@ fn build_terms(c: &Corpus) -> Vec<TermD> {
                 })
                 .collect();
             let samples = crate::rank::select_samples(&cands, MAX_TERM_SAMPLES);
-            (rank_key, TermD { term: term.clone(), count, samples })
+            (rank_key, TermD { term: term.clone(), count, specificity_x1024, samples })
         })
         .collect();
     terms.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.count.cmp(&a.1.count)).then(a.1.term.cmp(&b.1.term)));

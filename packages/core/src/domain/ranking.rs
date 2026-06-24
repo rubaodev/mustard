@@ -81,6 +81,20 @@ pub fn idf_x1024(df: usize, n_docs: usize) -> u64 {
     log2_x1024(n as u64 + 1).saturating_sub(log2_x1024(df as u64 + 1))
 }
 
+/// Domain-specificity ×1024 of a term: its term frequency times its inverse
+/// document frequency — the classic TF·IDF, fixed-point. `count` is the term's
+/// total occurrences (saturated into the ×1024 multiply so a flood cannot
+/// overflow), `df` the number of documents it appears in, `n_docs` the corpus
+/// size. The product PEAKS IN THE MIDDLE of the frequency range: it demotes the
+/// ubiquitous term (high `df` → `idf_x1024` tends to 0) AND the hapax (low
+/// `count` → small TF), so the discriminative mid-frequency vocabulary scores
+/// highest. Reuses [`idf_x1024`] for the corpus-rarity factor — no tuning knob,
+/// float-free and byte-stable like every primitive here.
+#[must_use]
+pub fn domain_specificity_x1024(count: usize, df: usize, n_docs: usize) -> u64 {
+    (count as u64).saturating_mul(idf_x1024(df, n_docs))
+}
+
 /// Fixed-point (×1024) base-2 logarithm of `x`: `floor(log2 x)` from the integer
 /// `ilog2`, plus a 10-bit fractional part linearly interpolated above that power
 /// of two. Monotone non-decreasing and continuous across powers;
@@ -157,5 +171,20 @@ mod tests {
         // panics nor underflows, it saturates at the ubiquitous floor.
         assert_eq!(idf_x1024(5 * n, n), idf_x1024(n, n));
         assert_eq!(idf_x1024(0, n), idf_x1024(1, n));
+    }
+
+    #[test]
+    fn domain_specificity_peaks_in_the_mid_frequency() {
+        let n = 1000;
+        // Ubiquitous term (high df, "type"/"response" style): high count but
+        // near-zero idf → low specificity.
+        let ubiquitous = domain_specificity_x1024(900, 900, n);
+        // Mid-frequency term with a reasonable count ("tenant"/"category"
+        // style): both factors substantial → the discriminative peak.
+        let mid = domain_specificity_x1024(60, 40, n);
+        // Hapax (df == 1, count low): high idf but tiny tf → low specificity.
+        let hapax = domain_specificity_x1024(1, 1, n);
+        assert!(mid > ubiquitous, "mid-frequency outscores the ubiquitous term: {mid} vs {ubiquitous}");
+        assert!(mid > hapax, "mid-frequency outscores the hapax: {mid} vs {hapax}");
     }
 }
