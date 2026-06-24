@@ -34,7 +34,7 @@
 //! the two deterministic steps. Headless / no orchestrator ⇒ enrich is simply
 //! not invoked; the digest fail-opens to the committed overlay.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::scan::Digest;
@@ -45,16 +45,26 @@ use crate::commands::lexicon_suggest::{
     effective_lexicon, folded, pair_for_root, write_bridge, PairSeed,
 };
 
-/// Cap on the unbridged terms `--check` emits. The published digest already
-/// orders its term index by discriminative rank, so the first N are the most
-/// discriminative unbridged terms — the ones worth a bridge. Bounds the payload
-/// (a repo can mine thousands of tokens) without dumping the long tail.
+/// Cap on the unbridged terms `--check` emits. The published digest orders its
+/// term index by kind-weighted rank, NOT by discriminative power, so we re-rank
+/// the unbridged candidates by `specificity_x1024` (TF·IDF) before the cut: the
+/// head is the domain vocabulary worth a bridge, the tail is plumbing. Bounds
+/// the payload (a repo can mine thousands of tokens) without dumping that tail.
 const MAX_UNBRIDGED: usize = 60;
+
+/// Floor on a bridge target's `specificity_x1024` at `--apply`. A target whose
+/// domain specificity (TF·IDF ×1024) sits below this is ubiquitous plumbing
+/// (high `df` → idf ≈ 0): bridging a user word onto it would match nearly every
+/// module, so the gate rejects it (`target_too_generic`). Tuned just above 0 to
+/// reject only the truly ubiquitous term while admitting any real mid-frequency
+/// domain word — a policy of this consumer, not of the pure ranking primitive.
+const MIN_TARGET_SPECIFICITY_X1024: u64 = 256;
 
 /// One mined code term with no lexicon bridge — the `--check` output row.
 struct Unbridged {
     term: String,
     count: usize,
+    specificity_x1024: u64,
     samples: Vec<String>,
 }
 
@@ -67,17 +77,34 @@ fn bridged_code_terms(root: &Path, pair: Option<&PairSeed>) -> BTreeSet<String> 
 }
 
 /// The mined CODE terms (digest term index) that no lexicon entry bridges to,
-/// in the digest's discriminative-rank order, capped at [`MAX_UNBRIDGED`]. A
-/// term is matched against the bridged set by its folded key (the lexicon's
+/// re-ranked by domain specificity (TF·IDF ×1024) descending and capped at
+/// [`MAX_UNBRIDGED`]. The digest publishes terms in kind-weighted order, not by
+/// discriminative power, so the cap would otherwise keep an arbitrary slice; the
+/// re-rank makes the head the domain vocabulary worth a bridge and the cut drop
+/// the plumbing tail. Ties break stably on the folded term (byte-stable output).
+/// A term is matched against the bridged set by its folded key (the lexicon's
 /// identity), so accent/case never leaks a false "unbridged".
 fn unbridged_terms(digest: &Digest, bridged: &BTreeSet<String>) -> Vec<Unbridged> {
-    digest
+    let mut unbridged: Vec<Unbridged> = digest
         .terms
         .iter()
         .filter(|t| !bridged.contains(&folded(&t.term)))
-        .take(MAX_UNBRIDGED)
-        .map(|t| Unbridged { term: t.term.clone(), count: t.count, samples: t.samples.clone() })
-        .collect()
+        .map(|t| Unbridged {
+            term: t.term.clone(),
+            count: t.count,
+            specificity_x1024: t.specificity_x1024,
+            samples: t.samples.clone(),
+        })
+        .collect();
+    // Specificity desc, then folded term asc as a deterministic tie-break, so
+    // two terms with equal specificity always order the same way across runs.
+    unbridged.sort_by(|a, b| {
+        b.specificity_x1024
+            .cmp(&a.specificity_x1024)
+            .then_with(|| folded(&a.term).cmp(&folded(&b.term)))
+    });
+    unbridged.truncate(MAX_UNBRIDGED);
+    unbridged
 }
 
 /// `--check` report: the unbridged mined vocabulary the orchestrator should
@@ -98,7 +125,8 @@ fn check_report(root: &Path) -> Value {
         "pair": pair.as_ref().map(|p| p.label),
         "language": language,
         "unbridged": unbridged.iter().map(|u| json!({
-            "term": u.term, "count": u.count, "samples": u.samples,
+            "term": u.term, "count": u.count,
+            "specificity_x1024": u.specificity_x1024, "samples": u.samples,
         })).collect::<Vec<_>>(),
     })
 }
@@ -133,11 +161,21 @@ impl Proposal {
     }
 }
 
-/// The folded set of CODE terms mined in the model — the gate's source of
-/// truth. A proposed bridge whose target is not in this set is a hallucination
-/// and is rejected, deterministically.
-fn mined_term_set(digest: &Digest) -> BTreeSet<String> {
-    digest.terms.iter().map(|t| folded(&t.term)).collect()
+/// The mined CODE vocabulary — folded term → its domain specificity (TF·IDF
+/// ×1024) — the gate's source of truth. Membership answers the
+/// anti-hallucination gate (a target not present is a hallucination); the
+/// specificity value answers the `target_too_generic` gate (a target below the
+/// floor is ubiquitous plumbing). On a collision (folding maps two raw terms to
+/// the same key) the higher specificity wins, so a generic alias never demotes a
+/// real domain term below the floor.
+fn mined_term_map(digest: &Digest) -> BTreeMap<String, u64> {
+    let mut map: BTreeMap<String, u64> = BTreeMap::new();
+    for t in &digest.terms {
+        let key = folded(&t.term);
+        let entry = map.entry(key).or_insert(0);
+        *entry = (*entry).max(t.specificity_x1024);
+    }
+    map
 }
 
 /// `--apply` report: validate each proposed bridge against the model and write
@@ -166,7 +204,7 @@ fn apply_report(root: &Path, proposals_path: &Path) -> Value {
     };
 
     let digest = Scan::locate().digest(&root.join(".claude").join("grain.model.json")).unwrap_or_default();
-    let mined = mined_term_set(&digest);
+    let mined = mined_term_map(&digest);
 
     let mut applied: Vec<Value> = Vec::new();
     let mut rejected: Vec<Value> = Vec::new();
@@ -180,12 +218,22 @@ fn apply_report(root: &Path, proposals_path: &Path) -> Value {
             if code_term.is_empty() {
                 continue;
             }
-            // The gate: the target MUST be a real mined term. This is what kills
-            // a hallucinated bridge deterministically, before any write.
-            if !mined.contains(&code_term) {
+            // Gate 1 (anti-hallucination): the target MUST be a real mined term.
+            // This kills a hallucinated bridge deterministically, before any write.
+            let Some(&specificity) = mined.get(&code_term) else {
                 rejected.push(json!({
                     "userWord": user_word, "codeTerm": code_term,
                     "reason": "target_not_in_model",
+                }));
+                continue;
+            };
+            // Gate 2 (anti-plumbing): a real but ubiquitous target (specificity
+            // below the floor) matches nearly every module — bridging onto it
+            // would smear the user word across the repo. Reject deterministically.
+            if specificity < MIN_TARGET_SPECIFICITY_X1024 {
+                rejected.push(json!({
+                    "userWord": user_word, "codeTerm": code_term,
+                    "reason": "target_too_generic",
                 }));
                 continue;
             }
@@ -239,11 +287,23 @@ mod tests {
     }
 
     /// A digest with the given (term, count, samples) rows — the shape
-    /// `scan digest` serializes, deserialized into our view.
+    /// `scan digest` serializes, deserialized into our view. Specificity is left
+    /// at its serde default (0); use [`digest_of_spec`] when a row's
+    /// `specificity_x1024` matters to the assertion.
     fn digest_of(rows: &[(&str, usize, &[&str])]) -> Digest {
         let terms: Vec<Value> = rows
             .iter()
             .map(|(t, c, s)| json!({ "term": t, "count": c, "samples": s }))
+            .collect();
+        serde_json::from_value(json!({ "terms": terms })).expect("digest view")
+    }
+
+    /// A digest with explicit `(term, specificity_x1024)` rows — for tests that
+    /// exercise the specificity re-rank or the `target_too_generic` floor.
+    fn digest_of_spec(rows: &[(&str, u64)]) -> Digest {
+        let terms: Vec<Value> = rows
+            .iter()
+            .map(|(t, s)| json!({ "term": t, "count": 1, "specificity_x1024": s, "samples": [] }))
             .collect();
         serde_json::from_value(json!({ "terms": terms })).expect("digest view")
     }
@@ -294,11 +354,12 @@ mod tests {
     }
 
     #[test]
-    fn check_caps_unbridged_at_max_in_rank_order() {
+    fn check_caps_unbridged_at_max() {
         let dir = tempdir().unwrap();
         write_root_config(dir.path());
         let pair = pair_for_root(dir.path());
-        // More unbridged terms than the cap, already in rank order from scan.
+        // More unbridged terms than the cap. Equal specificity (default 0) → the
+        // stable tie-break orders by folded term asc, so the cap keeps the head.
         let rows: Vec<(String, usize, Vec<String>)> =
             (0..MAX_UNBRIDGED + 10).map(|i| (format!("term{i:03}"), 100 - i, vec![])).collect();
         let view: Vec<(&str, usize, &[&str])> =
@@ -307,9 +368,40 @@ mod tests {
         let bridged = bridged_code_terms(dir.path(), pair.as_ref());
         let got = unbridged_terms(&digest, &bridged);
         assert_eq!(got.len(), MAX_UNBRIDGED, "capped at MAX_UNBRIDGED");
-        // The cap keeps the HEAD (most discriminative) — order is preserved.
         assert_eq!(got[0].term, "term000");
         assert_eq!(got[MAX_UNBRIDGED - 1].term, format!("term{:03}", MAX_UNBRIDGED - 1));
+    }
+
+    #[test]
+    fn check_ranks_unbridged_by_specificity_before_cap() {
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let bridged = BTreeSet::new(); // nothing bridged → every term survives the filter
+        // Deliberately out of specificity order in the digest (scan publishes
+        // kind-weighted order, not by discriminative power). The re-rank must
+        // surface the high-specificity domain word over the low-specificity
+        // plumbing, regardless of digest position.
+        let digest = digest_of_spec(&[
+            ("plumbing", 10),   // low specificity (ubiquitous), listed first
+            ("payable", 9000),  // the domain head
+            ("helper", 50),     // mid plumbing
+        ]);
+        let got = unbridged_terms(&digest, &bridged);
+        let terms: Vec<&str> = got.iter().map(|u| u.term.as_str()).collect();
+        assert_eq!(terms, vec!["payable", "helper", "plumbing"], "ranked by specificity desc: {terms:?}");
+        assert_eq!(got[0].specificity_x1024, 9000, "specificity carried onto the row");
+    }
+
+    #[test]
+    fn check_specificity_ties_break_stably_by_term() {
+        let dir = tempdir().unwrap();
+        write_root_config(dir.path());
+        let bridged = BTreeSet::new();
+        // Equal specificity → folded term asc decides, deterministically.
+        let digest = digest_of_spec(&[("beta", 500), ("alpha", 500), ("gamma", 500)]);
+        let got = unbridged_terms(&digest, &bridged);
+        let terms: Vec<&str> = got.iter().map(|u| u.term.as_str()).collect();
+        assert_eq!(terms, vec!["alpha", "beta", "gamma"], "stable tie-break: {terms:?}");
     }
 
     // -- AC-2: --apply writes real targets, gate rejects hallucinations -------
@@ -320,9 +412,9 @@ mod tests {
         write_root_config(dir.path());
         // The model mines `payable` but NOT `frobnicate`.
         let digest = digest_of(&[("payable", 197, &["src/payable.cs"])]);
-        let mined = mined_term_set(&digest);
-        assert!(mined.contains("payable"));
-        assert!(!mined.contains("frobnicate"));
+        let mined = mined_term_map(&digest);
+        assert!(mined.contains_key("payable"));
+        assert!(!mined.contains_key("frobnicate"));
 
         // Drive apply_report through real proposals: one valid, one hallucinated.
         let proposals = dir.path().join("proposals.json");
@@ -341,7 +433,7 @@ mod tests {
         let mut rejected = Vec::new();
         for code in ["payable", "frobnicate"] {
             let code_term = folded(code);
-            if mined.contains(&code_term) {
+            if mined.contains_key(&code_term) {
                 assert!(write_bridge(dir.path(), &pair_for_root(dir.path()).unwrap(), &user_word, &code_term).is_ok());
                 applied.push(code_term);
             } else {
@@ -364,6 +456,39 @@ mod tests {
 
         // Sanity: the proposals file was the real driver shape.
         let _ = proposals;
+    }
+
+    #[test]
+    fn apply_floor_rejects_generic_target_keeps_domain_one() {
+        // The model mines two real terms: `payable` (domain, high specificity)
+        // and `response` (ubiquitous plumbing, df ≈ n_docs → specificity ≈ 0).
+        // Both pass the anti-hallucination gate (both mined); the floor gate must
+        // reject only the generic one with `target_too_generic`, keep the other.
+        let domain_spec = MIN_TARGET_SPECIFICITY_X1024 + 1;
+        let generic_spec = MIN_TARGET_SPECIFICITY_X1024 - 1;
+        let digest = digest_of_spec(&[("payable", domain_spec), ("response", generic_spec)]);
+        let mined = mined_term_map(&digest);
+
+        // Mirror apply_report's two-gate sequence (scan digest is unavailable in
+        // unit tests, so drive the gate logic directly against the seeded map).
+        let mut applied = Vec::new();
+        let mut rejected: Vec<(&str, &str)> = Vec::new();
+        for code in ["payable", "response"] {
+            let code_term = folded(code);
+            match mined.get(&code_term) {
+                None => rejected.push((code, "target_not_in_model")),
+                Some(&s) if s < MIN_TARGET_SPECIFICITY_X1024 => {
+                    rejected.push((code, "target_too_generic"));
+                }
+                Some(_) => applied.push(code),
+            }
+        }
+        assert_eq!(applied, vec!["payable"], "domain target above floor accepted");
+        assert_eq!(
+            rejected,
+            vec![("response", "target_too_generic")],
+            "ubiquitous target below floor rejected with the right reason",
+        );
     }
 
     #[test]

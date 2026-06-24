@@ -967,6 +967,7 @@ mod tests {
             .map(|(term, count, samples)| DigestTerm {
                 term: (*term).to_string(),
                 count: *count,
+                specificity_x1024: 0,
                 samples: samples.iter().map(|s| (*s).to_string()).collect(),
             })
             .collect()
@@ -1012,7 +1013,7 @@ mod tests {
         assert_eq!(row.len(), 2, "exactly term + count per row: {c:?}");
         // Row cap: a catalogue past CANDIDATES_MAX trims to the bound, head-first.
         let big: Vec<DigestTerm> = (0..CANDIDATES_MAX + 25)
-            .map(|i| DigestTerm { term: format!("t{i:04}"), count: 1, samples: Vec::new() })
+            .map(|i| DigestTerm { term: format!("t{i:04}"), count: 1, specificity_x1024: 0, samples: Vec::new() })
             .collect();
         let cb = candidates_from_index(&big);
         assert_eq!(cb.len(), CANDIDATES_MAX, "row count bounded by CANDIDATES_MAX");

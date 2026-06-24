@@ -82,6 +82,12 @@ pub struct DigestTerm {
     pub term: String,
     #[serde(default)]
     pub count: usize,
+    /// Domain specificity ×1024 (TF·IDF, `ranking::domain_specificity_x1024`):
+    /// the discriminative-power signal that peaks at mid frequency. Defaulted to
+    /// 0 so a model from an older scan binary (no field) still deserialises — a
+    /// consumer sorting by it then sees a flat 0 and falls back to scan's order.
+    #[serde(default)]
+    pub specificity_x1024: u64,
     #[serde(default)]
     pub samples: Vec<String>,
 }
