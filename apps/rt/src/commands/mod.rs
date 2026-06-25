@@ -35,6 +35,8 @@ pub mod grill_capture;
 pub mod lexicon_suggest;
 pub mod lexicon_enrich;
 pub mod lexicon_judge;
+pub mod enrich_purpose;
+pub mod purpose_search;
 // W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
@@ -233,6 +235,51 @@ pub enum RunCmd {
         /// workspace anchor like every run-face emitter).
         #[arg(long, default_value = ".")]
         root: PathBuf,
+    },
+    /// Render a byte-stable batch prompt for purpose-enrichment of method/function
+    /// declarations (T2), or apply LLM-supplied summaries back to the grain model (T3).
+    ///
+    /// `--render`: read the grain model, emit a prompt with each method/function body.
+    /// `--apply <file>`: read `[{"id":"path#name#line","purpose":"..."}]` and write
+    /// purpose + body_hash back into the model (incremental: skip unchanged bodies).
+    /// Exactly one of `--render` / `--apply` must be supplied.
+    #[command(name = "enrich-purpose")]
+    EnrichPurpose {
+        /// Render mode: emit the batch summarize prompt to stdout.
+        #[arg(long)]
+        render: bool,
+        /// Apply mode: path to the JSON array of id+purpose entries.
+        #[arg(long)]
+        apply: Option<PathBuf>,
+        /// Path to the grain model JSON. Defaults to `.claude/grain.model.json`.
+        #[arg(long, default_value = ".claude/grain.model.json")]
+        model: PathBuf,
+        /// Workspace root. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Search declaration `purpose` summaries for a request — the recall path the
+    /// orchestrator calls ON A MISS, when the name digest returned nothing.
+    ///
+    /// A method whose NAME diverges from the request vocabulary (PT "efetivar" vs
+    /// `EffectivateAsync`) is invisible to the name index; `enrich-purpose` wrote
+    /// a one-sentence summary onto each logic declaration, and this command
+    /// searches THOSE (an UNCAPPED purpose→file index in the scan binary, matched
+    /// through the same ladder the digest uses, trigram rescue ON). Tokenises the
+    /// intent exactly as `feature --intent` and relays the scan tool's byte-stable
+    /// JSON `{intent, files:[{file, matchedTerms}]}`. NO LLM (purposes are already
+    /// in the model). Fail-open: an unavailable scan / model prints an empty
+    /// result, exit 0.
+    #[command(name = "purpose-search")]
+    PurposeSearch {
+        /// The free-text request whose purpose matches we want. Same tokenisation
+        /// as `feature --intent` (the orchestrator folds any cross-lingual
+        /// translation INSIDE the text).
+        #[arg(long)]
+        intent: String,
+        /// Path to the `grain.model.json` whose declaration purposes are searched.
+        #[arg(long)]
+        model: PathBuf,
     },
     /// Emit a compact git diff summary for agent context.
     DiffContext {
@@ -1892,6 +1939,12 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::LexiconSuggest { accept, root } => lexicon_suggest::run(accept.as_deref(), &root),
         RunCmd::LexiconEnrich { check, check_pt, apply, root } => lexicon_enrich::run(check, check_pt, apply.as_deref(), &root),
         RunCmd::LexiconJudgeRender { root } => lexicon_judge::run(&root),
+        RunCmd::EnrichPurpose { render, apply, model, root } => {
+            enrich_purpose::run(render, apply.as_deref(), &model, &root);
+        }
+        RunCmd::PurposeSearch { intent, model } => {
+            purpose_search::run(&intent, &model);
+        }
         RunCmd::DiffContext {
             parent,
             subproject,

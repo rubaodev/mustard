@@ -16,6 +16,7 @@ mod manifests;
 mod matching;
 mod mine;
 mod model;
+mod purpose;
 mod rank;
 mod spec;
 mod stemmers;
@@ -93,6 +94,28 @@ enum Command {
         #[arg(long, default_value = "")]
         invariant: String,
         /// Write the spec to a file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Find the files whose declarations' `purpose` summaries answer a free-text
+    /// intent — the recall path for a method whose NAME diverges from the request
+    /// vocabulary (e.g. PT "efetivar" vs `EffectivateAsync`). UNCAPPED over the
+    /// model's purposed declarations and matched through the SAME ladder
+    /// `digest --query` uses (with the trigram rescue rung ON). Deterministic, no
+    /// LLM (the purposes are already in the model). `path` is a project dir to
+    /// scan, or a model.json. Emits byte-stable JSON `{intent, files:[{file,
+    /// matchedTerms}]}`; an empty `files` means nothing bridged.
+    PurposeSearch {
+        path: PathBuf,
+        /// Comma/space-separated intent terms to search the purpose index for
+        /// (OR across terms; terms <3 chars ignored), e.g. "efetivar,baixa".
+        #[arg(long, default_value = "")]
+        query: String,
+        /// DECLARED natural language of the request (BCP-47-ish; only the primary
+        /// subtag is used). Empty = read the root project config next to the
+        /// model. The match ladder always keeps the fallback language active.
+        #[arg(long, default_value = "")]
+        lang: String,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -192,6 +215,26 @@ fn main() -> Result<()> {
                     println!("spec written to {}", p.display());
                 }
                 None => println!("{spec_md}"),
+            }
+        }
+        Command::PurposeSearch { path, query, lang, out } => {
+            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            // Fail-open: an unreadable / unparseable model yields an empty result
+            // (the orchestrator calls this on a miss; a degraded model must never
+            // turn the recall attempt into a hard error). `request_lang` reads the
+            // root config from the model path's neighbourhood when the model loads,
+            // or the explicit `--lang`; on a load failure the empty intent stands.
+            let result = match load_model(&path) {
+                Ok(model) => purpose::search(&model, &terms, &request_lang(&lang, &model.root)),
+                Err(_) => purpose::PurposeResult { intent: terms.join(" "), files: Vec::new() },
+            };
+            let json = serde_json::to_string_pretty(&result)?;
+            match out {
+                Some(p) => {
+                    std::fs::write(&p, &json)?;
+                    println!("purpose-search written to {} ({} bytes)", p.display(), json.len());
+                }
+                None => println!("{json}"),
             }
         }
         Command::Verify { path, entity, like, ops } => {

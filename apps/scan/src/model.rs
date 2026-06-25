@@ -168,6 +168,16 @@ pub struct Decl {
     /// generic to mine: a base name shared by many entities is a shared contract.
     #[serde(default)]
     pub supertypes: Vec<String>,
+    /// One-sentence business-action summary written by `enrich-purpose --apply`
+    /// (T3). Absent on freshly-scanned models; additive with `#[serde(default)]`
+    /// so older payloads deserialise unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    /// SHA-256 hex digest of the declaration's sliced body at the time `purpose`
+    /// was written — used by `enrich-purpose --apply` for incremental skipping
+    /// (skip when body hasn't changed). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_hash: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
