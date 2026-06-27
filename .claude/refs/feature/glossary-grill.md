@@ -12,7 +12,7 @@
 
 Right after the `mustard-rt run feature` digest (which produces the matched
 repo-vocabulary terms), once per request. Skip entirely on Light requests where
-you already have full precedent — the nudge is most valuable on net-new / wide
+you already have full precedent — the grill is most valuable on net-new / wide
 Full features that touch domain terms the glossary doesn't define.
 
 ## Run
