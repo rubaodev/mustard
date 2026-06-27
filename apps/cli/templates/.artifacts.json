@@ -20,15 +20,6 @@
       "checksum": null
     },
     {
-      "id": "skill:skill-creator",
-      "category": "skill",
-      "source": { "kind": "git", "repo": "https://github.com/anthropics/skills", "subdir": "skills/skill-creator", "ref": "690f15cac7f7b4c055c5ab109c79ed9259934081" },
-      "version": "690f15cac7f7b4c055c5ab109c79ed9259934081",
-      "vendoredAt": "2026-05-19",
-      "path": "skills/skill-creator",
-      "checksum": null
-    },
-    {
       "id": "skill:karpathy-guidelines",
       "category": "skill",
       "source": { "kind": "git", "repo": "https://github.com/forrestchang/andrej-karpathy-skills", "subdir": "skills/karpathy-guidelines", "ref": "2c606141936f1eeef17fa3043a72095b4765b9c2" },

@@ -13,12 +13,14 @@ source: manual
 | Action | Usage | Backend |
 |--------|-------|---------|
 | `install` | `/skill install <source>` | `mustard-rt run skill-fetch <source>` |
-| `create` | `/skill create <name>` | Invoke `skill-creator` skill (interactive) |
+| `create` | `/skill create <name>` | `skill-creator` (fetched on demand — see note) |
 | `list` | `/skill list` | `mustard-rt run skills list --format table` |
 | `remove` | `/skill remove <name>` | Delete `.claude/skills/{name}/` (warn if `source: scan`) |
-| `optimize` | `/skill optimize <name>` | `skill-creator`'s description-optimization loop |
-| `eval` | `/skill eval <name>` | `skill-creator` eval methodology |
-| `update` | `/skill update skill-creator` | Sparse-clone `anthropics/skills`, refresh `skill-creator` |
+| `optimize` | `/skill optimize <name>` | `skill-creator` description-optimization (fetched on demand) |
+| `eval` | `/skill eval <name>` | `skill-creator` eval methodology (fetched on demand) |
+| `update` | `/skill update skill-creator` | Sparse-clone `anthropics/skills` → fetch/refresh `skill-creator` |
+
+> **`skill-creator` is NOT bundled** (a ~250 KB Python authoring tool, kept out of the deployed payload). `create`/`optimize`/`eval` fetch it on demand — run `/skill update skill-creator` first (sparse-clones `anthropics/skills`); they require Python 3 + `claude` CLI on PATH.
 
 ## install — source formats
 
@@ -35,4 +37,4 @@ source: manual
 - NEVER delete skills with `source: manual` without user confirmation.
 - `source:` field is **territorial**: `/scan` writes `source: scan` ONLY; `/skill install|create` writes `source: manual` ONLY. Missing `source:` → treat as `manual` (conservative).
 - ALWAYS validate SKILL.md frontmatter on install (kebab-case `name`, description 50-600 chars with trigger word, `source: scan|manual`).
-- `optimize` and `eval` require Python 3 + `claude` CLI on PATH.
+- `create`/`optimize`/`eval` require `skill-creator` fetched (`/skill update skill-creator` — it is NOT bundled) plus Python 3 + `claude` CLI on PATH.
