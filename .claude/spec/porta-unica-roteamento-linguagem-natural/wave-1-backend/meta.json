@@ -1,0 +1,31 @@
+{
+  "stage": "Plan",
+  "outcome": "Active",
+  "phase": null,
+  "scope": null,
+  "lang": "pt-BR",
+  "checkpoint": null,
+  "parent": "porta-unica-roteamento-linguagem-natural",
+  "checklist": [
+    {
+      "label": "packages/core/src/domain/model/event.rs",
+      "path": "packages/core/src/domain/model/event.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "path": "apps/rt/src/commands/event/emit_pipeline.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/hooks/task/skill_usage_observer.rs",
+      "path": "apps/rt/src/hooks/task/skill_usage_observer.rs",
+      "done": false
+    },
+    {
+      "label": "apps/rt/src/shared/events/route.rs",
+      "path": "apps/rt/src/shared/events/route.rs",
+      "done": false
+    }
+  ]
+}
