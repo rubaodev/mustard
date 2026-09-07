@@ -20,10 +20,27 @@ use std::path::Path;
 
 /// Resolve the file-count threshold (default 10, floor 3).
 fn resolve_limit() -> usize {
-    std::env::var("MUSTARD_WAVE_SIZE_LIMIT")
+    env_limit("MUSTARD_WAVE_SIZE_LIMIT", 10)
+}
+
+/// Resolve the task-count threshold (default 10, floor 3).
+///
+/// A wave is ONE agent in ONE pass. Files measure how wide it reaches; tasks
+/// measure how long it has to stay coherent, and they are not the same number —
+/// measured in the field, a wave was accepted at 19 files AND 13 tasks, and the
+/// audit only ever looked at the files. The failure mode tasks catch is specific:
+/// quality falls off at the end of a long list, and a failure at task 11 wastes
+/// the ten before it.
+fn resolve_task_limit() -> usize {
+    env_limit("MUSTARD_WAVE_TASK_LIMIT", 10)
+}
+
+/// A `usize` threshold from `var`, floored at 3, defaulting to `default`.
+fn env_limit(var: &str, default: usize) -> usize {
+    std::env::var(var)
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
-        .map_or(10, |n| if n < 3 { 3 } else { n as usize })
+        .map_or(default, |n| if n < 3 { 3 } else { n as usize })
 }
 
 /// An enumerated wave folder.
@@ -179,6 +196,7 @@ fn audit_wave(
     wave: &WaveFolder,
     spec_dir: &Path,
     limit: usize,
+    task_limit: usize,
     role_patterns: &[RolePattern],
     model_path: &Path,
     project_root: &Path,
@@ -189,9 +207,11 @@ fn audit_wave(
     // Prefer the wave's own spec.md `## Files` section.
     let mut files: Option<Vec<String>> = None;
     let mut source: Option<&str> = None;
+    let mut task_count = 0usize;
     let wave_spec_path = spec_dir.join(folder).join("spec.md");
     if wave_spec_path.exists() {
         if let Ok(text) = fs::read_to_string(&wave_spec_path) {
+            task_count = count_task_items(&text);
             if let Some(parsed) = parse_files_section(&text) {
                 if !parsed.is_empty() {
                     files = Some(parsed);
@@ -253,18 +273,41 @@ fn audit_wave(
     if file_count > limit {
         reasons.push(format!("file-count:{file_count}>{limit}"));
     }
+    if task_count > task_limit {
+        reasons.push(format!("task-count:{task_count}>{task_limit}"));
+    }
     let oversized = !reasons.is_empty();
 
     json!({
         "wave": wave_num,
         "folder": folder,
         "fileCount": file_count,
+        "taskCount": task_count,
         "layerCount": layer_count,
         "languages": langs.into_iter().collect::<Vec<_>>(),
         "oversized": oversized,
         "reason": reasons.join("; "),
         "source": source,
     })
+}
+
+/// Count the checklist items under a wave spec's `## Tasks` / `## Tarefas`
+/// heading — top-level `- ` bullets only, so a sub-bullet elaborating one task
+/// is not counted as another task.
+fn count_task_items(text: &str) -> usize {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines
+        .iter()
+        .position(|l| crate::commands::spec::spec_sections::is_heading(l, "tasks"))
+    else {
+        return 0;
+    };
+    lines
+        .iter()
+        .skip(start + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .filter(|l| l.starts_with("- "))
+        .count()
 }
 
 /// Dispatch `mustard-rt run wave-size-check`.
@@ -299,33 +342,92 @@ pub fn run(spec_dir_arg: Option<&str>) {
         return;
     }
 
-    let Some(waves) = enumerate_waves(&spec_dir) else {
-        emit(json!({ "action": "skip", "reason": "not-a-wave-plan" }));
-        return;
+    emit(audit(&spec_dir));
+}
+
+/// Audit every wave of `spec_dir` and return the report — the miolo of [`run`],
+/// callable IN-PROCESS.
+///
+/// It is `pub(crate)` for one reason: this audit computed its numbers and no
+/// step of the pipeline ever looked at them. `wave-size-check` shipped as a
+/// command nobody called, so a plan was accepted with a 19-file, 13-task wave
+/// with no warning at any stage — the plan report even printed `widestWave: 19`
+/// and did nothing with it. [`warn_oversized_waves`] is the caller that closes
+/// that gap.
+pub(crate) fn audit(spec_dir: &Path) -> Value {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let Some(waves) = enumerate_waves(spec_dir) else {
+        return json!({ "action": "skip", "reason": "not-a-wave-plan" });
     };
 
     let limit = resolve_limit();
+    let task_limit = resolve_task_limit();
     // F0-e: honour `mustard.json#rolePatterns` so non-English / non-JS layers
     // classify correctly. Resolve from the workspace anchor, fail-open to cwd.
-    let project_root = crate::shared::context::workspace_root_strict().unwrap_or_else(|_| cwd.clone());
+    let project_root = crate::shared::context::workspace_root_strict().unwrap_or(cwd);
     let role_patterns = load_role_patterns(&project_root);
     let model_path = project_root.join(".claude").join("grain.model.json");
     let audited: Vec<Value> = waves
         .iter()
-        .map(|w| audit_wave(w, &spec_dir, limit, &role_patterns, &model_path, &project_root))
+        .map(|w| {
+            audit_wave(
+                w,
+                spec_dir,
+                limit,
+                task_limit,
+                &role_patterns,
+                &model_path,
+                &project_root,
+            )
+        })
         .collect();
     let oversized_count = audited
         .iter()
         .filter(|w| w.get("oversized").and_then(Value::as_bool) == Some(true))
         .count();
 
-    emit(json!({
+    json!({
         "action": "audited",
         "specDir": spec_dir.to_string_lossy(),
         "limit": limit,
+        "taskLimit": task_limit,
         "oversizedCount": oversized_count,
         "waves": audited,
-    }));
+    })
+}
+
+/// Run [`audit`] over a freshly materialised plan and WARN on stderr for each
+/// oversized wave. Advisory — it never blocks, and it never touches stdout (the
+/// materialise report is machine-read and must stay byte-stable).
+///
+/// **Why the warning is worth a line each.** A wave is one agent in one pass.
+/// Past the ceiling the last tasks get the worst work, and a failure late in the
+/// list throws away everything before it. The operator cannot see that from a
+/// plan that materialised successfully — every artefact is there, every file is
+/// listed, nothing failed. This is the only moment the shape of the plan is
+/// visible and still cheap to change.
+pub(crate) fn warn_oversized_waves(spec_dir: &Path) {
+    let report = audit(spec_dir);
+    if report.get("oversizedCount").and_then(Value::as_u64).unwrap_or(0) == 0 {
+        return;
+    }
+    let Some(waves) = report.get("waves").and_then(Value::as_array) else {
+        return;
+    };
+    for w in waves {
+        if w.get("oversized").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let folder = w.get("folder").and_then(Value::as_str).unwrap_or("?");
+        let files = w.get("fileCount").and_then(Value::as_u64).unwrap_or(0);
+        let tasks = w.get("taskCount").and_then(Value::as_u64).unwrap_or(0);
+        let reason = w.get("reason").and_then(Value::as_str).unwrap_or("");
+        eprintln!(
+            "[wave-size] WARN: {folder} is oversized ({files} files, {tasks} tasks — {reason}). \
+             A wave is ONE agent in ONE pass: split off the tasks that share no file with the \
+             rest — they are a wave of their own, and they can run in parallel."
+        );
+    }
 }
 
 #[cfg(test)]
@@ -362,7 +464,7 @@ mod tests {
         // extensions carry the (understood) language, so the file-count reason
         // still fires.
         let no_model = spec_dir.join("no-model.json");
-        let audited = audit_wave(&waves[0], spec_dir, 10, &[], &no_model, spec_dir);
+        let audited = audit_wave(&waves[0], spec_dir, 10, 10, &[], &no_model, spec_dir);
         assert_eq!(audited["oversized"], json!(true));
         assert_eq!(audited["fileCount"], json!(14));
         assert_eq!(audited["languages"], json!(["typescript"]));
@@ -372,6 +474,42 @@ mod tests {
     fn not_a_wave_plan_skips() {
         let dir = tempdir().unwrap();
         assert!(enumerate_waves(dir.path()).is_none());
+    }
+
+    /// A wave is oversized by its TASK count too, not only by its files.
+    ///
+    /// Measured in the field: a plan was accepted carrying a wave of 19 files
+    /// AND 13 tasks, and this audit only ever looked at the files — so a wave
+    /// that is narrow but very long slipped through every stage in silence.
+    /// A wave is one agent in one pass: past the ceiling the last tasks get the
+    /// worst work, and a failure at task 11 wastes the ten before it.
+    #[test]
+    fn a_long_task_list_is_oversized_even_with_few_files() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path();
+        std::fs::write(spec_dir.join("wave-plan.md"), "# plan\n").unwrap();
+        let wave_dir = spec_dir.join("wave-1-backend");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        let tasks: String = (1..=13).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write as _;
+            let _ = writeln!(acc, "- [ ] task {i}");
+            acc
+        });
+        std::fs::write(
+            wave_dir.join("spec.md"),
+            format!("## Files\n- src/a.rs\n- src/b.rs\n\n## Tasks\n{tasks}"),
+        )
+        .unwrap();
+        let waves = enumerate_waves(spec_dir).unwrap();
+        let no_model = spec_dir.join("no-model.json");
+        let audited = audit_wave(&waves[0], spec_dir, 10, 10, &[], &no_model, spec_dir);
+        assert_eq!(audited["fileCount"], json!(2), "well under the file limit: {audited}");
+        assert_eq!(audited["taskCount"], json!(13), "{audited}");
+        assert_eq!(audited["oversized"], json!(true), "{audited}");
+        assert!(
+            audited["reason"].as_str().unwrap_or_default().contains("task-count:13>10"),
+            "the reason names WHICH ceiling was crossed: {audited}"
+        );
     }
 
     #[test]
@@ -391,7 +529,7 @@ mod tests {
         std::fs::write(wave_dir.join("spec.md"), files).unwrap();
         let waves = enumerate_waves(spec_dir).unwrap();
         let no_model = spec_dir.join("no-model.json");
-        let audited = audit_wave(&waves[0], spec_dir, 10, &[], &no_model, spec_dir);
+        let audited = audit_wave(&waves[0], spec_dir, 10, 10, &[], &no_model, spec_dir);
         assert!(audited["layerCount"].as_u64().unwrap() >= 2, "C# folders span layers: {audited}");
         assert_eq!(audited["languages"], json!(["csharp"]));
         assert_eq!(audited["oversized"], json!(false), "multi-layer suppressed for foreign lang: {audited}");
@@ -413,7 +551,7 @@ mod tests {
         std::fs::write(wave_dir.join("spec.md"), files).unwrap();
         let waves = enumerate_waves(spec_dir).unwrap();
         let no_model = spec_dir.join("no-model.json");
-        let audited = audit_wave(&waves[0], spec_dir, 10, &[], &no_model, spec_dir);
+        let audited = audit_wave(&waves[0], spec_dir, 10, 10, &[], &no_model, spec_dir);
         assert!(audited["layerCount"].as_u64().unwrap() >= 2);
         assert_eq!(audited["oversized"], json!(true), "multi-layer preserved for JS/TS: {audited}");
         assert!(audited["reason"].as_str().unwrap().contains("multi-layer"));

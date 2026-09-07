@@ -38,7 +38,8 @@
       "WebSearch",
       "Bash",
       "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)"
+      "Bash(mustard-rt run qa-run:*)",
+      "Bash(mustard-rt run pr-merge:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",

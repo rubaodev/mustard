@@ -296,11 +296,18 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "cannot-write-wave-plan" });
         }
 
+        // The parent body each wave's `## Material` is cut from — read once, like
+        // the scaffold path does, so a re-wave carries the same material a fresh
+        // materialisation would.
+        let parent_material_text =
+            fs::read_to_string(spec_dir.join("spec.md")).unwrap_or_default();
+
         let mut waves_meta: Vec<Value> = Vec::new();
         for (entry, dag_wave) in plan.waves.iter().zip(waves.iter()) {
             let wave_dir = spec_dir.join(wave_name(entry));
             let _ = fs::create_dir_all(&wave_dir);
-            let wave_spec_content = render_wave_spec(&spec_name, entry, &hd);
+            let wave_spec_content =
+                render_wave_spec(&spec_name, entry, &hd, &parent_material_text);
             let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
             // Preserve the action-JSON contract: `files` is the file *count*.
             let file_count = dag_wave

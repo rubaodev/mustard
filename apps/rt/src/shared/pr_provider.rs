@@ -395,6 +395,61 @@ pub(crate) struct GithubPrCli {
     repo: PathBuf,
 }
 
+/// A pull-request body parked in a temp file for the duration of one `gh` call.
+///
+/// It deletes itself on drop, so a failed call leaves nothing behind. The path
+/// carries the process id and a nanosecond stamp because two units can open a
+/// PR at the same second on the same machine, and the second one must not read
+/// the first one's prose.
+struct BodyFile {
+    path: PathBuf,
+}
+
+impl BodyFile {
+    /// Write `body` to a fresh temp file.
+    fn new(body: &str) -> Result<Self, String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let path = std::env::temp_dir()
+            .join(format!("mustard-pr-body-{}-{stamp}.md", std::process::id()));
+        mustard_core::io::fs::write_atomic(&path, body.as_bytes())
+            .map_err(|e| format!("could not stage the pull-request body: {e}"))?;
+        Ok(Self { path })
+    }
+
+    /// The path as the `--body-file` argument value.
+    fn path_arg(&self) -> String {
+        self.path.to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for BodyFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The `gh` argv that PATCHes the `body` of pull request `number`, reading the
+/// prose from `body_path`.
+///
+/// Split out as a pure function so the SHAPE of the call is testable without a
+/// network: what broke here was not the intent but the command chosen to carry
+/// it, and a shape nobody asserts is a shape that drifts back.
+///
+/// `{owner}` / `{repo}` are `gh`'s own placeholders, resolved from the working
+/// directory the caller sets — no URL is parsed here.
+fn patch_body_argv(number: u64, body_path: &str) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        "--method".to_string(),
+        "PATCH".to_string(),
+        format!("repos/{{owner}}/{{repo}}/pulls/{number}"),
+        "-F".to_string(),
+        format!("body=@{body_path}"),
+    ]
+}
+
 impl GithubPrCli {
     /// Bind the adapter to one repository root — the cwd every `gh` call runs
     /// in.
@@ -409,8 +464,18 @@ impl PrProvider for GithubPrCli {
     }
 
     fn open(&self, pr: &PrToOpen) -> Result<PrOpened, String> {
+        // The body travels as a FILE, never inline.
+        //
+        // A pull-request body is prose: the unit's own `pr-body.md` runs to
+        // several kilobytes as a matter of course. Windows caps a command line
+        // at ~8 KB, so an inline `--body` turned a perfectly good PR into
+        // `{"ok":false,"error":"Linha de comando muito longa."}` — measured in
+        // the field at ~9 KB. `gh` accepts `--body-file` for exactly this, and
+        // the temp file also spares every shell one more quoting problem.
+        let body_file = BodyFile::new(&pr.body)?;
+        let body_path = body_file.path_arg();
         let mut args: Vec<&str> = vec![
-            "pr", "create", "--title", &pr.title, "--body", &pr.body, "--head", &pr.head,
+            "pr", "create", "--title", &pr.title, "--body-file", &body_path, "--head", &pr.head,
             "--base", &pr.base,
         ];
         if pr.draft {
@@ -430,7 +495,27 @@ impl PrProvider for GithubPrCli {
     }
 
     fn edit_body(&self, number: u64, body: &str) -> Result<(), String> {
-        gh_out(&self.repo, &["pr", "edit", &number.to_string(), "--body", body]).map(|_| ())
+        // ONE field, through the endpoint that changes one field.
+        //
+        // This used to be `gh pr edit`, a convenience command that first reads a
+        // whole pull-request view — including its PROJECT CARDS, which GitHub
+        // has since retired. So the edit failed on a piece of data nobody here
+        // ever asked for: `GraphQL: Projects (classic) is being deprecated …
+        // (repository.pullRequest.projectCards)`, measured 2026-09-07 while
+        // updating a body this session had just written. A command that reads
+        // more than it needs breaks on changes that are none of its business.
+        //
+        // The sibling Azure adapter already patches the single field that
+        // changes (`pr_azure::patch_field`); GitHub was the one asking for the
+        // whole view. `{owner}`/`{repo}` are `gh`'s own placeholders, resolved
+        // from the working directory `gh_out` sets — so no URL is parsed here.
+        //
+        // `-F body=@<file>` hands the prose over as a file for the same reason
+        // `open` does: a body runs to kilobytes, and Windows caps a command line
+        // at ~8 KB.
+        let body_file = BodyFile::new(body)?;
+        let argv = patch_body_argv(number, &body_file.path_arg());
+        gh_out(&self.repo, &argv.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
     }
 
     fn ready(&self, number: u64) -> Result<(), String> {
@@ -543,6 +628,36 @@ mod tests {
         AzureRemote, PAT_ENV,
     };
     use serde_json::json;
+
+    /// Editing a body changes ONE field, through the endpoint that changes one
+    /// field.
+    ///
+    /// It used to go through `gh pr edit`, a convenience command that first
+    /// reads a whole pull-request view — project cards included, which GitHub
+    /// retired. The edit then failed on data nobody asked for:
+    /// `GraphQL: Projects (classic) is being deprecated … (projectCards)`,
+    /// measured 2026-09-07. The intent was never wrong; the command carrying it
+    /// read more than it needed, and broke on a change that was none of its
+    /// business.
+    #[test]
+    fn editing_a_body_patches_one_field_and_reads_nothing() {
+        let argv = patch_body_argv(255, "/tmp/mustard-pr-body-1-2.md");
+
+        assert_eq!(&argv[0..3], ["api", "--method", "PATCH"], "{argv:?}");
+        assert!(
+            !argv.contains(&"edit".to_string()),
+            "the porcelain command is what read too much: {argv:?}",
+        );
+        // `gh`'s own placeholders — the repository comes from the working
+        // directory, so no URL is parsed on this path.
+        assert_eq!(argv[3], "repos/{owner}/{repo}/pulls/255", "{argv:?}");
+        // The prose rides as a FILE: a body runs to kilobytes and Windows caps
+        // a command line at ~8 KB.
+        assert_eq!(argv[4], "-F", "{argv:?}");
+        assert_eq!(argv[5], "body=@/tmp/mustard-pr-body-1-2.md", "{argv:?}");
+        // Exactly the body — nothing else about the pull request is touched.
+        assert_eq!(argv.len(), 6, "one field, one flag: {argv:?}");
+    }
 
     /// The port speaks the short name whatever a provider handed it: Azure's
     /// full ref is stripped, GitHub's already-short name passes unchanged,

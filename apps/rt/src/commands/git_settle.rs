@@ -694,6 +694,25 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             ),
         });
     }
+
+    // One fetch for every base — fail-open (offline still verifies against
+    // whatever `origin/<base>` is already known locally; the merge gate below
+    // stays conservative either way).
+    //
+    // **It runs HERE, before the base is resolved, because the resolution is a
+    // MEASUREMENT and a measurement is only as fresh as its refs.** It used to
+    // sit after the `ambiguous-base` refusal, so the containment fallback below
+    // asked `branch --contains` against remote-tracking refs that predated the
+    // merge that had just happened. Measured in the field, 2026-09-07: a unit
+    // merged through the PR door seconds earlier was declared ambiguous, and the
+    // refusal's own hint sent the operator to WRITE DOWN a base the repository
+    // could already prove — one `git fetch` later, the same call settled with
+    // nothing recorded by hand. A ritual that asks for a fact it declined to go
+    // and look up is asking the operator to cover for it.
+    let mut fetch_args: Vec<&str> = vec!["fetch", "origin"];
+    fetch_args.extend(bases.iter().map(String::as_str));
+    let fetched = git_ok(&main, &fetch_args);
+
     let mut answer = flow.base_of(&unit_branch);
     // **Before refusing for a missing RECORD, ask git.** A unit that is already
     // contained in exactly one branch was demonstrably merged there, and that is
@@ -720,9 +739,24 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "root": show(&main),
             "configRoot": show(&cfg_root),
             "candidates": answer.candidates(),
-            "hint": "unidade de emergência sem base registrada: nada gravou de qual das bases \
-                     candidatas ela saiu. Reabra com `mustard-rt run work-unit-open --branch \
-                     <unit> --base <uma delas>` e repita — o ritual de saída não escolhe por você",
+            // Whether the refusal was reached with FRESH refs or stale ones, said
+            // out loud. The two are different situations with different next
+            // moves, and only one of them is the operator's to solve: offline,
+            // the measurement never really ran, and telling them to write the
+            // base down by hand would freeze a note the repository can prove on
+            // its own the moment the network is back.
+            "fetched": fetched,
+            "hint": if fetched {
+                "unidade sem base registrada, e o trabalho não está contido em exatamente uma \
+                 base — nem o registro do corte nem a medição responderam. Reabra com \
+                 `mustard-rt run work-unit-open --branch <unit> --base <uma delas>` e repita — o \
+                 ritual de saída não escolhe por você"
+            } else {
+                "não foi possível buscar do remoto, então a medição não rodou: as referências \
+                 locais podem estar atrasadas em relação a um merge recém-feito. Reconecte e \
+                 repita ANTES de gravar a base à mão — um registro escrito agora envelhece, a \
+                 medição não"
+            },
         });
     }
     let Some(base) = answer.into_known() else {
@@ -753,12 +787,6 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         });
     };
 
-    // One fetch for every base — fail-open (offline still verifies against
-    // whatever origin/<base> is already known locally; the merge gate below
-    // stays conservative either way).
-    let mut fetch_args: Vec<&str> = vec!["fetch", "origin"];
-    fetch_args.extend(bases.iter().map(String::as_str));
-    let fetched = git_ok(&main, &fetch_args);
 
     // THE gate: 100% merged or nothing happens.
     if !is_merged(&main, &unit_branch, &base, &provider, &flow) {
@@ -1967,6 +1995,101 @@ mod tests {
     /// assertions can fail: the local head really IS contained (the evidence the
     /// old measurement stopped at), and the moment the remote ref is back on
     /// what the merge accounts for, the very same command settles the unit.
+    /// The base is MEASURED against fresh refs, so a unit merged seconds ago
+    /// settles instead of being declared ambiguous.
+    ///
+    /// Two bases and no cut record leave the base underivable from the name, so
+    /// the resolution falls to the containment measurement — and a measurement
+    /// is only as fresh as the refs it reads. The fetch used to run AFTER this
+    /// refusal, so `branch --contains` asked remote-tracking refs that predated
+    /// the merge. Measured in the field, 2026-09-07: a unit merged through the
+    /// PR door seconds earlier came back `ambiguous-base`, and the hint asked
+    /// the operator to WRITE DOWN a base the repository could already prove.
+    ///
+    /// The fixture reproduces exactly that gap: the merge lands on the ORIGIN
+    /// through a second clone, so this checkout's refs know nothing about it
+    /// until the settle itself goes and looks.
+    #[test]
+    fn a_unit_merged_on_the_remote_settles_without_a_recorded_base() {
+        let dir = tempdir().expect("tempdir");
+        let bare = dir.path().join("origin.git");
+        let main = dir.path().join("repo");
+        let other = dir.path().join("other");
+        for p in [&bare, &main] {
+            std::fs::create_dir_all(p).expect("mkdir");
+        }
+        git(&bare, &["init", "--bare", "."]);
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-b", "dev"]);
+        // TWO bases: with one, `base_of` answers it outright and the
+        // measurement is never reached.
+        std::fs::write(
+            main.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .expect("cfg");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("a.txt"), "a").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "seed"]);
+        git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
+        git(&main, &["push", "-u", "origin", "dev"]);
+        git(&main, &["branch", "main"]);
+        git(&main, &["push", "-u", "origin", "main"]);
+
+        // The unit: a `{kind}/{slug}` branch with a unit RECORD but no
+        // `.cut-base` — the shape a hand-cut branch leaves behind.
+        git(&main, &["checkout", "-b", "fix/stale"]);
+        std::fs::create_dir_all(main.join(".claude").join("spec").join("stale"))
+            .expect("unit record");
+        std::fs::write(main.join("b.txt"), "b").expect("work");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "the work"]);
+        git(&main, &["push", "-u", "origin", "fix/stale"]);
+
+        // The merge happens on the ORIGIN, through a clone this checkout never
+        // hears about — the state right after a pull request is merged.
+        git(
+            dir.path(),
+            &[
+                "clone",
+                bare.to_string_lossy().as_ref(),
+                other.to_string_lossy().as_ref(),
+            ],
+        );
+        git(&other, &["config", "user.email", "t@t"]);
+        git(&other, &["config", "user.name", "t"]);
+        git(&other, &["checkout", "dev"]);
+        git(&other, &["merge", "--no-ff", "origin/fix/stale", "-m", "merge fix/stale"]);
+        git(&other, &["push", "origin", "dev"]);
+
+        // This checkout's refs are stale by construction: nothing here has
+        // fetched since the merge.
+        git(&main, &["checkout", "dev"]);
+        let contained =
+            git_out(&main, &["branch", "-a", "--contains", "fix/stale"]).unwrap_or_default();
+        assert!(
+            !contained.contains("origin/dev"),
+            "the fixture must START stale, or it proves nothing: {contained}",
+        );
+
+        let v = settle_at(&main, Some("fix/stale"));
+        assert_ne!(
+            v["reason"],
+            json!("ambiguous-base"),
+            "the settle must go and look before declaring the base unknowable: {v}",
+        );
+        assert_eq!(v["ok"], json!(true), "{v}");
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(
+            v["baseCheckout"]["branch"],
+            json!("dev"),
+            "it settled onto the right base: {v}"
+        );
+    }
+
     #[test]
     fn settle_refuses_when_a_ref_moved_after_merge() {
         let (_dir, main) = fixture();

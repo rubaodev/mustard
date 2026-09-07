@@ -173,7 +173,19 @@ pub fn run(opts: CloseOrchestrateOpts) {
     let mut gates: Vec<GateReport> = Vec::new();
     // Resolved ONCE, up here: the QA gate below reads the recorded verdict from
     // this root, and the chained finalize writes to the same one.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    //
+    // It is the STATE root, not the working directory, and in a linked git
+    // worktree those differ: `workspace_root` maps a worktree back to its main
+    // checkout on purpose, so every worktree of a unit shares one `.claude/`.
+    // Every writer already went through that redirect; this reader took the raw
+    // `current_dir()`. Measured in the field, 2026-09-07: run from a worktree,
+    // this gate reported "no QA pass recorded" on the line right under a QA run
+    // that had just passed — the verdict was written at the main checkout and
+    // looked for in the worktree. The SUBCOMMANDS it shells still inherit the
+    // process's own directory, which is right: they run against the code.
+    let cwd = mustard_core::io::workspace::workspace_root_or_self(
+        &std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf()),
+    );
 
     // 1. verify-pipeline (build/test gate).
     let (ok, dur, _) = run_subcmd(&["verify-pipeline"]);

@@ -466,7 +466,14 @@ fn current_spec_uncached(project_dir_path: &str) -> Option<String> {
         }
     }
 
-    // 2. Newest pipeline-state file by mtime — legacy hint used when no
+    // 2. The unit the CHECKOUT is standing on. See
+    //    [`spec_of_checkout_branch`] — the branch is the isolation, so it is
+    //    the strongest statement available about which unit is in progress.
+    if let Some(spec) = spec_of_checkout_branch(project_dir_path) {
+        return Some(spec);
+    }
+
+    // 3. Newest pipeline-state file by mtime — legacy hint used when no
     //    env override is present.
     let states = ClaudePaths::for_project(Path::new(project_dir_path))
         .ok()?
@@ -487,6 +494,41 @@ fn current_spec_uncached(project_dir_path: &str) -> Option<String> {
         }
     }
     best.map(|(_, spec)| spec)
+}
+
+/// The unit the CHECKOUT is standing on: the slug of the current branch, when a
+/// spec directory of that name exists. `None` on an integration base, a
+/// hand-cut branch, or a slug with no spec directory.
+///
+/// **Why the branch outranks the leftover state file.** Every unit is cut as a
+/// `{kind}/{slug}` branch — the branch IS the isolation. A directory under
+/// `.claude/spec/` is only the residue of a unit that once existed, and a
+/// `.pipeline-states/*.json` is the residue of one that once ran. Measured in
+/// the field: for a whole session the boundary gate warned on every single edit
+/// naming `contrato-plano-fixo-nasce-com`, and the prompt banner said the same
+/// pipeline was in flight — while `active-specs` listed a different unit, and
+/// the checkout was on that other unit's branch. Dozens of warnings, all
+/// pointing at the wrong target. A gate that is wrong every time is worse than
+/// no gate, because the operator learns to skip the one day it is right.
+///
+/// Reads `.git/HEAD` directly rather than spawning `git`: this runs inside a
+/// PreToolUse hook, once per Write/Edit, and a subprocess per file edit is a
+/// cost the answer does not justify. Fail-open at every step.
+#[must_use]
+pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
+    let project = Path::new(project_dir_path);
+    let head = fs::read_to_string(project.join(".git").join("HEAD")).ok()?;
+    let branch = head.trim().strip_prefix("ref: refs/heads/")?.trim();
+    if branch.is_empty() {
+        return None;
+    }
+    let config = mustard_core::ProjectConfig::load(project);
+    let slug = crate::shared::work_kind::BaseFlow::of_at(&config.git, project).slug_of(branch)?;
+    ClaudePaths::for_project(project)
+        .and_then(|p| p.for_spec(&slug))
+        .ok()
+        .filter(|sp| sp.dir().exists())
+        .map(|_| slug)
 }
 
 /// Resolve the spec a session is currently bound to, fail-open `None`.

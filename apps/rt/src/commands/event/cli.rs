@@ -152,6 +152,11 @@ pub enum EventCmd {
         /// Omitted: the branch the checkout is standing on.
         #[arg(long)]
         unit: Option<String>,
+        /// The unit's SLUG, naming the notebook directly — the same name every
+        /// other spec command takes. Wins over `--unit` and over the current
+        /// branch, so a call from the wrong directory cannot pick another unit.
+        #[arg(long)]
+        spec: Option<String>,
         /// This item EXPLAINS THE SYMPTOM the operator reported — it is not an
         /// adjacent finding.
         ///
@@ -212,8 +217,14 @@ pub fn dispatch(cmd: EventCmd) {
             wave,
             format,
         } => event::event_projections::run(view.as_deref(), spec.as_deref(), wave, &format),
-        EventCmd::Notebook { add, unit, explains_symptom, root } => {
-            event::notebook::run(&root, unit.as_deref(), add.as_deref(), explains_symptom);
+        EventCmd::Notebook { add, unit, spec, explains_symptom, root } => {
+            event::notebook::run(
+                &root,
+                unit.as_deref(),
+                spec.as_deref(),
+                add.as_deref(),
+                explains_symptom,
+            );
         }
     }
 }

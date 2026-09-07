@@ -169,6 +169,16 @@ pub enum SpecCmd {
         /// (or carrying nothing): the draft is byte-identical to today's.
         #[arg(long)]
         material: Option<PathBuf>,
+        /// Refresh ONLY the `## Definitions` / `## Decisions` / `## Evidence`
+        /// sections of a spec that already exists; every other byte of
+        /// `spec.md` is left alone. Needs `--slug` and `--material`, and never
+        /// creates a spec.
+        ///
+        /// This is the frequent move: one decision settled, one
+        /// `material-add`, and the spec has to carry it. The alternative was a
+        /// full `--force` re-draft of the whole body for each one.
+        #[arg(long = "material-only")]
+        material_only: bool,
         /// Why this draft carries no conversation material. REQUIRED when
         /// `--material` is absent or carries nothing: an empty channel has to
         /// be a stated choice, not an omission that looks like success. One
@@ -319,13 +329,24 @@ pub enum SpecCmd {
         #[arg(long)]
         kind: String,
         /// The first half: the term, the decision, or the statement.
-        #[arg(long)]
+        ///
+        /// `allow_hyphen_values` because this is PROSE, and prose about a
+        /// command-line tool starts with `--` all the time. Without it the
+        /// parser reads `--subject "--spec com barra cai em for_spec"` as an
+        /// unknown FLAG and refuses the call — measured while recording this
+        /// unit's own material. A channel that refuses to carry a sentence
+        /// about a flag is a channel that loses exactly the findings a
+        /// command-line tool produces.
+        #[arg(long, allow_hyphen_values = true)]
         subject: String,
         /// The half that makes it usable: what the term MEANS here, WHY the
         /// decision was taken, or the FILE a finding was checked against.
         /// Refused when blank — a decision without its reason is the one thing
         /// a later reader cannot use.
-        #[arg(long)]
+        ///
+        /// Same `allow_hyphen_values` reasoning as `--subject`: a reason is
+        /// prose too, and it names flags.
+        #[arg(long, allow_hyphen_values = true)]
         detail: String,
         /// A finding's line number, when the claim is line-precise.
         ///
@@ -498,6 +519,7 @@ pub fn dispatch(cmd: SpecCmd) {
             signals,
             output,
             material,
+            material_only,
             no_material_reason,
             waves,
             plan,
@@ -513,6 +535,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 signals,
                 output,
                 material,
+                material_only,
                 no_material_reason,
                 waves,
                 plan,
@@ -608,5 +631,48 @@ pub fn dispatch(cmd: SpecCmd) {
                 reason.as_deref(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SpecCmd;
+    use clap::Parser;
+
+    /// A wrapper so the family enum can be parsed on its own — the binary's own
+    /// `Cli` lives in `main.rs` and is out of reach from the lib.
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        cmd: SpecCmd,
+    }
+
+    /// `material-add` carries PROSE, and prose about a command-line tool starts
+    /// with `--` all the time.
+    ///
+    /// Without `allow_hyphen_values` the parser read the VALUE as an unknown
+    /// flag and refused the whole call — measured while recording this unit's
+    /// own material, on the sentence "`--spec` com barra cai em `for_spec`". A
+    /// channel that cannot carry a sentence about a flag loses exactly the
+    /// findings a command-line tool produces.
+    #[test]
+    fn material_add_accepts_a_subject_that_opens_with_two_hyphens() {
+        let parsed = Probe::try_parse_from([
+            "probe",
+            "material-add",
+            "--spec",
+            "a-unit",
+            "--kind",
+            "finding",
+            "--subject",
+            "--spec com barra cai em for_spec",
+            "--detail",
+            "--detail tambem e prosa",
+        ]);
+        let Ok(Probe { cmd: SpecCmd::MaterialAdd { subject, detail, .. } }) = parsed else {
+            panic!("the call must parse: {:?}", parsed.err().map(|e| e.to_string()));
+        };
+        assert_eq!(subject, "--spec com barra cai em for_spec");
+        assert_eq!(detail, "--detail tambem e prosa");
     }
 }

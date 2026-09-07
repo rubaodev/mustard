@@ -140,6 +140,9 @@ pub struct SpecDraftOpts {
     /// intact. Absent (or carrying nothing) ⇒ the draft is byte-identical to a
     /// draft without the channel.
     pub material: Option<PathBuf>,
+    /// Refresh ONLY the material sections of a spec that already exists, leaving
+    /// the rest of `spec.md` byte-identical. See [`material_only_refresh`].
+    pub material_only: bool,
     /// Why this draft carries NO conversation material, when it carries none.
     ///
     /// Required in that case: an empty channel used to be indistinguishable
@@ -382,6 +385,22 @@ fn load_material(path: &Path) -> Result<ConversationMaterial, String> {
 /// Each item follows the project's established "bullet + attribute line" shape
 /// (the same one `- **AC-N** — …` / `  Command: \`…\`` uses), so the per-wave
 /// cut can lift a finding's file out of `Evidence:` without a bespoke grammar.
+/// ## The `[D-n]` / `[K-n]` / `[E-n]` handles
+///
+/// Every item is stamped with a short id — `D` for a definition, `K` for a
+/// decision, `E` for a piece of evidence. They exist so a TASK can name the item
+/// that governs it: the dispatch prompt echoes any item a task cites right under
+/// that task (`sections::echo_cited_material`).
+///
+/// The problem they solve: the material arrived as one block and the tasks as
+/// another, seventy lines apart, with nothing joining them. An agent holding 28
+/// context items and 13 tasks had to work out for itself which context belonged
+/// to which task — and a trap like "do not depend on the entry type in this
+/// guard" is true of exactly ONE task, which is where it needs to be read.
+///
+/// The ids are POSITIONAL within their kind, so they are stable for as long as
+/// the list only grows — which is how the channel is used (one `material-add`
+/// per settled point, appended).
 fn render_material_sections(material: &ConversationMaterial) -> Option<String> {
     if material.is_empty() {
         return None;
@@ -389,24 +408,41 @@ fn render_material_sections(material: &ConversationMaterial) -> Option<String> {
     let mut block = String::new();
     if !material.definitions.is_empty() {
         let _ = write!(block, "\n## {DEFINITIONS_HEADING}\n\n");
-        for d in &material.definitions {
-            let _ = writeln!(block, "- **{}** — {}", d.term.trim(), d.meaning.trim());
+        for (i, d) in material.definitions.iter().enumerate() {
+            let _ = writeln!(
+                block,
+                "- [D-{}] **{}** — {}",
+                i + 1,
+                d.term.trim(),
+                d.meaning.trim()
+            );
         }
     }
     if !material.decisions.is_empty() {
         let _ = write!(block, "\n## {DECISIONS_HEADING}\n\n");
-        for d in &material.decisions {
-            let _ = writeln!(block, "- {}\n  Reason: {}", d.decision.trim(), d.reason.trim());
+        for (i, d) in material.decisions.iter().enumerate() {
+            let _ = writeln!(
+                block,
+                "- [K-{}] {}\n  Reason: {}",
+                i + 1,
+                d.decision.trim(),
+                d.reason.trim()
+            );
         }
     }
     if !material.findings.is_empty() {
         let _ = write!(block, "\n## {EVIDENCE_HEADING}\n\n");
-        for f in &material.findings {
+        for (i, f) in material.findings.iter().enumerate() {
             let at = match f.line {
                 Some(line) => format!("{}:{line}", f.file.trim()),
                 None => f.file.trim().to_string(),
             };
-            let _ = writeln!(block, "- {}\n  Evidence: `{at}`", f.statement.trim());
+            let _ = writeln!(
+                block,
+                "- [E-{}] {}\n  Evidence: `{at}`",
+                i + 1,
+                f.statement.trim()
+            );
         }
     }
     Some(block)
@@ -436,6 +472,210 @@ fn append_material_sections(output: &Path, material: &ConversationMaterial) -> R
     }
     body.push_str(&block);
     mfs::write_atomic(&path, body.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Replace the `## Definitions` / `## Decisions` / `## Evidence` sections of an
+/// EXISTING spec with a fresh render of `material`, leaving every other byte of
+/// `spec.md` alone. The `--material-only` path.
+///
+/// Refuses (exit 0, `{"ok": false, …}` like every other refusal here) when the
+/// spec does not exist yet — this door updates, it never creates — and when no
+/// `--material` file was given, since there would be nothing to write.
+fn material_only_refresh(
+    project_root: &Path,
+    opts: &SpecDraftOpts,
+    material: &ConversationMaterial,
+) -> i32 {
+    let Some(slug) = opts.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        emit_error("--material-only needs --slug", "name the unit whose material to refresh");
+        return 0;
+    };
+    let dir = opts.output.clone().unwrap_or_else(|| {
+        mustard_core::ClaudePaths::spec_dir_or_unchecked(project_root, slug)
+    });
+    let path = dir.join("spec.md");
+    if !path.exists() {
+        emit_error(
+            "--material-only found no spec to update",
+            &format!("{} does not exist — draft the spec first", path.display()),
+        );
+        return 0;
+    }
+    if opts.material.is_none() {
+        emit_error(
+            "--material-only needs --material",
+            "pass the unit's `spec-material.json`; without it there is nothing to write",
+        );
+        return 0;
+    }
+    let Ok(body) = mfs::read_to_string(&path) else {
+        emit_error("could not read spec.md", &path.display().to_string());
+        return 0;
+    };
+    let mut out = strip_material_sections(&body);
+    if let Some(block) = render_material_sections(material) {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&block);
+    }
+    if let Err(e) = mfs::write_atomic(&path, out.as_bytes()) {
+        emit_error("write spec.md", &format!("{}: {e}", path.display()));
+        return 0;
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "ok": true,
+            "spec": slug,
+            "path": path.display().to_string(),
+            "definitions": material.definitions.len(),
+            "decisions": material.decisions.len(),
+            "findings": material.findings.len(),
+        })
+    );
+    0
+}
+
+/// Drop the three material sections from a spec body, heading and all, so the
+/// fresh render replaces them rather than stacking a second copy underneath.
+fn strip_material_sections(body: &str) -> String {
+    let mut text = body.to_string();
+    for key in ["definitions", "decisions", "evidence"] {
+        while let Some(block) = crate::commands::spec::spec_sections::section_block(&text, key) {
+            text = text.replacen(&block, "", 1);
+        }
+    }
+    // Collapse the blank runs the removals left, so a repeated refresh is
+    // byte-stable instead of growing whitespace on every call.
+    while text.contains("\n\n\n") {
+        text = text.replace("\n\n\n", "\n\n");
+    }
+    text.trim_end().to_string()
+}
+
+/// The narrative sections a HUMAN authors and this command can only seed with a
+/// placeholder — the ones a re-draft must never silently take back.
+///
+/// `## Acceptance Criteria` and `## Tasks` are deliberately absent: those have
+/// their own doors (`ac-add` / `ac-amend`, and the plan), and carrying them
+/// forward here would let a stale criterion outlive the amendment that replaced
+/// it.
+const AUTHORED_PROSE_SECTIONS: &[&str] =
+    &["context", "metric", "non-goals", "files", "boundaries"];
+
+/// Read back the [`AUTHORED_PROSE_SECTIONS`] a previous draft left on disk,
+/// keeping only the ones a human actually filled in.
+///
+/// **Why a re-draft may not reset them.** Adding one decision to the spec means
+/// re-running the drafter with `--force`, and `--force` rewrites the whole body
+/// from the template. Measured in the field: `## Contexto`, `## Métrica de
+/// sucesso`, `## Não-Objetivos`, `## Arquivos` and `## Limites` all went back to
+/// their example text, and the operator had to save them to a side file and
+/// splice them back by script — every time a decision was recorded. The material
+/// channel exists so the conversation is written down as it happens; a channel
+/// that costs the rest of the document each time it is used will not be used.
+///
+/// A section still holding the drafter's own placeholder is NOT carried: it says
+/// nothing, and carrying it would pin the seed of an older locale forever.
+fn read_authored_prose(
+    spec_md: &Path,
+    lang: mustard_core::SupportedLocale,
+) -> Vec<(String, String)> {
+    let Ok(text) = mfs::read_to_string(spec_md) else {
+        return Vec::new();
+    };
+    AUTHORED_PROSE_SECTIONS
+        .iter()
+        .filter_map(|key| {
+            let block = crate::commands::spec::spec_sections::section_block(&text, key)?;
+            let body: String = block
+                .lines()
+                .skip(1) // the heading line itself
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
+            (!body.is_empty() && !is_placeholder_body(&body, lang))
+                .then(|| ((*key).to_string(), body))
+        })
+        .collect()
+}
+
+/// `true` when every non-blank line of `body` is one of the drafter's own
+/// placeholder seeds — in EITHER catalogue locale, so a spec drafted in one
+/// language and re-drafted in another still recognises its own seed.
+fn is_placeholder_body(body: &str, lang: mustard_core::SupportedLocale) -> bool {
+    use mustard_core::platform::i18n::translate;
+    let seeds: Vec<String> = [
+        "placeholder.fill",
+        "placeholder.fill_files",
+        "placeholder.fill_metric",
+        "placeholder.fill_excluded",
+        "placeholder.fill_why_now",
+        "placeholder.fill_beneficiary",
+    ]
+    .iter()
+    .flat_map(|k| {
+        [
+            mustard_core::SupportedLocale::EnUs,
+            mustard_core::SupportedLocale::PtBr,
+            lang,
+        ]
+        .map(|l| translate(k, l).to_string())
+    })
+    .collect();
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .all(|l| seeds.iter().any(|s| l == s))
+}
+
+/// Put each carried section body back into the freshly written `spec.md`.
+///
+/// Only sections the fresh render left as a placeholder are replaced: if this
+/// draft brought real content for a section (a `--files` census, say), that
+/// content is newer and wins. Nothing is appended — a section the new template
+/// does not carry is dropped with it, which keeps the layout the scaffold owns.
+///
+/// # Errors
+///
+/// The freshly-written `spec.md` could not be read back or rewritten.
+fn carry_authored_prose(spec_md: &Path, authored: &[(String, String)]) -> Result<(), String> {
+    if authored.is_empty() {
+        return Ok(());
+    }
+    let mut text =
+        mfs::read_to_string(spec_md).map_err(|e| format!("{}: {e}", spec_md.display()))?;
+    let mut changed = false;
+    for (key, body) in authored {
+        let Some(block) = crate::commands::spec::spec_sections::section_block(&text, key) else {
+            continue;
+        };
+        let heading = block.lines().next().unwrap_or_default().to_string();
+        let fresh_body: String = block
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        // The fresh render already carries real content for this section — it is
+        // the newer statement, so it stands.
+        if !fresh_body.is_empty()
+            && !is_placeholder_body(&fresh_body, mustard_core::SupportedLocale::EnUs)
+            && !is_placeholder_body(&fresh_body, mustard_core::SupportedLocale::PtBr)
+        {
+            continue;
+        }
+        let replacement = format!("{heading}\n\n{body}\n");
+        text = text.replacen(&block, &replacement, 1);
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+    mfs::write_atomic(spec_md, text.as_bytes()).map_err(|e| format!("{}: {e}", spec_md.display()))
 }
 
 /// Entry point — resolves the project root from the process context and maps
@@ -479,6 +719,18 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         },
         None => ConversationMaterial::default(),
     };
+    // `--material-only` — refresh the three material sections of a spec that
+    // already exists, and touch nothing else.
+    //
+    // Recording a decision is the most frequent thing that happens to a spec:
+    // one `material-add` per settled point, several per conversation. Getting
+    // that decision INTO the spec used to mean a full `--force` re-draft, which
+    // rewrote the whole body. This is the small door for the common move; the
+    // full re-draft stays for a spec whose narrative genuinely changed.
+    if opts.material_only {
+        return material_only_refresh(project_root, &opts, &material);
+    }
+
     // **An empty channel must be a CHOICE, not an omission.**
     //
     // The channel was optional in both directions: pass nothing and the draft
@@ -623,9 +875,18 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     let tone = mustard_core::ProjectConfig::load(project_root).i18n().tone;
 
     // ---- Materialise files. ----
+    // Capture the prose a human already wrote, BEFORE the overwrite. See
+    // [`carry_authored_prose`] — a re-draft must not cost the operator the
+    // sections only they could write.
+    let authored = read_authored_prose(&output.join("spec.md"), lang_locale);
+
     let mut written: Vec<String> = Vec::new();
     if let Err(e) = spec_scaffold::write_spec_md(&output, &input, &opts.signals, lang_locale, tone) {
         emit_error("write spec.md", &e);
+        return 0;
+    }
+    if let Err(e) = carry_authored_prose(&output.join("spec.md"), &authored) {
+        emit_error("carry authored prose", &e);
         return 0;
     }
     written.push(output.join("spec.md").display().to_string());
@@ -1586,6 +1847,7 @@ mod tests {
                 signals: None,
                 output: None,
                 material: None,
+                material_only: false,
                 no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 1,
                 plan: None,
@@ -1684,6 +1946,7 @@ mod tests {
                 signals: None,
                 output: None,
                 material: None,
+                material_only: false,
                 no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 1,
                 plan: None,
@@ -1992,6 +2255,7 @@ mod tests {
             signals: None,
             output: Some(out.clone()),
             material: None,
+            material_only: false,
             no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 0,
             plan: None,
@@ -2035,6 +2299,7 @@ mod tests {
             signals: None,
             output: Some(out.clone()),
             material: None,
+            material_only: false,
             no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 3,
             plan: None,
@@ -2094,6 +2359,7 @@ mod tests {
                 signals: None,
                 output: Some(out.clone()),
                 material: None,
+                material_only: false,
                 no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves,
                 plan: None,
@@ -2133,6 +2399,7 @@ mod tests {
             signals: None,
             output: Some(dir.path().join("specs").join("demo")),
             material: None,
+            material_only: false,
             no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 2,
             plan: None,
@@ -2162,6 +2429,7 @@ mod tests {
             signals: None,
             output: Some(dir.path().join("out")),
             material: None,
+            material_only: false,
             no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 0,
             plan: None,
@@ -2196,6 +2464,7 @@ mod tests {
             signals: None,
             output: Some(out.to_path_buf()),
             material,
+            material_only: false,
             // These cases exercise the CHANNEL, including the empty one, so the
             // omission is declared here rather than being what is measured.
             no_material_reason: Some("fixture: the channel itself is under test".into()),
@@ -2228,6 +2497,7 @@ mod tests {
             signals: None,
             output: Some(out.clone()),
             material: None,
+            material_only: false,
             no_material_reason: reason.map(str::to_string),
             waves: 0,
             plan: None,
@@ -2279,21 +2549,27 @@ mod tests {
             ),
         );
 
-        // Three sections, three headings, each carrying its own kind.
+        // Three sections, three headings, each carrying its own kind — and each
+        // item stamped with the handle a TASK can cite (`[D-1]` / `[K-1]` /
+        // `[E-1]`), which is what lets the dispatch prompt echo an item under
+        // the one task it governs instead of leaving 28 items in a block.
         assert!(carried.contains("\n## Definitions\n"), "definitions heading:\n{carried}");
         assert!(
-            carried.contains("- **wave** — one dispatchable unit of the plan"),
+            carried.contains("- [D-1] **wave** — one dispatchable unit of the plan"),
             "definition body:\n{carried}"
         );
         assert!(carried.contains("\n## Decisions\n"), "decisions heading:\n{carried}");
-        assert!(carried.contains("- carry the material through a file"), "decision:\n{carried}");
+        assert!(
+            carried.contains("- [K-1] carry the material through a file"),
+            "decision:\n{carried}"
+        );
         assert!(
             carried.contains("  Reason: a shell argument mangles newlines and non-ASCII"),
             "a decision carries its REASON, not just the choice:\n{carried}"
         );
         assert!(carried.contains("\n## Evidence\n"), "evidence heading:\n{carried}");
         assert!(
-            carried.contains("- the drafter takes no material argument today"),
+            carried.contains("- [E-1] the drafter takes no material argument today"),
             "finding:\n{carried}"
         );
 
@@ -2417,6 +2693,7 @@ mod tests {
                 signals: None,
                 output: Some(out.clone()),
                 material: Some(path),
+                material_only: false,
                 no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
                 waves: 0,
                 plan: None,
@@ -2482,6 +2759,7 @@ mod tests {
             signals: None,
             output: None,
             material: None,
+            material_only: false,
             no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves: 1,
             plan: Some(plan.to_path_buf()),

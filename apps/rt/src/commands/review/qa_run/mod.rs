@@ -403,8 +403,7 @@ fn strip_separator(s: &str) -> Option<&str> {
 /// (`Command: cargo test`) keeps the historical behaviour. Returns `None` when
 /// the marker is absent or the value is empty.
 fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
-    let lower_seg = fragment.to_lowercase();
-    let idx = lower_seg.rfind(marker)?;
+    let idx = last_marker_outside_code(fragment, marker)?;
     let tail = fragment[idx + marker.len()..].trim();
     let value = if let Some(rest) = tail.strip_prefix('`') {
         let close = rest.find('`').unwrap_or(rest.len());
@@ -416,6 +415,52 @@ fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
         return None;
     }
     Some(value)
+}
+
+/// Byte index of the LAST `marker` in `fragment` that is not INSIDE a
+/// backtick-quoted value, comparing case-insensitively.
+///
+/// **Why a marker inside backticks is not a marker.** A criterion's value is
+/// backtick-quoted, and a command is free to contain the literal `Expect:` —
+/// the criterion that proves `ac-amend` refuses an embedded `Expect:` has to
+/// contain one. The reader used to search the raw line, find that occurrence,
+/// and take the rest of the COMMAND as the evidence regex; the real `Expect:`
+/// on the following line was then never read, and the criterion came back
+/// `skip` for an invalid regex. Measured while authoring this unit's own AC-6.
+/// This is the same confusion as the writer defect it proves, seen from the
+/// other side: there the writer accepted two `Expect:`, here the reader could
+/// not tell which one was its own.
+///
+/// Only a CLOSED pair of backticks quotes. An odd count leaves the trailing
+/// backtick opening nothing, so a line with unbalanced quoting keeps the
+/// historical reading instead of silently losing its criterion — dropping a
+/// criterion in silence is the failure this whole module exists to avoid.
+fn last_marker_outside_code(fragment: &str, marker: &str) -> Option<usize> {
+    // Closed backtick spans only: pair them up, ignore a trailing lone one.
+    let ticks: Vec<usize> = fragment.match_indices('`').map(|(i, _)| i).collect();
+    let spans: Vec<(usize, usize)> = ticks.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+    let quoted = |i: usize| spans.iter().any(|&(a, b)| i > a && i < b);
+
+    let mut found = None;
+    let mut at = 0usize;
+    while let Some(rel) = fragment[at..]
+        .char_indices()
+        .find(|&(off, _)| {
+            let i = at + off;
+            let end = i + marker.len();
+            end <= fragment.len()
+                && fragment.is_char_boundary(end)
+                && fragment[i..end].eq_ignore_ascii_case(marker)
+        })
+        .map(|(off, _)| off)
+    {
+        let i = at + rel;
+        if !quoted(i) {
+            found = Some(i);
+        }
+        at = i + marker.len();
+    }
+    found
 }
 
 /// Extract the command from a fragment that may contain a `Command:` marker.
@@ -759,24 +804,78 @@ fn should_emit_qa_event(criteria: &[AcResult], self_invoked: bool) -> bool {
     !(criteria.is_empty() || criteria.iter().any(|c| c.status == "skip"))
 }
 
-/// Run QA for `spec` under `cwd`. Always emits the metric; emits the
-/// `qa.result` event unless [`should_emit_qa_event`] vetoes it.
+/// The `overall` verdict for a run whose spec could not be located or read.
+///
+/// It is NOT one of the four outcome classes a criterion can have (`pass` /
+/// `fail` / `timeout` / `skip`) precisely because nothing was ever attempted —
+/// see the refusal in [`run_qa`]. Every consumer that refuses anything but
+/// `pass` refuses this too, so introducing it loosens nothing.
+pub(crate) const QA_SPEC_NOT_FOUND: &str = "spec-not-found";
+
+/// Where the harness STATE lives, for a run whose WORK sits at `work_dir`.
+///
+/// **Two questions, and `cwd` was answering both.** Where the acceptance
+/// criteria RUN is the current checkout — that is the code under test. Where the
+/// spec, the recorded verdict and the report LIVE is the project root, and in a
+/// linked git worktree those are different directories: `workspace_root` maps a
+/// worktree back to its main checkout ON PURPOSE, so every worktree of a unit
+/// shares one `.claude/` (see `io::workspace`'s worktree redirect).
+///
+/// Every WRITER already went through that redirect. This reader did not, so it
+/// looked for the spec beside the code. Measured in the field, 2026-09-07: run
+/// from a worktree, `qa-run` answered `spec-not-found` for a spec that existed,
+/// and the close gate then reported "no QA pass recorded" directly under a QA
+/// run that had just passed — the verdict was written in one directory and
+/// looked for in another.
+///
+/// Fail-open: no anchor above `work_dir` (a tempdir in a test, a checkout with
+/// no `mustard.json`) yields `work_dir` itself, so nothing that worked before
+/// changes.
+fn state_root(work_dir: &Path) -> PathBuf {
+    mustard_core::io::workspace::workspace_root_or_self(work_dir)
+}
+
+/// Run QA for `spec` under `cwd` — where `cwd` is where the WORK is. The
+/// harness state is resolved from it through [`state_root`].
+///
+/// Always emits the metric; emits the `qa.result` event unless
+/// [`should_emit_qa_event`] vetoes it.
 fn run_qa(cwd: &Path, spec: &str) -> QaResult {
+    let state = state_root(cwd);
+    let state = state.as_path();
     // Read the invocation mode ONCE: both the verdict and the emission guard
     // are pure functions of the statuses plus this flag, so neither reaches
     // back into the thread-local on its own.
     let self_invoked = runner::QA_OPTIONS.with(std::cell::Cell::get).self_invoked;
-    let Some(spec_file) = runner::find_spec_file(cwd, spec) else {
-        eprintln!("[qa-run] Spec file not found for \"{spec}\"");
-        runner::emit_qa_metric(cwd, spec, "skip", &[]);
-        return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
+    // A spec this run could not find is NOT a skip.
+    //
+    // `skip` is a statement about the criteria — "there was nothing to attempt".
+    // "I could not find the spec" is a statement about the CALL, and the two
+    // demand opposite next moves: author a criterion, versus fix the slug or the
+    // working directory. They were the same word, so the structured verdict —
+    // the thing another command reads — could not tell them apart, and only the
+    // stderr line (which no command reads) carried the difference. Measured in
+    // the field: a `qa-run` launched from inside a submodule reported
+    // `overall: skip` for a spec that exists, one directory up.
+    //
+    // `spec-not-found` blocks exactly like `skip` does at the close gate (any
+    // verdict that is not `pass` is refused there), so nothing gets looser.
+    let Some(spec_file) = runner::find_spec_file(state, spec) else {
+        eprintln!(
+            "[qa-run] Spec file not found for \"{spec}\" under {} (work dir: {}) — check the \
+             slug with `mustard-rt run active-specs`; a submodule has its own `.claude/`.",
+            state.display(),
+            cwd.display()
+        );
+        runner::emit_qa_metric(state, spec, QA_SPEC_NOT_FOUND, &[]);
+        return QaResult { overall: QA_SPEC_NOT_FOUND.to_string(), criteria: Vec::new() };
     };
     let markdown = match fs::read_to_string(&spec_file) {
         Ok(m) => m,
         Err(err) => {
             eprintln!("[qa-run] Cannot read spec file: {err}");
-            runner::emit_qa_metric(cwd, spec, "skip", &[]);
-            return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
+            runner::emit_qa_metric(state, spec, QA_SPEC_NOT_FOUND, &[]);
+            return QaResult { overall: QA_SPEC_NOT_FOUND.to_string(), criteria: Vec::new() };
         }
     };
 
@@ -796,7 +895,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     // Append the executable ACs of every linked capability (F5). A spec with no
     // `## Capabilities` section adds nothing here, so its run is unchanged.
     // Capability scenarios carry no `Expect:` regex — they gate on exit code.
-    let capability_acs = runner::gather_capability_acs(cwd, spec);
+    let capability_acs = runner::gather_capability_acs(state, spec);
     items.extend(capability_acs.into_iter().map(|(id, command)| (id, command, None)));
 
     if items.is_empty() {
@@ -808,9 +907,9 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
             eprintln!("[qa-run] WARN: Acceptance Criteria section found but no parseable AC items");
         }
         if should_emit_qa_event(&[], self_invoked) {
-            runner::emit_qa_event(cwd, spec, "skip", &[]);
+            runner::emit_qa_event(state, spec, "skip", &[]);
         }
-        runner::emit_qa_metric(cwd, spec, "skip", &[]);
+        runner::emit_qa_metric(state, spec, "skip", &[]);
         return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
     }
 
@@ -825,12 +924,12 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let cjson = criteria_json(&criteria);
     let payload = json!({ "spec": spec, "overall": overall, "criteria": cjson });
     if should_emit_qa_event(&criteria, self_invoked) {
-        runner::emit_qa_event(cwd, spec, overall, &cjson);
+        runner::emit_qa_event(state, spec, overall, &cjson);
     }
-    runner::emit_qa_metric(cwd, spec, overall, &criteria);
-    render::write_sidecar(cwd, spec, &payload);
+    runner::emit_qa_metric(state, spec, overall, &criteria);
+    render::write_sidecar(state, spec, &payload);
     // D4: materialise the human-readable report beside the phase dir.
-    render::write_qa_report_md(cwd, spec, overall, &criteria);
+    render::write_qa_report_md(state, spec, overall, &criteria);
 
     QaResult { overall: overall.to_string(), criteria }
 }
@@ -846,7 +945,10 @@ pub fn run(spec: &str, format: &str) {
     let cjson = criteria_json(&result.criteria);
 
     if format == "html" {
-        match render::write_html_report(&cwd, spec, &result.overall, &result.criteria) {
+        // The report is harness state, so it lands beside the rest of it — not
+        // in whichever checkout the criteria happened to run from.
+        match render::write_html_report(&state_root(&cwd), spec, &result.overall, &result.criteria)
+        {
             Some(path) => eprintln!("[qa-run] HTML report: {}", path.display()),
             None => eprintln!("[qa-run] WARN: could not write HTML report"),
         }
@@ -859,7 +961,10 @@ pub fn run(spec: &str, format: &str) {
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
 
-    if result.overall == "fail" {
+    // A failing criterion and a spec that was never found are both non-zero: the
+    // second used to exit 0, so a caller that only checks the exit code read
+    // "nothing to do here" from a call that did nothing at all.
+    if result.overall == "fail" || result.overall == QA_SPEC_NOT_FOUND {
         std::process::exit(1);
     }
 }
@@ -1063,6 +1168,52 @@ mod tests {
         assert!(!section.contains("Files"));
     }
 
+    /// A marker INSIDE a criterion's backtick-quoted command is data, not a
+    /// marker.
+    ///
+    /// Measured while authoring this unit's own AC-6: the criterion that proves
+    /// `ac-amend` refuses an embedded `Expect:` must itself contain one. The
+    /// reader searched the raw line, found that occurrence, and took the tail of
+    /// the COMMAND as the evidence regex — so the real `Expect:` on the next
+    /// line was never read and the criterion came back `skip` on an invalid
+    /// regex. A criterion silently not running is the failure this module exists
+    /// to prevent.
+    #[test]
+    fn a_marker_inside_the_command_value_is_not_a_marker() {
+        let items = parse_ac_items(
+            "- **AC-1** — when the command carries the literal, then the real marker still wins.\n  \
+             Command: `run ac-amend --command 'rg x Expect: y' 2>&1`\n  \
+             Expect: `recusado`\n",
+        );
+        assert_eq!(items.len(), 1, "one criterion parsed");
+        assert_eq!(
+            items[0].command, "run ac-amend --command 'rg x Expect: y' 2>&1",
+            "the command survives whole",
+        );
+        assert_eq!(
+            items[0].expect.as_deref(),
+            Some("recusado"),
+            "the standalone Expect: is the criterion's own",
+        );
+
+        // The historical defence still holds: a marker named in the STATEMENT,
+        // outside any backticks, still loses to the real one further right.
+        let prose = parse_ac_items(
+            "- **AC-2** — the Command: label appears in this sentence. \
+             Command: `cargo test foo` Expect: `1 passed`\n",
+        );
+        assert_eq!(prose[0].command, "cargo test foo");
+        assert_eq!(prose[0].expect.as_deref(), Some("1 passed"));
+
+        // Unbalanced backticks open no span, so the historical reading stands
+        // rather than the criterion vanishing.
+        assert_eq!(
+            extract_command("Command: cargo test `foo"),
+            Some("cargo test `foo".to_string()),
+            "an odd backtick must not swallow the value",
+        );
+    }
+
     /// The `Control:` marker parses beside `Command:` and `Expect:`, in BOTH AC
     /// shapes and in both marker positions — through the one parser, since a
     /// second reader for the third marker is exactly the drift the other two
@@ -1116,11 +1267,100 @@ mod tests {
         assert!(!is_skeleton("cmd <<EOF"), "a heredoc opener closes nothing");
     }
 
+    /// A spec this run could not find is `spec-not-found`, never `skip`.
+    ///
+    /// `skip` says "there was nothing to attempt", which is a statement about
+    /// the criteria. This is a statement about the CALL, and the remedy is the
+    /// opposite one — fix the slug or the working directory, not author a
+    /// criterion. Measured in the field from inside a submodule, where the spec
+    /// existed one directory up and the verdict read `skip`.
+    /// Run from a linked git WORKTREE, the spec is still found — because the
+    /// harness state lives at the main checkout and the reader now resolves it
+    /// the same way every writer does.
+    ///
+    /// The worktree redirect is deliberate (`io::workspace`): every worktree of
+    /// a unit shares ONE `.claude/`, so the dashboard and the reports read one
+    /// place. `spec-draft` writes through it; this reader took the raw working
+    /// directory and looked for the spec beside the CODE. Measured in the field,
+    /// 2026-09-07: `qa-run` answered `spec-not-found` for a spec that existed
+    /// one checkout away, and the close gate then reported "no QA pass recorded"
+    /// under a run that had just passed.
+    ///
+    /// The two halves are asserted apart, because the whole point is that they
+    /// are two different questions: the spec is READ at the main checkout, and
+    /// the criterion RUNS in the worktree.
     #[test]
-    fn skips_when_spec_missing() {
+    fn a_run_from_a_worktree_reads_the_state_at_the_main_checkout() {
+        fn git(dir: &Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("spawn git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+
+        let dir = tempdir().expect("tempdir");
+        let main = dir.path().join("repo");
+        std::fs::create_dir_all(&main).expect("mkdir");
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        std::fs::write(main.join("mustard.json"), b"{}").expect("anchor");
+        std::fs::create_dir_all(main.join(".claude")).expect("claude dir");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("seed.txt"), "s").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "seed"]);
+
+        // The spec lives ONLY at the main checkout — exactly what the redirect
+        // guarantees, and exactly what the old reader could not see.
+        let spec_dir = main.join(".claude").join("spec").join("wt-spec");
+        std::fs::create_dir_all(&spec_dir).expect("spec dir");
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Acceptance Criteria\n\n- **AC-1** — the criterion runs where the code is\n  \
+             Command: `cat marker.txt`\n  Expect: `worktree`\n",
+        )
+        .expect("spec");
+
+        // A linked worktree, carrying its own copy of the anchor (a checkout
+        // does) and a marker file that ONLY it has.
+        let wt = main.join(".claude").join("worktrees").join("unit");
+        git(&main, &["worktree", "add", "-b", "fix/unit", wt.to_string_lossy().as_ref()]);
+        std::fs::write(wt.join("marker.txt"), "worktree\n").expect("marker");
+        assert!(
+            !wt.join(".claude").join("spec").join("wt-spec").exists(),
+            "the fixture must NOT put the spec in the worktree, or it proves nothing",
+        );
+
+        let result = run_qa(&wt, "wt-spec");
+
+        assert_eq!(
+            result.overall, "pass",
+            "the spec is read at the main checkout, and the criterion runs in the worktree",
+        );
+        assert_eq!(result.criteria.len(), 1, "one criterion parsed");
+        assert_eq!(result.criteria[0].status, "pass", "the criterion ran in the worktree");
+
+        // The verdict was RECORDED at the main checkout, where the close gate
+        // will go looking for it — not beside the code.
+        assert!(
+            spec_dir.join(".events").exists(),
+            "the verdict must land with the rest of the unit's state",
+        );
+    }
+
+    #[test]
+    fn a_missing_spec_is_not_a_skip() {
         let dir = tempdir().unwrap();
         let r = run_qa(dir.path(), "ghost");
-        assert_eq!(r.overall, "skip");
+        assert_eq!(r.overall, QA_SPEC_NOT_FOUND);
+        assert!(r.criteria.is_empty(), "nothing was attempted");
     }
 
     // --- timeout as its own class + the self-invoked silence --------------
