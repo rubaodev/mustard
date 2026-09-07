@@ -84,9 +84,10 @@ fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
 /// fact about a unit — but the CUT cannot write it there: the cut runs BEFORE
 /// the draft, and `spec-draft` refuses to draft into a directory that already
 /// holds anything but harness state ([`crate::commands::spec::spec_draft`]'s
-/// `holds_only_harness_state`, whose allowlist is dot-prefixed harness state and
-/// whose whole reason for existing is that a `meta.json` there IS a drafted
-/// spec). Writing the base into `meta.json` at cut time therefore made step one
+/// `holds_only_harness_state`, whose allowlist names the entries written by the
+/// steps BEFORE the draft — the dot-prefixed spill and the material channel's
+/// `spec-material.json` alike — and whose whole reason for existing is that a
+/// `meta.json` there IS a drafted spec). Writing the base into `meta.json` at cut time therefore made step one
 /// block step two: the unit was cut and got no spec at all.
 ///
 /// So the cut writes HERE, and the draft folds it into `meta.json#base` when it

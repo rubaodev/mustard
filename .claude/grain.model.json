@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 491,
-      "loc": 227850
+      "loc": 227911
     },
     {
       "language": "tsx",
@@ -23791,7 +23791,7 @@
     {
       "path": "apps/rt/src/shared/pr_provider.rs",
       "language": "rust",
-      "loc": 913,
+      "loc": 974,
       "imports": [
         "crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED}",
         "crate::shared::pr_azure::{\n        do_open, do_view_number, pat_from,\n        test_support::{remote, FakeTransport},\n        AzureRemote, PAT_ENV,\n    }",
@@ -24102,57 +24102,63 @@
           "supertypes": []
         },
         {
-          "kind": "method",
-          "name": "new",
-          "line": 436,
-          "supertypes": []
-        },
-        {
-          "kind": "method",
-          "name": "provider",
+          "kind": "function",
+          "name": "patch_body_argv",
           "line": 442,
           "supertypes": []
         },
         {
           "kind": "method",
+          "name": "new",
+          "line": 456,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "provider",
+          "line": 462,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
           "name": "open",
-          "line": 446,
+          "line": 466,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "edit_body",
-          "line": 477,
+          "line": 497,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "ready",
-          "line": 487,
+          "line": 521,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "view",
-          "line": 491,
+          "line": 525,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "checks",
-          "line": 504,
+          "line": 538,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unsupported",
-          "line": 525,
+          "line": 559,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "UnsupportedPr",
-          "line": 534,
+          "line": 568,
           "supertypes": [
             "PrProvider"
           ]
@@ -24160,127 +24166,133 @@
         {
           "kind": "field",
           "name": "provider",
-          "line": 537,
+          "line": 571,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "provider",
-          "line": 541,
+          "line": 575,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "open",
-          "line": 545,
+          "line": 579,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "edit_body",
-          "line": 549,
+          "line": 583,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "ready",
-          "line": 553,
+          "line": 587,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "view",
-          "line": 557,
+          "line": 591,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "checks",
-          "line": 561,
+          "line": 595,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "provider_for",
-          "line": 578,
+          "line": 612,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "editing_a_body_patches_one_field_and_reads_nothing",
+          "line": 643,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_full_ref_and_a_short_name_answer_the_same_branch",
-          "line": 602,
+          "line": 666,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "azure_states_map_to_the_canonical_vocabulary",
-          "line": 615,
+          "line": 679,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "github_states_map_onto_the_canonical_vocabulary",
-          "line": 627,
+          "line": 691,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "github_view_normalises_refs_and_never_invents_a_merge_status",
-          "line": 640,
+          "line": 704,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_created_pr_number_is_read_out_of_the_url",
-          "line": 675,
+          "line": 739,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_provider_without_an_adapter_refuses_honestly",
-          "line": 686,
+          "line": 750,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_checks_reduction_ranks_failure_over_flight_and_never_guesses_green",
-          "line": 713,
+          "line": 777,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_github_rollup_reduces_both_of_its_node_types",
-          "line": 744,
+          "line": 808,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_factory_routes_by_the_provider_in_force",
-          "line": 794,
+          "line": 858,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "azure_open_posts_the_pullrequest_contract",
-          "line": 834,
+          "line": 898,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "azure_without_credential_refuses_naming_both_sources",
-          "line": 885,
+          "line": 949,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_azure_response_folds_into_the_normalized_view",
-          "line": 911,
+          "line": 975,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_azure_remote_spelling_yields_the_rest_base",
-          "line": 948,
+          "line": 1012,
           "supertypes": []
         }
       ],
@@ -103927,17 +103939,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Report slice",
       "roles": [
         "(core)",
-        "State"
+        "Report"
       ],
       "optional_roles": [
         "Ac",
         "Function",
         "Kind",
         "Mode",
-        "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -103966,12 +103978,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -104024,6 +104036,12 @@
           "role": "tipo base"
         },
         {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
+        },
+        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -104034,16 +104052,10 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
-        },
-        {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
