@@ -357,9 +357,15 @@ fn classify(
     //    injetado nos prompts. Apagá-los não degrada em silêncio — quebra o
     //    censo que orienta cada sessão. Medido em 07/09/2026.
     //
-    //    Uma saída NOVA do scan tem de entrar aqui no mesmo commit que a cria:
-    //    o podador não tem como descobrir sozinho quem escreve o quê, e o
-    //    defeito fica dormente até alguém rodar a remoção.
+    //    A regra é da CLASSE, não do scan: todo arquivo que o produto escreve
+    //    ou lê na raiz do `.claude/` entra aqui no mesmo commit que o cria. O
+    //    podador não tem como descobrir sozinho quem escreve o quê, e o defeito
+    //    fica dormente até alguém rodar a remoção. A primeira rodada consertou
+    //    só as saídas do scan e a revisão achou logo em seguida o
+    //    `grammars-suggestions.json`, que é override do operador — prova de que
+    //    listar instâncias não fecha o buraco, e de que a lista é a única
+    //    fronteira que existe hoje. Unificá-la com o `CACHE_FILES` de
+    //    `claude_paths` (que cobre só `.claude/.cache/`) é unidade própria.
     let well_known_files: BTreeSet<&'static str> = [
         "CLAUDE.md",
         "pipeline-config.md",
@@ -373,9 +379,14 @@ fn classify(
         "grain.model.json",
         "grain.dictionary.json",
         "grain.equivalences.json",
+        "grain.equivalences.learned.json",
         "scan-map.md",
         "scan-declined.json",
         "feature-digest.json",
+        // Override por projeto que o OPERADOR escreve, mesclado por
+        // `install_grammars`. Não é saída de máquina — é trabalho de autor, e
+        // apagá-lo perde o que nenhum comando sabe reconstruir.
+        "grammars-suggestions.json",
     ]
     .iter()
     .copied()
@@ -639,24 +650,46 @@ mod tests {
     #[test]
     fn the_scans_own_outputs_are_never_orphans() {
         let dir = tempdir().unwrap();
-        for name in [
+        let owned = [
             "scan-map.md",
             "grain.dictionary.json",
             "grain.equivalences.json",
+            "grain.equivalences.learned.json",
             "feature-digest.json",
             "scan-declined.json",
-        ] {
-            let (class, why) = classify(name, dir.path(), false, dir.path());
+            "grammars-suggestions.json",
+        ];
+        let claude = dir.path().join(".claude");
+        fs::create_dir_all(&claude).unwrap();
+        for name in owned {
+            fs::write(claude.join(name), "{}").unwrap();
+        }
+        fs::write(claude.join("lixo-de-alguem.md"), "x").unwrap();
+
+        // Pelo `audit`, não pelo `classify`: o que poupa um arquivo do
+        // `audit_and_act` é a RECOMENDAÇÃO, e classificar certo sem recomendar
+        // certo pouparia o arquivo em teste e o apagaria em produção.
+        let report = audit(dir.path());
+        for name in owned {
+            let e = report
+                .entries
+                .iter()
+                .find(|e| e.path.ends_with(name))
+                .unwrap_or_else(|| panic!("{name} ausente do relatório"));
             assert_eq!(
-                class,
-                Classification::Keep,
-                "`{name}` é escrito e lido pelo produto — apagá-lo quebra o censo. Evidência: {why:?}"
+                e.recommendation, "keep",
+                "`{name}` é escrito ou lido pelo produto — apagá-lo quebra o censo. Evidência: {:?}",
+                e.evidence
             );
         }
 
         // Dois lados: um arquivo que o produto realmente não conhece continua
         // órfão, senão a asserção acima passaria com um podador que nunca poda.
-        let (class, _) = classify("lixo-de-alguem.md", dir.path(), false, dir.path());
-        assert_eq!(class, Classification::Orphan, "um arquivo desconhecido segue órfão");
+        let junk = report
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("lixo-de-alguem.md"))
+            .expect("o arquivo desconhecido tem de aparecer no relatório");
+        assert_eq!(junk.recommendation, "remove", "um arquivo desconhecido segue órfão");
     }
 }
