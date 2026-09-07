@@ -1371,6 +1371,47 @@ mod tests {
         assert_eq!(d["reason"], json!("error-fallback"));
     }
 
+    /// A census this command could not READ is never reported as a measurement.
+    ///
+    /// `decide` is arithmetic: zero files reduce to `single-layer`, which reads
+    /// as "I measured this spec and it is one layer". Measured in the field: a
+    /// spec of 61 files across four subprojects wrote its census as prose, the
+    /// parser recognised no path in it, and the verdict came back
+    /// `decompose:false, reason:"single-layer"` — advice that, followed, would
+    /// have collapsed all 61 files into one wave. Wrong advice is worse than
+    /// none, because nobody doubts it.
+    #[test]
+    fn decide_from_spec_abstains_when_the_files_section_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = dir.path().join("spec.md");
+        std::fs::write(
+            &spec,
+            "# S\n\n## Files\n\nMudamos o lote e o vinculo, alem da tela.\n\
+             Nenhuma linha aqui e um caminho.\n\n## Tasks\n\n- [ ] x\n",
+        )
+        .unwrap();
+
+        let d = decide_from_spec(&spec);
+        assert_eq!(d["scope"], json!("abstain"), "{d}");
+        assert_eq!(d["filesSectionState"], json!("unrecognised"), "{d}");
+        assert_eq!(
+            d["reason"],
+            json!("not-measured: ## Files unrecognised"),
+            "the reason must not claim a measurement that never happened: {d}"
+        );
+        assert!(d["warning"].as_str().is_some_and(|w| !w.is_empty()), "{d}");
+
+        // A section that is genuinely EMPTY is a different state, and says so.
+        let fresh = dir.path().join("fresh.md");
+        std::fs::write(&fresh, "# S\n\n## Files\n\n## Tasks\n\n- [ ] x\n").unwrap();
+        assert_eq!(decide_from_spec(&fresh)["filesSectionState"], json!("empty"));
+
+        // And a census with real paths is measured normally — no abstain.
+        let real = dir.path().join("real.md");
+        std::fs::write(&real, "# S\n\n## Files\n\n- `src/a.rs`\n\n## Tasks\n\n- [ ] x\n").unwrap();
+        assert!(decide_from_spec(&real).get("filesSectionState").is_none());
+    }
+
     // --- scope-classify ---------------------------------------------------
 
     /// Helper: build a signals object for the classifier (independent of the
