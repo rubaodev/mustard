@@ -812,9 +812,37 @@ fn should_emit_qa_event(criteria: &[AcResult], self_invoked: bool) -> bool {
 /// `pass` refuses this too, so introducing it loosens nothing.
 pub(crate) const QA_SPEC_NOT_FOUND: &str = "spec-not-found";
 
-/// Run QA for `spec` under `cwd`. Always emits the metric; emits the
-/// `qa.result` event unless [`should_emit_qa_event`] vetoes it.
+/// Where the harness STATE lives, for a run whose WORK sits at `work_dir`.
+///
+/// **Two questions, and `cwd` was answering both.** Where the acceptance
+/// criteria RUN is the current checkout — that is the code under test. Where the
+/// spec, the recorded verdict and the report LIVE is the project root, and in a
+/// linked git worktree those are different directories: `workspace_root` maps a
+/// worktree back to its main checkout ON PURPOSE, so every worktree of a unit
+/// shares one `.claude/` (see `io::workspace`'s worktree redirect).
+///
+/// Every WRITER already went through that redirect. This reader did not, so it
+/// looked for the spec beside the code. Measured in the field, 2026-09-07: run
+/// from a worktree, `qa-run` answered `spec-not-found` for a spec that existed,
+/// and the close gate then reported "no QA pass recorded" directly under a QA
+/// run that had just passed — the verdict was written in one directory and
+/// looked for in another.
+///
+/// Fail-open: no anchor above `work_dir` (a tempdir in a test, a checkout with
+/// no `mustard.json`) yields `work_dir` itself, so nothing that worked before
+/// changes.
+fn state_root(work_dir: &Path) -> PathBuf {
+    mustard_core::io::workspace::workspace_root_or_self(work_dir)
+}
+
+/// Run QA for `spec` under `cwd` — where `cwd` is where the WORK is. The
+/// harness state is resolved from it through [`state_root`].
+///
+/// Always emits the metric; emits the `qa.result` event unless
+/// [`should_emit_qa_event`] vetoes it.
 fn run_qa(cwd: &Path, spec: &str) -> QaResult {
+    let state = state_root(cwd);
+    let state = state.as_path();
     // Read the invocation mode ONCE: both the verdict and the emission guard
     // are pure functions of the statuses plus this flag, so neither reaches
     // back into the thread-local on its own.
@@ -832,21 +860,21 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     //
     // `spec-not-found` blocks exactly like `skip` does at the close gate (any
     // verdict that is not `pass` is refused there), so nothing gets looser.
-    let Some(spec_file) = runner::find_spec_file(cwd, spec) else {
+    let Some(spec_file) = runner::find_spec_file(state, spec) else {
         eprintln!(
-            "[qa-run] Spec file not found for \"{spec}\" under {} — check the slug with \
-             `mustard-rt run active-specs`, and run from the project root (a submodule has its \
-             own `.claude/`).",
+            "[qa-run] Spec file not found for \"{spec}\" under {} (work dir: {}) — check the \
+             slug with `mustard-rt run active-specs`; a submodule has its own `.claude/`.",
+            state.display(),
             cwd.display()
         );
-        runner::emit_qa_metric(cwd, spec, QA_SPEC_NOT_FOUND, &[]);
+        runner::emit_qa_metric(state, spec, QA_SPEC_NOT_FOUND, &[]);
         return QaResult { overall: QA_SPEC_NOT_FOUND.to_string(), criteria: Vec::new() };
     };
     let markdown = match fs::read_to_string(&spec_file) {
         Ok(m) => m,
         Err(err) => {
             eprintln!("[qa-run] Cannot read spec file: {err}");
-            runner::emit_qa_metric(cwd, spec, QA_SPEC_NOT_FOUND, &[]);
+            runner::emit_qa_metric(state, spec, QA_SPEC_NOT_FOUND, &[]);
             return QaResult { overall: QA_SPEC_NOT_FOUND.to_string(), criteria: Vec::new() };
         }
     };
@@ -867,7 +895,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     // Append the executable ACs of every linked capability (F5). A spec with no
     // `## Capabilities` section adds nothing here, so its run is unchanged.
     // Capability scenarios carry no `Expect:` regex — they gate on exit code.
-    let capability_acs = runner::gather_capability_acs(cwd, spec);
+    let capability_acs = runner::gather_capability_acs(state, spec);
     items.extend(capability_acs.into_iter().map(|(id, command)| (id, command, None)));
 
     if items.is_empty() {
@@ -879,9 +907,9 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
             eprintln!("[qa-run] WARN: Acceptance Criteria section found but no parseable AC items");
         }
         if should_emit_qa_event(&[], self_invoked) {
-            runner::emit_qa_event(cwd, spec, "skip", &[]);
+            runner::emit_qa_event(state, spec, "skip", &[]);
         }
-        runner::emit_qa_metric(cwd, spec, "skip", &[]);
+        runner::emit_qa_metric(state, spec, "skip", &[]);
         return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
     }
 
@@ -896,12 +924,12 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let cjson = criteria_json(&criteria);
     let payload = json!({ "spec": spec, "overall": overall, "criteria": cjson });
     if should_emit_qa_event(&criteria, self_invoked) {
-        runner::emit_qa_event(cwd, spec, overall, &cjson);
+        runner::emit_qa_event(state, spec, overall, &cjson);
     }
-    runner::emit_qa_metric(cwd, spec, overall, &criteria);
-    render::write_sidecar(cwd, spec, &payload);
+    runner::emit_qa_metric(state, spec, overall, &criteria);
+    render::write_sidecar(state, spec, &payload);
     // D4: materialise the human-readable report beside the phase dir.
-    render::write_qa_report_md(cwd, spec, overall, &criteria);
+    render::write_qa_report_md(state, spec, overall, &criteria);
 
     QaResult { overall: overall.to_string(), criteria }
 }
@@ -917,7 +945,10 @@ pub fn run(spec: &str, format: &str) {
     let cjson = criteria_json(&result.criteria);
 
     if format == "html" {
-        match render::write_html_report(&cwd, spec, &result.overall, &result.criteria) {
+        // The report is harness state, so it lands beside the rest of it — not
+        // in whichever checkout the criteria happened to run from.
+        match render::write_html_report(&state_root(&cwd), spec, &result.overall, &result.criteria)
+        {
             Some(path) => eprintln!("[qa-run] HTML report: {}", path.display()),
             None => eprintln!("[qa-run] WARN: could not write HTML report"),
         }
@@ -1243,6 +1274,87 @@ mod tests {
     /// opposite one — fix the slug or the working directory, not author a
     /// criterion. Measured in the field from inside a submodule, where the spec
     /// existed one directory up and the verdict read `skip`.
+    /// Run from a linked git WORKTREE, the spec is still found — because the
+    /// harness state lives at the main checkout and the reader now resolves it
+    /// the same way every writer does.
+    ///
+    /// The worktree redirect is deliberate (`io::workspace`): every worktree of
+    /// a unit shares ONE `.claude/`, so the dashboard and the reports read one
+    /// place. `spec-draft` writes through it; this reader took the raw working
+    /// directory and looked for the spec beside the CODE. Measured in the field,
+    /// 2026-09-07: `qa-run` answered `spec-not-found` for a spec that existed
+    /// one checkout away, and the close gate then reported "no QA pass recorded"
+    /// under a run that had just passed.
+    ///
+    /// The two halves are asserted apart, because the whole point is that they
+    /// are two different questions: the spec is READ at the main checkout, and
+    /// the criterion RUNS in the worktree.
+    #[test]
+    fn a_run_from_a_worktree_reads_the_state_at_the_main_checkout() {
+        fn git(dir: &Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("spawn git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+
+        let dir = tempdir().expect("tempdir");
+        let main = dir.path().join("repo");
+        std::fs::create_dir_all(&main).expect("mkdir");
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        std::fs::write(main.join("mustard.json"), b"{}").expect("anchor");
+        std::fs::create_dir_all(main.join(".claude")).expect("claude dir");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("seed.txt"), "s").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "seed"]);
+
+        // The spec lives ONLY at the main checkout — exactly what the redirect
+        // guarantees, and exactly what the old reader could not see.
+        let spec_dir = main.join(".claude").join("spec").join("wt-spec");
+        std::fs::create_dir_all(&spec_dir).expect("spec dir");
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Acceptance Criteria\n\n- **AC-1** — the criterion runs where the code is\n  \
+             Command: `cat marker.txt`\n  Expect: `worktree`\n",
+        )
+        .expect("spec");
+
+        // A linked worktree, carrying its own copy of the anchor (a checkout
+        // does) and a marker file that ONLY it has.
+        let wt = main.join(".claude").join("worktrees").join("unit");
+        git(&main, &["worktree", "add", "-b", "fix/unit", wt.to_string_lossy().as_ref()]);
+        std::fs::write(wt.join("marker.txt"), "worktree\n").expect("marker");
+        assert!(
+            !wt.join(".claude").join("spec").join("wt-spec").exists(),
+            "the fixture must NOT put the spec in the worktree, or it proves nothing",
+        );
+
+        let result = run_qa(&wt, "wt-spec");
+
+        assert_eq!(
+            result.overall, "pass",
+            "the spec is read at the main checkout, and the criterion runs in the worktree",
+        );
+        assert_eq!(result.criteria.len(), 1, "one criterion parsed");
+        assert_eq!(result.criteria[0].status, "pass", "the criterion ran in the worktree");
+
+        // The verdict was RECORDED at the main checkout, where the close gate
+        // will go looking for it — not beside the code.
+        assert!(
+            spec_dir.join(".events").exists(),
+            "the verdict must land with the rest of the unit's state",
+        );
+    }
+
     #[test]
     fn a_missing_spec_is_not_a_skip() {
         let dir = tempdir().unwrap();
