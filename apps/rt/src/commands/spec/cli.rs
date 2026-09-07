@@ -169,6 +169,16 @@ pub enum SpecCmd {
         /// (or carrying nothing): the draft is byte-identical to today's.
         #[arg(long)]
         material: Option<PathBuf>,
+        /// Refresh ONLY the `## Definitions` / `## Decisions` / `## Evidence`
+        /// sections of a spec that already exists; every other byte of
+        /// `spec.md` is left alone. Needs `--slug` and `--material`, and never
+        /// creates a spec.
+        ///
+        /// This is the frequent move: one decision settled, one
+        /// `material-add`, and the spec has to carry it. The alternative was a
+        /// full `--force` re-draft of the whole body for each one.
+        #[arg(long = "material-only")]
+        material_only: bool,
         /// Why this draft carries no conversation material. REQUIRED when
         /// `--material` is absent or carries nothing: an empty channel has to
         /// be a stated choice, not an omission that looks like success. One
@@ -498,6 +508,7 @@ pub fn dispatch(cmd: SpecCmd) {
             signals,
             output,
             material,
+            material_only,
             no_material_reason,
             waves,
             plan,
@@ -513,6 +524,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 signals,
                 output,
                 material,
+                material_only,
                 no_material_reason,
                 waves,
                 plan,

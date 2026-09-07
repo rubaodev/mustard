@@ -86,6 +86,7 @@ use role::{build_role_block, patterns_task_block};
 use sections::{
     build_conversation_material, collapse_empty_sections, filter_task_lines, read_guards_block,
     read_reality_obligations, read_spec_lang, scan_unfilled, strip_unfilled_template_tokens,
+    MaterialCensus,
 };
 use skills::build_skills_list;
 
@@ -189,7 +190,19 @@ pub fn run(
     emit: EmitMode,
 ) {
     let project = PathBuf::from(project_dir());
-    let rendered = render_prompt_at(
+    // A `--spec` that does not name a real spec directory is a CALL error, and
+    // it must be refused BEFORE anything is rendered or written. Fail-open is
+    // the renderer's contract for a placeholder it could not fill; it was never
+    // meant to cover an argument that names nothing. Measured in the field: a
+    // `--spec <slug>/wave-1-backend` (the wave folded into the slug) failed the
+    // separator check in `ClaudePaths::for_spec`, degraded the spec dir to the
+    // project root, and emitted a prompt with an empty `## TASK` and zero
+    // material — with exit 0, a written file, and no warning.
+    if let Some(refusal) = spec_refusal(&project, spec) {
+        eprintln!("agent-prompt-render: REFUSED: {refusal}");
+        std::process::exit(2);
+    }
+    let rendered = render_prompt_with_census(
         &project,
         spec,
         wave,
@@ -205,22 +218,79 @@ pub fn run(
     // stdout is the prompt itself and must stay raw, so the measurement rides
     // the diagnostic channel. Without it a hollow wave is invisible until the
     // agent returns something thin: the operator reported exactly that, and the
-    // pipeline had no number to show. Two facts are enough to see it — how much
-    // of the conversation reached this wave, and how big its TASK is.
+    // pipeline had no number to show.
+    //
+    // `held-back` is the other half of the same sentence. A bare total on a spec
+    // holding more items reads as a truncation — the operator measured 28 of 35
+    // and concluded the renderer caps the material. It does not (see the "No
+    // size budget" note below); the difference is the per-wave cut, and a count
+    // that cannot say so invents a defect while hiding a real one.
+    let task_chars = rendered.task_chars;
     eprintln!(
-        "agent-prompt-render: wave={} role={role} material={} task={} chars",
+        "agent-prompt-render: wave={} role={role} material={} held-back={} (other wave) task={task_chars} chars",
         wave.map_or_else(|| "-".to_string(), |w| w.to_string()),
-        material_line_count(&rendered),
-        task_section_chars(&rendered),
+        material_line_count(&rendered.text),
+        rendered.material.other_wave,
     );
+    // A prompt with an empty `## TASK` is the definition of a useless dispatch:
+    // the agent is handed guards, references and material, and nothing to do.
+    // Emitting it costs a wave; refusing costs one re-run.
+    if task_chars == 0 {
+        eprintln!(
+            "agent-prompt-render: REFUSED: the rendered prompt has an EMPTY ## TASK — there is \
+             nothing to dispatch. For a wave, pass `--spec <slug> --wave <n>`; without a spec, \
+             pass `--task-text \"<the work>\"`."
+        );
+        std::process::exit(2);
+    }
     let out = match emit {
-        EmitMode::Inline => rendered,
+        EmitMode::Inline => rendered.text,
         EmitMode::Ref => prompt_ref_stub(
-            &project, spec, wave, role, subproject, mode, task_filter, task_text, &rendered,
+            &project,
+            spec,
+            wave,
+            role,
+            subproject,
+            mode,
+            task_filter,
+            task_text,
+            &rendered.text,
+            Some(rendered.material),
         ),
     };
     // stdout = prompt string or dispatch stub (raw, no JSON framing).
     print!("{out}");
+}
+
+/// Why a `--spec` cannot be honoured, or `None` when it can (including the
+/// spec-less dispatch, which passes no `--spec` at all).
+///
+/// Two shapes are refused, and each names the form that works — a refusal that
+/// does not teach the call costs the same round-trip it saved:
+///
+/// - a value `ClaudePaths::for_spec` rejects (a path separator, a `..`): almost
+///   always the WAVE folded into the slug;
+/// - a well-formed slug whose directory does not exist: a typo, or the wrong
+///   checkout — the case that used to render an empty prompt at the repo root.
+fn spec_refusal(project: &Path, spec: Option<&str>) -> Option<String> {
+    let slug = spec.map(str::trim).filter(|s| !s.is_empty())?;
+    let Ok(paths) = ClaudePaths::for_project(project) else {
+        // No workspace anchor to resolve against — the historical fail-open
+        // path. Nothing here can be established, so nothing is refused.
+        return None;
+    };
+    match paths.for_spec(slug) {
+        Err(e) => Some(format!(
+            "--spec '{slug}' is not a spec name ({e}). The wave is its OWN flag: \
+             pass `--spec <slug> --wave <n>`."
+        )),
+        Ok(sp) if !sp.dir().exists() => Some(format!(
+            "--spec '{slug}' names no spec directory ({}). Check the slug the base gate minted, \
+             or run from the project root.",
+            sp.dir().display()
+        )),
+        Ok(_) => None,
+    }
 }
 
 /// Bullet lines under `## CONVERSATION MATERIAL`, or 0 when the section
@@ -232,9 +302,23 @@ fn material_line_count(prompt: &str) -> usize {
         .count()
 }
 
-/// Characters under `## TASK` — the body the agent is actually handed.
-fn task_section_chars(prompt: &str) -> usize {
-    section_lines(prompt, "## TASK").map(|l| l.len() + 1).sum()
+/// Characters of the TASK body — measured on `task_steps` BEFORE substitution,
+/// never re-parsed out of the rendered prompt.
+///
+/// Re-parsing was wrong, and silently so. `read_task_steps` returns the wave's
+/// section WITH its own `## Tasks` heading, so the substituted body opens with a
+/// `## ` line — and a section scan that stops at the next `## ` stopped on that
+/// very line and reported ZERO characters for every wave that had a real task
+/// list. The number existed to make a hollow wave visible and answered `0` for
+/// the healthy ones instead. Measuring the source has no such ambiguity.
+fn task_body_chars(task_steps: &str) -> usize {
+    task_steps
+        .lines()
+        .map(str::trim)
+        // The block's own heading is not work — it is the label on the work.
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.len() + 1)
+        .sum()
 }
 
 /// Trimmed lines between a heading and the next `## `.
@@ -274,6 +358,12 @@ fn section_lines<'a>(prompt: &'a str, heading: &str) -> impl Iterator<Item = &'a
 ///
 /// Fail-open: a missing template block warns on stderr and yields an empty
 /// String (the CLI entry then prints nothing, the historical behaviour).
+// Test-only since the census landed: every runtime caller now takes
+// [`render_prompt_with_census`], because the counts the dispatch reports are
+// part of the answer. The remaining callers are all `#[cfg(test)]` modules
+// asserting the prompt TEXT, so gating keeps the bin build warning-free — the
+// same treatment `read_task_steps` / `files_section_paths` already get.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)] // mirrors the CLI flag surface 1:1
 pub(crate) fn render_prompt_at(
     project: &Path,
@@ -286,6 +376,46 @@ pub(crate) fn render_prompt_at(
     task_filter: Option<&str>,
     task_text: Option<&str>,
 ) -> String {
+    render_prompt_with_census(
+        project,
+        spec,
+        wave,
+        role,
+        subproject,
+        mode,
+        retry_context_file,
+        task_filter,
+        task_text,
+    )
+    .text
+}
+
+/// A rendered prompt plus the census of what the per-wave material cut did to
+/// it. [`render_prompt_at`] is the text-only face for the many callers that do
+/// not report; `run` takes this one, because reporting what was held back IS
+/// its job.
+pub(crate) struct RenderedPrompt {
+    /// The prompt text — byte-identical to what [`render_prompt_at`] returns.
+    pub text: String,
+    /// What the per-wave cut carried and what it held back.
+    pub material: MaterialCensus,
+    /// Size of the TASK body, from the source — see [`task_body_chars`].
+    pub task_chars: usize,
+}
+
+/// [`render_prompt_at`] with the material census kept instead of discarded.
+#[allow(clippy::too_many_arguments)] // mirrors the CLI flag surface 1:1
+pub(crate) fn render_prompt_with_census(
+    project: &Path,
+    spec: Option<&str>,
+    wave: Option<u32>,
+    role: &str,
+    subproject: &Path,
+    mode: RenderMode,
+    retry_context_file: Option<&Path>,
+    task_filter: Option<&str>,
+    task_text: Option<&str>,
+) -> RenderedPrompt {
     let project = project.to_path_buf();
     // Spec-less paths (the `/scan` guards enrich, `/task` with no scope) pass no
     // `--spec`. They carry no spec directory, no spec memory, and no spec-derived
@@ -309,7 +439,7 @@ pub(crate) fn render_prompt_at(
     };
     let Some(mut rendered) = block else {
         eprintln!("agent-prompt-render: WARN: template block missing — emitting empty prompt");
-        return String::new();
+        return RenderedPrompt { text: String::new(), material: MaterialCensus::default(), task_chars: 0 };
     };
 
     // Capture the placeholder tokens the TEMPLATE itself declares, BEFORE any
@@ -403,9 +533,14 @@ pub(crate) fn render_prompt_at(
     // VARIABLE tail of the template (after `## EFFICIENCY`), never in the
     // prefix-stable head — carrying context is worthless if it breaks the
     // prompt cache on every dispatch.
-    let conversation_material = spec
+    let (conversation_material, material_census) = spec
         .map(|_| build_conversation_material(&spec_dir.join("spec.md"), &op_spec_path))
         .unwrap_or_default();
+    // A task that NAMES a material item gets that item echoed right under it.
+    // The material still lives once, in its own section — this resolves the
+    // pointer where the work happens, so the agent is not left matching 28
+    // context items against 13 tasks by itself.
+    let task_steps = sections::echo_cited_material(&task_steps, &conversation_material);
     // The `{cross_wave_memory}` body accumulates the relevance-gated blocks
     // below (capabilities, spec memory, vocabulary). An empty result collapses
     // the section (`collapse_empty_sections`). The query is the role + task
@@ -565,7 +700,7 @@ pub(crate) fn render_prompt_at(
         rendered.push_str(&boundary);
     }
 
-    rendered
+    RenderedPrompt { text: rendered, material: material_census, task_chars: task_body_chars(&task_steps) }
 }
 
 // ---------------------------------------------------------------------------
@@ -745,30 +880,31 @@ mod tests {
             "x\n",
         );
         assert_eq!(super::material_line_count(prompt), 2, "both bullets counted");
-        assert_eq!(super::task_section_chars(prompt), "faca a coisa".len() + "em duas linhas".len() + 2);
 
-        // A collapsed section answers zero — which is the number worth seeing.
+        // A collapsed material section answers zero — the number worth seeing.
         let hollow = "## TASK\n\nfaca\n";
         assert_eq!(super::material_line_count(hollow), 0);
-        assert_eq!(super::task_section_chars(hollow), 5);
     }
 
-    /// A heading NAMED inside another block is not that block's heading.
+    /// The TASK size is measured on the SOURCE, and a wave's own `## Tasks`
+    /// heading is not work — it is the label on the work.
     ///
-    /// The real template mentions `## TASK` in the EFFICIENCY prose ("the
-    /// anchors already handed to you above"), and the `patterns` role body
-    /// names it too — both before the section itself. An unanchored search
-    /// matched the first literal, so the reported size was the tail of a
-    /// different block: a wrong number in the very diagnostic AC-12 adds.
+    /// This is the shape that made the old measurement lie. `read_task_steps`
+    /// returns the section WITH its heading, so the substituted body opens with
+    /// a `## ` line; re-parsing the rendered prompt stopped on that line and
+    /// reported ZERO for every wave that had a real task list — a number whose
+    /// whole job was to expose a hollow wave, answering `0` for healthy ones.
     #[test]
-    fn a_heading_named_inside_another_block_is_not_the_section() {
-        let prompt = "## ROLE\n\nliste os moldes em `## TASK` desta onda\n\n\
-                      ## TASK\n\no corpo real\n";
+    fn task_size_is_measured_on_the_source_and_skips_the_heading() {
+        let steps = "## Tasks\n\n- [ ] faca a coisa\n- [ ] em duas linhas\n";
         assert_eq!(
-            super::task_section_chars(prompt),
-            "o corpo real".len() + 1,
-            "the mention inside ## ROLE must not be read as the section",
+            super::task_body_chars(steps),
+            "- [ ] faca a coisa".len() + "- [ ] em duas linhas".len() + 2,
+            "the `## Tasks` heading and the blank lines are not the body",
         );
+        // A wave with no tasks at all is the one case that must read zero.
+        assert_eq!(super::task_body_chars(""), 0);
+        assert_eq!(super::task_body_chars("## Tasks\n\n"), 0, "a bare heading is not work");
     }
 
     use super::*;

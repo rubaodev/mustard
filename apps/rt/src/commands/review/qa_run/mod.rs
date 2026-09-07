@@ -759,6 +759,14 @@ fn should_emit_qa_event(criteria: &[AcResult], self_invoked: bool) -> bool {
     !(criteria.is_empty() || criteria.iter().any(|c| c.status == "skip"))
 }
 
+/// The `overall` verdict for a run whose spec could not be located or read.
+///
+/// It is NOT one of the four outcome classes a criterion can have (`pass` /
+/// `fail` / `timeout` / `skip`) precisely because nothing was ever attempted —
+/// see the refusal in [`run_qa`]. Every consumer that refuses anything but
+/// `pass` refuses this too, so introducing it loosens nothing.
+pub(crate) const QA_SPEC_NOT_FOUND: &str = "spec-not-found";
+
 /// Run QA for `spec` under `cwd`. Always emits the metric; emits the
 /// `qa.result` event unless [`should_emit_qa_event`] vetoes it.
 fn run_qa(cwd: &Path, spec: &str) -> QaResult {
@@ -766,17 +774,35 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     // are pure functions of the statuses plus this flag, so neither reaches
     // back into the thread-local on its own.
     let self_invoked = runner::QA_OPTIONS.with(std::cell::Cell::get).self_invoked;
+    // A spec this run could not find is NOT a skip.
+    //
+    // `skip` is a statement about the criteria — "there was nothing to attempt".
+    // "I could not find the spec" is a statement about the CALL, and the two
+    // demand opposite next moves: author a criterion, versus fix the slug or the
+    // working directory. They were the same word, so the structured verdict —
+    // the thing another command reads — could not tell them apart, and only the
+    // stderr line (which no command reads) carried the difference. Measured in
+    // the field: a `qa-run` launched from inside a submodule reported
+    // `overall: skip` for a spec that exists, one directory up.
+    //
+    // `spec-not-found` blocks exactly like `skip` does at the close gate (any
+    // verdict that is not `pass` is refused there), so nothing gets looser.
     let Some(spec_file) = runner::find_spec_file(cwd, spec) else {
-        eprintln!("[qa-run] Spec file not found for \"{spec}\"");
-        runner::emit_qa_metric(cwd, spec, "skip", &[]);
-        return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
+        eprintln!(
+            "[qa-run] Spec file not found for \"{spec}\" under {} — check the slug with \
+             `mustard-rt run active-specs`, and run from the project root (a submodule has its \
+             own `.claude/`).",
+            cwd.display()
+        );
+        runner::emit_qa_metric(cwd, spec, QA_SPEC_NOT_FOUND, &[]);
+        return QaResult { overall: QA_SPEC_NOT_FOUND.to_string(), criteria: Vec::new() };
     };
     let markdown = match fs::read_to_string(&spec_file) {
         Ok(m) => m,
         Err(err) => {
             eprintln!("[qa-run] Cannot read spec file: {err}");
-            runner::emit_qa_metric(cwd, spec, "skip", &[]);
-            return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
+            runner::emit_qa_metric(cwd, spec, QA_SPEC_NOT_FOUND, &[]);
+            return QaResult { overall: QA_SPEC_NOT_FOUND.to_string(), criteria: Vec::new() };
         }
     };
 
@@ -859,7 +885,10 @@ pub fn run(spec: &str, format: &str) {
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
 
-    if result.overall == "fail" {
+    // A failing criterion and a spec that was never found are both non-zero: the
+    // second used to exit 0, so a caller that only checks the exit code read
+    // "nothing to do here" from a call that did nothing at all.
+    if result.overall == "fail" || result.overall == QA_SPEC_NOT_FOUND {
         std::process::exit(1);
     }
 }
@@ -1116,11 +1145,19 @@ mod tests {
         assert!(!is_skeleton("cmd <<EOF"), "a heredoc opener closes nothing");
     }
 
+    /// A spec this run could not find is `spec-not-found`, never `skip`.
+    ///
+    /// `skip` says "there was nothing to attempt", which is a statement about
+    /// the criteria. This is a statement about the CALL, and the remedy is the
+    /// opposite one — fix the slug or the working directory, not author a
+    /// criterion. Measured in the field from inside a submodule, where the spec
+    /// existed one directory up and the verdict read `skip`.
     #[test]
-    fn skips_when_spec_missing() {
+    fn a_missing_spec_is_not_a_skip() {
         let dir = tempdir().unwrap();
         let r = run_qa(dir.path(), "ghost");
-        assert_eq!(r.overall, "skip");
+        assert_eq!(r.overall, QA_SPEC_NOT_FOUND);
+        assert!(r.criteria.is_empty(), "nothing was attempted");
     }
 
     // --- timeout as its own class + the self-invoked silence --------------

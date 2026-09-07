@@ -858,6 +858,20 @@ pub fn run_classify(from_spec: &str, slice_match_count: i64) {
 /// Decide directly from a spec file: compute the deterministic signals, then
 /// [`decide`]. Fail-open — an unreadable spec yields the `error-fallback`
 /// verdict.
+///
+/// ## A verdict computed over zero files is not a verdict
+///
+/// `decide` is arithmetic: zero files and zero layers reduce to
+/// `decompose:false, reason:"single-layer"`, which is *arithmetically* right and
+/// *epistemically* false — it reads as "I measured this spec and it is one
+/// layer" when what happened is "I read nothing". Measured in the field: a spec
+/// of 61 files across four subprojects came back exactly that way, and following
+/// it would have collapsed all 61 into a single wave. A wrong recommendation is
+/// worse than none, because nobody doubts it.
+///
+/// `scope-classify` and `plan-prepare` already downgrade a zero census through
+/// [`stamp_files_zero`]. This door did not. It does now, through the SAME stamp,
+/// so the three can never disagree about what a zero census means.
 #[must_use]
 pub(crate) fn decide_from_spec(spec_file: &Path) -> Value {
     let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
@@ -867,7 +881,26 @@ pub(crate) fn decide_from_spec(spec_file: &Path) -> Value {
     let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let project_root =
         mustard_core::io::workspace::workspace_root(&spec_dir).unwrap_or_else(|_| cwd.clone());
-    decide(&compute_signals_from_spec(&spec_text, &project_root))
+    let signals = compute_signals_from_spec(&spec_text, &project_root);
+    let mut out = decide(&signals);
+    if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
+        stamp_files_zero(&mut out, spec_file, &spec_text);
+        // The arithmetic `reason` claimed a measurement that never happened.
+        // Replace it by the state the stamp established, so a reader who only
+        // looks at `reason` is told the truth too.
+        if let Some(obj) = out.as_object_mut() {
+            let state = obj
+                .get("filesSectionState")
+                .and_then(Value::as_str)
+                .unwrap_or("absent")
+                .to_string();
+            obj.insert(
+                "reason".to_string(),
+                json!(format!("not-measured: ## Files {state}")),
+            );
+        }
+    }
+    out
 }
 
 /// Composite pre-PLAN decision: `scope` + `decompose` + `waves` floor from ONE

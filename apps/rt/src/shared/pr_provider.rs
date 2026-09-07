@@ -395,6 +395,41 @@ pub(crate) struct GithubPrCli {
     repo: PathBuf,
 }
 
+/// A pull-request body parked in a temp file for the duration of one `gh` call.
+///
+/// It deletes itself on drop, so a failed call leaves nothing behind. The path
+/// carries the process id and a nanosecond stamp because two units can open a
+/// PR at the same second on the same machine, and the second one must not read
+/// the first one's prose.
+struct BodyFile {
+    path: PathBuf,
+}
+
+impl BodyFile {
+    /// Write `body` to a fresh temp file.
+    fn new(body: &str) -> Result<Self, String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let path = std::env::temp_dir()
+            .join(format!("mustard-pr-body-{}-{stamp}.md", std::process::id()));
+        mustard_core::io::fs::write_atomic(&path, body.as_bytes())
+            .map_err(|e| format!("could not stage the pull-request body: {e}"))?;
+        Ok(Self { path })
+    }
+
+    /// The path as the `--body-file` argument value.
+    fn path_arg(&self) -> String {
+        self.path.to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for BodyFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 impl GithubPrCli {
     /// Bind the adapter to one repository root — the cwd every `gh` call runs
     /// in.
@@ -409,8 +444,18 @@ impl PrProvider for GithubPrCli {
     }
 
     fn open(&self, pr: &PrToOpen) -> Result<PrOpened, String> {
+        // The body travels as a FILE, never inline.
+        //
+        // A pull-request body is prose: the unit's own `pr-body.md` runs to
+        // several kilobytes as a matter of course. Windows caps a command line
+        // at ~8 KB, so an inline `--body` turned a perfectly good PR into
+        // `{"ok":false,"error":"Linha de comando muito longa."}` — measured in
+        // the field at ~9 KB. `gh` accepts `--body-file` for exactly this, and
+        // the temp file also spares every shell one more quoting problem.
+        let body_file = BodyFile::new(&pr.body)?;
+        let body_path = body_file.path_arg();
         let mut args: Vec<&str> = vec![
-            "pr", "create", "--title", &pr.title, "--body", &pr.body, "--head", &pr.head,
+            "pr", "create", "--title", &pr.title, "--body-file", &body_path, "--head", &pr.head,
             "--base", &pr.base,
         ];
         if pr.draft {
@@ -430,7 +475,13 @@ impl PrProvider for GithubPrCli {
     }
 
     fn edit_body(&self, number: u64, body: &str) -> Result<(), String> {
-        gh_out(&self.repo, &["pr", "edit", &number.to_string(), "--body", body]).map(|_| ())
+        // Same reason as `open`: an edited body is the same prose, the same size.
+        let body_file = BodyFile::new(body)?;
+        gh_out(
+            &self.repo,
+            &["pr", "edit", &number.to_string(), "--body-file", &body_file.path_arg()],
+        )
+        .map(|_| ())
     }
 
     fn ready(&self, number: u64) -> Result<(), String> {

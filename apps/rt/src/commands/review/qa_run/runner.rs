@@ -195,22 +195,70 @@ pub(super) fn running_binary_label(cwd: &Path, running: &Path) -> String {
 /// (compilation-bound) and everything else keeps [`AC_TIMEOUT_SECS`].
 fn ac_timeout_secs(command: &str) -> u64 {
     let env = std::env::var("MUSTARD_QA_AC_TIMEOUT_SECS").ok();
-    ac_timeout_secs_with_override(command, env.as_deref())
+    // The project's OWN build and type-check commands, so the compile-bound
+    // ceiling is not a list of tool names this file happens to know. Both are
+    // already declared in `mustard.json`; fail-open to none.
+    let declared = mustard_core::ProjectConfig::load(Path::new(
+        &crate::shared::context::project_dir(),
+    ))
+    .commands();
+    let compiling: Vec<String> = [declared.build, declared.type_check]
+        .into_iter()
+        .flatten()
+        .collect();
+    ac_timeout_secs_with_override(command, env.as_deref(), &compiling)
 }
 
 /// Deterministic core of [`ac_timeout_secs`]: the env value is injected as a
 /// parameter so the decision is a pure function of its inputs (no wall-clock,
 /// no globals) and unit-testable without mutating process env (which would
 /// need `unsafe` under Rust 2024 — forbidden in this crate).
-fn ac_timeout_secs_with_override(command: &str, env_override: Option<&str>) -> u64 {
+fn ac_timeout_secs_with_override(
+    command: &str,
+    env_override: Option<&str>,
+    compiling: &[String],
+) -> u64 {
     if let Some(secs) = env_override.and_then(|s| s.trim().parse::<u64>().ok()) {
         return secs;
     }
-    if command.to_ascii_lowercase().contains("cargo ") {
+    if is_compile_bound(command, compiling) {
         AC_TIMEOUT_CARGO_SECS
     } else {
         AC_TIMEOUT_SECS
     }
+}
+
+/// `true` when `command` has to COMPILE before it can answer.
+///
+/// **Why this is not just `cargo`.** A compile-bound criterion's runtime is
+/// bimodal: seconds on a warm cache, minutes on a cold one. It is the same
+/// criterion either way. Measured in the field: `pnpm type-check` answered in
+/// 1 s on one pass and was killed at 148 s on the next, purely because the build
+/// cache had gone cold — and `close-pipeline` refused the spec for it. The spec
+/// was not wrong; the clock was.
+///
+/// Three signals, in order of how much they are worth:
+///
+/// 1. `cargo ` — this workspace's own case, unchanged.
+/// 2. The project's DECLARED commands (`mustard.json#buildCommand` and
+///    `#typeCheckCommand`, passed in as `compiling`): the one place a project
+///    already says how it compiles, so nothing here has to guess.
+/// 3. A small set of type-check drivers, for a project that declared neither —
+///    a type check compiles without being called "build".
+fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
+    let lower = command.to_ascii_lowercase();
+    if lower.contains("cargo ") {
+        return true;
+    }
+    if compiling
+        .iter()
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| !c.is_empty())
+        .any(|c| lower.contains(&c))
+    {
+        return true;
+    }
+    ["type-check", "typecheck", "tsc "].iter().any(|t| lower.contains(t))
 }
 
 /// Locate the spec file. Tries, in order:
@@ -913,16 +961,16 @@ mod tests {
     #[test]
     fn qa_timeout_cargo_command_gets_big_ceiling() {
         assert_eq!(
-            ac_timeout_secs_with_override("cargo test -p mustard-rt", None),
+            ac_timeout_secs_with_override("cargo test -p mustard-rt", None, &[]),
             AC_TIMEOUT_CARGO_SECS
         );
         assert_eq!(
-            ac_timeout_secs_with_override("cargo build --workspace", None),
+            ac_timeout_secs_with_override("cargo build --workspace", None, &[]),
             AC_TIMEOUT_CARGO_SECS
         );
         // Wrapped/chained invocations still contain `cargo ` → big ceiling.
         assert_eq!(
-            ac_timeout_secs_with_override("rtk cargo test && echo ok", None),
+            ac_timeout_secs_with_override("rtk cargo test && echo ok", None, &[]),
             AC_TIMEOUT_CARGO_SECS
         );
     }
@@ -931,11 +979,11 @@ mod tests {
     #[test]
     fn qa_timeout_non_cargo_keeps_default() {
         assert_eq!(
-            ac_timeout_secs_with_override(r#"node -e "process.exit(0)""#, None),
+            ac_timeout_secs_with_override(r#"node -e "process.exit(0)""#, None, &[]),
             AC_TIMEOUT_SECS
         );
         assert_eq!(
-            ac_timeout_secs_with_override("grep -q Modelo SKILL.md", None),
+            ac_timeout_secs_with_override("grep -q Modelo SKILL.md", None, &[]),
             AC_TIMEOUT_SECS
         );
     }
@@ -947,18 +995,18 @@ mod tests {
     #[test]
     fn qa_timeout_env_override_wins() {
         assert_eq!(
-            ac_timeout_secs_with_override("cargo test -p mustard-rt", Some("300")),
+            ac_timeout_secs_with_override("cargo test -p mustard-rt", Some("300"), &[]),
             300
         );
-        assert_eq!(ac_timeout_secs_with_override("echo ok", Some("300")), 300);
+        assert_eq!(ac_timeout_secs_with_override("echo ok", Some("300"), &[]), 300);
         // Surrounding whitespace is tolerated.
-        assert_eq!(ac_timeout_secs_with_override("cargo build", Some(" 42 ")), 42);
+        assert_eq!(ac_timeout_secs_with_override("cargo build", Some(" 42 "), &[]), 42);
         // Invalid values fall back to the command-sensitive defaults.
         assert_eq!(
-            ac_timeout_secs_with_override("cargo build", Some("not-a-number")),
+            ac_timeout_secs_with_override("cargo build", Some("not-a-number"), &[]),
             AC_TIMEOUT_CARGO_SECS
         );
-        assert_eq!(ac_timeout_secs_with_override("echo ok", Some("")), AC_TIMEOUT_SECS);
+        assert_eq!(ac_timeout_secs_with_override("echo ok", Some(""), &[]), AC_TIMEOUT_SECS);
     }
 
     /// The file name cargo writes for `package` in `profile` — spelled once so

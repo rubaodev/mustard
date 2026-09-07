@@ -101,6 +101,7 @@ fn one_line(text: &str) -> String {
 pub(crate) fn notebook_at(
     root: &Path,
     unit: Option<&str>,
+    spec: Option<&str>,
     add: Option<&str>,
     explains: bool,
 ) -> Value {
@@ -123,14 +124,27 @@ pub(crate) fn notebook_at(
     // otherwise its own notebook answers `no-unit`.
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, &project);
     let bases: Vec<String> = flow.bases().to_vec();
-    let Some(slug) = flow.slug_of(&branch) else {
+    // `--spec` names the unit by its SLUG, skipping the branch read entirely.
+    //
+    // The slug is what this function derives from the branch anyway, two lines
+    // down, and it is the name every other spec command takes. Not accepting it
+    // here cost an `unexpected argument '--spec'` in the field, on a call whose
+    // meaning was unambiguous — and the fallback (resolve by the current branch)
+    // is exactly the path that wrote into the wrong repository from a submodule.
+    let Some(slug) = spec
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| flow.slug_of(&branch))
+    else {
         return json!({
             "ok": false,
             "reason": "no-unit",
             "branch": branch,
             "bases": bases,
             "hint": "the notebook is per work unit — run it from a `{kind}/{slug}` branch \
-                     (feature/, fix/, hotfix/), or name one with `--unit {kind}/{slug}`",
+                     (feature/, fix/, hotfix/), name one with `--unit {kind}/{slug}`, or name \
+                     the unit's slug directly with `--spec {slug}`",
         });
     };
 
@@ -250,12 +264,45 @@ pub(crate) fn explains_symptom(item: &str) -> bool {
 }
 
 /// Run `notebook` from `root` and print the JSON report.
-pub fn run(root: &Path, unit: Option<&str>, add: Option<&str>, explains: bool) {
+pub fn run(root: &Path, unit: Option<&str>, spec: Option<&str>, add: Option<&str>, explains: bool) {
+    let root = resolve_notebook_root(root);
     println!(
         "{}",
-        serde_json::to_string_pretty(&notebook_at(root, unit, add, explains))
+        serde_json::to_string_pretty(&notebook_at(&root, unit, spec, add, explains))
             .unwrap_or_else(|_| "{}".into())
     );
+}
+
+/// The project root a notebook write belongs to, from the `--root` the caller
+/// gave (default `.`, i.e. the current directory).
+///
+/// **Why the current directory is not the answer.** A notebook write creates
+/// `<root>/.claude/spec/<slug>/notebook.md` — a whole spec directory. Run with
+/// the shell sitting inside a git submodule, `.` IS the submodule, so the record
+/// landed in the WRONG REPOSITORY: measured in the field, a full spec tree
+/// appeared under `backend/Sialia.Backend/.claude/`, and the following
+/// `qa-run --spec <slug>` then answered "spec file not found" because it was
+/// looking in the submodule too.
+///
+/// So the root is resolved the way every other spec-writing command resolves it:
+/// walk up to the workspace anchor (`mustard.json` beside `.claude/`) through
+/// [`crate::shared::context::project_dir`]. An explicit `--root` that IS an
+/// anchor is honoured verbatim; anything else walks. Fail-open: no anchor
+/// anywhere means the given root stands, exactly as before.
+fn resolve_notebook_root(root: &Path) -> PathBuf {
+    if mustard_core::ClaudePaths::for_project(root).is_ok() {
+        return root.to_path_buf();
+    }
+    let resolved = PathBuf::from(crate::shared::context::project_dir());
+    if resolved != root {
+        eprintln!(
+            "[notebook] resolved the project root to {} (the working directory {} is not one — a \
+             submodule has its own `.claude/`)",
+            resolved.display(),
+            root.display()
+        );
+    }
+    resolved
 }
 
 #[cfg(test)]
@@ -293,7 +340,7 @@ mod tests {
         let root = dir.path();
 
         // Recorded from inside the unit — the branch names the notebook.
-        let wrote = notebook_at(root, None, Some("the statusline truncates on narrow terminals"), false);
+        let wrote = notebook_at(root, None, None, Some("the statusline truncates on narrow terminals"), false);
         assert_eq!(wrote["ok"], json!(true), "report: {wrote}");
         assert_eq!(wrote["unit"], json!("dev_my-unit"));
         assert_eq!(wrote["slug"], json!("my-unit"));
@@ -311,7 +358,7 @@ mod tests {
         // file is still untracked, so it survives the switch — on a real unit
         // the notebook rides its own branch, as the module doc says.)
         git(root, &["checkout", "dev"]);
-        let read = notebook_at(root, Some("dev_my-unit"), None, false);
+        let read = notebook_at(root, Some("dev_my-unit"), None, None, false);
         assert_eq!(read["ok"], json!(true));
         assert_eq!(read["added"], json!(false), "reading records nothing");
         assert_eq!(
@@ -322,7 +369,7 @@ mod tests {
 
         // A DIFFERENT unit has its own notebook — the record is per branch, not
         // one global list.
-        let other = notebook_at(root, Some("dev_another-unit"), None, false);
+        let other = notebook_at(root, Some("dev_another-unit"), None, None, false);
         assert_eq!(other["items"], json!([]), "one unit's item never leaks into another's");
     }
 
@@ -333,13 +380,13 @@ mod tests {
         let dir = repo();
         let root = dir.path();
 
-        let first = notebook_at(root, None, Some("rename the digest cache"), false);
+        let first = notebook_at(root, None, None, Some("rename the digest cache"), false);
         assert_eq!(first["added"], json!(true));
-        let again = notebook_at(root, None, Some("rename the digest cache"), false);
+        let again = notebook_at(root, None, None, Some("rename the digest cache"), false);
         assert_eq!(again["added"], json!(false), "an exact repeat is folded away");
         assert_eq!(again["items"], json!(["rename the digest cache"]));
 
-        let pasted = notebook_at(root, None, Some("two lines\nbecome  one"), false);
+        let pasted = notebook_at(root, None, None, Some("two lines\nbecome  one"), false);
         assert_eq!(
             pasted["items"],
             json!(["rename the digest cache", "two lines become one"]),
@@ -355,19 +402,19 @@ mod tests {
         let root = dir.path();
         git(root, &["checkout", "dev"]);
 
-        let base = notebook_at(root, None, Some("orphan note"), false);
+        let base = notebook_at(root, None, None, Some("orphan note"), false);
         assert_eq!(base["ok"], json!(false));
         assert_eq!(base["reason"], json!("no-unit"));
         assert!(base["hint"].as_str().unwrap_or_default().contains("--unit"), "the refusal says how");
 
-        let loose = notebook_at(root, Some("no-prefix-branch"), None, false);
+        let loose = notebook_at(root, Some("no-prefix-branch"), None, None, false);
         assert_eq!(loose["reason"], json!("no-unit"));
 
         // The prefix must name a DECLARED base, not merely sit before an
         // underscore: `feature_x` is not a unit of this project, and accepting
         // it would open `.claude/spec/x/notebook.md` — another unit's file —
         // without a word.
-        let foreign = notebook_at(root, Some("feature_x"), Some("would land in the wrong unit"), false);
+        let foreign = notebook_at(root, Some("feature_x"), None, Some("would land in the wrong unit"), false);
         assert_eq!(foreign["reason"], json!("no-unit"), "report: {foreign}");
         assert!(
             !root.join(".claude/spec/x/notebook.md").exists(),
@@ -396,7 +443,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = notebook_at(root, None, Some("nota qualquer"), false);
+        let out = notebook_at(root, None, None, Some("nota qualquer"), false);
         let items: Vec<String> = out["items"]
             .as_array()
             .unwrap()
@@ -439,7 +486,7 @@ mod tests {
             (format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM}"), true),
             (format!("  {EXPLAINS_SYMPTOM}   "), true),
         ] {
-            let out = notebook_at(root, None, Some(&typed), flag);
+            let out = notebook_at(root, None, None, Some(&typed), flag);
             assert_eq!(
                 out["ok"].as_bool(),
                 Some(false),
@@ -450,7 +497,7 @@ mod tests {
 
         // …and after all of that the notebook is still empty: nothing was
         // written, so nothing can block the close.
-        let read = notebook_at(root, None, None, false);
+        let read = notebook_at(root, None, None, None, false);
         assert_eq!(read["items"].as_array().map(Vec::len), Some(0), "{read}");
         assert_eq!(read["explainsSymptom"].as_array().map(Vec::len), Some(0), "{read}");
     }
@@ -472,10 +519,10 @@ mod tests {
             (format!("  {EXPLAINS_SYMPTOM}   com espacos   "), true),
         ] {
             for _ in 0..3 {
-                let _ = notebook_at(root, None, Some(&typed), flag);
+                let _ = notebook_at(root, None, None, Some(&typed), flag);
             }
         }
-        let read = notebook_at(root, None, None, false);
+        let read = notebook_at(root, None, None, None, false);
         let items: Vec<&str> =
             read["items"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(items.len(), 4, "three writes of each must leave one each: {items:?}");
@@ -495,7 +542,7 @@ mod tests {
         let root = dir.path();
         let quoted = format!("{EXPLAINS_SYMPTOM} eu so estava citando o marcador");
 
-        let out = notebook_at(root, None, Some(&quoted), false);
+        let out = notebook_at(root, None, None, Some(&quoted), false);
         assert_eq!(
             out["explainsSymptom"].as_array().map(Vec::len),
             Some(0),
@@ -509,7 +556,7 @@ mod tests {
         );
 
         // With the flag, the same item IS marked — and marked exactly once.
-        let out2 = notebook_at(root, None, Some("outra coisa"), true);
+        let out2 = notebook_at(root, None, None, Some("outra coisa"), true);
         let marked: Vec<&str> =
             out2["explainsSymptom"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(marked.len(), 1, "{out2}");
@@ -527,7 +574,7 @@ mod tests {
             format!("{EXPLAINS_SYMPTOM}{EXPLAINS_SYMPTOM} coladas"),
             format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} tres"),
         ] {
-            let out = notebook_at(root3, None, Some(&typed), false);
+            let out = notebook_at(root3, None, None, Some(&typed), false);
             assert_eq!(
                 out["explainsSymptom"].as_array().map(Vec::len),
                 Some(0),
@@ -540,6 +587,7 @@ mod tests {
         let dir4 = repo();
         let out4 = notebook_at(
             dir4.path(),
+            None,
             None,
             Some(&format!("{EXPLAINS_SYMPTOM} {EXPLAINS_SYMPTOM} ja marcado")),
             true,
