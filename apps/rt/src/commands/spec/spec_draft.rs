@@ -189,8 +189,12 @@ pub struct SpecDraftOpts {
 /// `meta.json#base` and removes it. Nobody authors it and it never reaches the
 /// merge; the authored work of a unit is `spec.md`, its waves, its proof, its
 /// change log and its review verdicts, and every one of those still refuses.
-const HARNESS_STATE_ENTRIES: &[&str] =
-    &[".events", ".dispatch", crate::shared::work_kind::CUT_BASE_FILE];
+const HARNESS_STATE_ENTRIES: &[&str] = &[
+    ".events",
+    ".dispatch",
+    crate::shared::work_kind::CUT_BASE_FILE,
+    crate::commands::spec::material_add::MATERIAL_FILE,
+];
 
 /// `true` when `dir` exists but holds NOTHING except the harness state listed in
 /// [`HARNESS_STATE_ENTRIES`] — i.e. no spec has been drafted into it yet.
@@ -205,6 +209,17 @@ const HARNESS_STATE_ENTRIES: &[&str] =
 /// That is why the cut records its base as [`HARNESS_STATE_ENTRIES`]' third
 /// entry and NOT as a `meta.json`: a sidecar written by step one is read here as
 /// step two's own output, and the unit came out cut and spec-less.
+///
+/// The FOURTH entry is the same lesson a second time, and it cost the same
+/// round. The material channel exists to be written the MOMENT a decision is
+/// settled — from the base gate onward, which is before this draft runs. Doing
+/// exactly what the rules prescribe therefore produced the very refusal above:
+/// `spec-material.json` was not listed, so the file the channel had just created
+/// read as a spec already drafted. The remedy the refusal teaches is `--force`,
+/// and `--force` rewrites the whole body — offered at the precise moment the
+/// conversation had started recording its decisions. Named through
+/// [`crate::commands::spec::material_add::MATERIAL_FILE`] so the writer and this
+/// whitelist can never drift apart.
 fn holds_only_harness_state(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         // Unreadable: treat as occupied — refusing is the safe direction when

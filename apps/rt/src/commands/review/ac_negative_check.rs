@@ -1344,7 +1344,15 @@ fn run_pass(
         // a criterion whose control was added or edited since the proof was
         // taken carries a control nobody ran, and a control nobody ran is no
         // control. Only that half is re-asked; the red proof is untouched.
-        if let Some(kept) = recorded {
+        // …and only a record that HAS a proof. One left behind by a red control
+        // earned nothing: the control refused the criterion, so its own command
+        // never ran, and `proof: not-attempted` is that absence written down.
+        // Carrying such a record over pins it forever — the operator repairs the
+        // control, re-runs, and the record answers with a green control beside
+        // the red control's own reason, the criterion still unproven. Measured
+        // in this repository, 2026-09-07. There is no earned red to protect
+        // here, so the criterion goes back through the full proof.
+        if let Some(kept) = recorded.filter(|p| p.proof != Proof::NotAttempted) {
             if kept.control_command.as_deref() == control {
                 criteria.push(kept.clone());
             } else {
