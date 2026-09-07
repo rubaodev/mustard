@@ -1344,15 +1344,18 @@ fn run_pass(
         // a criterion whose control was added or edited since the proof was
         // taken carries a control nobody ran, and a control nobody ran is no
         // control. Only that half is re-asked; the red proof is untouched.
-        // …and only a record that HAS a proof. One left behind by a red control
-        // earned nothing: the control refused the criterion, so its own command
-        // never ran, and `proof: not-attempted` is that absence written down.
-        // Carrying such a record over pins it forever — the operator repairs the
-        // control, re-runs, and the record answers with a green control beside
-        // the red control's own reason, the criterion still unproven. Measured
-        // in this repository, 2026-09-07. There is no earned red to protect
-        // here, so the criterion goes back through the full proof.
-        if let Some(kept) = recorded.filter(|p| p.proof != Proof::NotAttempted) {
+        // …e só um registro cuja prova produziu uma COR. Aproveitar existe para
+        // proteger um vermelho conquistado de virar verde quando o trabalho
+        // chega; um registro sem cor não conquistou nada e não tem o que
+        // proteger. São dois casos, e ambos prendem o critério para sempre:
+        // `not-attempted`, deixado por um controle vermelho que recusou o
+        // critério antes de o comando dele rodar; e `no-verdict`, deixado por um
+        // comando que rodou e morreu no próprio prazo. Nos dois, o operador
+        // conserta o que quebrou, re-roda, e o registro responde com a mesma
+        // coisa de antes — no primeiro caso um controle verde ao lado do motivo
+        // do controle vermelho. Medido neste repositório em 07/09/2026. Sem cor,
+        // o critério volta pela prova inteira.
+        if let Some(kept) = recorded.filter(|p| matches!(p.proof, Proof::Red | Proof::Green)) {
             if kept.control_command.as_deref() == control {
                 criteria.push(kept.clone());
             } else {
@@ -2343,19 +2346,20 @@ mod tests {
         assert_eq!(exit_code(&report), 1, "an input error is not the blocking code");
     }
 
-    /// A record whose proof was NEVER TAKEN carries nothing to carry over.
+    /// Um registro cuja prova NUNCA FOI TOMADA não tem o que aproveitar.
     ///
-    /// The carry-over path exists to protect an EARNED red from being re-run
-    /// into a green once the work lands. A record left by a RED CONTROL earned
-    /// nothing: the control refused the criterion, so its own command never ran.
-    /// Repairing the control and re-running must therefore TAKE the proof — and
-    /// it did not. Measured in this repository, 2026-09-07: after the control
-    /// was fixed and re-run, the same record read
-    /// `"control": "green", "control_exit": 0` beside
-    /// `"reason": "the CONTROL was TAKEN and came back red"`, and the criterion
-    /// stayed `unproven` for good. Deleting the ledger and re-running proved the
-    /// same criterion red on the first try — so it was the RE-RUN that lied,
-    /// never the measurement.
+    /// O caminho de aproveitamento existe para proteger um vermelho CONQUISTADO
+    /// de ser re-rodado até virar verde quando o trabalho chega. Um registro
+    /// deixado por um CONTROLE VERMELHO não conquistou nada: o controle recusou
+    /// o critério, então o comando dele nunca rodou. Consertar o controle e
+    /// re-rodar tem, portanto, de TOMAR a prova — e não tomava. Medido neste
+    /// repositório em 07/09/2026: depois de consertado o controle e re-rodada a
+    /// checagem, o mesmo registro trazia
+    /// `"control": "green", "control_exit": 0` ao lado de
+    /// `"reason": "the CONTROL was TAKEN and came back red"`, e o critério ficou
+    /// `unproven` para sempre. Apagar o ledger e re-rodar provava o mesmo
+    /// critério vermelho de primeira — ou seja, quem mentia era a RE-EXECUÇÃO,
+    /// nunca a medição.
     #[test]
     fn a_repaired_control_lets_the_proof_finally_be_taken() {
         let dir = tempdir().unwrap();
@@ -2411,5 +2415,96 @@ mod tests {
             ac1.reason.is_none(),
             "a green control must not leave the red control's reason standing beside it: {ac1:?}"
         );
+    }
+
+    /// Semeia um ledger em que AC-1 já carrega `proof` sem cor, com o controle
+    /// `control_command` gravado. Devolve nada — escreve o arquivo.
+    fn seed_colourless_ledger(spec_dir: &Path, proof: &str, control_command: &str, reason: &str) {
+        let stale = serde_json::json!({
+            "spec": "seeded",
+            "criteria": [{
+                "id": "AC-1",
+                "command": RED_COMMAND,
+                "expect": null,
+                "control_command": control_command,
+                "verdict": "unproven",
+                "proof": proof,
+                "control": "red",
+                "control_exit": 1,
+                "confirmation": "not-taken",
+                "exit": null,
+                "confirmation_exit": null,
+                "removal": "not-taken",
+                "removal_exit": null,
+                "reason": reason,
+                "stderr_excerpt": ""
+            }],
+            "amendments": [],
+            "additions": []
+        });
+        std::fs::write(
+            spec_dir.join(AC_PROOF_JSON),
+            serde_json::to_string_pretty(&stale).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// O corpo de spec que os dois testes de aproveitamento usam: AC-1 vermelho
+    /// com controle verde, AC-2 a rede de segurança final.
+    fn controlled_spec_body() -> String {
+        format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — when the work lands, then the new behaviour holds.\n               Command: `{RED_COMMAND}`\n  Control: `{GREEN_COMMAND}`\n\
+             - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        )
+    }
+
+    /// Uma prova morta no prazo prende o critério do mesmo jeito que uma nunca
+    /// tomada — e por isso o filtro exige COR, não a ausência de um único valor.
+    ///
+    /// `no-verdict` diz que o comando rodou e foi morto pelo próprio prazo: o
+    /// critério não conquistou vermelho nenhum. Aproveitar esse registro deixa o
+    /// operador que estreitou o comando sem saída a não ser apagar o ledger, que
+    /// é exatamente o contorno que este par de testes existe para eliminar.
+    #[test]
+    fn a_proof_killed_by_its_deadline_is_taken_again() {
+        let dir = tempdir().unwrap();
+        let spec_dir = seed(dir.path(), "seeded", &controlled_spec_body());
+        // Controle diferente do declarado, para cair no caminho `recontrol`.
+        seed_colourless_ledger(
+            &spec_dir,
+            "no-verdict",
+            "cd another-no-such-directory",
+            REASON_NO_VERDICT,
+        );
+
+        let report = check(dir.path(), "seeded");
+        let ac1 = entry(&report, "AC-1");
+        assert_eq!(ac1.proof, Proof::Red, "uma prova sem cor é tomada de novo: {ac1:?}");
+        assert_eq!(ac1.verdict, Verdict::Proven, "{ac1:?}");
+    }
+
+    /// O filtro governa AS DUAS pontas do aproveitamento, não só a que reroda o
+    /// controle.
+    ///
+    /// Quando o texto do controle NÃO mudou — o operador consertou o ambiente,
+    /// não a linha — o registro seguia pelo ramo que o devolve tal e qual. Sem
+    /// este teste, um filtro aplicado só ao ramo `recontrol` passaria verde e
+    /// deixaria metade do defeito de pé.
+    #[test]
+    fn an_unchanged_control_does_not_pin_a_colourless_proof_either() {
+        let dir = tempdir().unwrap();
+        let spec_dir = seed(dir.path(), "seeded", &controlled_spec_body());
+        // MESMO texto de controle que a spec declara: o ramo `kept.clone()`.
+        seed_colourless_ledger(&spec_dir, "not-attempted", GREEN_COMMAND, REASON_CONTROL_RED);
+
+        let report = check(dir.path(), "seeded");
+        let ac1 = entry(&report, "AC-1");
+        assert_eq!(
+            ac1.proof,
+            Proof::Red,
+            "o ramo do controle inalterado obedece ao mesmo filtro: {ac1:?}"
+        );
+        assert!(ac1.reason.is_none(), "e não carrega o motivo antigo: {ac1:?}");
     }
 }

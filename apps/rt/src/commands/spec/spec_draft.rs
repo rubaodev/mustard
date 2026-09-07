@@ -210,16 +210,16 @@ const HARNESS_STATE_ENTRIES: &[&str] = &[
 /// entry and NOT as a `meta.json`: a sidecar written by step one is read here as
 /// step two's own output, and the unit came out cut and spec-less.
 ///
-/// The FOURTH entry is the same lesson a second time, and it cost the same
-/// round. The material channel exists to be written the MOMENT a decision is
-/// settled — from the base gate onward, which is before this draft runs. Doing
-/// exactly what the rules prescribe therefore produced the very refusal above:
-/// `spec-material.json` was not listed, so the file the channel had just created
-/// read as a spec already drafted. The remedy the refusal teaches is `--force`,
-/// and `--force` rewrites the whole body — offered at the precise moment the
-/// conversation had started recording its decisions. Named through
-/// [`crate::commands::spec::material_add::MATERIAL_FILE`] so the writer and this
-/// whitelist can never drift apart.
+/// A QUARTA entrada é a mesma lição outra vez, e custou a mesma rodada. O canal
+/// de material existe para ser escrito NO MOMENTO em que uma decisão é fechada —
+/// do portão de base em diante, ou seja, antes deste rascunho rodar. Fazer
+/// exatamente o que as regras mandam produzia então a recusa acima: o
+/// `spec-material.json` não estava listado, e o arquivo que o canal acabara de
+/// criar era lido como spec já rascunhada. O remédio que a recusa ensina é
+/// `--force`, e `--force` reescreve o corpo inteiro — oferecido no instante
+/// exato em que a conversa começara a registrar suas decisões. Nomeado por
+/// [`crate::commands::spec::material_add::MATERIAL_FILE`] para que o escritor e
+/// esta lista nunca divirjam.
 fn holds_only_harness_state(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         // Unreadable: treat as occupied — refusing is the safe direction when
@@ -3167,17 +3167,18 @@ mod tests {
         assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"));
     }
 
-    /// A material file written BEFORE the draft is harness state, not a draft.
+    /// Um arquivo de material escrito ANTES do rascunho é estado do harness, não
+    /// rascunho.
     ///
-    /// The material channel exists to be written the moment a decision is
-    /// settled — from the base gate onward, which is BEFORE `spec-draft` runs.
-    /// Doing exactly that used to make the draft refuse: `spec-material.json`
-    /// was not on the whitelist, so the directory read as "already drafted" and
-    /// the draft demanded `--force` — an overwrite flag for a directory holding
-    /// nothing to overwrite, which is the very sentence this guard's own doc
-    /// comment uses about the event log. Worse than the error: the remedy it
-    /// teaches rewrites the whole body, at the exact moment the conversation's
-    /// decisions had just started being recorded.
+    /// O canal de material existe para ser escrito no momento em que uma decisão
+    /// é fechada — do portão de base em diante, ou seja, ANTES de `spec-draft`
+    /// rodar. Fazer exatamente isso fazia o rascunho recusar: o
+    /// `spec-material.json` não estava na lista, então o diretório era lido como
+    /// "já rascunhado" e o rascunho exigia `--force` — um flag de sobrescrita
+    /// para um diretório que não tem nada a sobrescrever, que é a própria frase
+    /// que o comentário deste guarda usa sobre o log de eventos. Pior que o
+    /// erro: o remédio que ele ensina reescreve o corpo inteiro, no instante
+    /// exato em que as decisões da conversa começaram a ser registradas.
     #[test]
     fn a_material_file_written_before_the_draft_is_not_a_draft() {
         let dir = tempdir().unwrap();
