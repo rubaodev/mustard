@@ -14,6 +14,14 @@ mustard-rt run material-add --spec {slug} --kind finding    --subject "<claim>" 
 
 One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open from ▸6 on:** the base gate's event log creates `.claude/spec/{slug}/`, so a decision settled before the draft still lands. `unknown_spec` means no gate minted that slug — no unit is open.
 
+**Once the spec exists, carry a new item in with `--material-only`** — it rewrites the three material sections and leaves every other byte of `spec.md` alone:
+
+```
+mustard-rt run spec-draft --slug {slug} --intent "{intent}" --material .claude/spec/{slug}/spec-material.json --material-only
+```
+
+A full `--force` re-draft is for a spec whose NARRATIVE changed. Reach for it and you rewrite the whole body to get one decision in — measured in the field, that cost the operator a save-and-splice script on every round of the conversation, which is a good way to stop recording decisions at all.
+
 ## Where it lands
 
 `spec-draft` checks `{kind}/{slug}` out in the MAIN checkout, so the whole unit is authored ON it: `spec.md`, the waves, the ceremony and the code alike. There is no `.claude/spec/` carve-out; a spec write on a bare integration base is DENIED like any other write — the branch the gate minted is the only place this material exists. An old `{base}_{slug}` name still reads as its unit.

@@ -1005,14 +1005,19 @@ mod tests {
         );
     }
 
-    /// Degraded: an unknown spec degrades to QA `skip` — which is NOT a pass:
-    /// `completed: false`, empty reviews, null summary.
+    /// Degraded: an unknown spec reports QA `spec-not-found` — which is NOT a
+    /// pass: `completed: false`, empty reviews, null summary.
+    ///
+    /// It used to read `skip`, the same word a spec with nothing to verify gets.
+    /// The two demand opposite next moves (fix the slug versus author a
+    /// criterion), so they no longer share a word — the close is refused either
+    /// way, since anything but `pass` is.
     #[test]
     fn composite_close_pipeline_unknown_spec_skips_without_closing() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
         let report = close(dir.path(), "ghost-spec");
-        assert_eq!(report["qa"]["overall"], json!("skip"), "{report}");
+        assert_eq!(report["qa"]["overall"], json!("spec-not-found"), "{report}");
         assert_eq!(report["completed"], json!(false), "{report}");
         assert_eq!(report["reviews"], json!([]), "{report}");
         assert_eq!(report["summary"], Value::Null, "{report}");

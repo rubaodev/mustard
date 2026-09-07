@@ -140,6 +140,13 @@ fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
 /// which can be a *finished, leftover* spec (a stale `payables-…`), raising a
 /// BOUNDARY WARNING for a spec the current session never touched.
 fn resolve_boundary_spec(cwd: &str, session_id: Option<&str>) -> Option<String> {
+    // The unit the CHECKOUT is on wins over every recorded hint. A session
+    // marker and a `.pipeline-states` file are both records of what was true
+    // when they were written; the branch is what is true now. See
+    // `context::spec_of_checkout_branch` for the session this cost.
+    if let Some(spec) = crate::shared::context::spec_of_checkout_branch(cwd) {
+        return Some(spec);
+    }
     if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown") {
         if let Some(spec) = crate::shared::context::spec_for_session(cwd, sid) {
             return Some(spec);

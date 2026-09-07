@@ -315,27 +315,163 @@ const MATERIAL_EVIDENCE: &str = "### Evidence";
 /// [`collapse_empty_sections`], so a spec that carries nothing renders a prompt
 /// byte-identical to one rendered before this channel existed. Fail-open: an
 /// unreadable spec yields "".
-pub(crate) fn build_conversation_material(parent_spec: &Path, wave_spec: &Path) -> String {
+///
+/// Returns the rendered block AND the [`MaterialCensus`] of what the cut did, so
+/// the dispatch can REPORT what it held back instead of printing a bare total
+/// that reads as a truncation. The census is computed by the cut ITSELF — a
+/// second counter re-reading the parent spec would be a second spelling of this
+/// rule, and the two would drift.
+pub(crate) fn build_conversation_material(
+    parent_spec: &Path,
+    wave_spec: &Path,
+) -> (String, MaterialCensus) {
     let text = mfs::read_to_string(parent_spec).unwrap_or_default();
-    if text.is_empty() {
-        return String::new();
+    let wave_text = mfs::read_to_string(wave_spec).unwrap_or_default();
+    cut_material_for_files(&text, &files_section_paths(&wave_text))
+}
+
+/// [`build_conversation_material`] against text already in hand, with the wave's
+/// declared files given directly instead of parsed out of its `spec.md`.
+///
+/// The wave SCAFFOLD needs exactly this cut while it is still WRITING the wave's
+/// `spec.md` — the file whose `## Files` the path-taking face would read does
+/// not exist yet. Two cuts would be two rules; this is the one rule, and
+/// [`build_conversation_material`] is its file-reading face.
+pub(crate) fn cut_material_for_files(
+    parent_text: &str,
+    declared: &[String],
+) -> (String, MaterialCensus) {
+    let mut census = MaterialCensus::default();
+    if parent_text.is_empty() {
+        return (String::new(), census);
     }
     let mut out = String::new();
-    if let Some(body) = cut_section_body(&text, "definitions") {
-        push_material_block(&mut out, MATERIAL_DEFINITIONS, &body);
+    for (key, heading) in [
+        ("definitions", MATERIAL_DEFINITIONS),
+        ("decisions", MATERIAL_DECISIONS),
+    ] {
+        if let Some(body) = cut_section_body(parent_text, key) {
+            census.carried += split_bullet_items(&body).len();
+            push_material_block(&mut out, heading, &body);
+        }
     }
-    if let Some(body) = cut_section_body(&text, "decisions") {
-        push_material_block(&mut out, MATERIAL_DECISIONS, &body);
-    }
-    if let Some(body) = cut_section_body(&text, "evidence") {
-        let wave_text = mfs::read_to_string(wave_spec).unwrap_or_default();
-        let declared = files_section_paths(&wave_text);
-        let kept = keep_findings_for(&body, &declared);
+    if let Some(body) = cut_section_body(parent_text, "evidence") {
+        let (kept, other_wave) = keep_findings_for(&body, declared);
+        census.other_wave = other_wave;
         if !kept.is_empty() {
+            census.carried += split_bullet_items(&kept).len();
             push_material_block(&mut out, MATERIAL_EVIDENCE, &kept);
         }
     }
-    out
+    (out, census)
+}
+
+/// Echo each material item a task CITES directly under that task line.
+///
+/// A task cites an item by its handle — `[E-3]`, `[K-7]`, `[D-2]` — the ids
+/// [`crate::commands::spec::spec_draft`] stamps when it writes the material
+/// sections. `material` is the block this wave carries, already cut.
+///
+/// **Why the item has to travel to the task.** In the rendered prompt the
+/// material is one section and the tasks are another, some seventy lines apart.
+/// Nothing joined them, so an agent handed 28 items and 13 tasks had to guess
+/// which context governed which step. A trap is usually true of exactly one task
+/// — "do not depend on the entry type in this guard" — and that is the only
+/// place it gets read in time to matter. The item still lives once, in the
+/// material section; this is a pointer resolved in place, not a second copy of
+/// the channel.
+///
+/// A citation naming an id the material does not carry is left ALONE: it is the
+/// author's text, and silently deleting it would hide a typo that a reader can
+/// otherwise see and fix. Returns `task_steps` unchanged when nothing is cited.
+pub(crate) fn echo_cited_material(task_steps: &str, material: &str) -> String {
+    if task_steps.is_empty() || material.is_empty() {
+        return task_steps.to_string();
+    }
+    let items = material_items_by_id(material);
+    if items.is_empty() {
+        return task_steps.to_string();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for line in task_steps.lines() {
+        out.push(line.to_string());
+        let indent = " ".repeat(line.len() - line.trim_start().len() + 2);
+        for id in cited_ids(line) {
+            if let Some(body) = items.get(&id) {
+                for (i, item_line) in body.lines().enumerate() {
+                    let prefix = if i == 0 { "↳ " } else { "  " };
+                    out.push(format!("{indent}{prefix}{}", item_line.trim()));
+                }
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// Index the `[D-n]` / `[K-n]` / `[E-n]` items of a rendered material block by
+/// their id. The body keeps the item's own continuation lines (the `Reason:` /
+/// `Evidence:` attribute), minus the leading bullet and the handle itself.
+fn material_items_by_id(material: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for item in split_bullet_items(material) {
+        let Some(first) = item.first() else { continue };
+        let Some((id, rest)) = split_handle(first.trim_start_matches("- ")) else {
+            continue;
+        };
+        let mut body = vec![rest.trim().to_string()];
+        body.extend(item.iter().skip(1).map(|l| l.trim().to_string()));
+        map.insert(id, body.join("\n"));
+    }
+    map
+}
+
+/// Split a leading `[X-n] ` handle off an item line: `("E-3", "the rest")`.
+fn split_handle(line: &str) -> Option<(String, &str)> {
+    let rest = line.trim_start().strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let id = rest[..close].trim().to_string();
+    is_material_id(&id).then(|| (id, &rest[close + 1..]))
+}
+
+/// Every `[X-n]` handle a task line cites, in order, without duplicates.
+fn cited_ids(line: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for (open, _) in line.match_indices('[') {
+        let rest = &line[open + 1..];
+        let Some(close) = rest.find(']') else { continue };
+        let id = rest[..close].trim().to_string();
+        if is_material_id(&id) && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// `true` for a well-formed material handle: one of `D` / `K` / `E`, a hyphen,
+/// then digits. Nothing else is a handle — a markdown checkbox (`[ ]`, `[x]`) or
+/// a link label must never be read as one.
+fn is_material_id(id: &str) -> bool {
+    let Some((kind, num)) = id.split_once('-') else {
+        return false;
+    };
+    matches!(kind, "D" | "K" | "E") && !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// What the per-wave cut did to the parent spec's conversation material.
+///
+/// It exists because a bare `material=28` on a spec holding 35 items reads as a
+/// SIZE CAP that ate the difference — the operator measured exactly that and
+/// concluded the renderer truncates. There is no cap (see the compositor's "No
+/// size budget" note). The difference is the per-wave cut doing its job, and a
+/// count that cannot say so teaches a defect that does not exist while hiding
+/// the one that did: findings with no path, silently dropped from every wave.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MaterialCensus {
+    /// Items riding in THIS wave's prompt.
+    pub carried: usize,
+    /// Findings held back because their evidence file is declared by ANOTHER
+    /// wave's `## Files` — the cut working as designed, now reported as such.
+    pub other_wave: usize,
 }
 
 /// The body of a `## <key>` section, heading EXCLUDED and trimmed. `None` when
@@ -376,19 +512,35 @@ fn push_material_block(out: &mut String, heading: &str, body: &str) {
 /// parser. Skipping the bullet line itself means a backtick inside the statement
 /// is never mistaken for the path.
 ///
-/// A finding with no evidence path is DROPPED: it cannot be attributed to any
-/// wave, and letting it through would make the cut a no-op for it.
-fn keep_findings_for(body: &str, declared: &[String]) -> String {
+/// A finding with no evidence path is UNATTRIBUTABLE, and it rides EVERYWHERE.
+///
+/// It used to be dropped, on the reasoning that it belongs to no wave. Measured
+/// in the field: that reasoning silently deleted it from ALL of them. A trap the
+/// operator wrote as "do not depend on the entry type in this guard", with no
+/// `file:line` beside it, reached no agent at all — while the parent spec still
+/// showed it, so nothing looked lost. A channel whose whole purpose is carrying
+/// what the conversation settled may not answer silence; an unattributable
+/// finding is treated like a decision (it binds every wave) instead.
+///
+/// A wave declaring NO `## Files` is the same case one level up: nothing can be
+/// attributed against an empty list, so everything rides rather than nothing.
+///
+/// Returns the kept block plus the number of findings held back for another
+/// wave — the count the dispatch reports, so a cut is never mistaken for a cap.
+fn keep_findings_for(body: &str, declared: &[String]) -> (String, usize) {
     let mut kept: Vec<String> = Vec::new();
+    let mut other_wave = 0usize;
     for item in split_bullet_items(body) {
-        let Some(path) = item.iter().skip(1).find_map(|l| backtick_path(l)) else {
-            continue;
-        };
-        if declared.iter().any(|d| same_file(d, &path)) {
-            kept.push(item.join("\n").trim_end().to_string());
+        let rendered = item.join("\n").trim_end().to_string();
+        match item.iter().skip(1).find_map(|l| backtick_path(l)) {
+            // No path, or no boundary to check it against — carry it.
+            None => kept.push(rendered),
+            _ if declared.is_empty() => kept.push(rendered),
+            Some(path) if declared.iter().any(|d| same_file(d, &path)) => kept.push(rendered),
+            Some(_) => other_wave += 1,
         }
     }
-    kept.join("\n")
+    (kept.join("\n"), other_wave)
 }
 
 /// Group a bullet list into items: each top-level `- ` line plus every following
@@ -767,12 +919,89 @@ mod tests {
     fn conversation_material_cuts_findings_by_declared_files() {
         let dir = tempdir().unwrap();
         let (parent, wave) = material_fixture(dir.path(), "- `src/alpha.rs`\n");
-        let out = build_conversation_material(&parent, &wave);
+        let (out, census) = build_conversation_material(&parent, &wave);
         assert!(out.contains("### Definitions"), "{out}");
         assert!(out.contains("### Decisions"), "{out}");
         assert!(out.contains("### Evidence"), "{out}");
         assert!(out.contains("alpha parses twice"), "declared file's finding missing: {out}");
         assert!(!out.contains("beta swallows"), "undeclared file's finding leaked: {out}");
+        // The census says what the cut did, in both directions: one definition,
+        // one decision and one finding rode; one finding stayed behind for the
+        // wave that declares its file. That second number is the whole point —
+        // a bare total reads as a truncation.
+        assert_eq!(census.carried, 3, "{census:?}");
+        assert_eq!(census.other_wave, 1, "{census:?}");
+    }
+
+    /// A finding with NO evidence path rides to EVERY wave.
+    ///
+    /// It used to be dropped from all of them, which deleted it while the parent
+    /// spec still displayed it — the silent loss the operator measured as a
+    /// truncating size cap.
+    #[test]
+    fn a_finding_without_a_path_reaches_every_wave() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("spec.md");
+        std::fs::write(
+            &parent,
+            "# T\n\n## Evidence\n\n- do not depend on the entry type in this guard\n\
+             - alpha parses twice\n  Evidence: `src/alpha.rs:12`\n",
+        )
+        .unwrap();
+        let wave_dir = dir.path().join("wave-1-x");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        let wave = wave_dir.join("spec.md");
+        std::fs::write(&wave, "# W\n\n## Files\n\n- `src/other.rs`\n").unwrap();
+
+        let (out, census) = build_conversation_material(&parent, &wave);
+        assert!(
+            out.contains("do not depend on the entry type"),
+            "the unattributable trap must ride: {out}"
+        );
+        assert!(!out.contains("alpha parses twice"), "another wave's finding leaked: {out}");
+        assert_eq!(census.carried, 1, "{census:?}");
+        assert_eq!(census.other_wave, 1, "{census:?}");
+    }
+
+    /// A wave declaring no `## Files` has no boundary to cut against, so it gets
+    /// everything rather than nothing.
+    #[test]
+    fn a_wave_with_no_declared_files_carries_every_finding() {
+        let dir = tempdir().unwrap();
+        let (parent, _) = material_fixture(dir.path(), "- `src/alpha.rs`\n");
+        let bare = dir.path().join("bare.md");
+        std::fs::write(&bare, "# W\n\n## Tasks\n\n- [ ] x\n").unwrap();
+        let (out, census) = build_conversation_material(&parent, &bare);
+        assert!(out.contains("alpha parses twice"), "{out}");
+        assert!(out.contains("beta swallows"), "{out}");
+        assert_eq!(census.other_wave, 0, "nothing is held back with no boundary: {census:?}");
+    }
+
+    /// A task citing `[E-1]` gets that item echoed under it; a citation of an id
+    /// the material does not carry is left alone (the author's own text).
+    #[test]
+    fn a_task_citing_an_item_gets_it_echoed_underneath() {
+        let material = "### Evidence\n- [E-1] the query evaporates under soft delete\n  \
+                        Evidence: `src/q.rs:10`\n- [E-2] unrelated\n  Evidence: `src/z.rs`\n";
+        let tasks = "## Tasks\n- [ ] guard the deletion path [E-1]\n- [ ] unrelated work [E-9]\n";
+        let out = echo_cited_material(tasks, material);
+
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("guard the deletion path"))
+            .expect("task line kept");
+        assert!(
+            lines[at + 1].contains("↳ the query evaporates under soft delete"),
+            "the cited item must sit right under its task: {out}"
+        );
+        assert!(lines[at + 2].contains("src/q.rs:10"), "the item's own evidence rides: {out}");
+        // The uncited item is not echoed anywhere.
+        assert!(!out.contains("unrelated\n"), "{out}");
+        // An unknown handle survives verbatim — a typo stays visible.
+        assert!(out.contains("[E-9]"), "{out}");
+        // A markdown checkbox is never read as a handle.
+        assert!(out.contains("- [ ] guard the deletion path"), "{out}");
     }
 
     /// A wave that declares NONE of the evidence files gets the vocabulary and
@@ -781,10 +1010,11 @@ mod tests {
     fn conversation_material_drops_evidence_heading_when_nothing_matches() {
         let dir = tempdir().unwrap();
         let (parent, wave) = material_fixture(dir.path(), "- `src/gamma.rs`\n");
-        let out = build_conversation_material(&parent, &wave);
+        let (out, census) = build_conversation_material(&parent, &wave);
         assert!(out.contains("### Definitions"), "{out}");
         assert!(!out.contains("### Evidence"), "empty evidence heading survived: {out}");
         assert!(!out.contains("alpha parses twice"), "{out}");
+        assert_eq!(census.other_wave, 2, "both findings belong elsewhere: {census:?}");
     }
 
     /// A spec with no material at all yields "" — the caller's heading then
@@ -794,10 +1024,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let parent = dir.path().join("spec.md");
         std::fs::write(&parent, "# T\n\n## Files\n\n- `a.rs`\n\n## Tasks\n\n- [ ] x\n").unwrap();
-        assert_eq!(build_conversation_material(&parent, &parent), "");
+        assert_eq!(build_conversation_material(&parent, &parent).0, "");
         // Missing file → fail-open, never a panic.
         let missing = dir.path().join("nope.md");
-        assert_eq!(build_conversation_material(&missing, &missing), "");
+        assert_eq!(build_conversation_material(&missing, &missing).0, "");
     }
 
     #[test]

@@ -674,6 +674,30 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         );
     }
 
+    // An `Expect:` inside `--command` is ALWAYS a call error, and it must be
+    // caught here — before any file is touched.
+    //
+    // What it did before: the marker was accepted verbatim into the command, and
+    // the rewriter then appended the criterion's own `Expect:` after it, so the
+    // line landed carrying TWO expected values. A criterion with two expected
+    // values is ambiguous, and it was born that way with no refusal. Worse, the
+    // damage was already on disk when the run reported `rewrite_failed` — the
+    // confirmation read the line back, could not recognise it, and failed AFTER
+    // the write. The operator then had to repair by hand the one file the flow
+    // says never to edit by hand.
+    if let Some(at) = expect_marker_in(&opts.command) {
+        return AcAmendReport::refused(
+            opts,
+            &id,
+            "expect_inside_command",
+            &format!(
+                "`--command` carries an `Expect:` marker at byte {at}. The expected value is its \
+                 OWN flag: pass the command in `--command` and the evidence regex in `--expect`. \
+                 Nothing was written"
+            ),
+        );
+    }
+
     // A slug with no spec markdown is a typo, not a new spec.
     let Some(spec_file) = qa_run::spec_file_for(root, &opts.spec) else {
         return AcAmendReport::refused(
@@ -928,6 +952,17 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     report.ledger = Some(ac_negative_check::repo_relative(root, &ledger_path));
     report.ok = true;
     report
+}
+
+/// Byte offset of an `Expect:` marker inside `command`, or `None`.
+///
+/// Case-insensitive on the label, because the mistake is a human one and
+/// `expect:` is the same mistake as `Expect:`. Deliberately NOT anchored to a
+/// line start: the value the operator pasted is one line, and the marker sits
+/// mid-line in exactly the shape that caused the corruption.
+fn expect_marker_in(command: &str) -> Option<usize> {
+    let lower = command.to_ascii_lowercase();
+    lower.find("expect:")
 }
 
 /// The process exit code for a finished report: `0` accepted, `1` refused.

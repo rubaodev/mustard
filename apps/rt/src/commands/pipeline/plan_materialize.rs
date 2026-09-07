@@ -271,6 +271,13 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
     //    only entry point). Idempotent; reconciled before approval, frozen
     //    after (see `wave_scaffold::WriteMode`).
     let outcome = wave_scaffold::scaffold(spec_dir, plan_path);
+    // 1b. Size audit of what was just materialised — advisory, stderr only.
+    //     `wave-size-check` computed these numbers from the day it was ported
+    //     and NO step of the pipeline read them, so a plan carrying a 19-file,
+    //     13-task wave was accepted in silence. This is the moment the shape is
+    //     visible and still cheap to change. It never blocks and never touches
+    //     stdout, so the machine-read report stays byte-stable.
+    crate::commands::wave::wave_size_check::warn_oversized_waves(spec_dir);
     let (scaffold_json, scaffold_ok) = match outcome {
         // Coverage gate (unconditional — no env knob): a parent/plan acceptance
         // criterion that no wave covers BLOCKS the PLAN transition. The layout

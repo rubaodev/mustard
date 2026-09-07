@@ -8,6 +8,7 @@
 //! hook greps the stub for [`PROMPT_REF_MARKER`] and expands it back inside the
 //! dispatch.
 
+use super::sections::MaterialCensus;
 use super::RenderMode;
 use mustard_core::io::fs as mfs;
 use std::path::Path;
@@ -32,9 +33,53 @@ pub(crate) fn prompt_ref_stub(
     task_filter: Option<&str>,
     task_text: Option<&str>,
     rendered: &str,
+    census: Option<MaterialCensus>,
 ) -> String {
     let rel = prompt_ref_rel_path(spec, wave, role, subproject, mode, task_filter, task_text);
-    write_prompt_ref(project, &rel, rendered)
+    // An empty render writes nothing and stamps nothing — the historical
+    // print-nothing contract, which a footer must not turn into a file.
+    if rendered.is_empty() {
+        return String::new();
+    }
+    let stamped = format!(
+        "{rendered}{}",
+        provenance_stamp(wave, role, subproject, census)
+    );
+    write_prompt_ref(project, &rel, &stamped)
+}
+
+/// The one-line provenance footer written into a `--emit ref` prompt file.
+///
+/// **Why a file needs to say who wrote it.** The subproject rides in the FILE
+/// NAME (`wave-1-backend.first.prompt.md` vs
+/// `wave-1-backend-apps-api.first.prompt.md`), so the same wave legitimately has
+/// several prompt files side by side — the per-subproject dispatch round depends
+/// on that, and deleting siblings would break it. What it cost, measured in the
+/// field: after re-rendering with `--subproject`, the operator opened the older
+/// file, found no traps in it, and reported to the operator that the traps had
+/// not arrived. They had — in the other file. Nothing inside either file said
+/// which run produced it.
+///
+/// It rides at the END, never in the head: the prompt's prefix is cached across
+/// dispatches, and a timestamp in the prefix would cost full price every time.
+/// A markdown comment, so an agent that reads the file verbatim sees nothing it
+/// could mistake for an instruction.
+fn provenance_stamp(
+    wave: Option<u32>,
+    role: &str,
+    subproject: &Path,
+    census: Option<MaterialCensus>,
+) -> String {
+    let sub = subproject.to_string_lossy();
+    let material = census.map_or_else(
+        || "-".to_string(),
+        |c| format!("{} held-back={}", c.carried, c.other_wave),
+    );
+    format!(
+        "\n\n<!-- rendered by mustard-rt: wave={} role={role} subproject={sub} material={material} at {} -->\n",
+        wave.map_or_else(|| "-".to_string(), |w| w.to_string()),
+        mustard_core::time::now_iso8601(),
+    )
 }
 
 /// Write `rendered` to project-relative `rel` and return the 2-line dispatch
@@ -70,9 +115,21 @@ pub(crate) fn render_prompt_ref_at(
     subproject: &Path,
     mode: RenderMode,
 ) -> String {
-    let rendered =
-        super::render_prompt_at(project, spec, wave, role, subproject, mode, None, None, None);
-    prompt_ref_stub(project, spec, wave, role, subproject, mode, None, None, &rendered)
+    let rendered = super::render_prompt_with_census(
+        project, spec, wave, role, subproject, mode, None, None, None,
+    );
+    prompt_ref_stub(
+        project,
+        spec,
+        wave,
+        role,
+        subproject,
+        mode,
+        None,
+        None,
+        &rendered.text,
+        Some(rendered.material),
+    )
 }
 
 /// Deterministic project-relative path (forward slashes — survives Git Bash
@@ -195,21 +252,39 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let rendered = "ROLE: impl\nfull rendered body";
         let stub = prompt_ref_stub(
-            dir.path(), Some("demo"), Some(1), "rt", Path::new("."), RenderMode::First,
+            dir.path(), Some("demo"), Some(1), "rt", Path::new("apps/api"), RenderMode::First,
             None, None, rendered,
+            Some(MaterialCensus { carried: 28, other_wave: 7 }),
         );
         let first = stub.lines().next().expect("stub first line");
         let rel = first.strip_prefix(PROMPT_REF_MARKER).expect("marker prefix").trim();
         let on_disk = std::fs::read_to_string(dir.path().join(rel)).expect("stub file");
-        assert_eq!(on_disk, rendered, "file holds the full render verbatim");
+        assert!(on_disk.starts_with(rendered), "file holds the full render verbatim: {on_disk}");
         assert!(stub.contains("VERBATIM"), "stub instructs verbatim dispatch: {stub}");
         assert!(stub.contains("Read the file"), "stub carries the subagent fallback: {stub}");
 
-        // Empty render → empty stub (the historical print-nothing contract).
+        // The provenance footer says WHICH run wrote this file — the whole point
+        // is that two prompt files of the same wave can sit side by side (one per
+        // subproject) and opening one must settle whether it is the current one.
+        let footer = on_disk.lines().last().unwrap_or_default();
+        assert!(footer.starts_with("<!-- rendered by mustard-rt:"), "{on_disk}");
+        assert!(footer.contains("wave=1"), "{footer}");
+        assert!(footer.contains("role=rt"), "{footer}");
+        assert!(footer.contains("subproject=apps/api"), "{footer}");
+        assert!(footer.contains("material=28 held-back=7"), "{footer}");
+        // It rides at the END: the prompt's cached prefix must not carry a clock.
+        assert!(!rendered.contains("rendered by mustard-rt"), "{rendered}");
+
+        // Empty render → empty stub, and NO file (the historical print-nothing
+        // contract, which the footer must not turn into a one-line file).
         let empty = prompt_ref_stub(
-            dir.path(), Some("demo"), Some(1), "rt", Path::new("."), RenderMode::First,
-            None, None, "",
+            dir.path(), Some("demo"), Some(2), "rt", Path::new("."), RenderMode::First,
+            None, None, "", None,
         );
         assert!(empty.is_empty(), "empty render must not produce a stub: {empty}");
+        assert!(
+            !dir.path().join(".claude/spec/demo/.dispatch/wave-2-rt.first.prompt.md").exists(),
+            "an empty render must write no file"
+        );
     }
 }

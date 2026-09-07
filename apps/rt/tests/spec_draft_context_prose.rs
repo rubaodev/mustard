@@ -47,6 +47,7 @@ fn drafted_context_is_prose_only() {
             signals: None,
             output: Some(out.clone()),
             material: None,
+            material_only: false,
             no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
             waves,
             plan: None,

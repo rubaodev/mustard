@@ -858,6 +858,20 @@ pub fn run_classify(from_spec: &str, slice_match_count: i64) {
 /// Decide directly from a spec file: compute the deterministic signals, then
 /// [`decide`]. Fail-open — an unreadable spec yields the `error-fallback`
 /// verdict.
+///
+/// ## A verdict computed over zero files is not a verdict
+///
+/// `decide` is arithmetic: zero files and zero layers reduce to
+/// `decompose:false, reason:"single-layer"`, which is *arithmetically* right and
+/// *epistemically* false — it reads as "I measured this spec and it is one
+/// layer" when what happened is "I read nothing". Measured in the field: a spec
+/// of 61 files across four subprojects came back exactly that way, and following
+/// it would have collapsed all 61 into a single wave. A wrong recommendation is
+/// worse than none, because nobody doubts it.
+///
+/// `scope-classify` and `plan-prepare` already downgrade a zero census through
+/// [`stamp_files_zero`]. This door did not. It does now, through the SAME stamp,
+/// so the three can never disagree about what a zero census means.
 #[must_use]
 pub(crate) fn decide_from_spec(spec_file: &Path) -> Value {
     let Ok(spec_text) = mustard_core::io::fs::read_to_string(spec_file) else {
@@ -867,7 +881,26 @@ pub(crate) fn decide_from_spec(spec_file: &Path) -> Value {
     let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let project_root =
         mustard_core::io::workspace::workspace_root(&spec_dir).unwrap_or_else(|_| cwd.clone());
-    decide(&compute_signals_from_spec(&spec_text, &project_root))
+    let signals = compute_signals_from_spec(&spec_text, &project_root);
+    let mut out = decide(&signals);
+    if signals.get("fileCount").and_then(Value::as_i64).unwrap_or(0) == 0 {
+        stamp_files_zero(&mut out, spec_file, &spec_text);
+        // The arithmetic `reason` claimed a measurement that never happened.
+        // Replace it by the state the stamp established, so a reader who only
+        // looks at `reason` is told the truth too.
+        if let Some(obj) = out.as_object_mut() {
+            let state = obj
+                .get("filesSectionState")
+                .and_then(Value::as_str)
+                .unwrap_or("absent")
+                .to_string();
+            obj.insert(
+                "reason".to_string(),
+                json!(format!("not-measured: ## Files {state}")),
+            );
+        }
+    }
+    out
 }
 
 /// Composite pre-PLAN decision: `scope` + `decompose` + `waves` floor from ONE
@@ -1336,6 +1369,47 @@ mod tests {
         let d = decide_from_spec(std::path::Path::new("/no/such/spec.md"));
         assert_eq!(d["decompose"], json!(false));
         assert_eq!(d["reason"], json!("error-fallback"));
+    }
+
+    /// A census this command could not READ is never reported as a measurement.
+    ///
+    /// `decide` is arithmetic: zero files reduce to `single-layer`, which reads
+    /// as "I measured this spec and it is one layer". Measured in the field: a
+    /// spec of 61 files across four subprojects wrote its census as prose, the
+    /// parser recognised no path in it, and the verdict came back
+    /// `decompose:false, reason:"single-layer"` — advice that, followed, would
+    /// have collapsed all 61 files into one wave. Wrong advice is worse than
+    /// none, because nobody doubts it.
+    #[test]
+    fn decide_from_spec_abstains_when_the_files_section_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = dir.path().join("spec.md");
+        std::fs::write(
+            &spec,
+            "# S\n\n## Files\n\nMudamos o lote e o vinculo, alem da tela.\n\
+             Nenhuma linha aqui e um caminho.\n\n## Tasks\n\n- [ ] x\n",
+        )
+        .unwrap();
+
+        let d = decide_from_spec(&spec);
+        assert_eq!(d["scope"], json!("abstain"), "{d}");
+        assert_eq!(d["filesSectionState"], json!("unrecognised"), "{d}");
+        assert_eq!(
+            d["reason"],
+            json!("not-measured: ## Files unrecognised"),
+            "the reason must not claim a measurement that never happened: {d}"
+        );
+        assert!(d["warning"].as_str().is_some_and(|w| !w.is_empty()), "{d}");
+
+        // A section that is genuinely EMPTY is a different state, and says so.
+        let fresh = dir.path().join("fresh.md");
+        std::fs::write(&fresh, "# S\n\n## Files\n\n## Tasks\n\n- [ ] x\n").unwrap();
+        assert_eq!(decide_from_spec(&fresh)["filesSectionState"], json!("empty"));
+
+        // And a census with real paths is measured normally — no abstain.
+        let real = dir.path().join("real.md");
+        std::fs::write(&real, "# S\n\n## Files\n\n- `src/a.rs`\n\n## Tasks\n\n- [ ] x\n").unwrap();
+        assert!(decide_from_spec(&real).get("filesSectionState").is_none());
     }
 
     // --- scope-classify ---------------------------------------------------

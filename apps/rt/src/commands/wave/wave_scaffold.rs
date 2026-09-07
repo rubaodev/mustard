@@ -202,6 +202,9 @@ pub(crate) struct Headings<'a> {
     /// `## Acceptance Criteria`/`## Critérios de Aceitação` heading for the
     /// AC union carried into `wave-plan.md`.
     acceptance: &'a str,
+    /// `## Material` heading for the parent spec's decisions and traps, cut to
+    /// this wave. See [`render_wave_spec`].
+    material: &'a str,
 }
 
 /// Build the heading set. These render MACHINE artefacts — the operational
@@ -228,6 +231,7 @@ pub(crate) fn headings() -> Headings<'static> {
         files: "## Files",
         reality_obligations: "## Reality Obligations",
         acceptance: "## Acceptance Criteria",
+        material: "## Material",
     }
 }
 
@@ -342,7 +346,27 @@ fn wave_self_link(parent: &str, w: &WavePlanEntry) -> String {
 /// [`scaffold`] via a stderr WARN, not here — an empty task block emits **no**
 /// `## Tasks` heading (a bare heading is noise; `agent-prompt-render` falls
 /// back to an empty TASK block, which the WARN makes visible).
-pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_>) -> String {
+///
+/// ## Why the material is COPIED here
+///
+/// `parent_material_text` is the parent `spec.md` body (empty when there is
+/// none). The decisions and traps the conversation settled live there, and until
+/// now they reached only the rendered dispatch prompt — never the wave file.
+/// Measured in the field: the human reading `wave-1-backend/spec.md` saw 37
+/// lines of tasks with no reason behind any of them, and concluded the spec was
+/// shallow. They were right about what they were looking at.
+///
+/// So the cut runs here too, through the SAME rule the prompt uses
+/// ([`cut_material_for_files`]) — definitions and decisions bind every wave, a
+/// finding rides to the wave that declares its file. It is a COPY, and the
+/// parent stays the source: `plan-materialize` re-renders these files, so a
+/// decision settled later lands here on the next materialisation.
+pub(crate) fn render_wave_spec(
+    parent: &str,
+    w: &WavePlanEntry,
+    hd: &Headings<'_>,
+    parent_material_text: &str,
+) -> String {
     let name = wave_name(w);
     let mut out = String::new();
     // Leading `id:` frontmatter — the rename-proof identity handle, derived from
@@ -424,6 +448,23 @@ pub(crate) fn render_wave_spec(parent: &str, w: &WavePlanEntry, hd: &Headings<'_
                 id = reality_obligation_id(w.n, i)
             );
         }
+    }
+    // What the conversation settled, cut to THIS wave — see the doc comment.
+    // Last, so the operational body (tasks, files, duties) keeps its position
+    // and a plan carrying no material renders byte-identically to before.
+    let (material, _) = crate::commands::agent::render::sections::cut_material_for_files(
+        parent_material_text,
+        &w.files,
+    );
+    if !material.is_empty() {
+        let _ = write!(out, "\n{}\n\n", hd.material);
+        let _ = writeln!(
+            out,
+            "_Copied from the parent spec at materialisation. The parent is the source — \
+             re-run `plan-materialize` after adding material._\n"
+        );
+        out.push_str(&material);
+        out.push('\n');
     }
     out
 }
@@ -1188,6 +1229,11 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     let wave_plan_md = render_wave_plan(&plan, &hd, ac_block.as_deref(), &parent_name);
     ledger.emit(&spec_dir.join("wave-plan.md"), &wave_plan_md);
 
+    // The parent spec body, read ONCE for the whole loop: each wave's `## Material`
+    // is cut from it. Absent parent (a re-wave before the archive lands) yields no
+    // material and the section simply does not render.
+    let parent_material_text = fs::read_to_string(spec_dir.join("spec.md")).unwrap_or_default();
+
     // Per-wave spec. A wave the Plan agent left with no `tasks` is a visible
     // signal — emit a stderr WARN so the operator notices the gap instead of it
     // silently materialising an empty TASK block downstream.
@@ -1203,7 +1249,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         let dir = spec_dir.join(wave_name(w));
         ledger.emit(
             &dir.join("spec.md"),
-            &render_wave_spec(&parent_name, w, &hd),
+            &render_wave_spec(&parent_name, w, &hd, &parent_material_text),
         );
     }
 
@@ -1498,7 +1544,7 @@ mod tests {
         // Machine artefact → ENGLISH-FIXED headings (sample_plan declares `lang: "pt"`).
         let hd = headings();
         let plan = sample_plan();
-        let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd);
+        let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd, "");
         // Identity (allowed) IS present as leading `id:` frontmatter, while
         // lifecycle metadata is NOT — no `### Stage:`/`### Parent:` header lines.
         // The two are distinct: `id:` is a rename-proof handle, lifecycle lives
@@ -1514,7 +1560,7 @@ mod tests {
         // English-fixed summary heading, never the PT form.
         assert!(s1.contains("## Summary"));
         assert!(!s1.contains("## Resumo"));
-        let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd);
+        let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd, "");
         assert!(s2.starts_with("---\nid: wave.epic-x.2-frontend\n---\n\n"), "{s2}");
         assert!(!s2.contains("### Stage:"));
         assert!(s2.contains("[[wave.epic-x.1-general]]"));
@@ -1815,12 +1861,57 @@ mod tests {
         assert!(plan.waves[0].files.is_empty());
         assert!(plan.waves[0].acceptance.is_empty());
         let hd = headings();
-        let spec = render_wave_spec("epic", &plan.waves[0], &hd);
+        let spec = render_wave_spec("epic", &plan.waves[0], &hd, "");
         assert!(spec.contains("## Summary"));
         assert!(spec.contains("## Network"));
         // No materialised body → no Tasks / Files heading.
         assert!(!spec.contains("## Tasks"), "no bare Tasks heading: {spec}");
         assert!(!spec.contains("## Files"), "no bare Files heading: {spec}");
+    }
+
+    /// The wave's OWN `spec.md` carries the decisions and traps that govern it.
+    ///
+    /// The human who opens a wave file is the operator checking the plan, the
+    /// reviewer reading the change, or someone picking the work up months later.
+    /// Until now that file held tasks, files and criteria and NOT one reason for
+    /// any of them — the material reached only the rendered dispatch prompt. The
+    /// operator read a wave file, saw work with no `why`, and concluded the spec
+    /// was shallow. They were describing exactly what was there.
+    ///
+    /// The cut is the same one the prompt uses: definitions and decisions bind
+    /// every wave, a finding rides to the wave that declares its file.
+    #[test]
+    fn render_wave_spec_carries_the_parents_material_for_this_wave() {
+        let w = WavePlanEntry {
+            n: 1,
+            role: "backend".to_string(),
+            summary: "the contract".to_string(),
+            depends_on: vec![],
+            tasks: vec!["wire the handler".to_string()],
+            files: vec!["src/api/handler.rs".to_string()],
+            acceptance: vec![],
+            satisfies: Vec::new(),
+            reality_obligations: Vec::new(),
+        };
+        let parent = "# Epic\n\n## Definitions\n\n- [D-1] **wave** — one agent, one pass\n\n\
+                      ## Decisions\n\n- [K-1] everything branches off dev\n  Reason: the train\n\n\
+                      ## Evidence\n\n- [E-1] the handler parses twice\n  \
+                      Evidence: `src/api/handler.rs:12`\n\
+                      - [E-2] the widget leaks\n  Evidence: `src/ui/widget.tsx:3`\n";
+        let spec = render_wave_spec("epic", &w, &headings(), parent);
+
+        assert!(spec.contains("## Material"), "material heading missing: {spec}");
+        assert!(spec.contains("**wave** — one agent, one pass"), "definition: {spec}");
+        assert!(spec.contains("everything branches off dev"), "decision: {spec}");
+        assert!(spec.contains("the handler parses twice"), "own finding: {spec}");
+        assert!(!spec.contains("the widget leaks"), "another wave's finding leaked: {spec}");
+        // The parent stays the source, and the file says so.
+        assert!(spec.contains("Copied from the parent spec"), "provenance line: {spec}");
+
+        // A parent with no material renders byte-identically to before: no
+        // heading, no empty section.
+        let bare = render_wave_spec("epic", &w, &headings(), "# Epic\n\n## Tasks\n\n- [ ] x\n");
+        assert!(!bare.contains("## Material"), "empty channel emits no heading: {bare}");
     }
 
     /// Validation 3: `tasks` / `files` materialise into the wave spec as the
@@ -1842,7 +1933,7 @@ mod tests {
             reality_obligations: Vec::new(),
         };
         let hd = headings();
-        let spec = render_wave_spec("epic", &w, &hd);
+        let spec = render_wave_spec("epic", &w, &hd, "");
         assert!(spec.contains("## Tasks"), "{spec}");
         assert!(spec.contains("- [ ] wire the handler"), "{spec}");
         assert!(spec.contains("- [ ] add the route"), "{spec}");
@@ -1936,6 +2027,7 @@ mod tests {
             "epic",
             &entry(vec!["fazer X".to_string()]),
             &headings(),
+            "",
         );
         assert!(spec.contains("## Tasks"), "machine artefact → ## Tasks: {spec}");
         assert!(!spec.contains("## Tarefas"), "no PT heading even for a pt plan: {spec}");
@@ -1964,7 +2056,7 @@ mod tests {
             satisfies: Vec::new(),
             reality_obligations: Vec::new(),
         };
-        let spec = render_wave_spec("epic", &w, &headings());
+        let spec = render_wave_spec("epic", &w, &headings(), "");
         assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
         assert!(!spec.contains("- [ ] - [x]"), "doubled checkbox: {spec}");
         assert!(!spec.contains("- [ ] - plain"), "doubled bullet: {spec}");
@@ -2089,7 +2181,7 @@ mod tests {
             satisfies: Vec::new(),
             reality_obligations: Vec::new(),
         };
-        let spec = render_wave_spec("epic", &w, &headings());
+        let spec = render_wave_spec("epic", &w, &headings(), "");
         assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
     }
 
