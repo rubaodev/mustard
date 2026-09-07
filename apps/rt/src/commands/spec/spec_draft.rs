@@ -3151,4 +3151,36 @@ mod tests {
         assert!(out.is_none(), "unreadable spec ⇒ conservative full, no downgrade: {out:?}");
         assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"));
     }
+
+    /// A material file written BEFORE the draft is harness state, not a draft.
+    ///
+    /// The material channel exists to be written the moment a decision is
+    /// settled — from the base gate onward, which is BEFORE `spec-draft` runs.
+    /// Doing exactly that used to make the draft refuse: `spec-material.json`
+    /// was not on the whitelist, so the directory read as "already drafted" and
+    /// the draft demanded `--force` — an overwrite flag for a directory holding
+    /// nothing to overwrite, which is the very sentence this guard's own doc
+    /// comment uses about the event log. Worse than the error: the remedy it
+    /// teaches rewrites the whole body, at the exact moment the conversation's
+    /// decisions had just started being recorded.
+    #[test]
+    fn a_material_file_written_before_the_draft_is_not_a_draft() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("uma-unidade");
+        std::fs::create_dir_all(spec_dir.join(".events")).unwrap();
+        std::fs::write(spec_dir.join(crate::shared::work_kind::CUT_BASE_FILE), "dev").unwrap();
+        std::fs::write(spec_dir.join("spec-material.json"), "{\"decisions\":[]}").unwrap();
+
+        assert!(
+            holds_only_harness_state(&spec_dir),
+            "the material channel's own file must not read as a drafted spec"
+        );
+
+        // The guard still protects a REAL draft: one `spec.md` and it is occupied.
+        std::fs::write(spec_dir.join("spec.md"), "# a spec\n").unwrap();
+        assert!(
+            !holds_only_harness_state(&spec_dir),
+            "a drafted spec.md must still demand --force"
+        );
+    }
 }

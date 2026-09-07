@@ -2334,4 +2334,74 @@ mod tests {
         assert_eq!(report.unproven, 0, "no criterion was judged");
         assert_eq!(exit_code(&report), 1, "an input error is not the blocking code");
     }
+
+    /// A record whose proof was NEVER TAKEN carries nothing to carry over.
+    ///
+    /// The carry-over path exists to protect an EARNED red from being re-run
+    /// into a green once the work lands. A record left by a RED CONTROL earned
+    /// nothing: the control refused the criterion, so its own command never ran.
+    /// Repairing the control and re-running must therefore TAKE the proof — and
+    /// it did not. Measured in this repository, 2026-09-07: after the control
+    /// was fixed and re-run, the same record read
+    /// `"control": "green", "control_exit": 0` beside
+    /// `"reason": "the CONTROL was TAKEN and came back red"`, and the criterion
+    /// stayed `unproven` for good. Deleting the ledger and re-running proved the
+    /// same criterion red on the first try — so it was the RE-RUN that lied,
+    /// never the measurement.
+    #[test]
+    fn a_repaired_control_lets_the_proof_finally_be_taken() {
+        let dir = tempdir().unwrap();
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — when the work lands, then the new behaviour holds.\n               Command: `{RED_COMMAND}`\n  Control: `{GREEN_COMMAND}`\n\
+             - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        let spec_dir = seed(dir.path(), "repaired", &body);
+
+        // The ledger a RED control leaves behind: the criterion's own command
+        // never ran, and the control it named back then is not the one the spec
+        // declares now — which is what a repair looks like on disk.
+        let stale = serde_json::json!({
+            "spec": "repaired",
+            "criteria": [{
+                "id": "AC-1",
+                "command": RED_COMMAND,
+                "expect": null,
+                "control_command": "cd another-no-such-directory",
+                "verdict": "unproven",
+                "proof": "not-attempted",
+                "control": "red",
+                "control_exit": 1,
+                "confirmation": "not-taken",
+                "exit": null,
+                "confirmation_exit": null,
+                "removal": "not-taken",
+                "removal_exit": null,
+                "reason": REASON_CONTROL_RED,
+                "stderr_excerpt": ""
+            }],
+            "amendments": [],
+            "additions": []
+        });
+        std::fs::write(
+            spec_dir.join(AC_PROOF_JSON),
+            serde_json::to_string_pretty(&stale).unwrap(),
+        )
+        .unwrap();
+
+        let report = check(dir.path(), "repaired");
+        let ac1 = entry(&report, "AC-1");
+
+        assert_eq!(ac1.control, Control::Green, "the repaired control passes: {ac1:?}");
+        assert_eq!(
+            ac1.proof,
+            Proof::Red,
+            "the proof the red control blocked must finally be TAKEN: {ac1:?}"
+        );
+        assert_eq!(ac1.verdict, Verdict::Proven, "and it clears the criterion: {ac1:?}");
+        assert!(
+            ac1.reason.is_none(),
+            "a green control must not leave the red control's reason standing beside it: {ac1:?}"
+        );
+    }
 }
