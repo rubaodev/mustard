@@ -347,16 +347,35 @@ fn classify(
     //    live rules live in the plugin), but the keep-list entry is PROTECTIVE:
     //    it stops the pruner from deleting a legacy or hand-authored copy in a
     //    downstream `.claude/`. Left intentionally.
+    //
+    //    Os cinco últimos são as OUTRAS saídas do scan, ao lado do
+    //    `grain.model.json` com que esta lista nasceu. Faltavam, e a falta era
+    //    destrutiva: sem entrada aqui um arquivo de raiz cai em ORPHAN com
+    //    `recommendation: remove`, e a face `--remove` apaga. O `scan-map.md` é
+    //    importado pelo `CLAUDE.md` de TODO subprojeto (`@.claude/scan-map.md`)
+    //    e lido em uma dúzia de módulos; os `grain.*` alimentam o vocabulário
+    //    injetado nos prompts. Apagá-los não degrada em silêncio — quebra o
+    //    censo que orienta cada sessão. Medido em 07/09/2026.
+    //
+    //    Uma saída NOVA do scan tem de entrar aqui no mesmo commit que a cria:
+    //    o podador não tem como descobrir sozinho quem escreve o quê, e o
+    //    defeito fica dormente até alguém rodar a remoção.
     let well_known_files: BTreeSet<&'static str> = [
         "CLAUDE.md",
         "pipeline-config.md",
-        "grain.model.json",
         "settings.json",
         "settings.local.json",
         "mustard.json",
         ".docs-audit.json",
         ".gitignore",
         ".gitkeep",
+        // Saídas do `scan`, todas na raiz do `.claude/`.
+        "grain.model.json",
+        "grain.dictionary.json",
+        "grain.equivalences.json",
+        "scan-map.md",
+        "scan-declined.json",
+        "feature-digest.json",
     ]
     .iter()
     .copied()
@@ -603,5 +622,41 @@ mod tests {
             assert!(e.get("evidence").is_some_and(|v| v.is_array()));
             assert!(e.get("recommendation").is_some_and(|v| v.is_string()));
         }
+    }
+
+    /// O que o próprio produto escreve na raiz do `.claude/` nunca é órfão.
+    ///
+    /// A lista `well_known_files` nasceu com `grain.model.json` e não seguiu o
+    /// scan quando ele passou a escrever mais quatro arquivos ao lado dele. O
+    /// resultado é um podador que, com `--remove`, apaga o censo que o produto
+    /// inteiro lê: o `scan-map.md` é importado pelo `CLAUDE.md` de TODO
+    /// subprojeto (`@.claude/scan-map.md`) e lido em uma dúzia de módulos; os
+    /// `grain.*` alimentam o vocabulário injetado. Medido em 07/09/2026: os
+    /// cinco saíam `ORPHAN` com `recommendation: remove`.
+    ///
+    /// O defeito é dormente — só morde em `--remove` — e é destrutivo quando
+    /// morde, que é a combinação que um teste tem de travar.
+    #[test]
+    fn the_scans_own_outputs_are_never_orphans() {
+        let dir = tempdir().unwrap();
+        for name in [
+            "scan-map.md",
+            "grain.dictionary.json",
+            "grain.equivalences.json",
+            "feature-digest.json",
+            "scan-declined.json",
+        ] {
+            let (class, why) = classify(name, dir.path(), false, dir.path());
+            assert_eq!(
+                class,
+                Classification::Keep,
+                "`{name}` é escrito e lido pelo produto — apagá-lo quebra o censo. Evidência: {why:?}"
+            );
+        }
+
+        // Dois lados: um arquivo que o produto realmente não conhece continua
+        // órfão, senão a asserção acima passaria com um podador que nunca poda.
+        let (class, _) = classify("lixo-de-alguem.md", dir.path(), false, dir.path());
+        assert_eq!(class, Classification::Orphan, "um arquivo desconhecido segue órfão");
     }
 }
