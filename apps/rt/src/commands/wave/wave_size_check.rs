@@ -364,7 +364,7 @@ pub(crate) fn audit(spec_dir: &Path) -> Value {
     let task_limit = resolve_task_limit();
     // F0-e: honour `mustard.json#rolePatterns` so non-English / non-JS layers
     // classify correctly. Resolve from the workspace anchor, fail-open to cwd.
-    let project_root = crate::shared::context::workspace_root_strict().unwrap_or_else(|_| cwd);
+    let project_root = crate::shared::context::workspace_root_strict().unwrap_or(cwd);
     let role_patterns = load_role_patterns(&project_root);
     let model_path = project_root.join(".claude").join("grain.model.json");
     let audited: Vec<Value> = waves
@@ -490,7 +490,11 @@ mod tests {
         std::fs::write(spec_dir.join("wave-plan.md"), "# plan\n").unwrap();
         let wave_dir = spec_dir.join("wave-1-backend");
         std::fs::create_dir_all(&wave_dir).unwrap();
-        let tasks: String = (1..=13).map(|i| format!("- [ ] task {i}\n")).collect();
+        let tasks: String = (1..=13).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write as _;
+            let _ = writeln!(acc, "- [ ] task {i}");
+            acc
+        });
         std::fs::write(
             wave_dir.join("spec.md"),
             format!("## Files\n- src/a.rs\n- src/b.rs\n\n## Tasks\n{tasks}"),
