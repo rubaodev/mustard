@@ -735,9 +735,12 @@ const SKILL_VALIDATE_LIVE_KEY: &str = "MUSTARD_SKILL_VALIDATE_GATE_MODE";
 /// - Present under merge: the user's file is the base and any top-level seed
 ///   key it lacks is backfilled — user edits are never clobbered.
 ///
-/// Both paths pass through the two point migrations —
-/// [`retire_planted_plugin_enablement`] and [`rename_dead_skill_validate_key`],
-/// the only writes that reach INSIDE a key the merge preserves. The file is
+/// Both paths pass through the three point migrations —
+/// [`retire_planted_plugin_enablement`], [`rename_dead_skill_validate_key`] and
+/// [`backfill_own_permission_rules`], the only writes that reach INSIDE a key
+/// the merge preserves. Each one is narrow by construction: the top-level merge
+/// refuses to guess what an absent sub-key means, so anything that must reach an
+/// installed project earns its own rule and says why. The file is
 /// only rewritten when the serialized result differs from what is on disk, so
 /// a settled project reports [`SeedOutcome::Preserved`].
 ///
@@ -751,7 +754,7 @@ pub fn seed_settings(claude_dir: &Path, overwrite: bool, mode: InstallMode) -> R
 
     let seed = parse_json_object(SETTINGS_SEED);
     let mut settings = if overwrite || !existed {
-        seed
+        seed.clone()
     } else {
         // Merge: the user's file is the base (fail-open: a malformed file
         // degrades to the seed, matching the historical init semantics).
@@ -759,7 +762,7 @@ pub fn seed_settings(claude_dir: &Path, overwrite: bool, mode: InstallMode) -> R
             .as_deref()
             .map(parse_json_object)
             .unwrap_or_default();
-        for (key, value) in seed {
+        for (key, value) in seed.clone() {
             existing.entry(key).or_insert(value);
         }
         existing
@@ -767,6 +770,7 @@ pub fn seed_settings(claude_dir: &Path, overwrite: bool, mode: InstallMode) -> R
 
     retire_planted_plugin_enablement(&mut settings);
     rename_dead_skill_validate_key(&mut settings);
+    backfill_own_permission_rules(&mut settings, &seed);
 
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))?;
     serialized.push('\n');
@@ -881,6 +885,73 @@ fn rename_dead_skill_validate_key(settings: &mut Map<String, Value>) {
         return;
     };
     env.entry(SKILL_VALIDATE_LIVE_KEY.to_string()).or_insert(value);
+}
+
+/// Backfill the seed's own `Bash(mustard-rt run …)` allow rules into an
+/// installed `settings.json#permissions.allow`.
+///
+/// **Why a default that only reaches a fresh install is not a default.** The
+/// seed merge is top-level only: a project that already has a `permissions`
+/// object keeps it verbatim, so a rule added to the seed never arrives anywhere
+/// it is already installed. Measured 2026-09-07: the operator was prompted for
+/// `mustard-rt run pr-merge` on every merge, ran it by hand three times, and the
+/// remedy — adding the rule — would have helped only projects that did not exist
+/// yet. Shipping a safe default the installed base can never receive is the same
+/// silence this harness keeps removing elsewhere.
+///
+/// Strictly narrow, so it guesses nothing:
+///
+/// - only rules the SEED declares, and only those naming `mustard-rt run` — the
+///   harness's own commands, never anything the operator's project runs;
+/// - only ADDS. Nothing is removed, nothing is reordered, and a rule the
+///   operator already has (in any spelling that matches exactly) is left alone;
+/// - a `deny` or `ask` entry for the same command WINS, because those are
+///   decisions and this is a default: an operator who denied a Mustard command
+///   is not asking for it back.
+///
+/// Nothing happens when the file declares no `permissions` object.
+fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<String, Value>) {
+    let wanted: Vec<String> = seed
+        .get("permissions")
+        .and_then(Value::as_object)
+        .and_then(|p| p.get("allow"))
+        .and_then(Value::as_array)
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|r| r.starts_with("Bash(mustard-rt run "))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if wanted.is_empty() {
+        return;
+    }
+    let Some(perms) = settings.get_mut("permissions").and_then(Value::as_object_mut) else {
+        return;
+    };
+    // A rule the operator DENIED or put behind an ask is a decision, and a
+    // default never overrides a decision. Read both lists before touching allow.
+    let refused: Vec<String> = ["deny", "ask"]
+        .iter()
+        .filter_map(|k| perms.get(*k))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let Some(allow) = perms.get_mut("allow").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let present: Vec<String> =
+        allow.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    for rule in wanted {
+        if present.contains(&rule) || refused.contains(&rule) {
+            continue;
+        }
+        allow.push(Value::String(rule));
+    }
 }
 
 /// Parse a JSON object fail-open: anything that is not a JSON object yields
@@ -1906,6 +1977,125 @@ mod tests {
     use serde_json::json;
     use std::fs as std_fs;
     use tempfile::tempdir;
+
+    // --- the harness's own permission rules ---------------------------------
+
+    /// A permission default Mustard ships reaches a project that is ALREADY
+    /// installed — and touches nothing else in the operator's file.
+    ///
+    /// The seed merge is top-level only, so a project that has a `permissions`
+    /// object keeps it verbatim and a rule added to the seed lands nowhere it is
+    /// already installed. Measured 2026-09-07: the operator was prompted for
+    /// `mustard-rt run pr-merge` on every merge and ran it by hand three times;
+    /// adding the rule to the seed alone would have helped only projects that did
+    /// not exist yet.
+    #[test]
+    fn an_installed_project_receives_the_harness_own_permission_rules() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::create_dir_all(root.join(".claude")).unwrap();
+        // An installed project: it HAS a permissions object, with one Mustard
+        // rule from an older seed and one rule the operator wrote themselves.
+        std_fs::write(
+            root.join(".claude/settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "permissions": {
+                    "allow": ["Read", "Bash(mustard-rt run qa-run:*)", "Bash(npm test:*)"],
+                    "deny": ["Bash(rm -rf:*)"]
+                }
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+
+        seed_settings(&root.join(".claude"), false, InstallMode::Shared).unwrap();
+
+        let settings: Value = serde_json::from_str(
+            &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
+        )
+        .unwrap();
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+
+        // Every `mustard-rt run` rule the seed declares is now present.
+        for rule in seed_own_rules() {
+            assert!(
+                allow.contains(&rule.as_str()),
+                "{rule} must reach an installed project: {allow:?}",
+            );
+        }
+        // What the operator wrote is untouched, in its own order, once each.
+        assert_eq!(allow[0], "Read", "the operator's list keeps its head: {allow:?}");
+        assert_eq!(allow[1], "Bash(mustard-rt run qa-run:*)", "{allow:?}");
+        assert_eq!(allow[2], "Bash(npm test:*)", "{allow:?}");
+        assert_eq!(
+            allow.iter().filter(|r| **r == "Bash(mustard-rt run qa-run:*)").count(),
+            1,
+            "a rule already present is never duplicated: {allow:?}",
+        );
+        // Nothing else in the file was invented: the operator declared no `env`,
+        // and the top-level merge is what backfills it — not this rule.
+        assert_eq!(settings["permissions"]["deny"][0], json!("Bash(rm -rf:*)"));
+    }
+
+    /// A DENIED Mustard command stays denied. A default never overrides a
+    /// decision — an operator who refused a command is not asking for it back.
+    #[test]
+    fn a_refused_rule_is_not_backfilled() {
+        let seed = parse_json_object(SETTINGS_SEED);
+        let own = seed_own_rules();
+        let refused = own[0].clone();
+
+        let mut settings = parse_json_object(
+            &serde_json::to_string(&json!({
+                "permissions": { "allow": ["Read"], "deny": [refused.clone()] }
+            }))
+            .unwrap(),
+        );
+        backfill_own_permission_rules(&mut settings, &seed);
+
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            !allow.contains(&refused.as_str()),
+            "a denied rule must not come back: {allow:?}",
+        );
+        // The rest of the seed's own rules still arrive — the refusal is
+        // per-rule, never a blanket opt-out.
+        assert!(allow.len() > 1, "the other rules still arrive: {allow:?}");
+    }
+
+    /// A file that declares no `permissions` at all is left to the top-level
+    /// merge, which plants the seed's whole object. This rule adds nothing.
+    #[test]
+    fn a_file_without_permissions_is_left_to_the_top_level_merge() {
+        let seed = parse_json_object(SETTINGS_SEED);
+        let mut settings = parse_json_object(r#"{"env":{"X":"1"}}"#);
+        backfill_own_permission_rules(&mut settings, &seed);
+        assert!(settings.get("permissions").is_none(), "nothing invented: {settings:?}");
+    }
+
+    /// The seed's own rules, read from the seed itself — so the tests above
+    /// cannot drift from what actually ships.
+    fn seed_own_rules() -> Vec<String> {
+        parse_json_object(SETTINGS_SEED)["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|r| r.starts_with("Bash(mustard-rt run "))
+            .map(str::to_string)
+            .collect()
+    }
 
     // --- upsert_project: fresh install --------------------------------------
 
