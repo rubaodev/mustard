@@ -173,7 +173,15 @@ fn signals_obj(
 /// census of at least this many files. Calibrated at 3 against the field
 /// regression (a 2-file/2-role growth that came back a false `full`); 3 files
 /// across distinct roles is the smallest census that still reads as genuine
-/// breadth (matches the wave-size gate's own multi-layer floor).
+/// breadth.
+///
+/// Este piso é **deliberadamente diferente do piso do auditor de onda**, e a
+/// diferença é o ponto. Este responde "esta SPEC deve virar várias ondas?", onde
+/// 3 arquivos em 2 papéis é largura genuína. O auditor responde "esta ONDA cabe
+/// numa passada?", onde 3 arquivos são o átomo e não existe divisão que
+/// satisfaça o aviso — por isso o piso dele é 6. Os dois números não devem ser
+/// reconciliados; um comentário que os declarasse iguais convidaria a próxima
+/// pessoa a desfazer a separação.
 const MULTI_LAYER_FILE_FLOOR: i64 = 3;
 
 /// Compute the decomposition decision for an input JSON value.

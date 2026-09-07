@@ -189,8 +189,12 @@ pub struct SpecDraftOpts {
 /// `meta.json#base` and removes it. Nobody authors it and it never reaches the
 /// merge; the authored work of a unit is `spec.md`, its waves, its proof, its
 /// change log and its review verdicts, and every one of those still refuses.
-const HARNESS_STATE_ENTRIES: &[&str] =
-    &[".events", ".dispatch", crate::shared::work_kind::CUT_BASE_FILE];
+const HARNESS_STATE_ENTRIES: &[&str] = &[
+    ".events",
+    ".dispatch",
+    crate::shared::work_kind::CUT_BASE_FILE,
+    crate::commands::spec::material_add::MATERIAL_FILE,
+];
 
 /// `true` when `dir` exists but holds NOTHING except the harness state listed in
 /// [`HARNESS_STATE_ENTRIES`] — i.e. no spec has been drafted into it yet.
@@ -205,6 +209,17 @@ const HARNESS_STATE_ENTRIES: &[&str] =
 /// That is why the cut records its base as [`HARNESS_STATE_ENTRIES`]' third
 /// entry and NOT as a `meta.json`: a sidecar written by step one is read here as
 /// step two's own output, and the unit came out cut and spec-less.
+///
+/// A QUARTA entrada é a mesma lição outra vez, e custou a mesma rodada. O canal
+/// de material existe para ser escrito NO MOMENTO em que uma decisão é fechada —
+/// do portão de base em diante, ou seja, antes deste rascunho rodar. Fazer
+/// exatamente o que as regras mandam produzia então a recusa acima: o
+/// `spec-material.json` não estava listado, e o arquivo que o canal acabara de
+/// criar era lido como spec já rascunhada. O remédio que a recusa ensina é
+/// `--force`, e `--force` reescreve o corpo inteiro — oferecido no instante
+/// exato em que a conversa começara a registrar suas decisões. Nomeado por
+/// [`crate::commands::spec::material_add::MATERIAL_FILE`] para que o escritor e
+/// esta lista nunca divirjam.
 fn holds_only_harness_state(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         // Unreadable: treat as occupied — refusing is the safe direction when
@@ -3150,5 +3165,38 @@ mod tests {
         );
         assert!(out.is_none(), "unreadable spec ⇒ conservative full, no downgrade: {out:?}");
         assert_eq!(meta_scope(&spec_dir).as_deref(), Some("full"));
+    }
+
+    /// Um arquivo de material escrito ANTES do rascunho é estado do harness, não
+    /// rascunho.
+    ///
+    /// O canal de material existe para ser escrito no momento em que uma decisão
+    /// é fechada — do portão de base em diante, ou seja, ANTES de `spec-draft`
+    /// rodar. Fazer exatamente isso fazia o rascunho recusar: o
+    /// `spec-material.json` não estava na lista, então o diretório era lido como
+    /// "já rascunhado" e o rascunho exigia `--force` — um flag de sobrescrita
+    /// para um diretório que não tem nada a sobrescrever, que é a própria frase
+    /// que o comentário deste guarda usa sobre o log de eventos. Pior que o
+    /// erro: o remédio que ele ensina reescreve o corpo inteiro, no instante
+    /// exato em que as decisões da conversa começaram a ser registradas.
+    #[test]
+    fn a_material_file_written_before_the_draft_is_not_a_draft() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("uma-unidade");
+        std::fs::create_dir_all(spec_dir.join(".events")).unwrap();
+        std::fs::write(spec_dir.join(crate::shared::work_kind::CUT_BASE_FILE), "dev").unwrap();
+        std::fs::write(spec_dir.join("spec-material.json"), "{\"decisions\":[]}").unwrap();
+
+        assert!(
+            holds_only_harness_state(&spec_dir),
+            "the material channel's own file must not read as a drafted spec"
+        );
+
+        // The guard still protects a REAL draft: one `spec.md` and it is occupied.
+        std::fs::write(spec_dir.join("spec.md"), "# a spec\n").unwrap();
+        assert!(
+            !holds_only_harness_state(&spec_dir),
+            "a drafted spec.md must still demand --force"
+        );
     }
 }
