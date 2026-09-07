@@ -41,9 +41,14 @@ fn resolve_task_limit() -> usize {
 
 /// A `usize` threshold from `var`, floored at 3, defaulting to `default`.
 fn env_limit(var: &str, default: usize) -> usize {
-    std::env::var(var)
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
+    env_limit_from(std::env::var(var).ok().as_deref(), default)
+}
+
+/// Deterministic core of [`env_limit`]: the env value arrives as a parameter, so
+/// the clamp is a pure function of its inputs and testable without mutating
+/// process env — which needs `unsafe` under Rust 2024, forbidden in this crate.
+fn env_limit_from(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|v| v.parse::<i64>().ok())
         .map_or(default, |n| if n < 3 { 3 } else { n as usize })
 }
 
@@ -78,9 +83,14 @@ fn resolve_min_tasks() -> usize {
 /// Gêmeo de [`env_limit`] SEM o piso de 3 daquele: os limiares do piso valem 2
 /// por padrão, um valor que `env_limit` não conseguiria sequer expressar.
 fn env_floor(var: &str, default: usize) -> usize {
-    std::env::var(var)
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
+    env_floor_from(std::env::var(var).ok().as_deref(), default)
+}
+
+/// Deterministic core of [`env_floor`], for the same reason [`env_limit_from`]
+/// exists. Zero is a LEGAL setting here: it disables the floor outright, which
+/// is precisely what the ceiling twin cannot express.
+fn env_floor_from(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|v| v.parse::<i64>().ok())
         .map_or(default, |n| if n < 0 { 0 } else { n as usize })
 }
 
@@ -464,6 +474,29 @@ pub(crate) fn audit(spec_dir: &Path) -> Value {
     })
 }
 
+/// The line a wave's shape earns — the ceiling's instruction or the floor's.
+///
+/// Pure, and separated from the `eprintln!` for ONE reason: the BRANCH is the
+/// whole fix. The two messages point in OPPOSITE directions, so an edit that
+/// swaps them — or that drops the floor's `Do NOT split it further` — changes
+/// nothing a compiler or a green suite would notice, and puts the operator back
+/// on the spiral that took a plan from 4 waves to 14.
+fn shape_warning(folder: &str, files: u64, tasks: u64, reason: &str, too_big: bool) -> String {
+    if too_big {
+        format!(
+            "[wave-size] WARN: {folder} is oversized ({files} files, {tasks} tasks — {reason}). \
+             A wave is ONE agent in ONE pass: split off the tasks that share no file with the \
+             rest — they are a wave of their own, and they can run in parallel."
+        )
+    } else {
+        format!(
+            "[wave-size] WARN: {folder} is undersized ({files} files, {tasks} tasks — {reason}). \
+             A dispatch costs a rendered prompt, an agent pass and a report — more than the work \
+             this wave carries: FOLD it into a neighbouring wave. Do NOT split it further."
+        )
+    }
+}
+
 /// Run [`audit`] over a freshly materialised plan and WARN on stderr for each
 /// oversized wave. Advisory — it never blocks, and it never touches stdout (the
 /// materialise report is machine-read and must stay byte-stable).
@@ -478,9 +511,16 @@ pub(crate) fn audit(spec_dir: &Path) -> Value {
 /// **Por que as duas pontas saem daqui.** Quem persegue só o teto não tem onde
 /// parar: no campo, o plano foi de 4 para 14 ondas e terminou numa onda de um
 /// arquivo. As duas mensagens mandam para lados OPOSTOS de propósito — a onda
-/// grande se DIVIDE, a onda pequena se DOBRA numa vizinha — e nunca se
-/// contradizem sobre a mesma onda, porque o piso de camadas põe o teto acima do
-/// piso de tamanho.
+/// grande se DIVIDE, a onda pequena se DOBRA numa vizinha.
+///
+/// **Sob os defaults elas não colidem, e não é UMA coisa que garante isso.** O
+/// piso de camadas (6) fica acima do piso de tamanho (2), e o mínimo duro de 3
+/// em [`env_limit`] impede que o teto de arquivos ou de tarefas desça até a
+/// faixa do piso. Quem reconfigura os pisos PODE cruzá-los: com
+/// `MUSTARD_WAVE_MIN_FILES=6`, uma onda de 6 arquivos sai `oversized` E
+/// `undersized`, e só a mensagem do teto é impressa. O audit é consultivo e a
+/// configuração é do operador, então isso se documenta aqui — não se corrige no
+/// código, que não tem como saber qual das duas o operador quis.
 pub(crate) fn warn_oversized_waves(spec_dir: &Path) {
     let report = audit(spec_dir);
     let over = report.get("oversizedCount").and_then(Value::as_u64).unwrap_or(0);
@@ -501,19 +541,7 @@ pub(crate) fn warn_oversized_waves(spec_dir: &Path) {
         let files = w.get("fileCount").and_then(Value::as_u64).unwrap_or(0);
         let tasks = w.get("taskCount").and_then(Value::as_u64).unwrap_or(0);
         let reason = w.get("reason").and_then(Value::as_str).unwrap_or("");
-        if too_big {
-            eprintln!(
-                "[wave-size] WARN: {folder} is oversized ({files} files, {tasks} tasks — {reason}). \
-                 A wave is ONE agent in ONE pass: split off the tasks that share no file with the \
-                 rest — they are a wave of their own, and they can run in parallel."
-            );
-        } else {
-            eprintln!(
-                "[wave-size] WARN: {folder} is undersized ({files} files, {tasks} tasks — {reason}). \
-                 A dispatch costs a rendered prompt, an agent pass and a report — more than the work \
-                 this wave carries: FOLD it into a neighbouring wave. Do NOT split it further."
-            );
-        }
+        eprintln!("{}", shape_warning(folder, files, tasks, reason, too_big));
     }
 }
 
@@ -753,5 +781,46 @@ mod tests {
             "an unwritten wave has no task count to measure: {audited}"
         );
         assert_eq!(audited["reason"], json!(""), "{audited}");
+    }
+
+    /// The branch split IS the fix, so it gets a test of its own.
+    ///
+    /// The two ends give OPPOSITE instructions, and the floor's must never read
+    /// as "split". Answering an undersized wave by splitting it is exactly the
+    /// spiral measured in the field: 4 waves became 14, and the last of them
+    /// held one file.
+    #[test]
+    fn the_two_ends_give_opposite_instructions() {
+        let big = shape_warning("wave-1-backend", 19, 13, "file-count:19>10", true);
+        assert!(big.contains("is oversized"), "{big}");
+        assert!(big.contains("split off the tasks"), "{big}");
+
+        let small = shape_warning("wave-13-core", 1, 1, "too-small:1f/1t<=2f/2t", false);
+        assert!(small.contains("is undersized"), "{small}");
+        assert!(small.contains("FOLD it into a neighbouring wave"), "{small}");
+        assert!(
+            small.contains("Do NOT split it further"),
+            "the floor must never be answered by splitting: {small}"
+        );
+        assert!(!small.contains("split off"), "no split instruction on the floor: {small}");
+    }
+
+    /// The floor knobs have NO hard minimum, and that is the entire reason
+    /// [`env_floor`] exists beside [`env_limit`]: the size floor defaults to 2,
+    /// a value the ceiling's clamp of 3 cannot even express. Zero is legal — it
+    /// DISABLES the floor rather than silently becoming 3.
+    #[test]
+    fn floor_knobs_reach_below_the_ceiling_clamp() {
+        assert_eq!(env_floor_from(None, 2), 2, "unset takes the default");
+        assert_eq!(env_floor_from(Some("6"), 2), 6);
+        assert_eq!(env_floor_from(Some("0"), 2), 0, "zero disables the floor");
+        assert_eq!(env_floor_from(Some("-4"), 2), 0, "negative clamps to zero, not to the default");
+        assert_eq!(env_floor_from(Some("nao-numero"), 2), 2, "unparseable falls back to the default");
+
+        // The contrast that justifies the twin: the ceiling knob cannot go there.
+        assert_eq!(env_limit_from(Some("2"), 10), 3, "the ceiling clamps at 3");
+        assert_eq!(env_limit_from(Some("0"), 10), 3, "…and zero cannot disable it");
+        assert_eq!(env_limit_from(None, 10), 10);
+        assert_eq!(env_limit_from(Some("14"), 10), 14);
     }
 }
