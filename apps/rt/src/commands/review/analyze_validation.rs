@@ -283,6 +283,30 @@ const UNWALKED_DIRS: &[&str] = &[
 /// procurar para sempre — a mesma resposta que dava antes de existir.
 const MAX_WALKED_DIRS: usize = 4000;
 
+/// `true` quando uma referência que não resolveu ainda PODE nomear um arquivo:
+/// ela carrega extensão ou uma barra.
+///
+/// O gatilho da varredura vinha do [`backtick_file_refs`], que recolhe o que
+/// está entre crases e não só caminhos — a seção `## Arquivos` de uma spec cita
+/// `` `## ACCEPTANCE` `` e o título vira uma "referência ausente" que abre até
+/// 4000 diretórios atrás de um arquivo com esse nome. Um título de seção e a
+/// prosa entre crases não passam por aqui; `apps/rt/src/x.rs`, `Cargo.toml` e
+/// `docs/notas` passam.
+///
+/// Deliberadamente mais frouxo que [`looks_like_file_path`], que exige extensão
+/// CONHECIDA: ali a pergunta é "isto é um caminho?", aqui é "vale a pena abrir o
+/// disco por isto?", e recusar `scripts/ac/deps` por não ter extensão custaria a
+/// resposta certa num caso real. Pura, total.
+fn could_name_a_file(r: &str) -> bool {
+    let r = r.trim();
+    if r.is_empty() {
+        return false;
+    }
+    r.contains('/')
+        || r.contains('\\')
+        || Path::new(r).extension().is_some_and(|ext| !ext.is_empty())
+}
+
 /// Onde, sob `root`, existe um arquivo com o mesmo NOME-BASE de cada referência
 /// que não resolveu — a referência como declarada, mapeada para o caminho de
 /// repositório onde o arquivo está de fato.
@@ -300,9 +324,15 @@ const MAX_WALKED_DIRS: usize = 4000;
 /// Determinística: as entradas de cada diretório são ordenadas pelo nome antes
 /// de descer, e a varredura é em LARGURA, então a resposta não depende da ordem
 /// que o sistema de arquivos devolve — a mensagem sai num JSON comparado byte a
-/// byte. Uma passada só para todas as referências, e nada é aberto quando não há
-/// nenhuma.
+/// byte. Uma passada só para todas as referências, e nada é aberto quando
+/// nenhuma delas pode ser um arquivo ([`could_name_a_file`]).
 fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, String> {
+    // O que o `backtick_file_refs` recolhe não é só caminho: um `## ACCEPTANCE`
+    // entre crases na própria seção `## Arquivos` chega aqui como referência que
+    // não resolveu, e abrir 4000 diretórios atrás de um TÍTULO de seção é o
+    // custo inteiro deste passo pago por nada.
+    let refs: Vec<&str> =
+        refs.iter().map(String::as_str).filter(|r| could_name_a_file(r)).collect();
     if refs.is_empty() {
         return BTreeMap::new();
     }
@@ -327,14 +357,14 @@ fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, String
                     }
                     continue;
                 }
-                for r in refs {
+                for &r in &refs {
                     if r.rsplit('/').next().unwrap_or(r) != entry.file_name {
                         continue;
                     }
                     let found = ac_negative_check::repo_relative(root, &entry.path);
-                    let score = u8::from(found.ends_with(&format!("/{r}")) || found == *r) + 1;
+                    let score = u8::from(found.ends_with(&format!("/{r}")) || found == r) + 1;
                     if best.get(r).is_none_or(|(previous, _)| *previous < score) {
-                        best.insert(r.clone(), (score, found));
+                        best.insert(r.to_string(), (score, found));
                     }
                 }
             }
@@ -1651,6 +1681,32 @@ mod tests {
         assert!(
             ghost_msg.contains("(create)") && ghost_msg.contains("(novo)"),
             "sem outro prefixo, a dica de marcador continua: {ghost_msg}"
+        );
+    }
+
+    /// A varredura de prefixos só começa por uma referência que AINDA pode ser
+    /// um arquivo.
+    ///
+    /// O gatilho não é escolhido: o `backtick_file_refs` recolhe o que está
+    /// entre crases, e a seção `## Arquivos` de uma spec cita títulos de seção
+    /// (`` `## ACCEPTANCE` ``) e prosa. Cada um deles chegava à varredura como
+    /// "arquivo ausente" e abria até 4000 diretórios atrás de um arquivo com
+    /// aquele nome.
+    #[test]
+    fn only_a_reference_that_could_be_a_file_starts_the_prefix_walk() {
+        for path in ["src/list.rs", "Cargo.toml", "docs/notas", "apps\\rt\\main.rs", "a.rs"] {
+            assert!(could_name_a_file(path), "isto pode ser um arquivo: {path}");
+        }
+        for prose in ["## ACCEPTANCE", "AC-1", "Command", "todo o resto", ""] {
+            assert!(!could_name_a_file(prose), "isto não abre varredura: {prose}");
+        }
+        // E a porta fechada devolve o mesmo "não achei" de sempre, sem abrir
+        // diretório nenhum — mesmo com o arquivo homônimo bem ali.
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("ACCEPTANCE"), "x").unwrap();
+        assert!(
+            refs_found_elsewhere(dir.path(), &["## ACCEPTANCE".to_string()]).is_empty(),
+            "um título de seção não vira endereço de arquivo",
         );
     }
 

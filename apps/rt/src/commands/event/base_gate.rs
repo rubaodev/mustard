@@ -361,6 +361,13 @@ fn significant_tokens(slug: &str) -> std::collections::BTreeSet<String> {
 /// ([`active_spec_names`]) — um segundo enumerador é como o portão e o picker
 /// passariam a discordar sobre o que está aberto.
 ///
+/// A unidade que está sendo aberta NÃO é suspeita de si mesma. Isso é inócuo na
+/// primeira abertura, quando o diretório da spec ainda não existe, e errado em
+/// todo RE-despacho de uma unidade já aberta — que é justamente o que o
+/// `dispatch.md` manda fazer depois de uma recusa do portão. O nome descartado
+/// vem da MESMA derivação que nomeia a unidade, então os dois lados não têm como
+/// discordar sobre qual é ele.
+///
 /// Determinístico: a ordem é a do localizador (ordenada), e nada de timestamp
 /// ou caminho volátil entra no resultado.
 pub(crate) fn overlapping_active_specs(project: &Path, intent: &str) -> Vec<String> {
@@ -368,12 +375,14 @@ pub(crate) fn overlapping_active_specs(project: &Path, intent: &str) -> Vec<Stri
     if intent.is_empty() {
         return Vec::new();
     }
-    let wanted = significant_tokens(&canonical_for_project(intent, project));
+    let own = canonical_for_project(intent, project);
+    let wanted = significant_tokens(&own);
     if wanted.len() < OVERLAP_MIN_TOKENS {
         return Vec::new();
     }
     active_spec_names(project)
         .into_iter()
+        .filter(|name| name != &own)
         .filter(|name| {
             significant_tokens(name).intersection(&wanted).count() >= OVERLAP_MIN_TOKENS
         })
@@ -890,6 +899,59 @@ mod tests {
             porcelain(root),
             "",
             "o portão gravou o que ele mesmo escreveu, sem commit manual no meio",
+        );
+    }
+
+    /// Um molde ADOTADO (`source: manual`) é escrita do OPERADOR, e o caminho
+    /// dele é igualzinho ao de um molde gerado — o frontmatter é o que separa.
+    ///
+    /// Lê-lo como censo faz o corte parar de recusar por causa da edição à mão
+    /// de alguém e [`record_leftover_census`] varrê-la para dentro de um commit
+    /// da ferramenta, que é exatamente a troca que a categoria existe para
+    /// impedir.
+    #[test]
+    fn an_adopted_mold_is_the_operators_writing_not_the_census() {
+        use crate::commands::event::work_branch::{busy_checkout, CheckoutWork};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+        git(root, &["checkout", "-b", "dev_first"]);
+
+        remine(&model);
+        leftover_enrichment(root);
+        // O molde curado, adotado: a partir do `source: manual` quem escreve
+        // ali é o operador, e o próprio molde documenta isso.
+        let adopted = root
+            .join("apps")
+            .join("rt")
+            .join(".claude")
+            .join("skills")
+            .join("rt-verdict-pattern");
+        std::fs::create_dir_all(&adopted).unwrap();
+        std::fs::write(
+            adopted.join("SKILL.md"),
+            "---\nname: rt-verdict-pattern\nsource: manual\n---\n\n## Purpose\n",
+        )
+        .unwrap();
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let busy = busy_checkout(root, Some("dev_first"), "dev_second", &flow_config())
+            .expect("a edição à mão do operador recusa o corte");
+        let CheckoutWork::Holds(dirty) = &busy.work else {
+            panic!("os caminhos foram observados, veio {:?}", busy.work);
+        };
+        assert_eq!(
+            dirty,
+            &vec!["apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md".to_string()],
+            "a recusa nomeia o molde adotado e só ele: {dirty:?}",
+        );
+
+        record_leftover_census(root);
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "e o portão não varre a escrita do operador para um commit dele",
         );
     }
 

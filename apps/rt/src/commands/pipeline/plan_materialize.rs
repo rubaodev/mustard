@@ -144,7 +144,11 @@ const ERR_CRITERIA_OUTSIDE_CLAIMANTS: &str = "acceptance criteria outside their 
 /// é que o `## Acceptance Criteria` da onda — e o bloco `## ACCEPTANCE` do prompt
 /// despachado — passou a ser recortado por esse conjunto: uma onda sem critério
 /// é um agente despachado sem régua, e ainda assim medido por uma no QA.
-const ERR_UNTRACED_WAVES: &str = "waves whose work traces to no acceptance criterion";
+/// `pub(crate)` para que o teste que trava a RECUSA (em `wave_scaffold`, junto
+/// da onda que a provoca) afirme contra o marcador de verdade e não contra uma
+/// segunda cópia da frase.
+pub(crate) const ERR_UNTRACED_WAVES: &str =
+    "waves whose work traces to no acceptance criterion";
 
 /// Stdout `sharedFiles.error` marker for a plan whose dispatch-parallel waves
 /// declare the same file. [`run`] maps it to exit 2 and [`materialize`] withholds

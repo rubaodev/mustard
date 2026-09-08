@@ -1599,6 +1599,45 @@ mod tests {
         assert!(!bare.contains("## WHY"), "empty heading survived: {bare}");
     }
 
+    /// Um render de nível-spec SEM `## Tasks` — a forma tactical-fix / spec
+    /// recém-rascunhada — imprime o `## Contexto` UMA vez.
+    ///
+    /// É a única forma em que os dois recortes saem do MESMO arquivo: o `## WHY`
+    /// lê o spec do pai e o fallback de TASK lê o spec operacional, que aqui é o
+    /// mesmo. Enquanto o tier 2 copiava o Contexto, o prompt o trazia duas
+    /// vezes — uma sob `## WHY` e outra dentro do `## TASK`.
+    #[test]
+    fn a_no_tasks_spec_renders_its_context_exactly_once() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "tf-sem-tasks";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let story = "o digest nao acha intents em pt";
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# TF\n\n## Contexto\n\n{story}\n\n\
+                 ## Critérios de Aceitação\n\n- **AC-1** — a consulta volta com acertos.\n"
+            ),
+        )
+        .unwrap();
+
+        let rendered = render_prompt_at(
+            dir.path(), Some(spec), None, "impl", Path::new("."),
+            RenderMode::First, None, None, None,
+        );
+        assert_eq!(
+            rendered.matches(story).count(),
+            1,
+            "o Contexto tem de sair uma vez só: {rendered}"
+        );
+        // …e ele sai pelo canal que é dele, com o TASK apontando para lá.
+        assert!(rendered.contains("## WHY"), "{rendered}");
+        assert!(rendered.contains("TASK fallback"), "{rendered}");
+        assert!(rendered.contains("**AC-1**"), "a régua continua chegando: {rendered}");
+    }
+
     /// AC-5: when the target subproject is its OWN nested git repository (`.git`
     /// FILE — the submodule shape), the rendered prompt states the git boundary
     /// (separate commit history; do not bump the superproject gitlink yourself —

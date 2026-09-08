@@ -771,22 +771,40 @@ pub(crate) fn is_exempt(index: usize, total: usize) -> bool {
     total > 0 && index + 1 == total
 }
 
-/// `true` when this criterion OWES a `Control:` and declares none — the one
-/// shape where the optional key is not optional.
+/// `true` quando este critério DEVE um `Control:` e não declara nenhum — a única
+/// forma em que a chave opcional deixa de ser opcional.
 ///
-/// The rule, in one sentence: a TEST RUNNER exits 0 when its filter selects
-/// nothing, so a criterion built on one has a red that says nothing until a
-/// control shows the filter can select at all. Every other command keeps the
-/// historical WARN, because refusing them would block every spec authored before
-/// the key existed.
+/// A regra, numa frase: um EXECUTOR DE TESTE sai com 0 quando o filtro dele não
+/// casa nada, então um critério construído sobre um deles tem um vermelho que
+/// não diz nada enquanto um controle não mostrar que o filtro casa alguma coisa.
+/// Todo outro comando fica com o WARN histórico, porque recusá-los bloquearia
+/// toda spec escrita antes de a chave existir.
 ///
-/// The runner question is asked of the SHARED predicate
-/// ([`super::analyze_validation::is_test_runner_command`]), which is also what
-/// the `test-ac-no-control` lint asks at drafting time — the criterion this gate
-/// refuses is exactly the one the warning named. Pure, total.
+/// A pergunta "é executor de teste?" vai para o predicado COMPARTILHADO
+/// ([`super::analyze_validation::is_test_runner_command`]), que é também o que o
+/// lint `test-ac-no-control` pergunta na hora do rascunho — o critério que este
+/// portão recusa é exatamente o que o aviso nomeou. Pura, total.
 fn control_required(command: &str, control: Option<&str>) -> bool {
     let declared = control.map(str::trim).is_some_and(|c| !c.is_empty());
     !declared && super::analyze_validation::is_test_runner_command(command)
+}
+
+/// Classifica POR QUE um vermelho foi vermelho, a partir do que o executor já
+/// devolveu — o mapeador dedicado do [`RedReason`], irmão dos outros
+/// `classify_*` deste módulo (um por passe, nunca um `match` solto no ponto de
+/// chamada).
+///
+/// Sair 0 e não casar o `Expect:` é o vermelho da EVIDÊNCIA; sair diferente de 0
+/// é o vermelho do COMANDO. Um vermelho sem código de saída registrado não deixa
+/// separar os dois, e inventar um deles ali seria pior que não dizer nada — daí
+/// o `None`, que é também a resposta para tudo que não foi vermelho. Pura,
+/// total.
+fn classify_red_reason(proof: Proof, exit: Option<i64>) -> Option<RedReason> {
+    match (proof, exit) {
+        (Proof::Red, Some(0)) => Some(RedReason::ExpectMissOnSuccessExit),
+        (Proof::Red, Some(_)) => Some(RedReason::NonzeroExit),
+        _ => None,
+    }
 }
 
 /// Classify ONE control run from the executor's status.
@@ -1035,15 +1053,7 @@ pub(crate) fn prove_one(
         return record;
     }
     let (verdict, proof, reason) = classify(result.status());
-    // A causa do vermelho, lida do código de saída que o executor já devolveu:
-    // sair 0 e não casar o `Expect:` é o vermelho da EVIDÊNCIA, sair diferente
-    // de 0 é o vermelho do COMANDO. Um vermelho sem código de saída não permite
-    // separar os dois, e inventar um deles ali seria pior que não dizer nada.
-    let red_reason = match (proof, result.exit()) {
-        (Proof::Red, Some(0)) => Some(RedReason::ExpectMissOnSuccessExit),
-        (Proof::Red, Some(_)) => Some(RedReason::NonzeroExit),
-        _ => None,
-    };
+    let red_reason = classify_red_reason(proof, result.exit());
     AcProof {
         id: id.to_string(),
         command: command.to_string(),

@@ -506,9 +506,30 @@ fn material_only_refresh(
     opts: &SpecDraftOpts,
     material: &ConversationMaterial,
 ) -> i32 {
+    if let Some(report) = material_only_result(project_root, opts, material) {
+        println!("{report}");
+    }
+    0
+}
+
+/// O `--material-only` INTEIRO menos a impressão: resolve a unidade, reescreve
+/// as seções de material do `spec.md` do pai, avisa na stderr sobre as ondas que
+/// ficaram para trás e devolve o relatório que o chamador imprime. `None` quando
+/// recusou — o `emit_error` já disse por quê, e não há relatório a dar.
+///
+/// Separado de [`material_only_refresh`] para que a FIAÇÃO seja afirmável: com
+/// tudo dentro da função que imprime, um teste só conseguia remontar o relatório
+/// por fora, chamando [`material_only_report`] com uma lista de ondas que ele
+/// mesmo derivava — e aí nada travava o caminho real, do slug ao detector de
+/// ondas. Os bytes impressos continuam sendo estes.
+fn material_only_result(
+    project_root: &Path,
+    opts: &SpecDraftOpts,
+    material: &ConversationMaterial,
+) -> Option<serde_json::Value> {
     let Some(slug) = opts.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         emit_error("--material-only needs --slug", "name the unit whose material to refresh");
-        return 0;
+        return None;
     };
     let dir = opts.output.clone().unwrap_or_else(|| {
         mustard_core::ClaudePaths::spec_dir_or_unchecked(project_root, slug)
@@ -519,18 +540,18 @@ fn material_only_refresh(
             "--material-only found no spec to update",
             &format!("{} does not exist — draft the spec first", path.display()),
         );
-        return 0;
+        return None;
     }
     if opts.material.is_none() {
         emit_error(
             "--material-only needs --material",
             "pass the unit's `spec-material.json`; without it there is nothing to write",
         );
-        return 0;
+        return None;
     }
     let Ok(body) = mfs::read_to_string(&path) else {
         emit_error("could not read spec.md", &path.display().to_string());
-        return 0;
+        return None;
     };
     let mut out = strip_material_sections(&body);
     if let Some(block) = render_material_sections(material) {
@@ -541,7 +562,7 @@ fn material_only_refresh(
     }
     if let Err(e) = mfs::write_atomic(&path, out.as_bytes()) {
         emit_error("write spec.md", &format!("{}: {e}", path.display()));
-        return 0;
+        return None;
     }
     // Esta porta reescreve o `spec.md` do PAI e mais nada. As ondas já
     // materializadas carregam o recorte de material feito quando
@@ -554,8 +575,7 @@ fn material_only_refresh(
     if !stale_waves.is_empty() {
         eprintln!("spec-draft: WARN: {}", stale_waves_warning(slug, &stale_waves));
     }
-    println!("{}", material_only_report(slug, &path, material, &stale_waves));
-    0
+    Some(material_only_report(slug, &path, material, &stale_waves))
 }
 
 /// O relatório do `--material-only`, montado num valor só — assim os bytes que
@@ -609,13 +629,22 @@ fn materialized_wave_dirs(spec_dir: &Path) -> Vec<String> {
 /// materializadas — ela precisa NOMEAR o comando que as reconcilia, senão o
 /// operador fica sabendo do problema e não do remédio.
 fn stale_waves_warning(slug: &str, waves: &[String]) -> String {
+    // Uma onda só e a frase inteira concorda com ela — sujeito, verbo e
+    // possessivo. Misturar "1 wave is" com "were NOT updated" na mesma linha faz
+    // o operador reler a frase para descobrir quantas ondas ela está contando.
+    let n = waves.len();
+    let (subject, verb, theirs) = if n == 1 {
+        ("1 wave is".to_string(), "was", "its")
+    } else {
+        (format!("{n} waves are"), "were", "their")
+    };
     format!(
-        "the material sections changed, but {} already materialised ({}) and were NOT \
-         updated — their per-wave material cut still carries what the spec said before this \
+        "the material sections changed, but {subject} already materialised ({}) and {verb} NOT \
+         updated — {theirs} per-wave material cut still carries what the spec said before this \
          refresh. Re-run `mustard-rt run plan-materialize --spec-dir {slug} --plan <plan.json>` \
-         to bring them forward.",
-        if waves.len() == 1 { "1 wave is" } else { "waves are" },
+         to bring {} forward.",
         waves.join(", "),
+        if n == 1 { "it" } else { "them" },
     )
 }
 
@@ -3304,25 +3333,24 @@ mod tests {
         )
         .unwrap();
 
-        let code = run_at(
-            project,
-            SpecDraftOpts {
-                intent: "Unidade com ondas".into(),
-                slug: Some(slug.to_string()),
-                scope: "full".into(),
-                lang: "pt-BR".into(),
-                signals: None,
-                output: None,
-                material: Some(material_path),
-                material_only: true,
-                no_material_reason: None,
-                waves: 2,
-                plan: None,
-                force: false,
-                query_terms: None,
-                force_scope: false,
-            },
-        );
+        let opts = || SpecDraftOpts {
+            intent: "Unidade com ondas".into(),
+            slug: Some(slug.to_string()),
+            scope: "full".into(),
+            lang: "pt-BR".into(),
+            signals: None,
+            output: None,
+            material: Some(material_path.clone()),
+            material_only: true,
+            no_material_reason: None,
+            waves: 2,
+            plan: None,
+            force: false,
+            query_terms: None,
+            force_scope: false,
+        };
+
+        let code = run_at(project, opts());
         assert_eq!(code, 0, "o refresh de material continua saindo limpo");
 
         let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
@@ -3333,11 +3361,27 @@ mod tests {
         let waves = materialized_wave_dirs(&spec_dir);
         assert_eq!(waves, vec!["wave-1-impl".to_string(), "wave-2-review".to_string()]);
 
-        // O relatório diz que as ondas ficaram para trás, e quais.
-        let report =
-            material_only_report(slug, &spec_dir.join("spec.md"), &ConversationMaterial::default(), &waves);
+        // O relatório que o COMANDO imprime — o mesmo valor, pela mesma fiação
+        // (slug, caminho, detector de ondas), não uma remontagem por fora.
+        let material = load_material(&material_path).expect("material");
+        let report = material_only_result(project, &opts(), &material)
+            .expect("o refresh devolve relatório");
+        assert_eq!(report["spec"], serde_json::json!(slug));
+        assert_eq!(
+            report["path"],
+            serde_json::json!(spec_dir.join("spec.md").display().to_string())
+        );
+        assert_eq!(report["decisions"], serde_json::json!(1), "a decisão contada: {report}");
         assert_eq!(report["wavesStale"], serde_json::json!(true));
         assert_eq!(report["staleWaves"], serde_json::json!(["wave-1-impl", "wave-2-review"]));
+
+        // Sem `--slug` a porta recusa e não há relatório nenhum a imprimir.
+        let mut headless = opts();
+        headless.slug = None;
+        assert!(
+            material_only_result(project, &headless, &material).is_none(),
+            "uma recusa não imprime relatório",
+        );
 
         // Sem onda no disco o campo não mente — o aviso é a exceção, não a regra.
         let clean = material_only_report(
@@ -3354,5 +3398,15 @@ mod tests {
         assert!(warn.contains("plan-materialize"), "o remédio é nomeado: {warn}");
         assert!(warn.contains(slug), "e nomeia a unidade: {warn}");
         assert!(warn.contains("wave-1-impl"), "e as ondas atrasadas: {warn}");
+        // A frase concorda com o número que ela mesma conta, nos dois lados.
+        assert!(
+            warn.contains("2 waves are") && warn.contains("were NOT updated"),
+            "plural: {warn}",
+        );
+        let one = stale_waves_warning(slug, &waves[..1]);
+        assert!(
+            one.contains("1 wave is") && one.contains("was NOT updated"),
+            "singular: {one}",
+        );
     }
 }

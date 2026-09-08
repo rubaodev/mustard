@@ -643,7 +643,7 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
             unparsed += 1;
             continue;
         }
-        match classify_dirty_path(path) {
+        match classify_dirty_path(root, path) {
             // the harness's own droppings are nobody's work
             DirtyPathKind::Scratch => {}
             // …e o censo também não é de ninguém, mas precisa ser GRAVADO, não
@@ -749,6 +749,66 @@ const CENSUS_SKILLS_DIR: &str = "skills";
 /// Ver [`CENSUS_SKILLS_DIR`].
 const CENSUS_SKILL_FILE: &str = "SKILL.md";
 
+/// A chave do frontmatter que diz QUEM escreve um molde, e o valor que a
+/// passagem de enriquecimento assume para si.
+///
+/// O par é o que separa as duas metades do `skills/`: `source: scan` (ou chave
+/// ausente, a forma histórica de um molde gerado) é saída da ferramenta, e
+/// [`CENSUS_SKILL_SOURCE_MANUAL`] é o molde ADOTADO — o próprio molde documenta
+/// que a partir dali as edições à mão não são mais sobrescritas, o que quer
+/// dizer que quem escreve ali é o operador.
+const CENSUS_SKILL_SOURCE_KEY: &str = "source:";
+/// Ver [`CENSUS_SKILL_SOURCE_KEY`].
+const CENSUS_SKILL_SOURCE_MANUAL: &str = "manual";
+
+/// De quem é um `.claude/skills/<molde>/SKILL.md`, lido do `source:` do
+/// frontmatter dele.
+///
+/// O nome do arquivo NÃO responde a pergunta. Os dois moldes curados deste
+/// repositório (`rt-verdict-pattern`, `core-function-pattern`) têm exatamente o
+/// mesmo caminho de um molde gerado e carregam `source: manual` — o marcador
+/// cujo significado documentado é "edições à mão não são sobrescritas". Tratar
+/// todo `SKILL.md` como censo faz a edição à mão do operador deixar de ser
+/// trabalho dele: o corte para de recusar por causa dela e
+/// [`crate::commands::event::base_gate::record_leftover_census`] a varre para
+/// dentro de um commit da ferramenta — a troca que a categoria existe para
+/// impedir.
+///
+/// Ilegível ou sem frontmatter que se possa ler é [`DirtyPathKind::Work`], a
+/// mesma direção segura que a regra de truncamento acima toma: errar para "tem
+/// trabalho" custa um commit, errar para o outro lado custa o trabalho de
+/// alguém.
+fn census_skill_kind(root: &Path, path: &str) -> DirtyPathKind {
+    let Ok(text) = std::fs::read_to_string(root.join(path)) else {
+        return DirtyPathKind::Work;
+    };
+    let mut lines = text.lines();
+    // O frontmatter abre na PRIMEIRA linha; um arquivo que não abre assim não
+    // tem frontmatter para ler.
+    if lines.next().map(str::trim) != Some("---") {
+        return DirtyPathKind::Work;
+    }
+    for line in lines {
+        if line.trim() == "---" {
+            // Fechou o bloco sem declarar `source:` — a forma histórica de um
+            // molde gerado, que é censo.
+            return DirtyPathKind::Census;
+        }
+        // Só a chave de topo: o `source:` que porventura apareça indentado
+        // pertence a outro mapa (`metadata:`), não ao molde.
+        let Some(value) = line.strip_prefix(CENSUS_SKILL_SOURCE_KEY) else {
+            continue;
+        };
+        return if value.trim().trim_matches(['"', '\'']) == CENSUS_SKILL_SOURCE_MANUAL {
+            DirtyPathKind::Work
+        } else {
+            DirtyPathKind::Census
+        };
+    }
+    // Abriu o frontmatter e nunca fechou: não há bloco que se possa ler.
+    DirtyPathKind::Work
+}
+
 /// O que uma linha do `git status` É, para quem está prestes a levar o checkout
 /// embora — as três categorias que [`checkout_work`] separa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -801,7 +861,11 @@ const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved", CUT_BASE_FILE];
 /// A mesma regra vale para o censo: só um caminho INTEIRO se classifica como
 /// [`DirtyPathKind::Census`] — `.claude/skills/` truncado continua sendo
 /// trabalho, porque este teste não mediu o que há embaixo.
-fn classify_dirty_path(path: &str) -> DirtyPathKind {
+///
+/// `root` existe por causa de UMA pergunta que o caminho não responde: um
+/// `SKILL.md` é do censo ou do operador conforme o `source:` do frontmatter
+/// dele, então esse caso — e só ele — abre o arquivo ([`census_skill_kind`]).
+fn classify_dirty_path(root: &Path, path: &str) -> DirtyPathKind {
     let normalised = path.replace('\\', "/");
     let mut segments = normalised.split('/').filter(|s| !s.is_empty());
     // Everything up to the first `.claude` segment is somebody else's tree.
@@ -828,9 +892,10 @@ fn classify_dirty_path(path: &str) -> DirtyPathKind {
         return DirtyPathKind::Work;
     }
     // `.claude/skills/<molde>/…/SKILL.md` — o molde inteiro, nunca um diretório
-    // truncado que só COMEÇA em `skills/`.
+    // truncado que só COMEÇA em `skills/`. Quem escreve o molde está no
+    // frontmatter dele, não no caminho.
     if *first == CENSUS_SKILLS_DIR && rest.last() == Some(&CENSUS_SKILL_FILE) {
-        return DirtyPathKind::Census;
+        return census_skill_kind(root, &normalised);
     }
     if *first != "spec" {
         return DirtyPathKind::Work;
@@ -2211,6 +2276,29 @@ mod tests {
     /// probe measured neither, so it counts.
     #[test]
     fn a_truncated_directory_only_passes_when_all_of_it_is_scratch() {
+        // A árvore só importa para os moldes: todo o resto se decide no nome.
+        // Dois moldes GERADOS aqui — um com `source: scan` e um sem chave
+        // nenhuma, a forma histórica — e um ADOTADO, no bloco de trabalho.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mold = |path: &str, body: &str| {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mold dir");
+            std::fs::write(&full, body).expect("mold file");
+        };
+        mold(
+            "apps/rt/.claude/skills/rt-gate-pattern/SKILL.md",
+            "---\nname: rt-gate-pattern\nsource: scan\n---\n\n## Purpose\n",
+        );
+        mold(
+            ".claude/skills/core-doc-pattern/SKILL.md",
+            "---\nname: core-doc-pattern\n---\n\n## Purpose\n",
+        );
+        mold(
+            "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",
+            "---\nname: rt-verdict-pattern\nsource: manual\n---\n\n## Purpose\n",
+        );
+
         // Scratch, whole — including the collapsed-directory spelling git uses.
         for scratch in [
             ".claude/.session/sess-x/pending-work-branch",
@@ -2234,7 +2322,7 @@ mod tests {
             ".claude\\.session\\sess-x\\pending-work-branch",
         ] {
             assert_eq!(
-                super::classify_dirty_path(scratch),
+                super::classify_dirty_path(root, scratch),
                 super::DirtyPathKind::Scratch,
                 "scratch: {scratch}",
             );
@@ -2254,7 +2342,7 @@ mod tests {
             ".claude\\scan-map.md",
         ] {
             assert_eq!(
-                super::classify_dirty_path(census),
+                super::classify_dirty_path(root, census),
                 super::DirtyPathKind::Census,
                 "census: {census}",
             );
@@ -2287,13 +2375,29 @@ mod tests {
             ".claude/skills/rt-gate-pattern/",
             "docs/scan-map.md",
             ".claude/grain.model.json.bak",
+            // O molde ADOTADO (`source: manual`) é escrita do OPERADOR: o nome
+            // do arquivo é o mesmo de um gerado e o frontmatter é o que separa.
+            "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",
+            // Um molde que não existe no disco não pôde ser lido, e um que
+            // abre frontmatter sem fechar não pôde ser interpretado — as duas
+            // formas caem para o lado seguro.
+            "apps/rt/.claude/skills/ausente-pattern/SKILL.md",
         ] {
             assert_eq!(
-                super::classify_dirty_path(work),
+                super::classify_dirty_path(root, work),
                 super::DirtyPathKind::Work,
                 "work: {work}",
             );
         }
+
+        // …e o frontmatter que abre, não declara `source:` e nunca fecha: não há
+        // bloco a ler, e o lado seguro é dizer que ali tem trabalho.
+        mold(".claude/skills/truncado-pattern/SKILL.md", "---\nname: truncado-pattern\n");
+        assert_eq!(
+            super::classify_dirty_path(root, ".claude/skills/truncado-pattern/SKILL.md"),
+            super::DirtyPathKind::Work,
+            "frontmatter sem fim não é bloco que se possa ler",
+        );
     }
 
     /// The other side of the same list: in that SAME seeded shape, a real

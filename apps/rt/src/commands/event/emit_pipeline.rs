@@ -2889,20 +2889,32 @@ mod tests {
         // …e uma fechada, que não é uma unidade concorrente.
         active_spec(project, "harness-branch-trabalho-fechada", "Close");
 
-        let suspects = crate::commands::event::base_gate::overlapping_active_specs(
-            project,
-            "o harness ve toda branch de trabalho",
-        );
+        // O intent desta abertura nomeia `harness-enxerga-toda-branch-trabalho`
+        // — outra unidade, sobre o mesmo assunto da que já está aberta.
+        let intent = "o harness enxerga toda branch de trabalho";
+        let suspects =
+            crate::commands::event::base_gate::overlapping_active_specs(project, intent);
         assert_eq!(
             suspects,
             vec!["harness-ve-toda-branch-trabalho".to_string()],
             "só a unidade ativa sobre o mesmo assunto vira suspeita: {suspects:?}",
         );
 
+        // RE-DESPACHO: a unidade que este intent nomeia já existe e está Active
+        // — é o que o `dispatch.md` manda fazer depois de uma recusa do portão.
+        // Ela não é suspeita de si mesma.
+        active_spec(project, "harness-enxerga-toda-branch-trabalho", "Execute");
+        let again = crate::commands::event::base_gate::overlapping_active_specs(project, intent);
+        assert_eq!(
+            again,
+            vec!["harness-ve-toda-branch-trabalho".to_string()],
+            "a própria unidade não pode entrar na lista das suspeitas: {again:?}",
+        );
+
         let line = success_line(
             EVENT_PIPELINE_KIND,
-            "harness-enxerga-branch",
-            Some("feature/harness-enxerga-branch".to_string()),
+            "harness-enxerga-toda-branch-trabalho",
+            Some("feature/harness-enxerga-toda-branch-trabalho".to_string()),
             None,
             None,
             &suspects,

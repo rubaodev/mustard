@@ -2518,6 +2518,55 @@ mod tests {
         // A lista viaja SEPARADA da cobertura: aqui o sujeito é a onda, e AC-1
         // está coberto.
         assert!(uncovered_acs.is_empty(), "{uncovered_acs:?}");
+
+        // ...e a RECUSA que o critério nomeia, medida no COMPOSTO: o marcador
+        // de erro, o leitor único que o `run` mapeia para exit 2, e a transição
+        // PLAN retida. Sem isto, apagar o termo `ERR_UNTRACED_WAVES` de
+        // `refused()` deixaria a suíte inteira verde.
+        //
+        // Fixture própria porque só ela ISOLA a recusa: o critério do pai
+        // precisa vir vermelho para a prova negativa aprovar, senão o relatório
+        // recusaria por dois motivos e a asserção passaria pelo outro.
+        use crate::commands::pipeline::plan_materialize::{
+            materialize, refused, ERR_UNTRACED_WAVES,
+        };
+        let comp = tempdir().unwrap();
+        let project = comp.path();
+        let comp_spec_dir = project.join(".claude").join("spec").join("epic-untraced");
+        std::fs::create_dir_all(&comp_spec_dir).unwrap();
+        std::fs::write(
+            comp_spec_dir.join("spec.md"),
+            "# Epic\n\n## Files\n- `src/a.rs` (create)\n- `src/b.rs` (create)\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
+        )
+        .unwrap();
+        let comp_plan = write_plan(
+            project,
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"], "satisfies": ["AC-1", "AC-2"] },
+                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
+                  "files": ["src/b.rs"] }
+            ]),
+        );
+
+        let report = materialize(project, &comp_spec_dir, &comp_plan);
+        assert_eq!(
+            report["scaffold"]["error"],
+            json!(ERR_UNTRACED_WAVES),
+            "a onda sem régua RECUSA o plano, não avisa: {report}",
+        );
+        assert!(refused(&report), "e a leitura única do relatório diz recusado: {report}");
+        assert_eq!(
+            report["events"],
+            json!([]),
+            "nenhuma transição PLAN sai de um plano recusado: {report}",
+        );
+        // O isolamento, dito em asserção: nada MAIS recusou este relatório.
+        assert_eq!(report["proof"]["ok"], json!(true), "{report}");
+        assert_eq!(report["sharedFiles"]["ok"], json!(true), "{report}");
     }
 
     /// One wave, fully specified — the fixture the claim-support gaps need,
