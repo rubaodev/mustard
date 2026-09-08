@@ -35,7 +35,7 @@
 use crate::commands::review::{ac_negative_check, qa_run};
 use crate::commands::spec::spec_sections::{self, is_heading};
 use mustard_core::io::fs;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use mustard_core::platform::i18n;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -267,6 +267,81 @@ fn ref_resolves(r: &str, spec_dir: &Path, root: &Path, project_roots: &[PathBuf]
     fs::exists(spec_dir.join(r))
         || fs::exists(root.join(r))
         || project_roots.iter().any(|sub| fs::exists(sub.join(r)))
+}
+
+/// Diretórios que a varredura de [`refs_found_elsewhere`] nunca abre: nada que
+/// um `## Files` referencie mora ali, e são justamente os que fazem uma
+/// varredura honesta custar segundos.
+const UNWALKED_DIRS: &[&str] = &[
+    ".git", "node_modules", "target", "dist", "build", ".next", ".venv", "venv",
+    "__pycache__", "obj", "coverage", ".turbo", ".cache",
+];
+
+/// Quantos diretórios a varredura abre antes de desistir. Um teto, não uma
+/// otimização: este validador é WARN e não pode custar mais que o passo que o
+/// chama, então em repositório grande ele responde "não achei" em vez de
+/// procurar para sempre — a mesma resposta que dava antes de existir.
+const MAX_WALKED_DIRS: usize = 4000;
+
+/// Onde, sob `root`, existe um arquivo com o mesmo NOME-BASE de cada referência
+/// que não resolveu — a referência como declarada, mapeada para o caminho de
+/// repositório onde o arquivo está de fato.
+///
+/// O defeito que ela conserta: a mensagem de `missing-file` nomeava UMA causa —
+/// esqueceu de marcar como novo — e o caso de campo era o outro, o caminho
+/// escrito relativo ao subprojeto ou a um pedaço da árvore
+/// (`src/commands/x.rs` quando o arquivo é `apps/rt/src/commands/x.rs`).
+/// Mandar marcar como novo ali é mandar criar uma segunda cópia.
+///
+/// Um candidato cujo caminho TERMINA na referência declarada vence um que só
+/// compartilha o nome: o primeiro é exatamente "o mesmo arquivo sob outro
+/// prefixo", o segundo é um homônimo. Empate fica com o primeiro encontrado.
+///
+/// Determinística: as entradas de cada diretório são ordenadas pelo nome antes
+/// de descer, e a varredura é em LARGURA, então a resposta não depende da ordem
+/// que o sistema de arquivos devolve — a mensagem sai num JSON comparado byte a
+/// byte. Uma passada só para todas as referências, e nada é aberto quando não há
+/// nenhuma.
+fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, String> {
+    if refs.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut best: BTreeMap<String, (u8, String)> = BTreeMap::new();
+    let mut frontier = vec![root.to_path_buf()];
+    let mut walked = 0usize;
+    while !frontier.is_empty() && walked < MAX_WALKED_DIRS {
+        let mut next = Vec::new();
+        for dir in frontier {
+            walked += 1;
+            if walked > MAX_WALKED_DIRS {
+                break;
+            }
+            let Ok(mut entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+            for entry in entries {
+                if entry.is_dir {
+                    if !UNWALKED_DIRS.contains(&entry.file_name.as_str()) {
+                        next.push(entry.path);
+                    }
+                    continue;
+                }
+                for r in refs {
+                    if r.rsplit('/').next().unwrap_or(r) != entry.file_name {
+                        continue;
+                    }
+                    let found = ac_negative_check::repo_relative(root, &entry.path);
+                    let score = u8::from(found.ends_with(&format!("/{r}")) || found == *r) + 1;
+                    if best.get(r).is_none_or(|(previous, _)| *previous < score) {
+                        best.insert(r.clone(), (score, found));
+                    }
+                }
+            }
+        }
+        frontier = next;
+    }
+    best.into_iter().map(|(r, (_, found))| (r, found)).collect()
 }
 
 /// `true` when a bare (un-backticked) token names ONE concrete file: it survives
@@ -535,17 +610,27 @@ pub(crate) fn counts_per_file(command: &str) -> bool {
     })
 }
 
-/// Whether an AC `command` invokes a TEST RUNNER — the subset of the weak-AC
-/// vocabulary that runs a suite: `cargo test|t|nextest`, or
-/// `npm|pnpm|yarn|bun test|t` / `… run test`. A leading `rtk ` wrapper is
-/// transparent; a COMPOUND command (`&&`/`||`/`;`/`|`) is exempt (the author
-/// already chained an assertion). Language-agnostic — it keys off the runner
-/// verb, never the runner's output. Pure, total, never panics.
+/// Whether an AC `command` invokes a TEST RUNNER — one that runs a suite and
+/// reports the suite's own verdict: `cargo test|t|nextest`, `dotnet test`,
+/// `go test`, `npm|pnpm|yarn|bun test|t` / `… run test`, `pytest`/`py.test`,
+/// `vitest`, `jest`. A leading `rtk `, `npx ` or `bunx ` wrapper is transparent;
+/// a COMPOUND command (`&&`/`||`/`;`/`|`) is exempt (the author already chained
+/// an assertion). Language-agnostic — it keys off the runner verb, never the
+/// runner's output. Pure, total, never panics.
 ///
-/// Used by the V6b lint to suggest a declared `Expect:` evidence regex for a
-/// test AC that has none: a green suite proves the tests ran, not that THIS
-/// feature's behaviour holds.
-fn is_test_shaped_command(command: &str) -> bool {
+/// The family is named by ONE fact they share: every one of them exits 0 when
+/// its FILTER selects nothing. So a runner AC can be green for a suite that ran
+/// nothing of this feature's, and red because the `Expect:` regex missed rather
+/// than because the behaviour is absent.
+///
+/// `pub(crate)` because THREE readers ask this about the same criterion and must
+/// never disagree: the V6b lint (a runner AC with no `Expect:` evidence regex),
+/// the V6d lint (a runner AC with no `Control:`), and the negative test itself
+/// ([`ac_negative_check`]), which REFUSES a runner criterion that declares no
+/// control. A second copy is how the drafting warning and the proof-time
+/// refusal would come to name different criteria — the same reason
+/// [`counts_per_file`] is shared with the amendment door.
+pub(crate) fn is_test_runner_command(command: &str) -> bool {
     let cmd = command.trim();
     if cmd.is_empty()
         || cmd.contains("&&")
@@ -555,13 +640,24 @@ fn is_test_shaped_command(command: &str) -> bool {
     {
         return false;
     }
-    let cmd = cmd.strip_prefix("rtk ").map_or(cmd, str::trim_start);
+    // Os invólucros transparentes, em cadeia: `rtk npx vitest …` é um vitest.
+    let mut cmd = cmd;
+    while let Some(rest) = ["rtk ", "npx ", "bunx "]
+        .into_iter()
+        .find_map(|w| cmd.strip_prefix(w))
+        .map(str::trim_start)
+    {
+        cmd = rest;
+    }
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     let Some(&first) = tokens.first() else {
         return false;
     };
     match first {
+        // Runners invoked as a program of their own.
+        "pytest" | "py.test" | "vitest" | "jest" => true,
         "cargo" => matches!(tokens.get(1).copied(), Some("test" | "t" | "nextest")),
+        "dotnet" | "go" => tokens.get(1).copied() == Some("test"),
         "npm" | "pnpm" | "yarn" | "bun" => match tokens.get(1).copied() {
             Some("test" | "t") => true,
             Some("run") => tokens.get(2).copied() == Some("test"),
@@ -746,27 +842,46 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
         .into_iter()
         .map(|p| root.join(p.dir))
         .collect();
-    for r in backtick_file_refs(&files_text) {
-        let line_with_ref = file_lines
-            .iter()
-            .find(|l| l.contains(&format!("`{r}`")))
-            .map_or("", String::as_str);
-        // Localized marker recognition: the drafter writes the create marker
-        // in the spec's narrative locale (`(novo)`/`(criar)` in pt-BR), so the
-        // check goes through the core i18n catalogue — the single origin of
-        // the marker synonyms — instead of the historical EN-only literal
-        // (which flagged every pt-BR net-new file as `missing-file`).
-        let is_create = i18n::line_has_file_marker(line_with_ref, i18n::FileMarker::Create);
-        let resolved = ref_resolves(&r, spec_dir, root, &project_roots);
-        if !is_create && !resolved {
-            let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
-            issues.push(json!({
-                "severity": "WARN",
-                "type": "missing-file",
-                "file": r,
-                "message": format!("File referenced but not found and not marked {accepted}"),
-            }));
-        }
+    let missing: Vec<String> = backtick_file_refs(&files_text)
+        .into_iter()
+        .filter(|r| {
+            let line_with_ref = file_lines
+                .iter()
+                .find(|l| l.contains(&format!("`{r}`")))
+                .map_or("", String::as_str);
+            // Localized marker recognition: the drafter writes the create marker
+            // in the spec's narrative locale (`(novo)`/`(criar)` in pt-BR), so the
+            // check goes through the core i18n catalogue — the single origin of
+            // the marker synonyms — instead of the historical EN-only literal
+            // (which flagged every pt-BR net-new file as `missing-file`).
+            let is_create = i18n::line_has_file_marker(line_with_ref, i18n::FileMarker::Create);
+            !is_create && !ref_resolves(r, spec_dir, root, &project_roots)
+        })
+        .collect();
+    // UMA varredura para todas as referências que não resolveram: a mensagem
+    // antiga nomeava uma causa só — esqueceu de marcar como novo — e o caso de
+    // campo era o outro, o arquivo existindo sob outro prefixo porque o caminho
+    // foi escrito relativo ao subprojeto. Perguntar ao disco custa uma passada e
+    // troca um palpite errado por um endereço.
+    let elsewhere = refs_found_elsewhere(root, &missing);
+    for r in missing {
+        let message = match elsewhere.get(&r) {
+            Some(found) => format!(
+                "File referenced as `{r}` but not found there — a file with that name exists at \
+                 `{found}`. Declare the path relative to the repository root (or to a subproject \
+                 root), so every reader resolves it the same way."
+            ),
+            None => {
+                let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
+                format!("File referenced but not found and not marked {accepted}")
+            }
+        };
+        issues.push(json!({
+            "severity": "WARN",
+            "type": "missing-file",
+            "file": r,
+            "message": message,
+        }));
     }
 
     // Validation 3: task decomposition sane.
@@ -880,7 +995,7 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                 *i != last
                     && item.expect.is_none()
                     && !qa_run::is_skeleton(&item.command)
-                    && is_test_shaped_command(&item.command)
+                    && is_test_runner_command(&item.command)
                     && !weak.contains(&item.id)
             })
             .map(|(_, item)| item.id.clone())
@@ -939,6 +1054,48 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                      output — the criterion stays red whether or not the work is done. Anchor \
                      it after the prefix instead (`:[0-9]+$`).",
                     prefixed.join(", ")
+                ),
+            }));
+        }
+
+        // Validation 6d: a TEST-RUNNER AC that declares no `Control:` command —
+        // o irmão do V6b, e a metade que o `Expect:` não cobre. Todo executor de
+        // teste sai com código 0 quando o FILTRO não casa nada, então o vermelho
+        // que o critério ganha na prova negativa pode ser a seleção vazia (um
+        // nome de teste com erro de digitação, um caminho que não existe) em vez
+        // do comportamento ausente. O `Control:` — um comando que precisa vir
+        // VERDE contra a árvore como ela está — é o que separa os dois, e ele é
+        // cobrado aqui, na redação, onde o conserto custa uma linha.
+        //
+        // Este aviso e a RECUSA do `ac-negative-check` leem o MESMO predicado
+        // ([`is_test_runner_command`]): o critério que o portão vai recusar é
+        // exatamente o que este aviso nomeia, nunca um vizinho parecido.
+        // Excludes the trailing safety AC, `<…>` skeletons, and ids already
+        // flagged weak (a tautology's fix is replacement, not a Control line).
+        let no_control: Vec<String> = ac_items
+            .iter()
+            .enumerate()
+            .filter(|(i, item)| {
+                *i != last
+                    && item.control.is_none()
+                    && !qa_run::is_skeleton(&item.command)
+                    && is_test_runner_command(&item.command)
+                    && !weak.contains(&item.id)
+            })
+            .map(|(_, item)| item.id.clone())
+            .collect();
+        if !no_control.is_empty() {
+            issues.push(json!({
+                "severity": "WARN",
+                "type": "test-ac-no-control",
+                "message": format!(
+                    "Test-runner acceptance criteria with no declared `Control:` command: {}. A \
+                     test runner exits 0 when its filter matches nothing, so a red here can be an \
+                     empty selection instead of the missing behaviour — add a `Control: \
+                     `<command>`` line that comes back GREEN against the tree as it is (the \
+                     unfiltered suite, or the file the new test lands in), so the red is proven \
+                     to be about the behaviour. `ac-negative-check` refuses such a criterion.",
+                    no_control.join(", ")
                 ),
             }));
         }
@@ -1397,6 +1554,103 @@ mod tests {
         assert!(
             !issues2.iter().any(|i| i["type"] == json!("test-ac-no-expect")),
             "a declared Expect line clears the warn: {issues2:?}"
+        );
+    }
+
+    /// V6d: um critério cujo comando é EXECUTOR DE TESTE e não declara
+    /// `Control:` vira `test-ac-no-control` — e declarar o controle limpa o
+    /// aviso.
+    ///
+    /// O vocabulário é o da família inteira, não só o `cargo`: `pytest` sai com
+    /// 0 quando o `-k` não casa nada exatamente como `cargo test` com um filtro
+    /// errado, e é esse fato compartilhado que o aviso nomeia.
+    ///
+    /// Bilateral duas vezes: o critério final (a rede de segurança) nunca é
+    /// nomeado, e o mesmo par comando+critério com um `Control:` declarado sai
+    /// em silêncio — então a asserção não passa por o lint disparar em tudo.
+    #[test]
+    fn test_ac_without_control_warns_and_a_declared_control_clears_it() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n  Expect: `test result: ok`\n\
+                    - **AC-2** — the python case passes.\n  Command: `pytest -k my_new_case`\n  Expect: `1 passed`\n\
+                    - **AC-3** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(dir.path(), &path, body);
+        let warn = issues
+            .iter()
+            .find(|i| i["type"] == json!("test-ac-no-control"))
+            .unwrap_or_else(|| panic!("expected test-ac-no-control WARN: {issues:?}"));
+        assert_eq!(warn["severity"], json!("WARN"));
+        let msg = warn["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("AC-1"), "o executor rust é nomeado: {msg}");
+        assert!(msg.contains("AC-2"), "e o python também — a família toda: {msg}");
+        assert!(!msg.contains("AC-3"), "a rede de segurança final é isenta: {msg}");
+
+        // Com o `Control:` declarado, silêncio.
+        let body2 = "# Spec\n\n## Acceptance Criteria\n\
+                     - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n  Expect: `test result: ok`\n  Control: `cargo test -p mustard-rt`\n\
+                     - **AC-2** — the python case passes.\n  Command: `pytest -k my_new_case`\n  Expect: `1 passed`\n  Control: `pytest --collect-only`\n\
+                     - **AC-3** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body2).unwrap();
+        let issues2 = validate(dir.path(), &path, body2);
+        assert!(
+            !issues2.iter().any(|i| i["type"] == json!("test-ac-no-control")),
+            "um controle declarado limpa o aviso: {issues2:?}"
+        );
+    }
+
+    /// A mensagem de `missing-file` procura o nome-base sob outros prefixos: o
+    /// caminho declarado relativo ao subprojeto (ou a um pedaço da árvore) é o
+    /// caso de campo, e mandar marcar como novo ali é mandar criar uma segunda
+    /// cópia do arquivo que já existe.
+    ///
+    /// Bilateral: um arquivo que não existe em lugar NENHUM continua recebendo a
+    /// mensagem antiga, com os marcadores aceitos — a busca não pode virar uma
+    /// desculpa para todo caminho errado.
+    #[test]
+    fn missing_file_names_the_prefix_where_it_exists() {
+        let dir = tempdir().unwrap();
+        // O arquivo existe, sob um prefixo que a spec não escreveu.
+        let real = dir.path().join("apps").join("rt").join("src");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("list.rs"), "// existing").unwrap();
+
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Files\n- `src/list.rs`\n- `ghost.rs`\n\
+                    ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(dir.path(), &path, body);
+
+        let found = issues
+            .iter()
+            .find(|i| i["type"] == json!("missing-file") && i["file"] == json!("src/list.rs"))
+            .unwrap_or_else(|| panic!("expected the missing-file WARN: {issues:?}"));
+        let msg = found["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("apps/rt/src/list.rs"),
+            "a mensagem diz ONDE o arquivo está: {msg}"
+        );
+        assert!(
+            msg.contains("relative to the repository root"),
+            "e qual é a regra do caminho: {msg}"
+        );
+        assert!(
+            !msg.contains("(novo)"),
+            "e não manda marcar como novo um arquivo que já existe: {msg}"
+        );
+
+        // O outro lado: um arquivo que não existe em prefixo nenhum mantém a
+        // mensagem antiga, com os marcadores aceitos.
+        let ghost = issues
+            .iter()
+            .find(|i| i["type"] == json!("missing-file") && i["file"] == json!("ghost.rs"))
+            .unwrap_or_else(|| panic!("a true miss must still be flagged: {issues:?}"));
+        let ghost_msg = ghost["message"].as_str().unwrap_or_default();
+        assert!(
+            ghost_msg.contains("(create)") && ghost_msg.contains("(novo)"),
+            "sem outro prefixo, a dica de marcador continua: {ghost_msg}"
         );
     }
 

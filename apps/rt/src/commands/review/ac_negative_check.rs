@@ -31,6 +31,17 @@
 //! optional, and refusing its absence would block every spec authored before it
 //! existed.
 //!
+//! With ONE exception, which is where the optional key stops being optional: a
+//! criterion whose command is a TEST RUNNER
+//! ([`super::analyze_validation::is_test_runner_command`]). Every runner in that
+//! family exits 0 when its FILTER selects nothing, so a typo'd test name, a path
+//! that does not exist and a behaviour that is genuinely absent all come back
+//! red — and with an `Expect:` regex in play, the red arrives on exit 0. That is
+//! the one shape where the red is worth nothing without a control, so there the
+//! absence is a REFUSAL rather than a WARN. `analyze_validation` names the same
+//! criteria at drafting time (`test-ac-no-control`), off the same predicate, so
+//! the warning and the refusal can never point at different criteria.
+//!
 //! The control is TAKEN AT PLAN TIME, in the same pass as the red proof, which
 //! is the whole reason it pays: one edit at authoring, rather than a finding
 //! at close about a command nobody could ever run.
@@ -186,6 +197,33 @@ pub(crate) enum Proof {
     NotAttempted,
 }
 
+/// POR QUE o vermelho foi vermelho — a leitura do código de saída que separa as
+/// duas maneiras de o executor chegar em [`Proof::Red`].
+///
+/// A regra do vermelho é `status == fail` e o `status` funde as duas: o comando
+/// terminou mal, ou o comando terminou BEM e a evidência do `Expect:` não
+/// apareceu na saída dele. São dois vermelhos com causas opostas — no primeiro o
+/// comportamento faltou, no segundo o comando rodou inteiro e ninguém sabe se o
+/// que faltou foi o comportamento ou a expressão que o procura. Executor de
+/// teste é onde isso dói: todos eles saem com 0 quando o filtro não casa nada.
+///
+/// Fica no registro, não numa mensagem, porque quem lê depois (o portão de
+/// aprovação, o operador conferindo o acervo) precisa da causa e não da frase.
+/// Ausente quando não houve vermelho — e também quando houve vermelho sem código
+/// de saída registrado, que é o único caso em que a separação não pode ser feita
+/// com honestidade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RedReason {
+    /// The command EXITED 0 and the `Expect:` regex did not match its output.
+    /// The command itself succeeded, so the red is about the evidence — a
+    /// filter that selected nothing looks exactly like this.
+    ExpectMissOnSuccessExit,
+    /// The command itself came back non-zero: the red the criterion's own
+    /// command earned.
+    NonzeroExit,
+}
+
 /// What happened when a criterion's command was run AGAIN, after the work it
 /// describes had landed — the second column of the record.
 ///
@@ -267,9 +305,11 @@ pub(crate) enum Removal {
 pub(crate) enum Control {
     /// The criterion declares NO `Control:` command, so nothing was asked. The
     /// default, so every ledger written before this column existed reads as the
-    /// truth about it. Reported as a WARN naming the id — never as a refusal:
-    /// the key is optional, and refusing its absence would block every spec
-    /// authored before it existed.
+    /// truth about it. Reported as a WARN naming the id: the key is optional,
+    /// and refusing its absence would block every spec authored before it
+    /// existed. The ONE exception is a command that is a TEST RUNNER, where the
+    /// absence refuses — see [`control_required`], which is where that rule and
+    /// its reason live.
     #[default]
     NotDeclared,
     /// TAKEN — the control ran and came back GREEN, so the criterion's
@@ -339,6 +379,15 @@ pub(crate) struct AcProof {
     /// The command's own exit code in the RED pass, when one arrived.
     #[serde(default)]
     pub(crate) exit: Option<i64>,
+    /// WHY the red was red, read off [`AcProof::exit`] in the RED pass — see
+    /// [`RedReason`]. Absent when there was no red (and when a red arrived with
+    /// no exit code, where the two causes cannot be told apart).
+    ///
+    /// `skip_serializing_if` so a ledger with nothing to say here stays byte-
+    /// identical to the one written before this column existed — the file is
+    /// committed, and a diff full of `null`s is a diff nobody reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) red_reason: Option<RedReason>,
     /// The command's own exit code in the CONFIRMATION pass. Kept apart from
     /// [`AcProof::exit`] so confirming a criterion never overwrites the record
     /// of what it did before its work existed.
@@ -488,9 +537,13 @@ pub(crate) struct NegativeCheckReport {
     /// match something against the tree as it is.
     pub(crate) controlled: usize,
     /// Every non-exempt criterion that declares NO `Control:` command, by id.
-    /// A WARN, never a refusal: the key is optional and its absence is an
-    /// authoring gap, not a finding about the criterion. Named rather than
-    /// counted, because the one action that clears it is per-criterion.
+    /// A WARN for all but one shape: the key is optional and its absence is an
+    /// authoring gap, not a finding about the criterion. The exception is a
+    /// criterion whose command is a TEST RUNNER, which is REFUSED
+    /// ([`control_required`]) and appears here too — the list names who has no
+    /// control, and the criterion's own `verdict` says what that cost it. Named
+    /// rather than counted, because the one action that clears it is
+    /// per-criterion.
     pub(crate) control_missing: Vec<String>,
     /// How many carry a GREEN confirmation — the second half of the proof.
     pub(crate) confirmed: usize,
@@ -594,6 +647,18 @@ const REASON_CONTROL_NO_VERDICT: &str = "the CONTROL was TAKEN but the command w
 const REASON_CONTROL_NOT_ATTEMPTED: &str = "the CONTROL was NEVER TAKEN: its command could not be \
      attempted at all (an unfilled `<…>` marker, or a program the shell could not find) — make \
      the control runnable, then take the proof";
+
+/// The reason a TEST-RUNNER criterion that declares NO `Control:` is refused.
+/// The one shape where the absent key stops being a WARN: a runner exits 0 when
+/// its filter selects nothing, so this criterion's red says nothing until
+/// something shows the filter can select at all. It names the action that clears
+/// it, and what a control for a test looks like.
+const REASON_CONTROL_REQUIRED: &str = "the CONTROL was NEVER DECLARED and this criterion's command \
+     is a TEST RUNNER, which exits 0 when its filter selects nothing — so its red can be an empty \
+     selection (a mistyped test name, a path that is not there) rather than the missing behaviour. \
+     Declare a `Control:` command that comes back GREEN against the tree as it is — the suite \
+     without the new filter, or a command naming the file the new test lands in — then take the \
+     proof";
 
 /// The reason a criterion that is STILL red after its work landed is unproven.
 /// It names the opposite action to [`REASON_GREEN`]: finish the work, do not
@@ -704,6 +769,24 @@ const REASON_NOTHING_TO_CONFIRM: &str = "there is no RED proof to confirm for th
 /// the trailing one.
 pub(crate) fn is_exempt(index: usize, total: usize) -> bool {
     total > 0 && index + 1 == total
+}
+
+/// `true` when this criterion OWES a `Control:` and declares none — the one
+/// shape where the optional key is not optional.
+///
+/// The rule, in one sentence: a TEST RUNNER exits 0 when its filter selects
+/// nothing, so a criterion built on one has a red that says nothing until a
+/// control shows the filter can select at all. Every other command keeps the
+/// historical WARN, because refusing them would block every spec authored before
+/// the key existed.
+///
+/// The runner question is asked of the SHARED predicate
+/// ([`super::analyze_validation::is_test_runner_command`]), which is also what
+/// the `test-ac-no-control` lint asks at drafting time — the criterion this gate
+/// refuses is exactly the one the warning named. Pure, total.
+fn control_required(command: &str, control: Option<&str>) -> bool {
+    let declared = control.map(str::trim).is_some_and(|c| !c.is_empty());
+    !declared && super::analyze_validation::is_test_runner_command(command)
 }
 
 /// Classify ONE control run from the executor's status.
@@ -910,6 +993,7 @@ pub(crate) fn prove_one(
         control_exit: None,
         confirmation: Confirmation::NotTaken,
         exit: None,
+        red_reason: None,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -926,7 +1010,7 @@ pub(crate) fn prove_one(
     // The CONTROL comes FIRST, and a criterion that fails it never reaches the
     // red pass: its red was going to arrive either way, and reading it as a
     // proof is precisely the vacuous stamp this key exists to refuse.
-    let (control_column, control_exit, control_reason) = take_control(root, control);
+    let (control_column, control_exit, control_reason) = take_control(root, command, control);
     if let Some(reason) = control_reason {
         let mut record = base(Verdict::Unproven, Proof::NotAttempted, reason);
         record.control = control_column;
@@ -951,6 +1035,15 @@ pub(crate) fn prove_one(
         return record;
     }
     let (verdict, proof, reason) = classify(result.status());
+    // A causa do vermelho, lida do código de saída que o executor já devolveu:
+    // sair 0 e não casar o `Expect:` é o vermelho da EVIDÊNCIA, sair diferente
+    // de 0 é o vermelho do COMANDO. Um vermelho sem código de saída não permite
+    // separar os dois, e inventar um deles ali seria pior que não dizer nada.
+    let red_reason = match (proof, result.exit()) {
+        (Proof::Red, Some(0)) => Some(RedReason::ExpectMissOnSuccessExit),
+        (Proof::Red, Some(_)) => Some(RedReason::NonzeroExit),
+        _ => None,
+    };
     AcProof {
         id: id.to_string(),
         command: command.to_string(),
@@ -962,6 +1055,7 @@ pub(crate) fn prove_one(
         control_exit,
         confirmation: Confirmation::NotTaken,
         exit: result.exit(),
+        red_reason,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -977,12 +1071,26 @@ pub(crate) fn prove_one(
 ///
 /// A criterion that declares NO control returns [`Control::NotDeclared`] and no
 /// reason: the key is optional, its absence is a WARN the report names by id,
-/// and refusing on it would block every spec authored before the key existed.
+/// and refusing on it would block every spec authored before the key existed —
+/// UNLESS `command` is a test runner, where the absence is the refusal
+/// [`control_required`] states.
 ///
 /// A control still carrying an unfilled `<…>` marker is NOT run — the same rule
 /// [`prove_one`] applies to the command itself, through the same predicate.
-fn take_control(root: &Path, control: Option<&str>) -> (Control, Option<i64>, Option<&'static str>) {
+///
+/// `command` is a parameter (rather than the control alone) precisely so the
+/// runner rule lives HERE, in the one function every pass asks about the
+/// control: [`prove_one`] on a first proof and [`recontrol`] on a recorded one.
+/// Spelling it at the call sites is how one of them would forget it.
+fn take_control(
+    root: &Path,
+    command: &str,
+    control: Option<&str>,
+) -> (Control, Option<i64>, Option<&'static str>) {
     let Some(control) = control.map(str::trim).filter(|c| !c.is_empty()) else {
+        if control_required(command, control) {
+            return (Control::NotDeclared, None, Some(REASON_CONTROL_REQUIRED));
+        }
         return (Control::NotDeclared, None, None);
     };
     if qa_run::is_skeleton(control) {
@@ -1015,7 +1123,7 @@ fn take_control(root: &Path, control: Option<&str>) -> (Control, Option<i64>, Op
 /// Unproven — the red it earned stays in the record, it just stops clearing the
 /// criterion on its own, exactly as a red confirmation does one pass later.
 fn recontrol(root: &Path, previous: &AcProof, control: Option<&str>) -> AcProof {
-    let (column, exit, reason) = take_control(root, control);
+    let (column, exit, reason) = take_control(root, &previous.command, control);
     let refused = reason.is_some();
     AcProof {
         control_command: control.map(str::to_string),
@@ -1064,6 +1172,7 @@ pub(crate) fn confirm_one(
         control_exit: None,
         confirmation: Confirmation::NotTaken,
         exit: None,
+        red_reason: None,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -1168,6 +1277,7 @@ pub(crate) fn remove_one(
         control_exit: None,
         confirmation: Confirmation::NotTaken,
         exit: None,
+        red_reason: None,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -1355,8 +1465,14 @@ fn run_pass(
         // coisa de antes — no primeiro caso um controle verde ao lado do motivo
         // do controle vermelho. Medido neste repositório em 07/09/2026. Sem cor,
         // o critério volta pela prova inteira.
+        // A exigência de controle é a outra metade que um registro guardado não
+        // resolve: ela não depende de rodar nada, só do par comando+controle que
+        // a spec carrega HOJE. Um registro tirado antes de a exigência existir
+        // ficaria proven para sempre, e a régua nova não valeria para o acervo.
         if let Some(kept) = recorded.filter(|p| matches!(p.proof, Proof::Red | Proof::Green)) {
-            if kept.control_command.as_deref() == control {
+            if kept.control_command.as_deref() == control
+                && !control_required(&item.command, control)
+            {
                 criteria.push(kept.clone());
             } else {
                 criteria.push(recontrol(root, kept, control));
@@ -1710,6 +1826,7 @@ mod tests {
                 control_exit: None,
                 confirmation: Confirmation::NotTaken,
                 exit: Some(1),
+                red_reason: Some(RedReason::NonzeroExit),
                 confirmation_exit: None,
                 removal: Removal::NotTaken,
                 removal_exit: None,
@@ -1938,6 +2055,165 @@ mod tests {
             e.proof,
             Proof::Red,
             "while the red proof the earlier pass paid for is untouched",
+        );
+    }
+
+    /// Um critério cujo comando é EXECUTOR DE TESTE e não declara `Control:` é
+    /// UNPROVEN, não um WARN — a exceção que tira o "opcional" da chave.
+    ///
+    /// A razão é a que o `Control:` existe para resolver, no único formato em
+    /// que ela é garantida: todo executor de teste sai com 0 quando o filtro não
+    /// casa nada, então o vermelho pode ser a seleção vazia. Sem controle, esse
+    /// vermelho não diz nada, e carimbá-lo `proven` é o carimbo vazio.
+    ///
+    /// Três lados, para nenhum passar de graça:
+    ///
+    /// 1. **Executor de teste sem controle ⇒ recusa**, e NADA é executado: o
+    ///    comando nem é lançado, então a recusa não pode ser o eco de um
+    ///    `pytest` ausente na máquina.
+    /// 2. **Comando NÃO-teste sem controle ⇒ WARN, como sempre**, com o veredito
+    ///    intacto — a recusa acima não é o motor recusando tudo.
+    /// 3. **Um registro guardado não salva o critério**: uma prova vermelha
+    ///    tirada antes de a exigência existir volta a ser julgada, porque a
+    ///    exigência é sobre o par comando+controle de hoje e não sobre o que
+    ///    rodou ontem.
+    #[test]
+    fn test_runner_ac_without_control_is_unproven() {
+        let dir = tempdir().unwrap();
+        // `pytest` é executor de teste pelo VERBO; se a recusa falhasse, o
+        // comando ainda assim não rodaria nada caro nesta máquina.
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — the new case passes.\n  Command: `pytest -k some_new_case`\n\
+             - **AC-2** — the behaviour holds.\n  Command: `{RED_COMMAND}`\n\
+             - **AC-3** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        let spec_dir = seed(dir.path(), "runner-no-control", &body);
+        let report = check(dir.path(), "runner-no-control");
+
+        // --- 1. O executor de teste sem controle é recusado -----------------
+        let refused = entry(&report, "AC-1");
+        assert_eq!(refused.verdict, Verdict::Unproven, "reason: {:?}", refused.reason);
+        assert_eq!(refused.control, Control::NotDeclared);
+        assert_eq!(
+            refused.proof,
+            Proof::NotAttempted,
+            "o comando não é nem lançado — o vermelho dele não seria legível",
+        );
+        assert_eq!(refused.exit, None, "nada rodou, então não há código de saída");
+        let reason = refused.reason.clone().unwrap_or_default();
+        assert!(reason.contains("TEST RUNNER"), "a razão nomeia a forma: {reason}");
+        assert!(reason.contains("`Control:`"), "e a ação que a limpa: {reason}");
+        assert!(!report.ok, "e a recusa retém o plano");
+
+        // --- 2. O comando NÃO-teste sem controle segue WARN -----------------
+        let warned = entry(&report, "AC-2");
+        assert_eq!(
+            warned.verdict,
+            Verdict::Proven,
+            "a ausência de controle em comando não-teste nunca recusou: {:?}",
+            warned.reason,
+        );
+        assert_eq!(warned.proof, Proof::Red);
+        assert!(
+            report.control_missing.contains(&"AC-1".to_string())
+                && report.control_missing.contains(&"AC-2".to_string()),
+            "os dois continuam na lista de avisos: {:?}",
+            report.control_missing,
+        );
+
+        // --- 3. Um registro anterior não compra a isenção -------------------
+        let seeded = AcProofLedger {
+            spec: "runner-no-control".to_string(),
+            criteria: vec![AcProof {
+                id: "AC-1".to_string(),
+                command: "pytest -k some_new_case".to_string(),
+                expect: None,
+                control_command: None,
+                verdict: Verdict::Proven,
+                proof: Proof::Red,
+                control: Control::NotDeclared,
+                control_exit: None,
+                confirmation: Confirmation::NotTaken,
+                exit: Some(1),
+                red_reason: Some(RedReason::NonzeroExit),
+                confirmation_exit: None,
+                removal: Removal::NotTaken,
+                removal_exit: None,
+                reason: None,
+                stderr_excerpt: String::new(),
+                proof_tree: None,
+            }],
+            amendments: Vec::new(),
+            additions: Vec::new(),
+        };
+        std::fs::write(
+            spec_dir.join(AC_PROOF_JSON),
+            serde_json::to_string_pretty(&seeded).unwrap(),
+        )
+        .unwrap();
+        let rechecked = check(dir.path(), "runner-no-control");
+        let e = entry(&rechecked, "AC-1");
+        assert_eq!(
+            e.verdict,
+            Verdict::Unproven,
+            "a prova guardada não isenta a exigência de hoje: {:?}",
+            e.reason,
+        );
+        assert_eq!(e.proof, Proof::Red, "e o vermelho já pago fica no registro");
+    }
+
+    /// O registro diz POR QUE o vermelho foi vermelho: sair 0 com o `Expect:`
+    /// sem casar é o vermelho da EVIDÊNCIA, sair diferente de 0 é o vermelho do
+    /// COMANDO.
+    ///
+    /// Os dois entram no ledger como `proven: red` e pediam leituras opostas sem
+    /// que o arquivo dissesse qual era qual — e o primeiro é exatamente o que um
+    /// filtro vazio produz. Bilateral: as duas causas aparecem no mesmo relatório
+    /// com valores diferentes, então a asserção não passa por o campo ter um
+    /// valor fixo.
+    #[test]
+    fn proof_records_why_the_red_was_red() {
+        let dir = tempdir().unwrap();
+        // AC-2 roda um comando que SAI 0 e cuja saída não carrega a evidência.
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — the command itself fails.\n  Command: `{RED_COMMAND}`\n\
+             - **AC-2** — the evidence is missing.\n  Command: `{GREEN_COMMAND}`\n  \
+             Expect: `mustard-no-such-evidence-9f3c`\n\
+             - **AC-3** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        let spec_dir = seed(dir.path(), "why-red", &body);
+        let report = check(dir.path(), "why-red");
+
+        let nonzero = entry(&report, "AC-1");
+        assert_eq!(nonzero.proof, Proof::Red, "precondição: {:?}", nonzero.reason);
+        assert_eq!(nonzero.red_reason, Some(RedReason::NonzeroExit));
+        assert_ne!(nonzero.exit, Some(0), "o comando realmente falhou");
+
+        let expect_miss = entry(&report, "AC-2");
+        assert_eq!(expect_miss.proof, Proof::Red, "um Expect que não casa é vermelho");
+        assert_eq!(expect_miss.exit, Some(0), "mas o comando saiu 0");
+        assert_eq!(
+            expect_miss.red_reason,
+            Some(RedReason::ExpectMissOnSuccessExit),
+            "e o registro separa as duas causas",
+        );
+
+        // O critério isento não tem vermelho nenhum, e o campo não inventa um.
+        assert_eq!(entry(&report, "AC-3").red_reason, None);
+
+        // No arquivo: a grafia que um leitor de fora lê, e nenhuma chave para
+        // quem não tem o que dizer.
+        let body = std::fs::read_to_string(spec_dir.join(AC_PROOF_JSON)).unwrap();
+        assert!(
+            body.contains("\"expect-miss-on-success-exit\"") && body.contains("\"nonzero-exit\""),
+            "as duas causas, por extenso, no ledger: {body}"
+        );
+        let ledger: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            ledger["criteria"][2].get("red_reason").is_none(),
+            "sem vermelho, sem campo: {body}"
         );
     }
 
