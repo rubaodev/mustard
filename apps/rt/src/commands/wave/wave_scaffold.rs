@@ -1087,6 +1087,41 @@ fn frozen_plan_warn() -> String {
     )
 }
 
+/// Os números que FALTAM na numeração das ondas de um plano, em ordem.
+///
+/// A contagem que vai para o sidecar é `plan.waves.len()`, mas cada diretório é
+/// nomeado pelo `n` que a onda declara — então um plano com as ondas 1, 2 e 4
+/// materializa três diretórios e uma tabela que pula o 3, e nada em lugar nenhum
+/// nota o buraco. Aqui ele vira um WARN nominal.
+///
+/// Deliberadamente NÃO renumera: `wave-advance` ordena por nível e é indiferente
+/// ao número, e reescrever o `n` do autor mudaria os nomes de diretório debaixo
+/// de um plano que talvez já esteja citado em prosa. O buraco quase sempre é uma
+/// onda removida à mão — o aviso é para o autor decidir.
+///
+/// A faixa examinada é `1..=maior n declarado`, então uma numeração que começa
+/// em 2 acusa o 1 que falta. Um `n` repetido não é buraco e não aparece aqui.
+fn numbering_gaps(plan: &Plan) -> Vec<u32> {
+    let declared: BTreeSet<u32> = plan.waves.iter().map(|w| w.n).collect();
+    let Some(&highest) = declared.iter().next_back() else {
+        return Vec::new();
+    };
+    (1..=highest).filter(|n| !declared.contains(n)).collect()
+}
+
+/// A prosa do WARN de numeração — composta aqui (e não inline no `eprintln!`)
+/// pelo mesmo motivo de [`frozen_plan_warn`]: para o texto ser assertável.
+fn numbering_gap_warn(gaps: &[u32]) -> String {
+    let missing: Vec<String> = gaps.iter().map(u32::to_string).collect();
+    format!(
+        "[wave-scaffold] WARN: plan wave numbering has a hole — no wave {}. Each directory is \
+         named by the `n` its wave declares, so the layout on disk skips the same number; \
+         re-number the waves in plan.json, or leave the hole deliberately (wave-advance orders \
+         by dependency level and never reads the number).",
+        missing.join(", "),
+    )
+}
+
 /// The minimal valid plan appended to BOTH unreadable-plan messages, plus the
 /// pointer to the authoritative schema. stderr only — the `plan-materialize`
 /// stdout keeps its stable `error: "plan unreadable"` marker.
@@ -1191,6 +1226,13 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
                  using {actual}",
             );
         }
+    }
+    // Sibling signal, same severity and same reason to exist: the count and the
+    // per-wave `n` are two different numbers, and only the count was ever
+    // cross-checked. A hole in the numbering is an operator edit nobody notices.
+    let gaps = numbering_gaps(&plan);
+    if !gaps.is_empty() {
+        eprintln!("{}", numbering_gap_warn(&gaps));
     }
 
     let parent_name = spec_dir
@@ -2210,6 +2252,40 @@ mod tests {
     fn claim_plan(waves: Vec<WavePlanEntry>) -> Plan {
         let total = waves.len() as u32;
         Plan { waves, total_waves: Some(total), lang: None }
+    }
+
+    /// AC-5 — um buraco na numeração das ondas vira aviso NOMINAL: o WARN diz
+    /// quais números faltam.
+    ///
+    /// A contagem gravada no sidecar é `plan.waves.len()` e cada diretório é
+    /// nomeado pelo `n` declarado; as duas coisas nunca foram confrontadas, então
+    /// um plano de ondas 1, 2 e 4 materializava três diretórios com um 3 ausente
+    /// que ninguém via. Bilateral: uma numeração contígua não acusa nada, logo a
+    /// asserção não pode passar por o aviso disparar sempre.
+    #[test]
+    fn scaffold_avisa_numeracao_com_buraco() {
+        let holed = claim_plan(vec![
+            claim_wave(1, "rt", vec!["a"], vec!["src/a.rs"], vec![]),
+            claim_wave(2, "rt", vec!["b"], vec!["src/b.rs"], vec![]),
+            claim_wave(4, "rt", vec!["d"], vec!["src/d.rs"], vec![]),
+        ]);
+        assert_eq!(numbering_gaps(&holed), vec![3], "the missing number is named");
+        let warn = numbering_gap_warn(&numbering_gaps(&holed));
+        assert!(warn.contains("no wave 3"), "the WARN must name the number: {warn}");
+
+        // Uma numeração que começa em 2 também tem buraco — o 1 que falta.
+        let offset = claim_plan(vec![
+            claim_wave(2, "rt", vec!["b"], vec!["src/b.rs"], vec![]),
+            claim_wave(3, "rt", vec!["c"], vec!["src/c.rs"], vec![]),
+        ]);
+        assert_eq!(numbering_gaps(&offset), vec![1]);
+
+        // O outro lado: contígua é silêncio.
+        let contiguous = claim_plan(vec![
+            claim_wave(1, "rt", vec!["a"], vec!["src/a.rs"], vec![]),
+            claim_wave(2, "rt", vec!["b"], vec!["src/b.rs"], vec![]),
+        ]);
+        assert!(numbering_gaps(&contiguous).is_empty(), "a contiguous plan is silent");
     }
 
     /// AC-1 — a claim the plan's own contents refute: the wave says it covers

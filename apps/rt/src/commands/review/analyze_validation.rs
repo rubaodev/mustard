@@ -606,6 +606,93 @@ fn proven_criteria(spec_dir: &Path, items: &[qa_run::AcItem]) -> BTreeSet<String
         .collect()
 }
 
+/// As seções da spec-mãe que VIAJAM para o prompt de uma onda — o canal de
+/// conversa que `spec-draft --material` escreve, cortado por
+/// [`crate::commands::agent::render::sections`]. Nada mais é colado, e o
+/// template despachado não manda o agente ler a spec-mãe em passo nenhum.
+const MATERIAL_SECTION_KEYS: &[&str] = &["definitions", "decisions", "evidence"];
+
+/// Whether `line` names a wave by its NUMBER — `onda 1`, `wave 2`, `ondas 3 e 4`.
+///
+/// Exige ao menos um espaço entre a palavra e o dígito, e que a palavra comece
+/// palavra: `wave-1-rt` e `wave-plan.md` são caminhos, não prescrição, e a
+/// coluna `| Wave |` de uma tabela é cabeçalho. Sem regex — o crate não carrega
+/// uma para uso genérico (só o matcher `Expect:` do `qa-run` a usa).
+fn names_a_wave_by_number(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    for word in ["ondas", "onda", "waves", "wave"] {
+        let mut from = 0usize;
+        while let Some(rel) = lower[from..].find(word) {
+            let at = from + rel;
+            from = at + word.len();
+            // Fronteira à esquerda: a palavra não pode ser o fim de outra maior.
+            if lower[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                continue;
+            }
+            let after = &lower[from..];
+            let trimmed = after.trim_start_matches([' ', '\t']);
+            if trimmed.len() == after.len() {
+                continue;
+            }
+            if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Os títulos das seções que atribuem trabalho a uma onda PELO NÚMERO e não
+/// viajam para prompt nenhum — a prescrição nominal inalcançável, em ordem do
+/// documento e sem repetir.
+///
+/// O lint NÃO tenta adivinhar se alguma tarefa cobre a prescrição: casar prosa
+/// com tarefa é julgamento e daria um aviso ruidoso. Ele checa o que é
+/// determinístico e foi o defeito medido em campo — o texto estava sob um título
+/// não-canônico, e só as três seções de material viajam.
+///
+/// Blocos cercados por ``` são pulados (um exemplo de plano não é prescrição), e
+/// só um H2 delimita seção: o `### {Role} Agent` é um bloco DENTRO dela.
+fn unreachable_wave_prescriptions(content: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut section: Option<String> = None;
+    let mut travels = false;
+    let mut fenced = false;
+    for line in content.split('\n') {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if line.starts_with("##") && !line.starts_with("###") {
+            let title = line.trim_start_matches('#').trim();
+            if title.is_empty() {
+                continue;
+            }
+            travels = MATERIAL_SECTION_KEYS.iter().any(|key| is_heading(line, key));
+            section = Some(format!("## {title}"));
+            continue;
+        }
+        if travels {
+            continue;
+        }
+        // Antes do primeiro H2 há só o título e o frontmatter da spec.
+        let Some(name) = section.as_ref() else {
+            continue;
+        };
+        if names_a_wave_by_number(line) && !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
 /// Run the validation against an explicit project `root`. Returns the issues
 /// list.
 ///
@@ -905,6 +992,30 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
         }));
     }
 
+    // Validation 9: PRESCRIÇÃO NOMINAL inalcançável. Prosa que atribui trabalho a
+    // uma onda pelo número — "a onda 1 mede os três candidatos e escolhe" — numa
+    // seção que não viaja para prompt nenhum. Só `definitions`, `decisions` e
+    // `evidence` são coladas no prompt da onda, e apenas sob título canônico; o
+    // template despachado não manda ler a spec-mãe em passo nenhum. A prescrição
+    // não foi lida e ignorada: não foi entregue. Medido em campo — o trabalho que
+    // a spec-mãe reservava ao operador sumiu da decomposição.
+    let unreachable = unreachable_wave_prescriptions(content);
+    if !unreachable.is_empty() {
+        issues.push(json!({
+            "severity": "WARN",
+            "type": "wave-prescription-unreachable",
+            "message": format!(
+                "Prose assigning work to a wave BY ITS NUMBER sits where no wave prompt can \
+                 reach it: {}. Only `## Definitions`, `## Decisions` and `## Evidence` travel \
+                 into a dispatched wave's prompt, and the prompt never tells the agent to read \
+                 the parent spec — so the prescription is not ignored, it is undelivered. Move \
+                 it under `## Decisions` (with its reason), or fold it into that wave's own \
+                 `tasks` in the plan JSON.",
+                unreachable.join(", ")
+            ),
+        }));
+    }
+
     issues
 }
 
@@ -990,6 +1101,65 @@ mod tests {
             !issues.iter().any(|i| i["type"] == "weak-ac"),
             "a MEASURED criterion is not a rubber stamp: {issues:?}",
         );
+    }
+
+    /// AC-4 — prosa que atribui trabalho a uma onda pelo número, sob um título
+    /// que não viaja, vira `wave-prescription-unreachable` — e o aviso diz para
+    /// onde mover o texto.
+    ///
+    /// Bilateral: a MESMA frase sob `## Decisions` viaja para o prompt da onda e
+    /// não acusa nada, então a asserção não pode passar por o lint disparar em
+    /// toda menção a onda.
+    #[test]
+    fn lint_prescricao_nominal_inalcancavel() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        // `## Decisão em aberto` NÃO é variante canônica de `decisions` — este é
+        // exatamente o título não-canônico medido em campo.
+        let body = "# Spec\n\n## Decisão em aberto\n\n\
+                    A onda 1 mede os três candidatos e escolhe.\n\n\
+                    ## Files\n- `a.rs` (create)\n\n### Backend Agent\n- [ ] t1\n- [ ] t2\n\n\
+                    ## Acceptance Criteria\n\
+                    - **AC-1** — when a.rs runs, then it returns ok.\n  Command: `curl -sf localhost`\n\
+                    - **AC-2** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(dir.path(), &path, body);
+        let found = issues
+            .iter()
+            .find(|i| i["type"] == "wave-prescription-unreachable")
+            .expect("a nominal prescription under a non-canonical heading must be flagged");
+        let message = found["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("## Decisão em aberto"),
+            "the WARN must name the section it found: {message}"
+        );
+        assert!(
+            message.contains("`## Decisions`"),
+            "the WARN must say where to move the text: {message}"
+        );
+
+        // O outro lado: sob o título canônico, a mesma frase viaja — silêncio.
+        let moved = body.replace("## Decisão em aberto", "## Decisions");
+        std::fs::write(&path, &moved).unwrap();
+        let issues = validate(dir.path(), &path, &moved);
+        assert!(
+            !issues.iter().any(|i| i["type"] == "wave-prescription-unreachable"),
+            "a prescription that DOES travel is not a finding: {issues:?}"
+        );
+    }
+
+    /// A referência a uma onda que é CAMINHO, não prescrição, nunca é flagrada —
+    /// o diretório `wave-1-rt`, o arquivo `wave-plan.md`, a coluna `| Wave |`.
+    #[test]
+    fn a_wave_path_is_not_a_prescription() {
+        assert!(!names_a_wave_by_number("- `wave-1-rt/spec.md`"));
+        assert!(!names_a_wave_by_number("- `.claude/spec/x/wave-plan.md`"));
+        assert!(!names_a_wave_by_number("| Wave | Role | Depende de |"));
+        assert!(!names_a_wave_by_number("quatro ondas dividiram três arquivos"));
+        // E a prescrição, nas duas línguas.
+        assert!(names_a_wave_by_number("a onda 1 mede os três candidatos e escolhe"));
+        assert!(names_a_wave_by_number("as ondas 2 e 3 saem juntas"));
+        assert!(names_a_wave_by_number("wave 2 owns the migration"));
     }
 
     /// `looks_like_file_path` names ONE concrete file, so a glob — which names a
