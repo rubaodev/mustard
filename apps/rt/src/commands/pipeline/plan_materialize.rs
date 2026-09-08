@@ -15,7 +15,7 @@
 //!    [`crate::commands::wave::wave_dependency::validate_plan_dag`] over the
 //!    plan's file union (WARN-level). Folded in so the check runs every time,
 //!    not only when the orchestrator relays a separate `wave-dependency` call.
-//! 3b. `wave-dependency`'s SAME-LEVEL FILE COLLISION check —
+//! 4. `wave-dependency`'s SAME-LEVEL FILE COLLISION check —
 //!    [`crate::commands::wave::wave_dependency::plan_file_collisions`] over the
 //!    plan's declared per-wave censuses. BLOCKING, unlike 3: two waves that share
 //!    a dispatch level have no edge between them and go out together, so a file
@@ -25,16 +25,16 @@
 //!    construction (same level IS parallel dispatch), and the advisory reading of
 //!    the same fact (`wave-overlap-check`, at the approval gate) was measured
 //!    insufficient in the field.
-//! 4. `ac-negative-check`'s NEGATIVE TEST —
+//! 5. `ac-negative-check`'s NEGATIVE TEST —
 //!    [`crate::commands::review::ac_negative_check::check`] over the parent
 //!    `spec.md`'s own acceptance criteria. BLOCKING, unlike 2 and 3: a
 //!    criterion that was not proven ABLE to fail withholds the PLAN transition
 //!    and exits 2, exactly like the uncovered-criteria coverage gate below —
 //!    and, like it, with NO env knob.
-//! 5. `emit-pipeline --kind pipeline.scope` — the typed
+//! 6. `emit-pipeline --kind pipeline.scope` — the typed
 //!    [`PipelineScopePayload`] with `scope: "full"` (this composite exists for
 //!    the Full/wave-plan flow) + the scaffolded wave count.
-//! 6. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
+//! 7. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
 //!    (idempotent on the spec's last phase).
 //!
 //! Pressupposes `spec.md` + `meta.json` already materialised by `spec-draft`.
