@@ -84,9 +84,9 @@ use reference::build_reference_files;
 use retry::compose_retry_context;
 use role::{build_role_block, patterns_task_block};
 use sections::{
-    build_conversation_material, collapse_empty_sections, filter_task_lines, read_guards_block,
-    read_reality_obligations, read_spec_lang, scan_unfilled, strip_unfilled_template_tokens,
-    MaterialCensus,
+    build_conversation_material, build_why_block, collapse_empty_sections, filter_task_lines,
+    read_guards_block, read_reality_obligations, read_spec_lang, read_wave_acceptance,
+    scan_unfilled, strip_unfilled_template_tokens, MaterialCensus,
 };
 use skills::build_skills_list;
 
@@ -121,6 +121,8 @@ pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
     "{cross_wave_memory}",
     "{reference_files}",
     "{skills_list}",
+    "{why_block}",
+    "{acceptance_block}",
     "{retry_context}",
 ];
 
@@ -522,6 +524,20 @@ pub(crate) fn render_prompt_with_census(
     // happened to write. Empty for a wave that declares none (heading collapses)
     // and for spec-less renders, which have no wave spec to read.
     let reality_obligations = read_reality_obligations(&op_spec_path);
+    // The RULER this wave is measured by — the criteria its own `spec.md`
+    // declares, verbatim, `Command:` and all. The wave scaffold materialises the
+    // subset each wave satisfies; this reads that section back, exactly as
+    // `{task_steps}` reads back `## Tasks`. Empty for a spec that declares none
+    // (heading collapses), which is the same silence the prompt had before.
+    let acceptance_block = read_wave_acceptance(&op_spec_path);
+    // WHY the work exists, and the ground the unit deliberately does not cover —
+    // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
+    // (never the wave, which carries neither) through the same path already open
+    // for the material cut below, so it costs one more read of a file this
+    // function already resolves. Spec-less renders have no parent and carry none.
+    let why_block = spec
+        .map(|_| build_why_block(&spec_dir.join("spec.md")))
+        .unwrap_or_default();
     // What the CONVERSATION established, carried in by `spec-draft --material`
     // and living ONCE in the PARENT spec (`## Definitions` / `## Decisions` /
     // `## Evidence`). A per-wave copy would drift, so the cut happens HERE:
@@ -665,6 +681,8 @@ pub(crate) fn render_prompt_with_census(
         &cross_wave_memory,
         &reference_files,
         &skills_list,
+        &why_block,
+        &acceptance_block,
         &retry_context,
     ];
     for (key, value) in TEMPLATE_PLACEHOLDERS.iter().zip(values.iter()) {
@@ -672,10 +690,11 @@ pub(crate) fn render_prompt_with_census(
     }
 
     // ---- Drop headings whose fail-open body resolved to empty. ----
-    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## CONVERSATION
-    // MATERIAL`, `## CROSS-WAVE MEMORY` and `## PRIOR WAVE DIFF` all degrade to
-    // "" on the spec-less / wave-1 / no-Files / no-material paths; a dangling
-    // empty heading is negative signal, so collapse it.
+    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## WHY`,
+    // `## ACCEPTANCE`, `## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY` and
+    // `## PRIOR WAVE DIFF` all degrade to "" on the spec-less / wave-1 /
+    // no-Files / no-material / no-criteria paths; a dangling empty heading is
+    // negative signal, so collapse it.
     rendered = collapse_empty_sections(&rendered);
 
     // ---- Blank only the TEMPLATE placeholders left unfilled (warn on each). ----
@@ -1205,6 +1224,8 @@ mod tests {
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
             ("{skills_list}", ""),
+            ("{why_block}", ""),
+            ("{acceptance_block}", ""),
             ("{retry_context}", ""),
         ];
         for (k, v) in subs {
@@ -1476,6 +1497,106 @@ mod tests {
             RenderMode::First, None, None, Some("ad-hoc task"),
         );
         assert!(!spec_less.contains("## CONVERSATION MATERIAL"), "{spec_less}");
+    }
+
+    /// The wave's prompt carries the RULER it will be judged by — the criteria
+    /// its own `spec.md` declares, verbatim, `Command:` included — and only
+    /// those: a criterion belonging to another wave must not ride.
+    ///
+    /// This is the whole path the field report named: the prompt had 15 fields
+    /// and none of them was a criterion, so the executor was told where and what
+    /// and never how it would be measured.
+    #[test]
+    fn wave_prompt_carries_its_acceptance() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "ruler-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] parent task\n").unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# W\n\n## Tasks\n\n- [ ] do alpha\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n  Expect: `1 passed`\n",
+        )
+        .unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## ACCEPTANCE"), "the ruler section is missing: {rendered}");
+        assert!(rendered.contains("**AC-1**"), "{rendered}");
+        assert!(
+            rendered.contains("Command: `cargo test alpha`"),
+            "the judging command must ride verbatim: {rendered}"
+        );
+        assert!(rendered.contains("Expect: `1 passed`"), "{rendered}");
+        // The section says what it is: a judge, not a suggestion.
+        assert!(rendered.contains("JUDGE of this wave"), "{rendered}");
+        // The wave's own `## Acceptance Criteria` heading is demoted, so it
+        // nests under `## ACCEPTANCE` instead of terminating it.
+        assert!(rendered.contains("### Acceptance Criteria"), "{rendered}");
+
+        // A wave that declares none renders NO such section — the heading
+        // collapses like every other fail-open placeholder.
+        std::fs::create_dir_all(spec_dir.join("wave-2-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-2-impl").join("spec.md"),
+            "# W\n\n## Tasks\n\n- [ ] do beta\n",
+        )
+        .unwrap();
+        let bare = render_wave(dir.path(), spec, 2);
+        assert!(!bare.contains("## ACCEPTANCE"), "empty heading survived: {bare}");
+        assert!(!bare.contains("AC-1"), "another wave's criterion leaked: {bare}");
+    }
+
+    /// The wave's prompt carries the PARENT's `## Contexto` + `## Não-Objetivos`
+    /// — why the work exists and what the unit deliberately does not cover.
+    ///
+    /// The parent is the only place either lives, and before this the sole path
+    /// to a wave was the TASK fallback, which fires ONLY for a spec with no
+    /// `## Tasks` — and a full-scope wave always has one. So the assertion is
+    /// made against a wave WITH tasks, which is the case that used to lose it.
+    #[test]
+    fn wave_prompt_carries_parent_why() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "why-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
+             ## Não-Objetivos\n\n- não endurecer o portão de resíduo\n\n\
+             ## Tasks\n\n- [ ] parent task\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# W\n\n## Tasks\n\n- [ ] do alpha\n",
+        )
+        .unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## WHY"), "{rendered}");
+        assert!(rendered.contains("o despacho chega sem o porquê"), "context lost: {rendered}");
+        assert!(
+            rendered.contains("não endurecer o portão de resíduo"),
+            "non-goals lost: {rendered}"
+        );
+        // The cut sections nest under `## WHY` — a `## ` line here would end the
+        // section and `collapse_empty_sections` would then drop the heading.
+        assert!(rendered.contains("### Contexto"), "heading not demoted: {rendered}");
+        assert!(rendered.contains("### Não-Objetivos"), "heading not demoted: {rendered}");
+
+        // A spec that declares neither renders no WHY section at all.
+        let bare_spec = "no-why-spec";
+        let bare_dir = dir.path().join(".claude/spec").join(bare_spec);
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        std::fs::write(bare_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] a task\n").unwrap();
+        let bare = render_prompt_at(
+            dir.path(), Some(bare_spec), None, "impl", Path::new("."),
+            RenderMode::First, None, None, None,
+        );
+        assert!(!bare.contains("## WHY"), "empty heading survived: {bare}");
     }
 
     /// AC-5: when the target subproject is its OWN nested git repository (`.git`

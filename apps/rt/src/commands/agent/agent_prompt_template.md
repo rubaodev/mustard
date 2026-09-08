@@ -5,6 +5,9 @@
 2. **Sibling-convention check (MANDATORY before first Edit/Write):** for each file you will modify, read ONE neighbouring file in the same directory first to confirm conventions (shebang, license header, async/sync style, error pattern, import order, indentation). Skip only for: NEW directories with no siblings; pure JSON/YAML edits; spec markdown. Cost: ≤1 extra Read per edit target, saves reviewer warnings about "decorative async over blocking", "Bun check after initStore", "import duplicated", etc.
 3. Spec language is `{spec_lang}` — it governs the spec narrative (prose, labels, Concerns you append) AND every comment you write, in every form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, `<!-- -->`). Everything else in the code stays English regardless: identifiers, file paths, shell commands, AC `Command:` content, log/error/exception messages, API string constants. Surgical: never translate pre-existing comments — the locale rule applies only to the new ones you write.
 
+## WHY
+{why_block}
+
 ## GUARDS
 {guards_summary}
 
@@ -44,6 +47,9 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 
 ## REALITY OBLIGATIONS
 {reality_obligations}
+
+## ACCEPTANCE
+{acceptance_block}
 
 ## TASK
 {task_steps}

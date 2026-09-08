@@ -135,6 +135,17 @@ const ERR_UNSUPPORTABLE_CLAIMS: &str = "unsupportable acceptance-criteria claims
 /// reader to edit different lines. Mapped to exit 2 like its two siblings.
 const ERR_CRITERIA_OUTSIDE_CLAIMANTS: &str = "acceptance criteria outside their claimants";
 
+/// Marcador `scaffold.error` para uma onda que faz trabalho (`tasks`) e não
+/// satisfaz critério nenhum. Mapeado para exit 2 como os três irmãos, e apartado
+/// deles pelo mesmo motivo: aqui o sujeito é a ONDA, não o critério, e a linha
+/// que o leitor precisa editar é a dela.
+///
+/// Era o único dos quatro sinais de rastreabilidade que só avisava. O que mudou
+/// é que o `## Acceptance Criteria` da onda — e o bloco `## ACCEPTANCE` do prompt
+/// despachado — passou a ser recortado por esse conjunto: uma onda sem critério
+/// é um agente despachado sem régua, e ainda assim medido por uma no QA.
+const ERR_UNTRACED_WAVES: &str = "waves whose work traces to no acceptance criterion";
+
 /// Stdout `sharedFiles.error` marker for a plan whose dispatch-parallel waves
 /// declare the same file. [`run`] maps it to exit 2 and [`materialize`] withholds
 /// the PLAN transition — like the coverage gate, and with no env knob: waves of
@@ -198,6 +209,7 @@ pub(crate) fn refused(report: &Value) -> bool {
         || scaffold_err == Some(ERR_UNCOVERED_ACS)
         || scaffold_err == Some(ERR_UNSUPPORTABLE_CLAIMS)
         || scaffold_err == Some(ERR_CRITERIA_OUTSIDE_CLAIMANTS)
+        || scaffold_err == Some(ERR_UNTRACED_WAVES)
         || !disjoint
         || !proven
 }
@@ -319,9 +331,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             uncovered_acs,
             unsupportable_claims,
             criteria_outside_claimants,
+            untraced_waves,
         } if uncovered_acs.is_empty()
             && unsupportable_claims.is_empty()
-            && criteria_outside_claimants.is_empty() =>
+            && criteria_outside_claimants.is_empty()
+            && untraced_waves.is_empty() =>
         {
             (
                 json!({
@@ -347,26 +361,31 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             uncovered_acs,
             unsupportable_claims,
             criteria_outside_claimants,
+            untraced_waves,
         } => (
             json!({
                 "created_files": created,
                 "skipped": skipped,
                 "refreshed": refreshed,
                 "removed": removed,
-                // Coverage first, then the contradiction, then sufficiency: a
-                // criterion nobody claimed cannot also be judged on whether its
-                // claimant reaches its paths, so the earlier question owns the
-                // headline while every list travels in full.
+                // Coverage first, then the contradiction, then sufficiency, then
+                // the untraced wave: a criterion nobody claimed cannot also be
+                // judged on whether its claimant reaches its paths, so the
+                // earlier question owns the headline while every list travels in
+                // full.
                 "error": if !uncovered_acs.is_empty() {
                     ERR_UNCOVERED_ACS
                 } else if !unsupportable_claims.is_empty() {
                     ERR_UNSUPPORTABLE_CLAIMS
-                } else {
+                } else if !criteria_outside_claimants.is_empty() {
                     ERR_CRITERIA_OUTSIDE_CLAIMANTS
+                } else {
+                    ERR_UNTRACED_WAVES
                 },
                 "uncovered_acs": uncovered_acs,
                 "unsupportable_claims": unsupportable_claims,
                 "criteria_outside_claimants": criteria_outside_claimants,
+                "untraced_waves": untraced_waves,
             }),
             false,
         ),
@@ -623,11 +642,19 @@ mod tests {
         std::fs::write(
             &plan_path,
             serde_json::to_string(&json!({
+                // `files` + `satisfies` are load-bearing, not decoration: a wave
+                // that does work and traces to NO criterion is refused (its
+                // dispatched prompt would carry no ruler), and one that claims a
+                // criterion while declaring nowhere to do the work is refused by
+                // the claim-support gap. This fixture is the HAPPY path, so it
+                // has to clear both.
                 "waves": [
                     { "n": 1, "role": "rt", "summary": "base", "depends_on": [],
-                      "tasks": ["do the thing"] },
+                      "tasks": ["do the thing"], "files": ["src/rt.rs"],
+                      "satisfies": ["AC-1"] },
                     { "n": 2, "role": "cli", "summary": "wire", "depends_on": ["wave-1-rt"],
-                      "tasks": ["wire it"] }
+                      "tasks": ["wire it"], "files": ["src/cli.rs"],
+                      "satisfies": ["AC-2"] }
                 ],
                 "total_waves": 2,
                 "lang": "en-US"
@@ -1065,13 +1092,16 @@ mod tests {
             &plan_path,
             serde_json::to_string(&json!({
                 "waves": [
+                    // `satisfies` on both waves: a wave with tasks and no
+                    // criterion is refused, and this fixture is about the DUTY
+                    // path — it must not trip an unrelated gate.
                     { "n": 1, "role": "rt", "summary": "wire it", "tasks": ["wire the webhook"],
-                      "files": ["src/hook.rs"],
+                      "files": ["src/hook.rs"], "satisfies": ["AC-1"],
                       "reality_obligations": [
                           "read the provider's official webhook doc for the retry semantics"
                       ] },
                     { "n": 2, "role": "cli", "summary": "render it", "tasks": ["render it"],
-                      "files": ["src/cli.rs"] }
+                      "files": ["src/cli.rs"], "satisfies": ["AC-2"] }
                 ],
                 "total_waves": 2,
                 "lang": "en-US"

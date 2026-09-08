@@ -301,13 +301,18 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         // materialisation would.
         let parent_material_text =
             fs::read_to_string(spec_dir.join("spec.md")).unwrap_or_default();
+        // O pool de texto dos critérios, montado do MESMO jeito que a
+        // materialização monta: as ondas do DAG não declaram `acceptance` nem
+        // `satisfies`, então nenhuma delas materializa a seção — o pai continua
+        // sendo a fonte do dia em que declararem.
+        let pool = crate::commands::wave::wave_scaffold::ac_pool(&plan, Some(&spec_text));
 
         let mut waves_meta: Vec<Value> = Vec::new();
         for (entry, dag_wave) in plan.waves.iter().zip(waves.iter()) {
             let wave_dir = spec_dir.join(wave_name(entry));
             let _ = fs::create_dir_all(&wave_dir);
             let wave_spec_content =
-                render_wave_spec(&spec_name, entry, &hd, &parent_material_text);
+                render_wave_spec(&spec_name, entry, &hd, &parent_material_text, &pool);
             let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
             // Preserve the action-JSON contract: `files` is the file *count*.
             let file_count = dag_wave

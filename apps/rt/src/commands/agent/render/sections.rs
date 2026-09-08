@@ -190,16 +190,101 @@ pub(crate) fn read_reality_obligations(spec_path: &Path) -> String {
     out
 }
 
+/// Build the `## ACCEPTANCE` body for a wave — the criteria the wave's OWN
+/// `spec.md` declares, verbatim, with their `Command:` / `Expect:` / `Control:`
+/// lines intact.
+///
+/// The criteria are the RULER, and until now the wave never saw it: the union
+/// lives in `wave-plan.md` (where QA reads it from) and the wave's prompt
+/// carried 15 fields, none of them a criterion. The wave scaffold now
+/// materialises the subset each wave satisfies into its own spec, so this cut is
+/// a read of the wave's own file — never a second filter over the parent's
+/// union, which would be a second rule for deciding which criterion is whose.
+///
+/// The instruction line is composed HERE rather than sitting statically under
+/// the template heading, for the same reason
+/// [`read_reality_obligations`] composes its own: a static body would keep the
+/// heading alive for every wave that declares no criterion, and a section that
+/// is present and empty reads as "there are none" when it means "this wave
+/// never said". Empty when the wave declares none, which collapses the heading
+/// like any other.
+///
+/// The section's own heading is demoted to `###` so it nests under
+/// `## ACCEPTANCE` instead of terminating it — see [`demote_heading`].
+/// Fail-open: an unreadable spec yields "". EN by the agent-prompt policy.
+pub(crate) fn read_wave_acceptance(spec_path: &Path) -> String {
+    let text = mfs::read_to_string(spec_path).unwrap_or_default();
+    let Some(block) = cut_section_by_key(&text, "acceptance-criteria") else {
+        return String::new();
+    };
+    format!(
+        "These criteria are the JUDGE of this wave, not a suggestion: each `Command:` below is \
+         run VERBATIM by the QA gate, and its exit code (plus the `Expect:` pattern when one is \
+         declared) is the verdict on your work. Read them BEFORE you write code, and make each \
+         one pass — do not restate, reinterpret or narrow them.\n\n{}",
+        demote_heading(&block)
+    )
+}
+
+/// Build the `## WHY` body for a dispatched wave — the PARENT spec's
+/// `## Context` and `## Non-Goals` sections, cut by canonical key (so
+/// `## Contexto` / `## Não-Objetivos` resolve identically).
+///
+/// The wave file carries the WHAT and the WHERE; the reason the work exists, and
+/// the ground the unit deliberately does NOT cover, live once in the parent and
+/// reached no wave at all. The only path they had was the TASK fallback, which
+/// fires only for a spec with no `## Tasks` — and a full-scope wave always has
+/// one.
+///
+/// Each cut section's heading is demoted to `###` ([`demote_heading`]): a `## `
+/// line as the first body line would end the `## WHY` section instead of sitting
+/// inside it, and `collapse_empty_sections` would then drop the WHY heading as
+/// empty while leaving the orphaned body behind.
+///
+/// Empty when the parent declares neither section, which collapses the heading.
+/// Fail-open: an unreadable spec yields "".
+pub(crate) fn build_why_block(parent_spec: &Path) -> String {
+    let text = mfs::read_to_string(parent_spec).unwrap_or_default();
+    let mut parts: Vec<String> = Vec::new();
+    for key in ["context", "non-goals"] {
+        if let Some(body) = cut_section_by_key(&text, key) {
+            parts.push(demote_heading(&body));
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// Demote a cut section's leading `## ` heading to `### `, leaving every other
+/// line alone.
+///
+/// A cut section arrives WITH its heading, and a `## ` line inside a rendered
+/// `## SECTION` body is not nested content — it is the next section, both to a
+/// reader and to [`collapse_empty_sections`]. One `#` is the whole fix, and it
+/// keeps the author's own (localised) heading text instead of replacing it with
+/// a fixed English label.
+fn demote_heading(block: &str) -> String {
+    if block.starts_with("## ") {
+        format!("#{block}")
+    } else {
+        block.to_string()
+    }
+}
+
 /// Build a TASK block from the spec body when no structured `## Tasks` section
 /// exists. Tier 1: the `## Causa raiz` / `## Root cause` section (when
 /// present) plus the `## Plano` / `## Plan` section. Tier 2 (when tier 1 finds
 /// nothing — the tactical-fix / drafted-spec shape): the spec's `## Context` /
-/// `## Contexto` + `## Acceptance Criteria` / `## Critérios de Aceitação`
-/// sections (canonical `is_heading` keys), prefixed with a header naming the
-/// origin so the agent knows it is reading narrative, not a checklist. Both
-/// tiers append an explicit instruction to read the full spec before editing.
-/// Empty only when no narrative section is present at all (the renderer then
-/// degrades to a blank TASK as before).
+/// `## Contexto` section (canonical `is_heading` key), prefixed with a header
+/// naming the origin so the agent knows it is reading narrative, not a
+/// checklist. Both tiers append an explicit instruction to read the full spec
+/// before editing. Empty only when no narrative section is present at all (the
+/// renderer then degrades to a blank TASK as before).
+///
+/// Tier 2 used to carry the `## Acceptance Criteria` section too. It no longer
+/// does: the criteria now ride in their own `## ACCEPTANCE` block
+/// ([`read_wave_acceptance`]), cut from the SAME spec — so keeping them here
+/// printed every criterion twice, and the copy under `## TASK` read as work to
+/// do rather than as the ruler the work is measured by.
 fn build_task_fallback(text: &str, spec_path: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(body) = cut_section_by_display(text, &["Root cause", "Causa raiz"]) {
@@ -209,20 +294,16 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
         parts.push(body);
     }
     if parts.is_empty() {
-        let mut tier2: Vec<String> = Vec::new();
+        // Só o Contexto: os critérios têm seção própria no prompt agora, e
+        // repeti-los aqui os faria ler como trabalho a fazer, não como a régua.
         if let Some(body) = cut_section_by_key(text, "context") {
-            tier2.push(body);
-        }
-        if let Some(body) = cut_section_by_key(text, "acceptance-criteria") {
-            tier2.push(body);
-        }
-        if !tier2.is_empty() {
             parts.push(
                 "> TASK fallback: the spec has no `## Tasks` section — the content below \
-                 is its Context + Acceptance Criteria sections, verbatim."
+                 is its Context section, verbatim. The criteria this work is judged by ride \
+                 in `## ACCEPTANCE`."
                     .to_string(),
             );
-            parts.append(&mut tier2);
+            parts.push(body);
         }
     }
     if parts.is_empty() {
@@ -1117,11 +1198,16 @@ mod tests {
     }
 
     #[test]
-    fn task_fallback_tf_without_tasks_yields_context_and_ac() {
+    fn task_fallback_tf_without_tasks_yields_context_only() {
         // A tactical-fix / drafted spec: no `## Tasks`, no `## Causa raiz` /
         // `## Plano` — only `## Contexto` + `## Critérios de Aceitação`. The
-        // TASK block must be non-empty, carry both sections and a header
-        // naming the origin, instead of degrading to a blank TASK.
+        // TASK block must be non-empty, carry the CONTEXT and a header naming
+        // the origin, instead of degrading to a blank TASK.
+        //
+        // The criteria are deliberately NOT here any more: they ride in their
+        // own `## ACCEPTANCE` block (`read_wave_acceptance`), cut from this same
+        // spec, so carrying them twice would print every criterion twice and
+        // make the copy under `## TASK` read as work to do.
         let dir = tempdir().unwrap();
         let path = dir.path().join("spec.md");
         std::fs::write(
@@ -1134,8 +1220,13 @@ mod tests {
         assert!(!steps.is_empty(), "TASK must not be empty for a TF spec");
         assert!(steps.contains("TASK fallback"), "origin header missing: {steps}");
         assert!(steps.contains("the digest misses pt intents"), "context missing: {steps}");
-        assert!(steps.contains("AC-1"), "acceptance criteria missing: {steps}");
+        assert!(!steps.contains("AC-1"), "the criteria must not ride in TASK too: {steps}");
         assert!(steps.contains("Read the full spec at"), "read-the-spec cue missing: {steps}");
+
+        // ...and the criteria DO reach the prompt, through their own channel.
+        let acceptance = read_wave_acceptance(&path);
+        assert!(acceptance.contains("AC-1"), "criteria lost entirely: {acceptance}");
+        assert!(acceptance.contains("JUDGE"), "the ruler must name itself: {acceptance}");
     }
 
     #[test]
@@ -1152,7 +1243,13 @@ mod tests {
         .unwrap();
         let steps = read_task_steps(&path);
         assert!(steps.contains("widget cache is stale"), "context missing: {steps}");
-        assert!(steps.contains("cache invalidates on write"), "AC missing: {steps}");
+        // The EN `## Acceptance Criteria` resolves through the same canonical
+        // key — for the ACCEPTANCE block now, not for the TASK fallback.
+        assert!(!steps.contains("cache invalidates on write"), "AC leaked into TASK: {steps}");
+        assert!(
+            read_wave_acceptance(&path).contains("cache invalidates on write"),
+            "the EN heading must resolve for the ruler too"
+        );
     }
 
     #[test]
