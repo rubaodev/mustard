@@ -15,16 +15,26 @@
 //! sequenced by their dependency edge) and is never flagged.
 //!
 //! Output: one JSON line, mirroring `wave-size-check`'s advisory shape —
-//! `{ action, specDir, overlapCount, overlaps: [{ level, waves:[a,b], files:[…] }] }`,
-//! or `{ action: "skip", reason }` for the not-applicable cases. Deterministic
-//! and byte-stable: overlaps ordered by (level, waveA, waveB), files sorted.
+//! `{ action, specDir, overlapCount, overlaps: [{ level, waves:[a,b], files:[…],
+//! chain }] }`, or `{ action: "skip", reason }` for the not-applicable cases.
+//! Deterministic and byte-stable: overlaps ordered by (level, waveA, waveB),
+//! files sorted.
+//!
+//! `chain` is the MINIMAL chaining that zeroes the overlap — one edge, on the
+//! higher-numbered wave. Naming only the pair left the reader to work out the
+//! repair every time; the pair and its repair travel together now, and they
+//! come from [`crate::commands::wave::wave_dependency::same_level_collisions`],
+//! the same rule `plan-materialize` refuses on. That sharing is the point: the
+//! two steps used to disagree about the same plan, because the one that ran
+//! FIRST deduped the shared file away before looking.
 //!
 //! Fail-open: a missing spec dir, a non-wave spec, or an unreadable wave spec
 //! all degrade to a `skip` / empty audit — never a panic, always exit 0.
 
 use crate::commands::pipeline::dispatch_plan::{build_plan, wave_declared_files};
+use crate::commands::wave::wave_dependency::same_level_collisions;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Dispatch `mustard-rt run wave-overlap-check`.
@@ -82,40 +92,28 @@ pub fn run(spec_dir_arg: Option<&str>) {
 /// [`build_plan`] for the levels — the audit groups on the SAME `level` the
 /// dispatcher parallelises on, so it can never disagree with the real dispatch
 /// rounds — and [`wave_declared_files`] for each wave's declared paths.
+///
+/// O pareamento em si é [`same_level_collisions`], compartilhado com
+/// `wave-dependency` e com o portão de `plan-materialize`: esta auditoria lê o
+/// plano já materializado, aquele lê o `plan.json`, e a regra que decide o que é
+/// colisão passou a ser uma só.
 fn audit_overlaps(project_root: &Path, spec_dir: &Path, spec_slug: &str) -> Vec<Value> {
     let items = build_plan(project_root, spec_dir, spec_slug, None);
 
-    // Group each wave's declared-file SET by dispatch level.
-    let mut by_level: BTreeMap<u32, Vec<(u32, BTreeSet<String>)>> = BTreeMap::new();
-    for item in &items {
-        let files: BTreeSet<String> = wave_declared_files(spec_dir, item.wave, &item.role)
-            .into_iter()
-            .collect();
-        by_level.entry(item.level).or_default().push((item.wave, files));
-    }
+    let census: Vec<(u32, u32, BTreeSet<String>)> = items
+        .iter()
+        .map(|item| {
+            let files: BTreeSet<String> = wave_declared_files(spec_dir, item.wave, &item.role)
+                .into_iter()
+                .collect();
+            (item.wave, item.level, files)
+        })
+        .collect();
 
-    // Pairwise intersection within each level. `build_plan` returns items sorted
-    // by (level, wave), so each level's Vec is wave-ascending and the i<j walk
-    // yields (waveA < waveB) pairs in order → the overlaps list is byte-stable.
-    let mut overlaps = Vec::new();
-    for (level, waves) in &by_level {
-        for i in 0..waves.len() {
-            for j in (i + 1)..waves.len() {
-                let (wave_a, files_a) = &waves[i];
-                let (wave_b, files_b) = &waves[j];
-                // `BTreeSet::intersection` yields the shared paths already sorted.
-                let shared: Vec<String> = files_a.intersection(files_b).cloned().collect();
-                if !shared.is_empty() {
-                    overlaps.push(json!({
-                        "level": level,
-                        "waves": [wave_a, wave_b],
-                        "files": shared,
-                    }));
-                }
-            }
-        }
-    }
-    overlaps
+    same_level_collisions(&census)
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap_or_else(|_| json!({})))
+        .collect()
 }
 
 #[cfg(test)]
@@ -177,6 +175,50 @@ mod tests {
         let overlaps = audit_overlaps(dir.path(), &spec_dir, "ov");
         assert_eq!(overlaps.len(), 1, "one same-level overlapping pair: {overlaps:?}");
         assert_eq!(overlaps[0]["level"], json!(1));
+        assert_eq!(overlaps[0]["waves"], json!([2, 3]));
+        assert_eq!(overlaps[0]["files"], json!(["apps/rt/src/shared.rs"]));
+    }
+
+    /// AC-3 — a auditoria devolve também o ENCADEAMENTO MÍNIMO, não só o par.
+    ///
+    /// O par sozinho conta o que está errado e deixa o conserto por conta de
+    /// quem lê; a aresta que zera a sobreposição é uma só e é derivável, então
+    /// ela viaja junto. Aponta sempre para trás — a onda de número maior passa a
+    /// depender da menor — porque a outra direção inverte a ordem que o autor do
+    /// plano já escreveu no resto do grafo.
+    ///
+    /// Bilateral por construção: o caso disjunto abaixo
+    /// (`disjoint_same_level_is_clean`) não emite par nenhum, logo esta asserção
+    /// não pode passar por o campo aparecer sempre.
+    #[test]
+    fn overlap_check_propoe_encadeamento_minimo() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let plan = "\
+| Wave | Role | Depende de | Summary |
+|------|------|------------|---------|
+| 1 | base | — | foundation |
+| 2 | a | [[1]] | first |
+| 3 | b | [[1]] | second |
+";
+        let spec_dir = scaffold(
+            dir.path(),
+            "chain",
+            plan,
+            &[
+                ("wave-1-base", "## Files\n- apps/rt/src/base.rs\n"),
+                ("wave-2-a", "## Files\n- apps/rt/src/shared.rs\n- apps/rt/src/a.rs\n"),
+                ("wave-3-b", "## Files\n- apps/rt/src/shared.rs\n- apps/rt/src/b.rs\n"),
+            ],
+        );
+        let overlaps = audit_overlaps(dir.path(), &spec_dir, "chain");
+        assert_eq!(overlaps.len(), 1, "one same-level overlapping pair: {overlaps:?}");
+        assert_eq!(
+            overlaps[0]["chain"],
+            json!("add wave 2 to wave 3's depends_on"),
+            "the pair travels with the edge that zeroes it: {overlaps:?}",
+        );
+        // O par continua inteiro — o encadeamento é acréscimo, não substituição.
         assert_eq!(overlaps[0]["waves"], json!([2, 3]));
         assert_eq!(overlaps[0]["files"], json!(["apps/rt/src/shared.rs"]));
     }
