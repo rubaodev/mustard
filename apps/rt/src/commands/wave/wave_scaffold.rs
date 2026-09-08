@@ -1075,7 +1075,8 @@ impl<'a> Ledger<'a> {
 /// it in chat, which the change-request observer records in the spec's
 /// `change-log.md` — because silently re-planning an approved spec is exactly
 /// what the approval marker exists to prevent. Composed here (rather than
-/// inlined at the `eprintln!`) so the wording is assertable.
+/// inlined at the emission) so the wording is assertable; a test that wants to
+/// pin the EMISSION drives [`scaffold_warning_to`] with its own sink.
 fn frozen_plan_warn() -> String {
     format!(
         "[wave-scaffold] WARN: the plan does not match the layout on disk, which is FROZEN \
@@ -1109,8 +1110,10 @@ fn numbering_gaps(plan: &Plan) -> Vec<u32> {
     (1..=highest).filter(|n| !declared.contains(n)).collect()
 }
 
-/// A prosa do WARN de numeração — composta aqui (e não inline no `eprintln!`)
-/// pelo mesmo motivo de [`frozen_plan_warn`]: para o texto ser assertável.
+/// A prosa do WARN de numeração — composta aqui (e não inline na emissão) pelo
+/// mesmo motivo de [`frozen_plan_warn`]: para o texto ser assertável. Quem
+/// decide EMITI-LO é [`scaffold_warning_to`], e é lá que o teste do critério
+/// entra — a prosa certa num aviso que ninguém emite não vale nada.
 fn numbering_gap_warn(gaps: &[u32]) -> String {
     let missing: Vec<String> = gaps.iter().map(u32::to_string).collect();
     format!(
@@ -1194,7 +1197,34 @@ pub(crate) enum ScaffoldOutcome {
 /// Write mode follows the spec's approval marker — see [`WriteMode`]: an
 /// UNAPPROVED layout is reconciled onto the plan (rewrite what differs, prune
 /// waves the plan dropped), an APPROVED one is frozen.
+///
+/// Uma linha só: todo o miolo é [`scaffold_warning_to`], com o stderr do
+/// processo como destino dos avisos. Nada além da escolha do destino mora aqui,
+/// para que um teste que dirige o materializador com outro destino exercite o
+/// materializador INTEIRO — inclusive a fiação que decide se cada aviso sai.
 pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
+    scaffold_warning_to(spec_dir, plan_path, &mut std::io::stderr())
+}
+
+/// [`scaffold`] com o destino dos avisos INJETADO.
+///
+/// Os WARNs deste materializador (total declarado divergente, buraco na
+/// numeração, onda sem tarefa, os quatro grupos de rastreabilidade, o plano
+/// congelado) saíam por `eprintln!` direto, e o que um teste consegue observar
+/// de um `eprintln!` é nada — então cada aviso só tinha teste da função que
+/// COMPÕE o texto, nunca da fiação que decide EMITI-LO. Apagar um `if` inteiro
+/// aqui deixava a suíte verde.
+///
+/// O destino é um `&mut dyn Write` porque é a menor mudança que fecha isso: em
+/// produção ele é `std::io::stderr()` (ver [`scaffold`]) e num teste é um
+/// `Vec<u8>`, com o mesmo código correndo dos dois lados. Falha de escrita é
+/// ignorada de propósito — um aviso que não sai nunca pode derrubar a
+/// materialização.
+pub(crate) fn scaffold_warning_to(
+    spec_dir: &Path,
+    plan_path: &Path,
+    warn: &mut dyn std::io::Write,
+) -> ScaffoldOutcome {
     let raw = match fs::read_to_string(plan_path) {
         Ok(t) => t,
         Err(e) => {
@@ -1221,7 +1251,8 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     if let Some(declared) = plan.total_waves {
         let actual = plan.waves.len() as u32;
         if declared != actual {
-            eprintln!(
+            let _ = writeln!(
+                warn,
                 "[wave-scaffold] WARN: plan.total_waves={declared} but waves.length={actual}; \
                  using {actual}",
             );
@@ -1232,7 +1263,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // cross-checked. A hole in the numbering is an operator edit nobody notices.
     let gaps = numbering_gaps(&plan);
     if !gaps.is_empty() {
-        eprintln!("{}", numbering_gap_warn(&gaps));
+        let _ = writeln!(warn, "{}", numbering_gap_warn(&gaps));
     }
 
     let parent_name = spec_dir
@@ -1281,7 +1312,8 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // silently materialising an empty TASK block downstream.
     for w in &plan.waves {
         if w.tasks.is_empty() {
-            eprintln!(
+            let _ = writeln!(
+                warn,
                 "[wave-scaffold] WARN: wave-{n}-{role} materialised with no tasks — \
                  agent-prompt-render will fall back to an empty task block",
                 n = w.n,
@@ -1306,16 +1338,16 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
         .ok();
     let gaps = traceability_gaps(&plan, parent_ac_md.as_deref());
     for gap in &gaps.untraced_waves {
-        eprintln!("[wave-scaffold] WARN: {gap}");
+        let _ = writeln!(warn, "[wave-scaffold] WARN: {gap}");
     }
     for gap in &gaps.uncovered_acs {
-        eprintln!("[wave-scaffold] WARN: {gap}");
+        let _ = writeln!(warn, "[wave-scaffold] WARN: {gap}");
     }
     for gap in &gaps.criteria_outside_claimants {
-        eprintln!("[wave-scaffold] WARN: {gap}");
+        let _ = writeln!(warn, "[wave-scaffold] WARN: {gap}");
     }
     for gap in &gaps.unsupportable_claims {
-        eprintln!("[wave-scaffold] WARN: {gap}");
+        let _ = writeln!(warn, "[wave-scaffold] WARN: {gap}");
     }
     // `scaffold` never exits — it stays reusable in-process (plan-materialize),
     // which blocks the PLAN transition when either list is non-empty.
@@ -1409,7 +1441,7 @@ pub(crate) fn scaffold(spec_dir: &Path, plan_path: &Path) -> ScaffoldOutcome {
     // count the approved layout does not carry — and names the route that does
     // accept a change.
     if drift || parent_drift {
-        eprintln!("{}", frozen_plan_warn());
+        let _ = writeln!(warn, "{}", frozen_plan_warn());
     }
     // Sorted so stdout stays byte-stable regardless of directory-read order.
     refreshed.sort();
@@ -2254,38 +2286,82 @@ mod tests {
         Plan { waves, total_waves: Some(total), lang: None }
     }
 
-    /// AC-5 — um buraco na numeração das ondas vira aviso NOMINAL: o WARN diz
-    /// quais números faltam.
+    /// Materializa um plano com as ondas numeradas `ns` e devolve o que o
+    /// materializador ESCREVEU no destino de avisos.
+    ///
+    /// Dirige [`scaffold_warning_to`] — o miolo inteiro de [`scaffold`], com um
+    /// `Vec<u8>` no lugar do stderr do processo. É o que separa este teste do que
+    /// ele era: chamar `numbering_gaps` + `numbering_gap_warn` direto media a
+    /// prosa e deixava a FIAÇÃO sem rede, então apagar o `if` que emite o aviso
+    /// mantinha a suíte verde.
+    fn scaffold_warnings(project: &Path, slug: &str, ns: &[u32]) -> String {
+        let spec_dir = project.join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let waves: Vec<Value> = ns
+            .iter()
+            .map(|n| {
+                json!({
+                    "n": n, "role": "rt", "summary": "s", "depends_on": [],
+                    "tasks": ["do it"], "files": [format!("src/w{n}.rs")]
+                })
+            })
+            .collect();
+        let plan_path = project.join(format!("{slug}.json"));
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": waves,
+                // Igual ao número de ondas: o WARN de total divergente é outro
+                // sinal e não pode entrar no lugar do que se mede aqui.
+                "total_waves": ns.len(),
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut sink: Vec<u8> = Vec::new();
+        let _ = scaffold_warning_to(&spec_dir, &plan_path, &mut sink);
+        String::from_utf8_lossy(&sink).into_owned()
+    }
+
+    /// AC-5 — um buraco na numeração das ondas vira aviso NOMINAL: o
+    /// MATERIALIZADOR escreve o WARN, e o WARN diz quais números faltam.
     ///
     /// A contagem gravada no sidecar é `plan.waves.len()` e cada diretório é
     /// nomeado pelo `n` declarado; as duas coisas nunca foram confrontadas, então
     /// um plano de ondas 1, 2 e 4 materializava três diretórios com um 3 ausente
-    /// que ninguém via. Bilateral: uma numeração contígua não acusa nada, logo a
-    /// asserção não pode passar por o aviso disparar sempre.
+    /// que ninguém via.
+    ///
+    /// Dirige o materializador de ponta a ponta e observa o que ele EMITIU —
+    /// nunca as duas funções auxiliares direto. Bilateral: uma numeração contígua
+    /// não escreve nada, logo a asserção não pode passar por o aviso disparar
+    /// sempre.
     #[test]
     fn scaffold_avisa_numeracao_com_buraco() {
-        let holed = claim_plan(vec![
-            claim_wave(1, "rt", vec!["a"], vec!["src/a.rs"], vec![]),
-            claim_wave(2, "rt", vec!["b"], vec!["src/b.rs"], vec![]),
-            claim_wave(4, "rt", vec!["d"], vec!["src/d.rs"], vec![]),
-        ]);
-        assert_eq!(numbering_gaps(&holed), vec![3], "the missing number is named");
-        let warn = numbering_gap_warn(&numbering_gaps(&holed));
-        assert!(warn.contains("no wave 3"), "the WARN must name the number: {warn}");
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+
+        let holed = scaffold_warnings(project, "epic-holed", &[1, 2, 4]);
+        assert!(
+            holed.contains("[wave-scaffold] WARN: plan wave numbering has a hole"),
+            "o materializador tem de emitir o aviso: {holed}"
+        );
+        assert!(holed.contains("no wave 3"), "e o aviso tem de nomear o número: {holed}");
+        // O diretório da onda 4 existe com um wave-3 ausente ao lado — o buraco
+        // que o aviso descreve é real, não uma leitura só do JSON.
+        assert!(project.join("epic-holed").join("wave-4-rt").is_dir(), "{holed}");
+        assert!(!project.join("epic-holed").join("wave-3-rt").exists(), "{holed}");
 
         // Uma numeração que começa em 2 também tem buraco — o 1 que falta.
-        let offset = claim_plan(vec![
-            claim_wave(2, "rt", vec!["b"], vec!["src/b.rs"], vec![]),
-            claim_wave(3, "rt", vec!["c"], vec!["src/c.rs"], vec![]),
-        ]);
-        assert_eq!(numbering_gaps(&offset), vec![1]);
+        let offset = scaffold_warnings(project, "epic-offset", &[2, 3]);
+        assert!(offset.contains("no wave 1"), "o 1 ausente também é buraco: {offset}");
 
         // O outro lado: contígua é silêncio.
-        let contiguous = claim_plan(vec![
-            claim_wave(1, "rt", vec!["a"], vec!["src/a.rs"], vec![]),
-            claim_wave(2, "rt", vec!["b"], vec!["src/b.rs"], vec![]),
-        ]);
-        assert!(numbering_gaps(&contiguous).is_empty(), "a contiguous plan is silent");
+        let contiguous = scaffold_warnings(project, "epic-contiguous", &[1, 2]);
+        assert!(
+            !contiguous.contains("numbering has a hole"),
+            "uma numeração contígua não pode acusar nada: {contiguous}"
+        );
     }
 
     /// AC-1 — a claim the plan's own contents refute: the wave says it covers
