@@ -645,6 +645,24 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              work at a base nobody chose."
         }
 
+        // BASE GATE — o censo que sobrou sujo na árvore e o portão acabou de
+        // gravar por conta própria, em vez de deixá-lo para o corte da próxima
+        // unidade recusar como se fosse trabalho do operador. Frase de usuário
+        // (sai no stderr da abertura do pipeline), então mora no catálogo como
+        // manda a nota do topo deste arquivo, e não embutida no portão em um
+        // idioma só. `{paths}` é interpolado por
+        // `base_gate::record_leftover_census`.
+        ("basegate.census.recorded", Locale::PtBr) => {
+            "base-gate: os artefatos do censo ({paths}) eram a única coisa não commitada na \
+             árvore — foram gravados aqui mesmo, na base, para que o corte da próxima unidade \
+             não cobre de você uma escrita que é da ferramenta."
+        }
+        ("basegate.census.recorded", Locale::EnUs) => {
+            "base-gate: the census artifacts ({paths}) were the only uncommitted thing in the \
+             tree — they were recorded right here, on the base, so the next unit's branch cut \
+             does not charge you for a write that is the tool's."
+        }
+
         // Work-unit SURFACING — the three places the harness says out loud that
         // a work unit is somewhere other than the checkout, or that the exit
         // ritual is still owed. All three are user-facing (a listing legend, a

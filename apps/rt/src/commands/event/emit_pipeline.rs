@@ -294,7 +294,7 @@ pub fn run(opts: EmitPipelineOpts) {
     let work_kind = resolve_work_kind_or_exit(&opts, &payload);
     let kind_base =
         resolve_kind_base_or_exit(&opts, work_kind.as_ref().map(|(kind, _)| kind));
-    enforce_base_gate_or_exit(&opts);
+    let overlapping = enforce_base_gate_or_exit(&opts);
     enforce_qa_gate_or_exit(&opts);
 
     // --- EMIT the primary event (+ any legacy→new alias twin) -----------------
@@ -366,7 +366,10 @@ pub fn run(opts: EmitPipelineOpts) {
     // Remove the terminal-state marker (keyed on the predicate, so it runs for
     // every kind), then echo the one deterministic success line.
     cleanup_terminal_state(&kind, &payload, &spec);
-    echo_success(&kind, &spec, work_branch, minted.as_ref(), work_kind);
+    println!(
+        "{}",
+        success_line(&kind, &spec, work_branch, minted.as_ref(), work_kind, &overlapping)
+    );
 }
 
 /// The process cwd, degrading to the configured project dir (never panics) —
@@ -490,9 +493,13 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 /// Every other kind returns immediately: they are transitions INSIDE a unit
 /// that already crossed this gate, and a read-only request that never opens a
 /// pipeline never emits `pipeline.kind` at all — so it never reaches it.
-fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) {
+/// Devolve as specs ATIVAS que o `--intent` desta abertura parece repetir —
+/// relatadas em `overlappingSpecs`, nunca bloqueantes (ver
+/// [`super::base_gate::overlapping_active_specs`]). Vazio para todo outro
+/// `--kind`, que não abre unidade nenhuma.
+fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) -> Vec<String> {
     if opts.kind != EVENT_PIPELINE_KIND {
-        return;
+        return Vec::new();
     }
     let project = project_dir();
     let root = Path::new(&project);
@@ -507,6 +514,11 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) {
         // to establish.
         super::base_gate::BaseVerdict::Abstain => {}
         super::base_gate::BaseVerdict::Open(_) => {
+            // ANTES do mine: o que a passagem de enriquecimento deixou sujo é a
+            // única coisa na árvore, e enquanto continuar lá o próprio mine se
+            // considera impedido (a conjunção de `census_refresh_due` exige
+            // árvore limpa) e o corte da próxima unidade recusa por causa dela.
+            super::base_gate::record_leftover_census(root);
             super::base_gate::refresh_census_if_stale(root);
             // The census refresh only re-mines the DETERMINISTIC half. The
             // agent-written half — Guards prose, `{role}-pattern` molds — is
@@ -516,6 +528,12 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) {
             super::enrichment_gap::report_if_stale(root);
         }
     }
+    // Roda para `Open` e para `Abstain` alike: a suspeita se lê nas specs em
+    // disco, não no git, então uma abstenção do portão não tem por que calá-la.
+    opts.intent
+        .as_deref()
+        .map(|intent| super::base_gate::overlapping_active_specs(root, intent))
+        .unwrap_or_default()
 }
 
 /// REVIEW/QA gate: `pipeline.complete` requires a `qa.result(overall=pass)` for
@@ -841,13 +859,21 @@ fn cleanup_terminal_state(kind: &str, payload: &Value, spec: &str) {
 /// can SEE the rename instead of inferring it. `nameFrom` says which side named
 /// it — the derivation or the operator's `--unit-name`. Those keys are omitted
 /// when they have nothing to say, which keeps every other call byte-identical.
-fn echo_success(
+///
+/// `overlappingSpecs` segue essa mesma regra e é ADVISÓRIO: nomeia as unidades
+/// já ativas que o `--intent` parece repetir, sem impedir nada. Ausente sempre
+/// que a lista está vazia, que é todo caso em que nada foi suspeitado.
+///
+/// A linha é MONTADA aqui e impressa pelo chamador, para que o relatório possa
+/// ser lido por um teste sem ninguém precisar capturar o stdout do processo.
+fn success_line(
     kind: &str,
     spec: &str,
     work_branch: Option<String>,
     minted: Option<&MintedName>,
     work_kind: Option<(WorkKind, &'static str)>,
-) {
+    overlapping: &[String],
+) -> Value {
     let mut done = json!({ "ok": true, "kind": kind, "spec": spec });
     if let Some(branch) = work_branch {
         done["branch"] = json!(branch);
@@ -868,7 +894,10 @@ fn echo_success(
         done["type"] = json!(unit_kind.token());
         done["typeFrom"] = json!(origin);
     }
-    println!("{done}");
+    if !overlapping.is_empty() {
+        done["overlappingSpecs"] = json!(overlapping);
+    }
+    done
 }
 
 /// Returns `true` when the spec has a `qa.result` event with
@@ -2829,5 +2858,68 @@ mod tests {
                 .count()
         };
         assert_eq!(before, after, "no duplicate pipeline.status when already completed");
+    }
+
+    /// Escreve uma spec ATIVA em disco, na forma que o localizador do
+    /// `active-specs` lê (`meta.json` ao lado do `spec.md`).
+    fn active_spec(project: &Path, name: &str, stage: &str) {
+        let dir = project.join(".claude").join("spec").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), format!("# {name}\n")).unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            format!(r#"{{"stage":"{stage}","outcome":"Active"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// A porta que abre o pipeline RELATA a unidade já aberta sobre o mesmo
+    /// assunto — `overlappingSpecs`, ao lado da linha de sucesso — e não bloqueia
+    /// nada. Nenhuma detecção rodava ali: com duas specs `Active` na árvore, a
+    /// abertura da terceira não dizia uma palavra.
+    #[test]
+    fn emit_pipeline_names_an_overlapping_active_spec() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+
+        active_spec(project, "harness-ve-toda-branch-trabalho", "Execute");
+        // Uma unidade sem relação alguma: o cruzamento tem de SEPARAR, não
+        // apontar tudo o que está aberto.
+        active_spec(project, "estimador-contagem-tokens", "Plan");
+        // …e uma fechada, que não é uma unidade concorrente.
+        active_spec(project, "harness-branch-trabalho-fechada", "Close");
+
+        let suspects = crate::commands::event::base_gate::overlapping_active_specs(
+            project,
+            "o harness ve toda branch de trabalho",
+        );
+        assert_eq!(
+            suspects,
+            vec!["harness-ve-toda-branch-trabalho".to_string()],
+            "só a unidade ativa sobre o mesmo assunto vira suspeita: {suspects:?}",
+        );
+
+        let line = success_line(
+            EVENT_PIPELINE_KIND,
+            "harness-enxerga-branch",
+            Some("feature/harness-enxerga-branch".to_string()),
+            None,
+            None,
+            &suspects,
+        );
+        assert_eq!(
+            line["overlappingSpecs"],
+            json!(["harness-ve-toda-branch-trabalho"]),
+            "o relatório carrega a suspeita: {line}",
+        );
+        assert_eq!(line["ok"], json!(true), "e não bloqueia nada: {line}");
+
+        // A chave só aparece quando tem o que dizer — toda outra chamada segue
+        // byte-idêntica à de antes.
+        let quiet = success_line(EVENT_PIPELINE_KIND, "x", None, None, None, &[]);
+        assert!(
+            quiet.get("overlappingSpecs").is_none(),
+            "sem suspeita, sem chave: {quiet}",
+        );
     }
 }

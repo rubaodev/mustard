@@ -1329,10 +1329,28 @@ fn spec_date_prefix(name: &str) -> &str {
 /// value as authoritative for an *upper* bound check.
 #[must_use]
 pub fn count_active(root: &Path) -> usize {
-    discover_root_specs(root)
-        .iter()
+    active_spec_names(root).len()
+}
+
+/// Os NOMES do mesmo conjunto que [`count_active`] conta — a descoberta do
+/// picker ([`discover_root_specs`] + [`classify_spec`]), na árvore de trabalho
+/// e só nela, ordenada para a saída ser byte-estável.
+///
+/// `pub(crate)` porque o portão base pergunta o que está aberto para cruzar com
+/// o `--intent` da unidade sendo aberta, e um segundo enumerador ali seria a
+/// terceira leitura de "o que está ativo" neste repositório: o portão passaria
+/// a suspeitar de specs que o picker não lista, ou a calar sobre as que lista.
+/// [`count_active`] agora deriva daqui pela mesma razão — a contagem que barra
+/// uma edição e a lista que o portão relata não podem discordar.
+#[must_use]
+pub(crate) fn active_spec_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = discover_root_specs(root)
+        .into_iter()
         .filter(|c| classify_spec(&c.header) == Some(SpecKind::Active))
-        .count()
+        .map(|c| c.name)
+        .collect();
+    names.sort();
+    names
 }
 
 /// The spec a picker ROW LETTER names, resolved through the SAME enumeration

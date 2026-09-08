@@ -63,11 +63,14 @@
 use std::path::Path;
 
 use mustard_core::{
-    record_written_path, worktree_is_clean, ProjectConfig, RecordOutcome, Scan,
+    record_written_path, translate, worktree_is_clean, ProjectConfig, RecordOutcome, Scan,
 };
 
+use super::work_branch::{checkout_work, CheckoutWork};
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
+use crate::commands::spec::active_specs::active_spec_names;
+use crate::commands::spec::spec_slug::canonical_for_project;
 use crate::hooks::write::scan_clean_gate::tree_is_dirty;
 use crate::util::format_gate_message;
 
@@ -284,6 +287,97 @@ pub(crate) fn refresh_census_if_stale(project: &Path) {
         }
         Err(e) => eprintln!("base-gate: census refresh failed ({e}); the previous model stands"),
     }
+}
+
+/// Grava os artefatos do censo que SOBRARAM sujos na árvore — a saída da
+/// passagem de enriquecimento (`scan-map.md`, os `SKILL.md` dos moldes, o
+/// modelo e o dicionário), que o mine determinístico daqui não grava porque não
+/// foi ele quem a escreveu.
+///
+/// O portão se barrava nas próprias saídas: essa sujeira ficava para o corte da
+/// PRÓXIMA unidade recusar, atribuindo ao operador uma escrita que não é dele.
+/// Gravar é a mesma resposta que [`refresh_census_if_stale`] já dá para o mine
+/// determinístico, pela mesma máquina ([`record_written_path`]) e sob o mesmo
+/// assunto de commit ([`CENSUS_COMMIT_SUBJECT`]).
+///
+/// A precondição é a MEDIÇÃO, não uma suposição: só age quando
+/// [`checkout_work`] responde [`CheckoutWork::CensusOnly`] — a árvore inteira,
+/// com o índice, não tem uma linha do operador. Sobrando qualquer coisa dele
+/// junto, não grava nada e a recusa de hoje continua valendo; um probe que não
+/// respondeu ([`CheckoutWork::Unproven`]) também não autoriza nada. Por isso o
+/// `found_clean` passado adiante é `Some(true)`: é exatamente o fato que
+/// `record_written_path` usa para saber que o índice não tem nada do operador
+/// para o commit varrer junto.
+///
+/// Fail-open de ponta a ponta, e alto no stderr — nunca no stdout, que carrega
+/// a linha JSON que os portões comparam byte a byte.
+pub(crate) fn record_leftover_census(project: &Path) {
+    let CheckoutWork::CensusOnly(paths) = checkout_work(project) else {
+        return;
+    };
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    if record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, Some(true))
+        != RecordOutcome::Recorded
+    {
+        // Ignorado, invisível para o git ou recusado pelo git: a escrita fica
+        // onde caiu, exatamente como o mine determinístico já degrada.
+        return;
+    }
+    let lang = ProjectConfig::load(project).i18n().lang;
+    eprintln!(
+        "{}",
+        translate("basegate.census.recorded", lang).replace("{paths}", &paths.join(", "))
+    );
+}
+
+/// Quantos tokens significativos duas unidades precisam compartilhar para uma
+/// virar suspeita da outra. Dois, porque um só ("harness", "spec") é o
+/// vocabulário do projeto inteiro e apontaria todas as unidades abertas.
+const OVERLAP_MIN_TOKENS: usize = 2;
+
+/// Comprimento mínimo de um token para ele contar. Abaixo disso sobra a cola
+/// que o slug não removeu, não o assunto.
+const OVERLAP_MIN_TOKEN_LEN: usize = 3;
+
+/// Os tokens de um slug que dizem sobre O QUÊ ele é: sem o prefixo de data que
+/// alguns diretórios de spec carregam (puro dígito) e sem as partículas curtas.
+fn significant_tokens(slug: &str) -> std::collections::BTreeSet<String> {
+    slug.split('-')
+        .filter(|t| t.len() >= OVERLAP_MIN_TOKEN_LEN && !t.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// As specs ATIVAS que o `--intent` desta abertura parece repetir — suspeitas,
+/// nunca um veredito: o retorno é relatado (`overlappingSpecs`) e não bloqueia
+/// nada. Duas unidades abertas sobre o mesmo assunto é uma decisão do operador,
+/// e o portão que a tomasse por ele erraria justamente nos casos legítimos
+/// (a segunda onda de um assunto, um fix adjacente).
+///
+/// A comparação roda na MESMA derivação que nomeia a unidade
+/// ([`canonical_for_project`]), então o intent e o diretório da spec chegam
+/// aqui na mesma grafia, já sem stopwords e no idioma que o projeto declara. As
+/// specs vêm do MESMO localizador que o `active-specs` usa
+/// ([`active_spec_names`]) — um segundo enumerador é como o portão e o picker
+/// passariam a discordar sobre o que está aberto.
+///
+/// Determinístico: a ordem é a do localizador (ordenada), e nada de timestamp
+/// ou caminho volátil entra no resultado.
+pub(crate) fn overlapping_active_specs(project: &Path, intent: &str) -> Vec<String> {
+    let intent = intent.trim();
+    if intent.is_empty() {
+        return Vec::new();
+    }
+    let wanted = significant_tokens(&canonical_for_project(intent, project));
+    if wanted.len() < OVERLAP_MIN_TOKENS {
+        return Vec::new();
+    }
+    active_spec_names(project)
+        .into_iter()
+        .filter(|name| {
+            significant_tokens(name).intersection(&wanted).count() >= OVERLAP_MIN_TOKENS
+        })
+        .collect()
 }
 
 /// The commit subject the gate writes when it records a census it re-mined.
@@ -749,6 +843,94 @@ mod tests {
             std::fs::read_to_string(root.join("theirs.txt")).unwrap(),
             "mine, not yours\n",
             "and its bytes were never rewritten",
+        );
+    }
+
+    /// Deixa na árvore, e só na árvore, a saída da passagem de ENRIQUECIMENTO —
+    /// o mapa de um subprojeto e um molde `{papel}-pattern`, que o mine
+    /// determinístico não escreve e por isso não grava.
+    fn leftover_enrichment(root: &Path) {
+        let claude = root.join("apps").join("rt").join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("scan-map.md"), "Tipo: cargo · 307 arquivos\n").unwrap();
+        let mold = claude.join("skills").join("rt-gate-pattern");
+        std::fs::create_dir_all(&mold).unwrap();
+        std::fs::write(mold.join("SKILL.md"), "---\nname: rt-gate-pattern\n---\n").unwrap();
+    }
+
+    /// Uma árvore suja SÓ com o censo não recusa o corte da próxima unidade — e
+    /// o portão fecha a conta ele mesmo, em vez de deixá-la para o operador.
+    ///
+    /// Era a ferramenta se barrando nas próprias saídas: a passagem de
+    /// enriquecimento reescreve arquivos versionados que ninguém pediu ao
+    /// operador, o corte seguinte os lia como trabalho dele e recusava,
+    /// mandando commitar ou guardar a saída do próprio Mustard.
+    #[test]
+    fn a_census_only_dirty_tree_does_not_refuse_the_cut() {
+        use crate::commands::event::work_branch::busy_checkout;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+        git(root, &["checkout", "-b", "dev_first"]);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+
+        assert_eq!(
+            busy_checkout(root, Some("dev_first"), "dev_second", &flow_config()),
+            None,
+            "nada disso é trabalho de ninguém — recusar aqui é a ferramenta se \
+             barrando na própria saída",
+        );
+
+        record_leftover_census(root);
+        assert_eq!(
+            porcelain(root),
+            "",
+            "o portão gravou o que ele mesmo escreveu, sem commit manual no meio",
+        );
+    }
+
+    /// …e a outra metade da mesma regra: com trabalho do operador junto, a
+    /// recusa de hoje continua valendo, nomeando SÓ o que é dele — e o portão
+    /// não grava nada, porque um commit ali varreria a mudança do operador para
+    /// dentro de um commit da ferramenta.
+    #[test]
+    fn operator_work_beside_the_census_still_refuses_and_names_only_theirs() {
+        use crate::commands::event::work_branch::{busy_checkout, CheckoutWork};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+        git(root, &["checkout", "-b", "dev_first"]);
+
+        remine(&model);
+        leftover_enrichment(root);
+        std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let busy = busy_checkout(root, Some("dev_first"), "dev_second", &flow_config())
+            .expect("o trabalho do operador ainda recusa o corte");
+        let CheckoutWork::Holds(dirty) = &busy.work else {
+            panic!("os caminhos foram observados, veio {:?}", busy.work);
+        };
+        assert_eq!(
+            dirty,
+            &vec!["theirs.txt".to_string()],
+            "a recusa nomeia só o que é do operador: {dirty:?}",
+        );
+
+        record_leftover_census(root);
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "com trabalho do operador na árvore o portão não commita nada",
+        );
+        assert!(
+            porcelain(root).contains("theirs.txt"),
+            "e o arquivo dele segue sendo dele para commitar",
         );
     }
 }

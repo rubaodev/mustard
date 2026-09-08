@@ -557,8 +557,17 @@ pub(crate) enum CheckoutWork {
     /// git answered for this tree and reported nothing: a plain checkout carries
     /// nothing off, so the cut is safe to make.
     ProvenClean,
+    /// A única coisa suja na árvore são artefatos do censo
+    /// ([`DirtyPathKind::Census`]), nomeados aqui. Não é trabalho de ninguém:
+    /// a ferramenta os escreveu e a ferramenta os grava
+    /// ([`crate::commands::event::base_gate::record_leftover_census`]), então o
+    /// corte não é recusado por causa deles. Mantido APARTE de
+    /// [`Self::ProvenClean`] porque quem grava precisa saber QUAIS caminhos são,
+    /// e uma árvore limpa não tem nenhum.
+    CensusOnly(Vec<String>),
     /// Paths positively observed as uncommitted or untracked — `.claude/`
-    /// included.
+    /// included. Só o que é do OPERADOR: o censo sai daqui e vai para
+    /// [`Self::CensusOnly`], para que a recusa nomeie apenas o que é dele.
     Holds(Vec<String>),
     /// Nothing could be established: the probe failed, or git answered in a
     /// shape this parser does not understand. Never an authorisation.
@@ -582,8 +591,9 @@ pub(crate) enum CheckoutWork {
 ///    redirected shared state; that reasoning does not hold for this consumer,
 ///    where `.claude/spec/…` is branch content that rides a checkout exactly
 ///    like source code does. The VOLATILE harness state is separated from it by
-///    [`is_harness_scratch`], a list this probe OWNS — not by the project's
-///    `.gitignore`, which cannot be relied on to say anything (see there).
+///    [`classify_dirty_path`], a list this probe OWNS — not by the project's
+///    `.gitignore`, which cannot be relied on to say anything (see there). O
+///    censo sai por essa mesma porta, para uma categoria só dele.
 /// 2. **A failed measurement is not "clean".** `dirty_paths` reads an
 ///    unanswerable probe as an empty list, which is right for ITS callers: they
 ///    REFUSE a cut, so an unmeasured probe merely lets the ordinary path
@@ -607,6 +617,7 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
         return CheckoutWork::Unproven;
     };
     let mut paths = Vec::new();
+    let mut census = Vec::new();
     let mut unparsed = 0usize;
     for line in out.lines() {
         let line = line.trim_start();
@@ -632,11 +643,18 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
             unparsed += 1;
             continue;
         }
-        if is_harness_scratch(path) {
-            continue; // the harness's own droppings are nobody's work
+        match classify_dirty_path(path) {
+            // the harness's own droppings are nobody's work
+            DirtyPathKind::Scratch => {}
+            // …e o censo também não é de ninguém, mas precisa ser GRAVADO, não
+            // descartado: fica de lado, com nome e tudo.
+            DirtyPathKind::Census => census.push(path.to_string()),
+            DirtyPathKind::Work => paths.push(path.to_string()),
         }
-        paths.push(path.to_string());
     }
+    // O trabalho do operador decide primeiro e sozinho: com uma linha dele na
+    // árvore o corte é recusado, e a recusa nomeia só o que é dele — o censo
+    // que porventura veio junto não entra na frase.
     if !paths.is_empty() {
         return CheckoutWork::Holds(paths);
     }
@@ -648,6 +666,10 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
     // measured at all.
     if unparsed > 0 {
         return CheckoutWork::Unproven;
+    }
+    // Nada do operador e nada por medir: sobrou o censo, e ele tem dono.
+    if !census.is_empty() {
+        return CheckoutWork::CensusOnly(census);
     }
     CheckoutWork::ProvenClean
 }
@@ -704,6 +726,43 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
     ".dashboard.port",
 ];
 
+/// Os arquivos que o próprio Mustard escreve ao MAPEAR o projeto — o censo.
+/// Lidos diretamente sob um `.claude/`, em qualquer profundidade da árvore: o
+/// `scan-map.md` de cada subprojeto mora no `.claude/` dele, e o modelo, o
+/// dicionário e a lista de recusas moram no do raiz.
+///
+/// Categoria PRÓPRIA, nem rascunho nem trabalho, e as duas leituras erradas
+/// custam coisas diferentes. Rascunho não serve: nenhuma regra de ignore os
+/// cobre num install compartilhado — eles são versionados de propósito, e
+/// descartá-los aqui os deixaria de fora de todo commit. Trabalho também não:
+/// a ferramenta os escreve e a ferramenta os grava, então cobrá-los do operador
+/// é recusar o corte por causa da saída da própria ferramenta — o atrito que
+/// [`crate::commands::event::base_gate::record_leftover_census`] fecha.
+const CENSUS_FILES: &[&str] =
+    &["grain.model.json", "grain.dictionary.json", "scan-declined.json", "scan-map.md"];
+
+/// A subárvore sob um `.claude/` onde os moldes `{papel}-pattern` do censo
+/// vivem, e o nome do arquivo que fecha cada um. A passagem de enriquecimento
+/// reescreve `.claude/skills/<molde>/SKILL.md`, então o par identifica a outra
+/// metade do censo sem precisar conhecer o nome de nenhum molde.
+const CENSUS_SKILLS_DIR: &str = "skills";
+/// Ver [`CENSUS_SKILLS_DIR`].
+const CENSUS_SKILL_FILE: &str = "SKILL.md";
+
+/// O que uma linha do `git status` É, para quem está prestes a levar o checkout
+/// embora — as três categorias que [`checkout_work`] separa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirtyPathKind {
+    /// Rascunho do harness: regenerável ou por-máquina. Ninguém precisa dele, e
+    /// levá-lo junto não custa nada — some da medição.
+    Scratch,
+    /// Artefato do censo: escrito pela ferramenta, versionado de propósito.
+    Census,
+    /// O trabalho de alguém — ou um caminho que não se provou ser nenhuma das
+    /// duas coisas acima, que é a direção segura para este chamador.
+    Work,
+}
+
 /// The per-spec spill: written INSIDE a unit's own directory, but by the
 /// harness for itself, not by the unit. Everything else under
 /// `.claude/spec/<unit>/` is the unit's work.
@@ -719,10 +778,11 @@ const SPEC_SCRATCH_DIRS: &[&str] = &[".events", ".blobs", ".dispatch"];
 /// directory is that unit's work.
 const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved", CUT_BASE_FILE];
 
-/// `true` when a `git status` path names the harness's OWN scratch under a
-/// `.claude/`, at any depth of the tree — a subproject's nested `.claude/` is
-/// the same harness writing the same state, which is why the root `.gitignore`
-/// spells those rules `**/.claude/…`.
+/// Classifica um caminho do `git status` nas três categorias de
+/// [`DirtyPathKind`], lendo-o sob um `.claude/` a qualquer profundidade da
+/// árvore — o `.claude/` aninhado de um subprojeto é o mesmo harness escrevendo
+/// o mesmo estado, que é por isso que o `.gitignore` do raiz soletra aquelas
+/// regras como `**/.claude/…`.
 ///
 /// TRUNCATION. git can report a DIRECTORY where a file was expected — one entry
 /// standing for everything below it. [`checkout_work`] asks git to enumerate,
@@ -737,35 +797,52 @@ const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved", CUT_BASE_FILE];
 /// being wrong the other way costs somebody their work), and with the
 /// enumeration in place it no longer strands the project whose `.claude/` was
 /// never committed: that tree now arrives as its individual files.
-fn is_harness_scratch(path: &str) -> bool {
+///
+/// A mesma regra vale para o censo: só um caminho INTEIRO se classifica como
+/// [`DirtyPathKind::Census`] — `.claude/skills/` truncado continua sendo
+/// trabalho, porque este teste não mediu o que há embaixo.
+fn classify_dirty_path(path: &str) -> DirtyPathKind {
     let normalised = path.replace('\\', "/");
     let mut segments = normalised.split('/').filter(|s| !s.is_empty());
     // Everything up to the first `.claude` segment is somebody else's tree.
     // `.claude/.claude/` cannot occur (guarded in `ClaudePaths`), so the first
     // occurrence is the only one worth reading.
     if !segments.any(|s| s == ".claude") {
-        return false;
+        return DirtyPathKind::Work;
     }
     let rest: Vec<&str> = segments.collect();
     // A bare `.claude` / `.claude/`: measured nothing, so it counts.
     let Some(first) = rest.first() else {
-        return false;
+        return DirtyPathKind::Work;
     };
     if HARNESS_SCRATCH_DIRS.contains(first) {
-        return true;
+        return DirtyPathKind::Scratch;
     }
-    if rest.len() == 1 && HARNESS_SCRATCH_FILES.contains(first) {
-        return true;
+    if rest.len() == 1 {
+        if HARNESS_SCRATCH_FILES.contains(first) {
+            return DirtyPathKind::Scratch;
+        }
+        if CENSUS_FILES.contains(first) {
+            return DirtyPathKind::Census;
+        }
+        return DirtyPathKind::Work;
+    }
+    // `.claude/skills/<molde>/…/SKILL.md` — o molde inteiro, nunca um diretório
+    // truncado que só COMEÇA em `skills/`.
+    if *first == CENSUS_SKILLS_DIR && rest.last() == Some(&CENSUS_SKILL_FILE) {
+        return DirtyPathKind::Census;
     }
     if *first != "spec" {
-        return false;
+        return DirtyPathKind::Work;
     }
     // `.claude/spec/<unit>/<child>/…` — only the spill is scratch. A shorter
     // path is a truncated directory that may hold the unit's own spec.
     match rest.get(2) {
-        Some(child) if SPEC_SCRATCH_DIRS.contains(child) => true,
-        Some(child) => rest.len() == 3 && SPEC_SCRATCH_FILES.contains(child),
-        None => false,
+        Some(child) if SPEC_SCRATCH_DIRS.contains(child) => DirtyPathKind::Scratch,
+        Some(child) if rest.len() == 3 && SPEC_SCRATCH_FILES.contains(child) => {
+            DirtyPathKind::Scratch
+        }
+        _ => DirtyPathKind::Work,
     }
 }
 
@@ -800,7 +877,9 @@ pub(crate) struct BusyCheckout {
     /// WHAT was established about the work that would have ridden along: the
     /// paths positively observed ([`CheckoutWork::Holds`]), or the fact that the
     /// probe could not answer ([`CheckoutWork::Unproven`]).
-    /// [`CheckoutWork::ProvenClean`] never appears here — that is not busy.
+    /// [`CheckoutWork::ProvenClean`] never appears here — that is not busy, e
+    /// [`CheckoutWork::CensusOnly`] tampouco: uma árvore suja só com o censo não
+    /// tem trabalho de ninguém para levar embora.
     pub(crate) work: CheckoutWork,
 }
 
@@ -854,7 +933,11 @@ pub(crate) fn busy_checkout(
         return None;
     }
     let work = checkout_work(root);
-    if matches!(work, CheckoutWork::ProvenClean) {
+    // `CensusOnly` passa junto com `ProvenClean`: os dois dizem que não há
+    // trabalho de ninguém para o checkout levar embora. Recusar o corte pela
+    // saída da própria ferramenta seria a ferramenta se barrando nela mesma —
+    // e o portão base já grava esses arquivos antes do corte.
+    if matches!(work, CheckoutWork::ProvenClean | CheckoutWork::CensusOnly(_)) {
         return None;
     }
     Some(BusyCheckout {
@@ -2150,7 +2233,31 @@ mod tests {
             // Windows separators, should git or a caller ever hand them over.
             ".claude\\.session\\sess-x\\pending-work-branch",
         ] {
-            assert!(super::is_harness_scratch(scratch), "scratch: {scratch}");
+            assert_eq!(
+                super::classify_dirty_path(scratch),
+                super::DirtyPathKind::Scratch,
+                "scratch: {scratch}",
+            );
+        }
+
+        // Censo — escrito pela ferramenta, versionado de propósito. Nem
+        // rascunho (seria descartado de todo commit) nem trabalho (recusaria o
+        // corte pela saída da própria ferramenta).
+        for census in [
+            ".claude/grain.model.json",
+            ".claude/grain.dictionary.json",
+            ".claude/scan-declined.json",
+            ".claude/scan-map.md",
+            "apps/rt/.claude/scan-map.md",
+            "apps/rt/.claude/skills/rt-gate-pattern/SKILL.md",
+            ".claude/skills/core-doc-pattern/SKILL.md",
+            ".claude\\scan-map.md",
+        ] {
+            assert_eq!(
+                super::classify_dirty_path(census),
+                super::DirtyPathKind::Census,
+                "census: {census}",
+            );
         }
 
         // Work — the unit's own artefacts, and every truncated directory that
@@ -2173,8 +2280,19 @@ mod tests {
             // Not under a `.claude/` segment at all.
             "src/.session/x",
             ".claudeignore",
+            // O censo tem nome inteiro ou não é censo: um diretório truncado
+            // que só COMEÇA em `skills/` não foi medido, e um `scan-map.md`
+            // fora de um `.claude/` é de quem o escreveu.
+            ".claude/skills/",
+            ".claude/skills/rt-gate-pattern/",
+            "docs/scan-map.md",
+            ".claude/grain.model.json.bak",
         ] {
-            assert!(!super::is_harness_scratch(work), "work: {work}");
+            assert_eq!(
+                super::classify_dirty_path(work),
+                super::DirtyPathKind::Work,
+                "work: {work}",
+            );
         }
     }
 
