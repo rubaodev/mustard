@@ -207,6 +207,16 @@ pub(crate) struct Headings<'a> {
     /// `## Material` heading for the parent spec's decisions and traps, cut to
     /// this wave. See [`render_wave_spec`].
     material: &'a str,
+    /// Uma linha escrita LOGO ABAIXO do `## Acceptance Criteria` da onda,
+    /// quando o conjunto ali NÃO é um recorte por onda.
+    ///
+    /// O prompt renderiza aquela seção sob "estes critérios são o JUIZ desta
+    /// onda" ([`crate::commands::agent::render::sections::read_wave_acceptance`]),
+    /// e essa frase é falsa quando a régua foi carregada inteira por não haver
+    /// como atribuí-la — ver [`headings_for_rewave`]. `None` na porta do PLAN,
+    /// onde o autor declara `satisfies` e o recorte é real: o arquivo sai
+    /// byte-idêntico ao de antes deste campo existir.
+    acceptance_note: Option<&'a str>,
 }
 
 /// Build the heading set. These render MACHINE artefacts — the operational
@@ -234,7 +244,36 @@ pub(crate) fn headings() -> Headings<'static> {
         reality_obligations: "## Reality Obligations",
         acceptance: "## Acceptance Criteria",
         material: "## Material",
+        acceptance_note: None,
     }
+}
+
+/// A linha que a onda nascida de um REWAVE carrega sob o
+/// `## Acceptance Criteria` dela.
+///
+/// O rewave não tem autor: as ondas nascem de um DAG de ARQUIVOS, que não tem
+/// como dizer qual critério pertence a qual onda. A régua é então carregada
+/// INTEIRA para cada onda ([`super::exec_rewave_check`]), senão toda onda
+/// rewaveada seria despachada com `## ACCEPTANCE` vazio — o estado que a outra
+/// porta recusa com exit 2.
+///
+/// Carregar a união e deixar o prompt afirmar "estes critérios são o JUIZ desta
+/// onda" seria dizer ao executor uma coisa que o plano não sabe. Então a união
+/// continua, e o arquivo DIZ que é união: é a diferença entre uma resposta
+/// honesta e uma atribuição inventada.
+const REWAVE_ACCEPTANCE_NOTE: &str =
+    "_Carried WHOLE from the parent, not cut per wave: this layout was derived from the file \
+     dependency graph, which cannot say which criterion belongs to which wave. The set below is \
+     the UNIT's ruler — some of these lines only pass once a sibling wave lands, and that is \
+     expected._";
+
+/// O mesmo conjunto de títulos da porta do PLAN, mais a nota que declara a
+/// régua como união do pai — ver [`REWAVE_ACCEPTANCE_NOTE`].
+///
+/// Duas portas, dois construtores nomeados, um renderizador: o campo fica
+/// privado e nenhuma delas pode esquecer qual é a sua.
+pub(crate) fn headings_for_rewave() -> Headings<'static> {
+    Headings { acceptance_note: Some(REWAVE_ACCEPTANCE_NOTE), ..headings() }
 }
 
 /// Render the wave-plan markdown index. Lifecycle metadata (stage / scope /
@@ -477,6 +516,12 @@ pub(crate) fn render_wave_spec(
     }
     if !criteria.is_empty() {
         let _ = write!(out, "\n{}\n\n", hd.acceptance);
+        // A nota, quando existe, vem ANTES dos critérios: ela qualifica o
+        // conjunto inteiro, e o prompt a lê logo abaixo da frase fixa que
+        // chama a seção de juiz desta onda — ver [`headings_for_rewave`].
+        if let Some(note) = hd.acceptance_note {
+            let _ = writeln!(out, "{note}\n");
+        }
         out.push_str(&criteria.join("\n"));
         out.push('\n');
     }
@@ -842,6 +887,21 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         }
     }
 
+    // O PLANO PRÉ-CRITÉRIOS, dito uma vez e lido pelas DUAS recusas abaixo.
+    //
+    // Sem um único critério declarado — nem no pai, nem em onda nenhuma — não há
+    // conjunto contra o qual medir onda alguma: todo `satisfies` seria fantasma,
+    // e toda onda com tarefa seria "onda sem régua". As duas recusas então
+    // disparariam juntas num plano que está sendo REDIGIDO, que é o estado
+    // legítimo de quem ainda não escreveu os critérios — a recusa bloquearia a
+    // redação em vez de um erro. O silêncio ali já é dito pela lacuna de
+    // cobertura, que também não tem o que dizer.
+    //
+    // A exceção mora numa variável só de propósito: ela nasceu na checagem de id
+    // fantasma e a outra recusa não a recebeu, e a divergência custou um plano
+    // legítimo recusado com `ERR_UNTRACED_WAVES`. Uma condição, dois leitores.
+    let pre_criteria_plan = defined.is_empty();
+
     for w in &plan.waves {
         // Conjunto satisfeito: a MESMA regra que o renderizador usa para recortar
         // o `## Acceptance Criteria` da onda — ver [`satisfied_ids`].
@@ -863,13 +923,8 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         // continua sendo uma linha, e a mensagem nomeia o id e os ids que
         // existem.
         //
-        // O conjunto VAZIO é exceção, e por uma razão e não por conveniência:
-        // sem um único critério declarado no plano ou no pai, não há conjunto
-        // contra o qual comparar — todo id seria fantasma, inclusive num plano
-        // pré-critérios legítimo, e a recusa bloquearia a redação em vez de um
-        // erro. O silêncio ali já é dito pela lacuna de cobertura, que também
-        // não tem o que dizer.
-        let phantom: Vec<String> = if defined.is_empty() {
+        // O conjunto VAZIO é exceção — ver [`pre_criteria_plan`], acima.
+        let phantom: Vec<String> = if pre_criteria_plan {
             Vec::new()
         } else {
             satisfied.iter().filter(|id| !defined.contains(*id)).cloned().collect()
@@ -887,7 +942,10 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
                 known = defined.iter().cloned().collect::<Vec<_>>().join(", "),
             ));
         }
-        if !w.tasks.is_empty() && satisfied.is_empty() {
+        // A MESMA exceção do fantasma, pela MESMA razão — ver
+        // [`pre_criteria_plan`]. Ela nasceu só na checagem acima, e a assimetria
+        // recusava exatamente a população que a outra metade isentava.
+        if !pre_criteria_plan && !w.tasks.is_empty() && satisfied.is_empty() {
             untraced_waves.push(format!(
                 "wave-{n}-{role} has tasks but satisfies no AC — add `satisfies` ids or an \
                  `acceptance` line so its work traces to a criterion. Its `## Acceptance \
@@ -2622,6 +2680,77 @@ mod tests {
         assert_eq!(report["sharedFiles"]["ok"], json!(true), "{report}");
     }
 
+    /// A REGRESSÃO que este teste tranca: um plano PRÉ-CRITÉRIOS — o pai ainda
+    /// não escreveu `## Acceptance Criteria` — não pode ser recusado por "onda
+    /// sem régua".
+    ///
+    /// A isenção nasceu na checagem de id fantasma e não foi dada à recusa
+    /// irmã, então a segunda passou a recusar exatamente a população que a
+    /// primeira isentava: um plano legítimo em redação virava
+    /// `ERR_UNTRACED_WAVES`, exit 2, e a transição PLAN era retida.
+    #[test]
+    fn a_plan_written_before_any_criterion_is_not_refused() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-pre-criterios");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // O pai tem prosa e arquivos, e nenhum critério ainda.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Epic\n\n## Contexto\n\na história\n\n## Files\n- `src/a.rs` (create)\n",
+        )
+        .unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"] },
+                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
+                  "files": ["src/b.rs"] }
+            ]),
+        );
+
+        let ScaffoldOutcome::Created { untraced_waves, uncovered_acs, .. } =
+            scaffold(&spec_dir, &plan_path)
+        else {
+            panic!("expected ScaffoldOutcome::Created");
+        };
+        assert!(
+            untraced_waves.is_empty(),
+            "sem critério NENHUM não há conjunto contra o qual medir onda alguma — recusar aqui \
+             bloqueia a redação: {untraced_waves:?}",
+        );
+        assert!(uncovered_acs.is_empty(), "e não há critério descoberto a nomear: {uncovered_acs:?}");
+
+        // …e a mesma resposta no COMPOSTO: nada de `ERR_UNTRACED_WAVES`, e a
+        // transição PLAN não é retida.
+        use crate::commands::pipeline::plan_materialize::{materialize, ERR_UNTRACED_WAVES};
+        let comp = tempdir().unwrap();
+        let project = comp.path();
+        let comp_spec_dir = project.join(".claude").join("spec").join("epic-pre-criterios");
+        std::fs::create_dir_all(&comp_spec_dir).unwrap();
+        std::fs::write(
+            comp_spec_dir.join("spec.md"),
+            "# Epic\n\n## Contexto\n\na história\n\n## Files\n\
+             - `src/a.rs` (create)\n- `src/b.rs` (create)\n",
+        )
+        .unwrap();
+        let comp_plan = write_plan(
+            project,
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"] },
+                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
+                  "files": ["src/b.rs"] }
+            ]),
+        );
+        let report = materialize(project, &comp_spec_dir, &comp_plan);
+        assert_ne!(
+            report["scaffold"]["error"],
+            json!(ERR_UNTRACED_WAVES),
+            "o plano pré-critérios não é recusado por falta de régua: {report}",
+        );
+    }
+
     /// Um `satisfies` que nomeia critério NENHUM é recusado do mesmo jeito que
     /// uma onda que não declara nada.
     ///
@@ -3036,14 +3165,34 @@ mod tests {
         };
         let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1), lang: None };
 
-        // (a) tasks but no AC → untraced-wave gap naming the wave (Gap 1).
-        let gaps = traceability_gaps(&plan(wave(vec!["do the thing"], vec![], vec![])), None);
+        // (a) tasks but no AC, num plano que TEM critérios → untraced-wave gap
+        // naming the wave (Gap 1).
+        let parent_ac = "# S\n\n## Acceptance Criteria\n\n- **AC-1** — works. Command: `true`\n";
+        let gaps = traceability_gaps(
+            &plan(wave(vec!["do the thing"], vec![], vec![])),
+            Some(parent_ac),
+        );
         assert!(
             gaps.untraced_waves.iter().any(|g| g.contains("wave-1-backend") && g.contains("satisfies no AC")),
             "wave with tasks but no AC must be a gap: {:?}",
             gaps.untraced_waves
         );
-        assert!(gaps.uncovered_acs.is_empty(), "no defined ACs → no uncovered gap");
+        assert!(
+            gaps.uncovered_acs.iter().any(|g| g.contains("AC-1")),
+            "e o critério que nenhuma onda reivindica é órfão: {:?}",
+            gaps.uncovered_acs,
+        );
+        // (a') …e a MESMA onda, num plano que ainda não escreveu critério
+        // NENHUM, não é gap: sem conjunto contra o qual medir, a recusa
+        // bloquearia a redação em vez de um erro — a mesma isenção que o id
+        // fantasma tem (ver `pre_criteria_plan`).
+        let drafting = traceability_gaps(&plan(wave(vec!["do the thing"], vec![], vec![])), None);
+        assert!(
+            drafting.untraced_waves.is_empty(),
+            "um plano pré-critérios não tem régua a cobrar: {:?}",
+            drafting.untraced_waves,
+        );
+        assert!(drafting.uncovered_acs.is_empty(), "no defined ACs → no uncovered gap");
         // (b) declares AND satisfies its own AC → clean on both axes. It also
         // declares a file: a wave that does work and claims a criterion while
         // declaring nowhere to do it is Gap 3, so the fixture has to be a

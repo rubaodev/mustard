@@ -297,11 +297,27 @@ fn demote_heading(block: &str) -> String {
 /// onde este fallback dispara — os dois recortes são do mesmo `spec.md`, então o
 /// Contexto saía DUAS vezes no prompt.
 ///
-/// O que sobrou no tier 2 é um PONTEIRO, e ele continua condicionado à seção
-/// `## Contexto` existir e ter corpo: sem isso não há narrativa para apontar, e
-/// o bloco fica vazio como sempre ficou. Com ela, o TASK diz onde a história e a
-/// régua estão em vez de repetir uma delas — que é uma resposta útil, não um
-/// TASK em branco.
+/// O que sobrou no tier 2 é um PONTEIRO — e um ponteiro só vale enquanto aponta
+/// para algo que ESTÁ no prompt. Duas coisas seguem daí, e as duas são regra:
+///
+/// 1. **Dispara por QUALQUER uma das duas.** Condicionar o tier inteiro ao
+///    `## Contexto` deixava indespachável a spec que declara critérios sob um
+///    título narrativo diferente (`## Problema`, `## Resumo`): o TASK voltava
+///    vazio e o `render::run` RECUSA um `## TASK` vazio com exit 2. Uma spec sem
+///    o título canônico é uma spec que degrada, nunca uma spec que não anda.
+/// 2. **Nomeia SÓ o que vai ser renderizado.** O `## ACCEPTANCE` colapsa quando
+///    a spec não declara critério ([`read_wave_acceptance`] devolve "" e o
+///    [`collapse_empty_sections`] derruba o título), e o `## WHY` colapsa quando
+///    ela não tem `## Contexto` nem `## Não-Objetivos` ([`build_why_block`]).
+///    Apontar para uma seção que não está no prompt é pior que não apontar: o
+///    agente vai procurar e não acha.
+///
+/// A pergunta é feita ao MESMO texto que este fallback já tem em mãos, e é a
+/// mesma que os dois blocos fazem — no render de nível-spec, que é onde este
+/// tier dispara, os três recortes saem do mesmo `spec.md`.
+///
+/// Vazio só quando não há nem narrativa nem régua para apontar: aí não existe
+/// ponteiro honesto a dar, e o TASK em branco de sempre é a resposta.
 fn build_task_fallback(text: &str, spec_path: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(body) = cut_section_by_display(text, &["Root cause", "Causa raiz"]) {
@@ -310,15 +326,12 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
     if let Some(body) = cut_section_by_display(text, &["Plan", "Plano"]) {
         parts.push(body);
     }
-    if parts.is_empty() && cut_section_by_key(text, "context").is_some() {
+    if parts.is_empty() {
         // O ponteiro, não a cópia: a narrativa já viaja no `## WHY` e os
         // critérios no `## ACCEPTANCE`, recortados deste mesmo arquivo.
-        parts.push(
-            "> TASK fallback: the spec has no `## Tasks` section. The story of WHY this work \
-             exists is in `## WHY` above, and the criteria this work is judged by are in \
-             `## ACCEPTANCE` — both cut from this same spec. Derive the steps from them."
-                .to_string(),
-        );
+        if let Some(pointer) = task_fallback_pointer(text) {
+            parts.push(pointer);
+        }
     }
     if parts.is_empty() {
         return String::new();
@@ -328,6 +341,42 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
         spec_path.display()
     ));
     parts.join("\n\n")
+}
+
+/// O ponteiro do tier 2, nomeando SÓ as seções que o prompt vai mesmo carregar.
+///
+/// As duas perguntas são as MESMAS que os dois blocos fazem do mesmo texto:
+/// `## WHY` existe quando há `## Contexto` OU `## Não-Objetivos`
+/// ([`build_why_block`]); `## ACCEPTANCE` existe quando há
+/// `## Critérios de Aceitação` ([`read_wave_acceptance`]). Sem nenhuma das duas
+/// não há para onde apontar, e o retorno é `None` — o TASK em branco de sempre.
+///
+/// Pura, total; EN pela política de prompt de agente, como todo o resto do
+/// bloco.
+fn task_fallback_pointer(text: &str) -> Option<String> {
+    let why = cut_section_by_key(text, "context").is_some()
+        || cut_section_by_key(text, "non-goals").is_some();
+    let ruler = cut_section_by_key(text, "acceptance-criteria").is_some();
+    let head = "> TASK fallback: the spec has no `## Tasks` section.";
+    let tail = "Derive the steps from it.";
+    Some(match (why, ruler) {
+        (true, true) => format!(
+            "{head} The story of WHY this work exists is in `## WHY` above, and the criteria \
+             this work is judged by are in `## ACCEPTANCE` — both cut from this same spec. \
+             Derive the steps from them."
+        ),
+        (true, false) => format!(
+            "{head} The story of WHY this work exists is in `## WHY` above, cut from this same \
+             spec. The spec declares no acceptance criteria, so nothing in this prompt states \
+             how the work will be judged. {tail}"
+        ),
+        (false, true) => format!(
+            "{head} The criteria this work is judged by are in `## ACCEPTANCE` above, cut from \
+             this same spec. The spec carries no narrative section, so this prompt does not say \
+             why the work exists. {tail}"
+        ),
+        (false, false) => return None,
+    })
 }
 
 /// Cut a `## <name>` section body (heading included) by literal display name,
@@ -1251,11 +1300,68 @@ mod tests {
             "the story must still reach the prompt through `## WHY`"
         );
 
-        // Sem `## Contexto` não há narrativa para apontar, e o bloco volta a ser
-        // vazio — o TASK em branco de sempre, nunca um ponteiro para o nada.
+        // Sem narrativa NEM régua não há para onde apontar, e o bloco volta a
+        // ser vazio — o TASK em branco de sempre, nunca um ponteiro para o nada.
         let bare = dir.path().join("bare.md");
-        std::fs::write(&bare, "# TF\n## Critérios de Aceitação\n- **AC-1** — x\n").unwrap();
+        std::fs::write(&bare, "# TF\n## Limites\nIN: nada\n").unwrap();
         assert!(read_task_steps(&bare).is_empty(), "{:?}", read_task_steps(&bare));
+    }
+
+    /// A REGRESSÃO que este teste tranca: uma spec que declara critérios sob um
+    /// título narrativo que não é `## Contexto` voltava com `## TASK` VAZIO, e
+    /// `render::run` recusa um TASK vazio com exit 2 — a spec ficava
+    /// indespachável em vez de degradar.
+    ///
+    /// E o ponteiro nomeia SÓ o que o prompt carrega: sem `## Contexto` nem
+    /// `## Não-Objetivos` o `## WHY` colapsa, então mandar o agente lê-lo seria
+    /// mandá-lo procurar uma seção que não está ali.
+    #[test]
+    fn task_fallback_fires_on_criteria_alone_and_points_only_at_what_renders() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# TF\n## Problema\no digest perde intents pt\n\
+             ## Critérios de Aceitação\n- **AC-1** — repro query returns hits\n",
+        )
+        .unwrap();
+        let steps = read_task_steps(&path);
+        assert!(!steps.is_empty(), "a spec ficou indespachável: TASK vazio");
+        assert!(steps.contains("`## ACCEPTANCE`"), "a régua tem de ser nomeada: {steps}");
+        assert!(
+            !steps.contains("`## WHY`"),
+            "o `## WHY` colapsa nesta spec — apontar para ele manda procurar o que não existe: \
+             {steps}"
+        );
+        assert!(steps.contains("Read the full spec at"), "read-the-spec cue missing: {steps}");
+        // E a outra metade da mesma regra: o bloco que ele nomeia é o que
+        // realmente renderiza, e o que ele NÃO nomeia é o que colapsa.
+        assert!(read_wave_acceptance(&path).contains("AC-1"), "a régua renderiza");
+        assert!(build_why_block(&path).is_empty(), "e o `## WHY` colapsa mesmo");
+    }
+
+    /// O espelho: narrativa sem régua. O `## ACCEPTANCE` colapsa, então o
+    /// ponteiro fala só do `## WHY`.
+    #[test]
+    fn task_fallback_points_only_at_why_when_the_spec_declares_no_criteria() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(&path, "# TF\n## Contexto\na história inteira\n").unwrap();
+        let steps = read_task_steps(&path);
+        assert!(steps.contains("`## WHY`"), "a história tem de ser nomeada: {steps}");
+        assert!(
+            !steps.contains("`## ACCEPTANCE`"),
+            "sem critério declarado o `## ACCEPTANCE` colapsa: {steps}"
+        );
+        assert!(read_wave_acceptance(&path).is_empty(), "e ele colapsa mesmo");
+
+        // `## Não-Objetivos` sozinho também arma o `## WHY`, pela mesma regra
+        // que o [`build_why_block`] usa — as duas seções, não só a primeira.
+        let ng = dir.path().join("ng.md");
+        std::fs::write(&ng, "# TF\n## Não-Objetivos\n- não mexer no portão\n").unwrap();
+        let steps = read_task_steps(&ng);
+        assert!(steps.contains("`## WHY`"), "o não-objetivo também é história: {steps}");
+        assert!(!build_why_block(&ng).is_empty(), "e o bloco renderiza mesmo");
     }
 
     #[test]

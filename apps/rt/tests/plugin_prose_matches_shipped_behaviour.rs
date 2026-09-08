@@ -1194,15 +1194,20 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
          spec, waves and proof while `git status` named all three",
     );
     let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
-    // ONE entry point, called by BOTH doors: the shared refusal, plus the census
-    // recording the cut owes the base. A door that took only `busy_checkout`
-    // would refuse the same way and still carry `.claude/scan-map.md` and the
-    // generated molds into the unit's branch.
+    // ONE decision and ONE settlement, and BOTH doors take BOTH: the shared
+    // refusal (`busy_checkout`) and the census recording the cut owes the base
+    // (`record_census_before_cut`). They are two calls rather than one because
+    // the recording must land AFTER the base resolves — a cut denied for an
+    // unknown base has to leave no commit behind. A door that took only the
+    // refusal would refuse the same way and still carry `.claude/scan-map.md`
+    // and the generated molds into the unit's branch.
     assert!(
-        gate.contains("busy_checkout_before_cut(Path::new(&local)")
-            && branch.contains("fn busy_checkout_before_cut")
-            && branch.contains("busy_checkout_before_cut(project,"),
-        "the two doors no longer take the SAME decide-and-settle call, so they can \
+        gate.contains("busy_checkout(Path::new(&local)")
+            && gate.contains("record_census_before_cut(Path::new(&local)")
+            && branch.contains("fn record_census_before_cut")
+            && branch.contains("busy_checkout(project,")
+            && branch.contains("record_census_before_cut(project,"),
+        "the two doors no longer take the SAME decide-and-settle pair, so they can \
          disagree — about the refusal, or about who records the census before the cut",
     );
     assert!(

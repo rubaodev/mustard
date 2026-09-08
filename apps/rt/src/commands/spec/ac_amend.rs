@@ -177,8 +177,22 @@ pub(crate) struct AcAmendReport {
     ///
     /// The same shape `spec-draft --material-only` reports for the material
     /// channel (`wavesStale`/`staleWaves`) — one signal, said the same way.
+    ///
+    /// The rename is what makes that sentence true. This struct carries no
+    /// `rename_all`, so the field emitted `waves_stale` while its twin emits
+    /// `wavesStale`: a caller reading the documented key off an ac-amend report
+    /// got `null` and silently never re-materialised. Only these two fields are
+    /// renamed — `rename_all` here would rewrite every OTHER key of a report
+    /// callers already read.
+    ///
+    /// `skip_serializing_if` for the other half of the same promise: both keys
+    /// used to be serialized unconditionally, so adding them changed the bytes
+    /// of every existing ac-amend call. Absent when nothing is stale, which is
+    /// the ordinary case and the one that must stay byte-identical.
+    #[serde(rename = "wavesStale", skip_serializing_if = "std::ops::Not::not")]
     pub(crate) waves_stale: bool,
     /// The wave directories whose copy of this criterion is stale, sorted.
+    #[serde(rename = "staleWaves", skip_serializing_if = "Vec::is_empty")]
     pub(crate) stale_waves: Vec<String>,
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
@@ -1465,6 +1479,27 @@ mod tests {
             vec!["wave-1-old".to_string()],
             "só a onda cuja cópia ficou para trás é nomeada",
         );
+
+        // …e o sinal sai com o NOME que a documentação dele promete. Sem o
+        // rename o campo saía `waves_stale` enquanto o gêmeo do
+        // `spec-draft --material-only` sai `wavesStale`: quem lesse a chave
+        // documentada recebia `null` e nunca re-materializava.
+        let json = serde_json::to_value(&report).expect("report serialises");
+        assert!(json.get("waves_stale").is_none(), "a grafia antiga não pode sobrar: {json}");
+        assert!(json.get("stale_waves").is_none(), "idem para a evidência: {json}");
+        // Nada desatualizado: as duas chaves ficam AUSENTES, então um relatório
+        // que não tem o que dizer continua com os bytes que sempre teve.
+        assert!(json.get("wavesStale").is_none(), "nada stale, nada emitido: {json}");
+        assert!(json.get("staleWaves").is_none(), "{json}");
+        // E quando há: as chaves aparecem, em camelCase.
+        let stale = AcAmendReport {
+            waves_stale: true,
+            stale_waves: vec!["wave-1-old".to_string()],
+            ..AcAmendReport::refused(&o, "AC-2", "e", "r")
+        };
+        let json = serde_json::to_value(&stale).expect("report serialises");
+        assert_eq!(json["wavesStale"], serde_json::json!(true), "{json}");
+        assert_eq!(json["staleWaves"], serde_json::json!(["wave-1-old"]), "{json}");
 
         // The sibling criteria are untouched — the rewrite is surgical, which is
         // also why the root spec legitimately still contains the green command

@@ -71,7 +71,6 @@ use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
 use crate::commands::spec::active_specs::{active_spec_names, without_spec_date_prefix};
 use crate::commands::spec::spec_slug::canonical_for_project;
-use crate::hooks::write::scan_clean_gate::tree_is_dirty;
 use crate::util::format_gate_message;
 
 /// The closed set of answers the base gate can return.
@@ -194,7 +193,25 @@ pub(crate) fn census_refresh_due(project: &Path, model: &Path) -> bool {
     // Shared install: only a POSITIVE clean tree qualifies. `None` (no git,
     // unreadable status) is unmeasured, and a refresh mined over unknown dirt
     // is exactly what `scan_clean_gate` refuses for the user-invoked door.
-    tree_is_dirty(project) == Some(false)
+    //
+    // A saída do PRÓPRIO censo é descontada, e é o que torna UM commit possível.
+    // Enquanto a passagem de enriquecimento suja a árvore, o mine se considerava
+    // impedido por ela — então o portão tinha de gravar ANTES para se
+    // desimpedir, e gravava o modelo VELHO sob o assunto do censo; o mine então
+    // gravava o modelo novo sob o MESMO assunto, e sobravam dois commits com o
+    // mesmo título, o primeiro registrando conteúdo que a própria ferramenta
+    // acabara de superar. Descontando a saída da ferramenta, o mine roda
+    // primeiro e a gravação acontece uma vez só, no fim
+    // ([`record_leftover_census`]).
+    //
+    // O que NÃO é descontado continua sendo tudo: uma linha do operador junto
+    // devolve `Holds` e o mine segue impedido, que é a regra de sempre.
+    // `Unproven` (sem git, status ilegível) não autoriza nada, exatamente como
+    // o `None` de antes.
+    matches!(
+        super::work_branch::checkout_work(project),
+        CheckoutWork::ProvenClean | CheckoutWork::CensusOnly(_)
+    )
 }
 
 /// `true` when the census on disk describes an older tree than the one checked
@@ -276,8 +293,10 @@ pub(crate) fn refresh_census_if_stale(project: &Path) {
                      to see"
                 ),
                 RecordOutcome::TreeNotClean => eprintln!(
-                    "base-gate: census refreshed ({path}) — the tree already carried your work, \
-                     so it was left for you to commit alongside it"
+                    "base-gate: census refreshed ({path}) — the tree already carried other \
+                     changes, so it was not recorded here: the census pass right after this one \
+                     records it when nothing but the census is dirty, and otherwise it is yours \
+                     to commit alongside your work"
                 ),
                 RecordOutcome::Unavailable => eprintln!(
                     "base-gate: census refreshed ({path}) — git would not record it, so it \
@@ -981,6 +1000,102 @@ mod tests {
         assert_eq!(carried.trim(), "", "e a branch nova nasce sem nada do censo no diff dela");
     }
 
+    /// A REGRESSÃO que este teste tranca: um corte RECUSADO por base
+    /// desconhecida não pode deixar para trás o commit do censo de um corte que
+    /// nunca aconteceu.
+    ///
+    /// A gravação morava dentro da decisão de "checkout ocupado", que roda ANTES
+    /// da resolução da base. Com vários candidatos declarados e nada dizendo de
+    /// qual base a emergência saiu, o corte devolve `BaseUnknown` e não toca no
+    /// git — mas o censo já tinha sido commitado.
+    #[test]
+    fn a_cut_denied_for_an_unknown_base_leaves_no_census_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        // Dois candidatos declarados e nenhum registro: `hotfix/…` não tem base
+        // derivável, então a resolução responde `Ambiguous`.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let sid = "sess-base-unknown";
+        crate::shared::context::set_pending_branch(&root_s, sid, "hotfix/urgente", None);
+        // Amostrado DEPOIS do marcador, que também escreve na árvore: o que
+        // este teste mede é o que o corte faz, não o que o marcador fez.
+        let dirty_before = porcelain(root);
+        let outcome = crate::commands::event::work_branch::cut_pending_work_branch(root, sid);
+        assert!(
+            matches!(
+                outcome,
+                crate::commands::event::work_branch::CutOutcome::BaseUnknown { .. }
+            ),
+            "a base não foi estabelecida, então nada é cortado: {outcome:?}",
+        );
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "e nenhum commit do censo fica para trás de um corte que não houve",
+        );
+        assert_eq!(
+            porcelain(root),
+            dirty_before,
+            "a árvore fica exatamente como estava, para o corte que vier de fato",
+        );
+    }
+
+    /// …e a outra metade: numa posição PROTEGIDA o corte não grava nada, porque
+    /// ali a decisão nem chega a MEDIR a árvore — `holds_other_work` devolve
+    /// `false` no `is_protected` e sai. Um hook não cria commit numa base
+    /// protegida atrás do operador; a porta explícita do `emit-pipeline`
+    /// continua gravando lá.
+    #[test]
+    fn the_cut_does_not_commit_the_census_onto_a_protected_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // `git.protected` nomeia a branch em que a árvore está parada.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev"},"protected":["dev"]}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let config = ProjectConfig::load(root);
+        assert!(
+            crate::commands::event::work_branch::is_protected(root, "dev", &config),
+            "a fixture precisa de uma posição realmente protegida",
+        );
+        crate::commands::event::work_branch::record_census_before_cut(root, Some("dev"), &config);
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "nada é commitado numa base protegida pelo caminho do corte",
+        );
+
+        // E a posição NÃO MEDIDA (`HEAD` destacado, ou ilegível) idem.
+        crate::commands::event::work_branch::record_census_before_cut(root, Some("HEAD"), &config);
+        crate::commands::event::work_branch::record_census_before_cut(root, None, &config);
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "uma posição que não foi medida não autoriza commit nenhum",
+        );
+    }
+
     /// Um molde ADOTADO (`source: manual`) é escrita do OPERADOR, e o caminho
     /// dele é igualzinho ao de um molde gerado — o frontmatter é o que separa.
     ///
@@ -1031,6 +1146,44 @@ mod tests {
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
             "e o portão não varre a escrita do operador para um commit dele",
+        );
+    }
+
+    /// A REGRESSÃO que este teste tranca: o mine se considerava impedido pela
+    /// saída da PRÓPRIA ferramenta, e era isso que produzia dois commits de
+    /// mesmo título.
+    ///
+    /// Com o censo contando como sujeira, o portão tinha de gravar ANTES do mine
+    /// só para se desimpedir — gravando o modelo VELHO sob o assunto do censo —
+    /// e o mine em seguida gravava o novo sob o MESMO assunto. Descontada a
+    /// saída da ferramenta, o mine roda primeiro e a gravação acontece uma vez
+    /// só, no fim.
+    #[test]
+    fn a_census_only_dirty_tree_does_not_block_the_mine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+        // O censo precisa estar VENCIDO para a pergunta ter conteúdo: o modelo
+        // é apagado, que é a forma mais clara de "mais velho que a árvore".
+        std::fs::remove_file(&model).unwrap();
+        assert!(census_refresh_due(root, &model), "precondição: o mine está vencido");
+
+        // A saída da passagem de enriquecimento, e só ela.
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a árvore está suja — só de censo");
+        assert!(
+            census_refresh_due(root, &model),
+            "a ferramenta não pode se impedir com a própria saída: enquanto isso for \
+             `false`, o portão precisa gravar antes do mine e sobram dois commits de \
+             mesmo título",
+        );
+
+        // A outra metade: UMA linha do operador junto e o mine volta a ser
+        // impedido — o desconto é do censo, não da sujeira em geral.
+        std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
+        assert!(
+            !census_refresh_due(root, &model),
+            "com trabalho do operador na árvore o mine continua impedido",
         );
     }
 

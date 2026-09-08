@@ -580,12 +580,15 @@ fn material_only_result(
     }
     // Esta porta reescreve o `spec.md` do PAI e mais nada. As ondas já
     // materializadas carregam o recorte de material feito quando
-    // `plan-materialize` rodou, então tudo o que acabou de entrar aqui está
+    // `plan-materialize` rodou, então o que acabou de entrar aqui pode estar
     // ausente delas — e ninguém era avisado disso. Uma decisão registrada que o
     // executor da onda nunca lê é a mesma coisa que decisão nenhuma, então o
     // desencontro é NOMEADO: na stderr, para o operador, e no relatório, para
     // quem lê a saída por máquina.
-    let stale_waves = materialized_wave_dirs(&dir);
+    //
+    // O corpo NOVO do pai (`out`) é o que a comparação usa — o mesmo que acabou
+    // de ir para o disco, não o que estava lá antes.
+    let stale_waves = waves_missing_the_new_material(&dir, &out);
     let report = material_only_report(slug, &path, material, &stale_waves);
     Some((report, stale_waves))
 }
@@ -615,15 +618,29 @@ fn material_only_report(
     })
 }
 
-/// Os diretórios `wave-N-*` que uma materialização anterior deixou sob
-/// `spec_dir`, ordenados — a ordem do `read_dir` não é estável e esta lista viaja
-/// num relatório que precisa ser.
+/// As ondas materializadas sob `spec_dir` cujo `## Material` NÃO confirma o
+/// recorte que o corpo NOVO do pai produz — ordenadas, porque esta lista viaja
+/// num relatório byte-estável e a ordem do `read_dir` não é.
 ///
-/// Só os NOMES são coletados: quem pergunta quer saber QUAIS ondas ficaram para
-/// trás, nunca o que há dentro delas. Diretório ilegível devolve lista vazia —
-/// isto é uma linha de aviso, e recusar o refresh de material por causa de uma
-/// listagem que não abriu custaria mais do que a linha vale.
-fn materialized_wave_dirs(spec_dir: &Path) -> Vec<String> {
+/// A versão anterior listava TODA onda no disco, sem comparar nada: re-rodar o
+/// `--material-only` com o mesmo arquivo de material — ou com um que só remove
+/// seções — marcava as ondas como desatualizadas do mesmo jeito. Um sinal que
+/// dispara quando nada mudou é o modo de falha que esta unidade cita para o
+/// antigo WARN de rastreio, reproduzido no canal que veio consertá-lo.
+///
+/// A regra é a de [`super::ac_amend::stale_wave_copies`], aplicada ao material:
+/// a onda é relida e só entra na lista quando a releitura NÃO confirma o texto
+/// novo. O recorte comparado é o MESMO que a materialização faria — os arquivos
+/// que a onda declara, pelo mesmo
+/// [`cut_material_for_files`](crate::commands::agent::render::sections::cut_material_for_files)
+/// — senão a comparação e a re-materialização discordariam sobre o que a onda
+/// deveria carregar.
+///
+/// Uma onda sem `spec.md` legível não tem cópia para envelhecer e não entra;
+/// diretório ilegível devolve lista vazia — isto é uma linha de aviso, e recusar
+/// o refresh por causa de uma listagem que não abriu custaria mais do que ela
+/// vale.
+fn waves_missing_the_new_material(spec_dir: &Path, parent_body: &str) -> Vec<String> {
     // Pela camada de fs do projeto (`mfs`), como todo o resto deste módulo: um
     // `std::fs` solto aqui é um leitor a menos sob o mesmo controle.
     let Ok(entries) = mfs::read_dir(spec_dir) else {
@@ -631,12 +648,71 @@ fn materialized_wave_dirs(spec_dir: &Path) -> Vec<String> {
     };
     let mut names: Vec<String> = entries
         .into_iter()
-        .filter(|e| e.is_dir)
+        .filter(|e| e.is_dir && e.file_name.starts_with("wave-"))
+        .filter(|e| {
+            let Ok(body) = mfs::read_to_string(e.path.join("spec.md")) else {
+                return false;
+            };
+            let files = declared_files(&body);
+            let (fresh, _) =
+                crate::commands::agent::render::sections::cut_material_for_files(
+                    parent_body,
+                    &files,
+                );
+            held_material(&body).trim() != fresh.trim()
+        })
         .map(|e| e.file_name)
-        .filter(|name| name.starts_with("wave-"))
         .collect();
     names.sort();
     names
+}
+
+/// Os caminhos que o `## Files` de uma onda declara — a chave do recorte de
+/// material por onda.
+///
+/// A materialização os escreve como `` - `caminho` ``
+/// ([`crate::commands::wave::wave_scaffold::render_wave_spec`]); o desmarcar
+/// aceita a linha sem crase também, para não depender de um detalhe de
+/// formatação para responder "mudou?".
+fn declared_files(wave_body: &str) -> Vec<String> {
+    let Some(block) = crate::commands::spec::spec_sections::section_block(wave_body, "files")
+    else {
+        return Vec::new();
+    };
+    block
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(|p| p.trim().trim_matches('`').trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// O material que a onda carrega HOJE — o corpo do `## Material` dela sem o
+/// título nem a linha de procedência que a materialização escreve.
+///
+/// O título é o literal EN que o renderizador de onda usa (artefato de máquina,
+/// idioma fixo), então não há chave canônica a resolver: o resolvedor de seções
+/// não conhece `material` justamente porque ele é só do arquivo de onda.
+/// Devolve "" quando a onda não tem a seção — que é o estado de uma onda
+/// materializada antes de o canal existir, e ele COMPARA igual a um recorte
+/// vazio.
+fn held_material(wave_body: &str) -> String {
+    let lines: Vec<&str> = wave_body.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim_end() == "## Material") else {
+        return String::new();
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.starts_with("## "))
+        .map_or(lines.len(), |i| start + 1 + i);
+    lines[start + 1..end]
+        .iter()
+        .filter(|l| !l.trim_start().starts_with("_Copied from the parent spec"))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 /// A linha de stderr de um refresh que caiu numa spec cujas ondas já estavam
@@ -3371,9 +3447,48 @@ mod tests {
         assert!(body.contains("uma decisão nova"), "a decisão entrou no spec.md:\n{body}");
         assert!(body.contains("prosa que o refresh não pode tocar"), "o resto do corpo fica:\n{body}");
 
-        // O detector enxerga as duas ondas, em ordem estável, e só elas.
-        let waves = materialized_wave_dirs(&spec_dir);
+        // O detector enxerga as duas ondas, em ordem estável, e só elas — as
+        // duas foram materializadas ANTES desta decisão, então nenhuma a
+        // carrega.
+        let new_body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        let waves = waves_missing_the_new_material(&spec_dir, &new_body);
         assert_eq!(waves, vec!["wave-1-impl".to_string(), "wave-2-review".to_string()]);
+
+        // …e o sinal dispara por MUDANÇA, não por existência: uma onda cujo
+        // `## Material` já confirma o recorte novo não é desatualizada.
+        let caught_up = spec_dir.join("wave-1-impl");
+        let (fresh, _) = crate::commands::agent::render::sections::cut_material_for_files(
+            &new_body,
+            &[],
+        );
+        assert!(!fresh.is_empty(), "a decisão nova tem de entrar no recorte");
+        std::fs::write(
+            caught_up.join("spec.md"),
+            format!("# onda\n\n## Material\n\n{fresh}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            waves_missing_the_new_material(&spec_dir, &new_body),
+            vec!["wave-2-review".to_string()],
+            "a onda que já carrega o texto novo sai da lista; a que não carrega fica",
+        );
+
+        // E a re-execução com o MESMO material não inventa desatualização
+        // nenhuma: nada mudou, nada é reportado.
+        std::fs::write(
+            spec_dir.join("wave-2-review").join("spec.md"),
+            format!("# onda\n\n## Material\n\n{fresh}\n"),
+        )
+        .unwrap();
+        assert!(
+            waves_missing_the_new_material(&spec_dir, &new_body).is_empty(),
+            "um sinal que dispara quando nada mudou é ruído, não aviso",
+        );
+        // Restaurada a fixture, porque o resto do teste mede o relatório do
+        // caminho real com as duas ondas para trás.
+        for wave in ["wave-1-impl", "wave-2-review"] {
+            std::fs::write(spec_dir.join(wave).join("spec.md"), "# onda\n").unwrap();
+        }
 
         // O relatório que o COMANDO imprime — o mesmo valor, pela mesma fiação
         // (slug, caminho, detector de ondas), não uma remontagem por fora.

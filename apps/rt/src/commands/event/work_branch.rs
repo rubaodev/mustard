@@ -996,37 +996,54 @@ pub(crate) fn busy_checkout(
     })
 }
 
-/// A MESMA decisão de [`busy_checkout`], tomada por quem vai efetivamente
-/// cortar — e que, ao liberar o corte, GRAVA antes o censo que sobrou sujo na
-/// árvore.
+/// Grava o censo que sobrou sujo na árvore, no ÚNICO ponto em que o corte vai
+/// mesmo acontecer — chamado pelas duas portas que cortam, DEPOIS de a base
+/// estar resolvida e ANTES do `git checkout -b`.
 ///
-/// As duas metades andam juntas de propósito. [`CheckoutWork::CensusOnly`] passa
-/// como "não é trabalho de ninguém" em toda porta, mas só uma delas gravava o
-/// censo antes de cortar (o portão base, em
+/// [`CheckoutWork::CensusOnly`] passa como "não é trabalho de ninguém" em toda
+/// porta, mas só o portão base gravava o censo antes de cortar (em
 /// [`crate::commands::event::emit_pipeline`]). Nas outras duas o `git checkout
 /// -b` levava `.claude/scan-map.md` e os moldes gerados para DENTRO da branch da
-/// unidade, onde eles entram no diff dela e no pull request dela — exatamente a
-/// atribuição que o assunto de commit do censo existe para evitar. Uma função
-/// que decide e liquida é o que impede a terceira porta de nascer esquecendo o
-/// mesmo passo.
+/// unidade, onde entram no diff e no pull request dela — a atribuição que o
+/// assunto de commit do censo existe para evitar.
 ///
-/// Gravar não é condicionado ao veredito ser `CensusOnly`: quando a árvore está
-/// limpa, ou quando o checkout nem pertencia a outra unidade,
-/// [`crate::commands::event::base_gate::record_leftover_census`] mede de novo e
-/// não faz nada — e o corte que vem a seguir é o mesmo corte que carregaria o
-/// censo embora. Fail-open de ponta a ponta: censo invisível para o git, ou um
-/// git que recusa, deixa a escrita onde caiu e o corte segue como antes.
-pub(crate) fn busy_checkout_before_cut(
+/// ## "Liberado para cortar" NÃO é "não havia o que medir"
+///
+/// A versão anterior gravava sempre que [`busy_checkout`] devolvia `None`, e
+/// esse `None` mistura dois estados. [`holds_other_work`] devolve `false` — sem
+/// medir nada — assim que a posição é PROTEGIDA, ou é `None`/`HEAD`. Nesses
+/// casos o `None` diz "não há decisão a tomar", não "a árvore foi medida e só
+/// tem censo": um Edit com a árvore parada em `main` disparava um commit da
+/// ferramenta na própria branch protegida, atrás do operador.
+///
+/// Então as duas condições são explícitas aqui, e as duas são necessárias:
+///
+/// 1. a posição foi MEDIDA (`current` é um nome de branch, não `None` nem
+///    `HEAD`) e NÃO é protegida — um hook não cria commit numa base protegida
+///    sem o operador ter pedido; a porta explícita do portão base continua
+///    gravando lá, onde o operador digitou o comando;
+/// 2. a árvore, medida de novo por
+///    [`crate::commands::event::base_gate::record_leftover_census`], responde
+///    `CensusOnly` — sobrando qualquer linha do operador, nada é gravado.
+///
+/// E o MOMENTO importa tanto quanto a condição: a chamada mora depois da
+/// resolução da base, porque um corte recusado ali (`workbranch.base.unknown`)
+/// deixava para trás um commit do censo de um corte que nunca aconteceu.
+///
+/// Fail-open de ponta a ponta: censo invisível para o git, ou um git que recusa,
+/// deixa a escrita onde caiu e o corte segue como antes.
+pub(crate) fn record_census_before_cut(
     root: &Path,
     current: Option<&str>,
-    target: &str,
     config: &mustard_core::ProjectConfig,
-) -> Option<BusyCheckout> {
-    let busy = busy_checkout(root, current, target, config);
-    if busy.is_none() {
-        crate::commands::event::base_gate::record_leftover_census(root);
+) {
+    let Some(branch) = current.filter(|b| *b != "HEAD") else {
+        return;
+    };
+    if is_protected(root, branch, config) {
+        return;
     }
-    busy
+    crate::commands::event::base_gate::record_leftover_census(root);
 }
 
 /// What [`cut_pending_work_branch`] did — the closed set, so a caller that must
@@ -1120,9 +1137,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
 
     // The checkout may belong to ANOTHER unit that has not committed yet:
     // refuse before touching git, so its work stays where its author left it.
-    // Liberado o corte, o censo que sobrou sujo é gravado AQUI, antes do
-    // checkout — senão ele viaja para dentro da branch desta unidade.
-    if let Some(busy) = busy_checkout_before_cut(project, current.as_deref(), &target, &config) {
+    if let Some(busy) = busy_checkout(project, current.as_deref(), &target, &config) {
         return CutOutcome::Refused(busy);
     }
 
@@ -1139,6 +1154,13 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
             }
         }
     };
+
+    // A base está resolvida, então o corte vai mesmo acontecer: é AQUI que o
+    // censo que sobrou sujo é gravado, antes do checkout — senão ele viaja para
+    // dentro da branch desta unidade. Nem antes (um corte recusado por base
+    // desconhecida deixaria um commit do censo para trás), nem por qualquer
+    // `None` da decisão — ver [`record_census_before_cut`].
+    record_census_before_cut(project, current.as_deref(), &config);
 
     // Refresh from origin FIRST so the unit is cut from the latest base — the
     // base this cut will really use included, declared or not.

@@ -792,6 +792,13 @@ pub(crate) fn is_exempt(index: usize, total: usize) -> bool {
 /// dele nem sendo executado. Estreitar o gatilho é o que torna esse re-julgamento
 /// seguro — e ele CONTINUA valendo, porque a regra deve alcançar o acervo.
 ///
+/// Os DOIS passes que julgam um critério perguntam isto: o vermelho
+/// ([`prove_one`], via [`take_control`]) e a confirmação ([`confirm_one`]). O
+/// passe de confirmação toma um ramo próprio em [`run_pass`] e não passava por
+/// aqui, então uma spec cujo registro é anterior à regra fechava como provada
+/// sem nunca ter sido perguntada — a regra alcançava só quem por acaso
+/// re-rodasse o vermelho primeiro.
+///
 /// A pergunta vai para o predicado COMPARTILHADO
 /// ([`super::analyze_validation::test_runner_has_selector`]), que é também o que
 /// o lint `test-ac-no-control` pergunta na hora do rascunho — o critério que
@@ -1175,11 +1182,20 @@ fn recontrol(root: &Path, previous: &AcProof, control: Option<&str>) -> AcProof 
 /// binary cannot be attempted from here, and is recorded as a confirmation NOT
 /// TAKEN — never as [`Confirmation::Inexecutable`], which is an order to
 /// rewrite the criterion.
+/// `control` é o que a spec declara HOJE, e ele é perguntado AQUI pelo mesmo
+/// motivo que em [`prove_one`]: a regra deve alcançar o ACERVO. O passe de
+/// confirmação toma o seu próprio ramo e nunca passava por
+/// [`control_required`] — então uma spec cujo registro é anterior à regra
+/// (`control_command: null` ao lado de um executor filtrado) confirmava verde e
+/// FECHAVA como provada, e a regra só valia para quem por acaso re-rodasse o
+/// vermelho antes. A pergunta vem primeiro, como o controle vem primeiro no
+/// vermelho: sem ele o verde não diz se o filtro casou alguma coisa.
 pub(crate) fn confirm_one(
     root: &Path,
     id: &str,
     command: &str,
     expect: Option<&str>,
+    control: Option<&str>,
     previous: Option<&AcProof>,
     in_process: bool,
 ) -> AcProof {
@@ -1202,6 +1218,16 @@ pub(crate) fn confirm_one(
         stderr_excerpt: String::new(),
         proof_tree: None,
     });
+    // O CONTROLE vem primeiro, aqui como no vermelho — ver o doc acima.
+    if control_required(command, control) {
+        return AcProof {
+            control_command: control.map(str::to_string),
+            control: Control::NotDeclared,
+            verdict: Verdict::Unproven,
+            reason: Some(REASON_CONTROL_REQUIRED.to_string()),
+            ..record
+        };
+    }
     if record.proof != Proof::Red {
         return AcProof {
             verdict: Verdict::Unproven,
@@ -1458,11 +1484,16 @@ fn run_pass(
             // The confirmation only ever speaks about a criterion the ledger
             // already carries. One it does not is missing its RED proof, and a
             // green run here would answer a question nobody asked.
+            //
+            // O `control` da spec de HOJE viaja junto: a exigência de controle
+            // é perguntada também neste passe, senão a regra não alcançaria o
+            // acervo — ver [`confirm_one`].
             criteria.push(confirm_one(
                 tree,
                 &item.id,
                 &item.command,
                 expect,
+                control,
                 recorded,
                 in_process,
             ));
@@ -2225,6 +2256,103 @@ mod tests {
                 "um controle declarado limpa a exigência: {filtered}",
             );
         }
+    }
+
+    /// A REGRESSÃO que este teste tranca: a exigência de `Control:` valia só no
+    /// passe VERMELHO, e o passe que FECHA a spec tem ramo próprio.
+    ///
+    /// Uma spec cujo ledger é anterior à regra — `control_command: null` ao lado
+    /// de um executor de teste FILTRADO, com o vermelho já pago — confirmava
+    /// verde e fechava como provada sem nunca ter sido perguntada. A regra
+    /// alcançava o acervo só quando alguém por acaso re-rodava o vermelho antes.
+    #[test]
+    fn the_confirm_pass_asks_for_the_control_too() {
+        let dir = tempdir().unwrap();
+        // O comando do critério é um executor FILTRADO e sai VERDE nesta
+        // árvore: sem a pergunta, a confirmação o fecharia como provado.
+        let filtered = "pytest -k some_new_case";
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — the new case passes.\n  Command: `{filtered}`\n\
+             - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        let spec_dir = seed(dir.path(), "confirm-no-control", &body);
+        // O acervo: o vermelho já pago, e nenhum controle declarado.
+        let seeded = AcProofLedger {
+            spec: "confirm-no-control".to_string(),
+            criteria: vec![AcProof {
+                id: "AC-1".to_string(),
+                command: filtered.to_string(),
+                expect: None,
+                control_command: None,
+                verdict: Verdict::Proven,
+                proof: Proof::Red,
+                control: Control::NotDeclared,
+                control_exit: None,
+                confirmation: Confirmation::NotTaken,
+                exit: Some(1),
+                red_reason: Some(RedReason::NonzeroExit),
+                confirmation_exit: None,
+                removal: Removal::NotTaken,
+                removal_exit: None,
+                reason: None,
+                stderr_excerpt: String::new(),
+                proof_tree: None,
+            }],
+            amendments: Vec::new(),
+            additions: Vec::new(),
+        };
+        std::fs::write(
+            spec_dir.join(AC_PROOF_JSON),
+            serde_json::to_string_pretty(&seeded).unwrap(),
+        )
+        .unwrap();
+
+        let report = confirm(dir.path(), "confirm-no-control");
+        let e = entry(&report, "AC-1");
+        assert_eq!(
+            e.verdict,
+            Verdict::Unproven,
+            "o passe que fecha a spec pergunta a MESMA coisa que o vermelho: {:?}",
+            e.reason,
+        );
+        assert_ne!(
+            e.confirmation,
+            Confirmation::Green,
+            "e o critério não fecha como confirmado sem o controle",
+        );
+        let reason = e.reason.clone().unwrap_or_default();
+        assert!(reason.contains("TEST RUNNER"), "a razão nomeia a forma: {reason}");
+        assert!(reason.contains("`Control:`"), "e a ação que a limpa: {reason}");
+        assert_eq!(e.proof, Proof::Red, "e o vermelho já pago fica no registro");
+
+        // A outra metade, SEM lançar o executor: com `Control:` declarado a
+        // exigência sai do caminho e o que sobra é a resposta de sempre para um
+        // registro sem vermelho. Bilateral pelo mesmo par de chamadas, então a
+        // asserção não passa por o campo ter um valor fixo.
+        let no_red = AcProof {
+            proof: Proof::NotAttempted,
+            verdict: Verdict::Unproven,
+            ..seeded.criteria[0].clone()
+        };
+        let blocked = confirm_one(dir.path(), "AC-1", filtered, None, None, Some(&no_red), false);
+        assert!(
+            blocked.reason.unwrap_or_default().contains("TEST RUNNER"),
+            "sem controle, a exigência responde antes de qualquer outra coisa",
+        );
+        let cleared = confirm_one(
+            dir.path(),
+            "AC-1",
+            filtered,
+            None,
+            Some(GREEN_COMMAND),
+            Some(&no_red),
+            false,
+        );
+        assert!(
+            cleared.reason.unwrap_or_default().contains("no RED proof"),
+            "com `Control:` declarado a exigência sai do caminho",
+        );
     }
 
     /// O registro diz POR QUE o vermelho foi vermelho: sair 0 com o `Expect:`

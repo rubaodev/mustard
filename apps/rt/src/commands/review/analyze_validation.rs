@@ -581,7 +581,12 @@ fn is_weak_command_part(part: &str) -> bool {
         "build" | "tsc" | "make" if tokens.len() == 1 => true,
         "cargo" => match tokens.get(1).copied() {
             Some("build" | "b" | "check" | "c") => true,
-            Some("test" | "t" | "nextest") => !cargo_test_has_filter(&tokens),
+            // O MESMO leitor que [`test_runner_has_selector`] usa para o cargo:
+            // "tem filtro" e "estreita por nome" são a mesma pergunta, e duas
+            // varreduras é como as duas portas passariam a responder diferente.
+            Some("test" | "t" | "nextest") => {
+                !narrows_by_name(&tokens, 2, &[], true, CARGO_SCOPE_VALUE_FLAGS)
+            }
             _ => false,
         },
         "npm" | "pnpm" | "yarn" | "bun" => match tokens.get(1).copied() {
@@ -594,40 +599,6 @@ fn is_weak_command_part(part: &str) -> bool {
         },
         _ => false,
     }
-}
-
-/// Whether a `cargo test …` invocation carries a positional test-name filter
-/// (which makes it a STRONG assertion). `tokens[0..2]` are `cargo test`; a
-/// filter is any positional token after `test` that is neither a flag nor the
-/// value consumed by a value-taking flag (`-p`, `--features`, …). A `--`
-/// forwards the rest to libtest, where a non-flag is a filter.
-fn cargo_test_has_filter(tokens: &[&str]) -> bool {
-    const VALUE_FLAGS: &[&str] = &[
-        "-p", "--package", "--test", "--bench", "--example", "--bin", "--features",
-        "-F", "--manifest-path", "-j", "--jobs", "--target", "--profile",
-        "--target-dir", "--color",
-    ];
-    let mut i = 2;
-    while i < tokens.len() {
-        let t = tokens[i];
-        if t == "--" {
-            return tokens[i + 1..].iter().any(|a| !a.starts_with('-'));
-        }
-        if t.contains('=') {
-            i += 1; // self-contained `--flag=value`
-            continue;
-        }
-        if VALUE_FLAGS.contains(&t) {
-            i += 2; // skip the flag and its separate value
-            continue;
-        }
-        if t.starts_with('-') {
-            i += 1; // boolean flag (--workspace, --all-targets, --release, …)
-            continue;
-        }
-        return true; // a bare positional after `test` ⇒ a test-name filter
-    }
-    false
 }
 
 /// Whether an AC `command` COUNTS PER FILE, and therefore prints `file:count`
@@ -724,15 +695,58 @@ fn runner_tokens(command: &str) -> Vec<&str> {
     cmd.split_whitespace().collect()
 }
 
-/// Flags que consomem o token seguinte sem NOMEAR teste nenhum — escopo, não
-/// seleção. Compartilhadas pelas famílias abaixo; uma flag desconhecida que
-/// tome valor no formato separado pode ser lida como posicional, e essa direção
-/// (exigir o `Control:`) é a segura.
-const RUNNER_SCOPE_VALUE_FLAGS: &[&str] = &[
+// ---------------------------------------------------------------------------
+// Flags de ESCOPO que consomem o token seguinte — uma lista POR FAMÍLIA
+// ---------------------------------------------------------------------------
+//
+// Uma lista só, compartilhada por todas as famílias, mede a família errada em
+// quase todas elas: `-v`, `-w`, `-f`, `-c` e `-j` tomam valor no `dotnet` e são
+// BOOLEANAS no go, no pytest, no vitest e no jest. Com a lista única,
+// `go test ./... -v -run TestNewCase` pulava dois tokens no `-v`, engolia o
+// `-run` e lia `TestNewCase` como posicional — o detector devolvia "sem
+// seletor" e NEM o aviso `test-ac-no-control` NEM a recusa da prova negativa
+// disparavam para a população inteira que eles existem para pegar.
+//
+// A direção do erro continua sendo a segura em cada lista: uma flag de valor
+// que a lista da família não conhece faz o valor dela ser lido como posicional,
+// e isso EXIGE o `Control:` — nunca o dispensa.
+
+/// cargo: `-p`, `--features`, `--target` … escolhem ONDE rodar.
+const CARGO_SCOPE_VALUE_FLAGS: &[&str] = &[
     "-p", "--package", "--test", "--bench", "--example", "--bin", "--features", "-F",
     "--manifest-path", "-j", "--jobs", "--target", "--profile", "--target-dir", "--color",
-    "--reporter", "--config", "-c", "--rootDir", "--maxWorkers", "-w", "--workers",
-    "--logger", "--results-directory", "-v", "--verbosity", "-f", "--framework",
+];
+
+/// `go test`: `-v`, `-race`, `-cover`, `-short` e `-c` são BOOLEANAS aqui.
+const GO_SCOPE_VALUE_FLAGS: &[&str] = &[
+    "-timeout", "-count", "-parallel", "-cpu", "-tags", "-covermode", "-coverprofile",
+    "-coverpkg", "-outputdir", "-o", "-exec", "-gcflags", "-ldflags", "-cpuprofile",
+    "-memprofile", "-blockprofile", "-trace",
+];
+
+/// `dotnet test`: a única família em que `-v`, `-f`, `-c`, `-l`, `-r`, `-s` e
+/// `-o` realmente TOMAM valor — que é de onde a lista única veio.
+const DOTNET_SCOPE_VALUE_FLAGS: &[&str] = &[
+    "-v", "--verbosity", "-f", "--framework", "-c", "--configuration", "-l", "--logger",
+    "-r", "--results-directory", "-s", "--settings", "-o", "--output", "-a",
+    "--test-adapter-path", "--runtime", "--collect", "--diag", "--blame-hang-timeout",
+];
+
+/// pytest: `-v`, `-q`, `-x`, `-s` e `-l` são BOOLEANAS aqui.
+const PYTEST_SCOPE_VALUE_FLAGS: &[&str] = &[
+    "-p", "-c", "-o", "-W", "-n", "--rootdir", "--junitxml", "--maxfail", "--tb", "--color",
+    "--capture", "--ignore", "--deselect", "--basetemp", "--dist", "--override-ini",
+    "--log-level", "--import-mode",
+];
+
+/// vitest / jest: `-w`, `-u`, `-v`, `-t` (que é flag de NOME, tratada à parte)
+/// não são flags de escopo com valor separado. `-w` é `--watch` no vitest; no
+/// jest ele é `--maxWorkers`, e lê-lo como booleano faz `jest -w 4` ver `4`
+/// como posicional — o lado seguro.
+const JS_SCOPE_VALUE_FLAGS: &[&str] = &[
+    "-c", "--config", "--reporter", "--reporters", "--rootDir", "--maxWorkers", "--workers",
+    "--environment", "--testEnvironment", "--outputFile", "--shard", "--project",
+    "--testTimeout", "--dir", "--mode", "--coverage.reporter",
 ];
 
 /// `true` quando o comando de um executor de teste NARROWS BY NAME — carrega um
@@ -751,9 +765,9 @@ const RUNNER_SCOPE_VALUE_FLAGS: &[&str] = &[
 ///
 /// Então o gatilho é NOMEAÇÃO, não escopo:
 ///
-/// * **cargo** — um posicional depois de `test` ([`cargo_test_has_filter`]);
-///   `-p`, `--lib` e `--test <alvo>` escolhem ONDE rodar, e um alvo que não
-///   existe faz o cargo sair diferente de zero, alto.
+/// * **cargo** — um posicional depois de `test`; `-p`, `--lib` e `--test <alvo>`
+///   escolhem ONDE rodar, e um alvo que não existe faz o cargo sair diferente
+///   de zero, alto.
 /// * **go** — `-run` / `-bench`; `./...` e um caminho de pacote são escopo.
 /// * **dotnet** — `--filter`.
 /// * **pytest** — `-k` / `-m`, ou um posicional (arquivo, diretório ou node id:
@@ -772,10 +786,19 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
         return false;
     };
     match first {
-        "cargo" => cargo_test_has_filter(&tokens),
-        "go" => narrows_by_name(&tokens, 2, &["-run", "-bench"], false),
-        "dotnet" => narrows_by_name(&tokens, 2, &["--filter"], false),
-        "pytest" | "py.test" => narrows_by_name(&tokens, 1, &["-k", "-m"], true),
+        // O cargo passa pela MESMA varredura que todas as outras famílias — ver
+        // [`narrows_by_name`]. Ele tinha um scanner próprio
+        // (`cargo_test_has_filter`), idêntico a esta chamada e com 13 das 15
+        // flags dele repetidas literalmente na lista compartilhada: uma flag
+        // acrescentada a uma das duas e não à outra fazia o cargo e o resto
+        // discordarem sobre o que é um seletor — que é exatamente a deriva de
+        // que a lista única por família era um caso.
+        "cargo" => narrows_by_name(&tokens, 2, &[], true, CARGO_SCOPE_VALUE_FLAGS),
+        "go" => narrows_by_name(&tokens, 2, &["-run", "-bench"], false, GO_SCOPE_VALUE_FLAGS),
+        "dotnet" => narrows_by_name(&tokens, 2, &["--filter"], false, DOTNET_SCOPE_VALUE_FLAGS),
+        "pytest" | "py.test" => {
+            narrows_by_name(&tokens, 1, &["-k", "-m"], true, PYTEST_SCOPE_VALUE_FLAGS)
+        }
         // `vitest run` é a invocação da suíte inteira fora do modo watch — o
         // `run` é subcomando, não padrão de arquivo.
         "vitest" | "jest" => narrows_by_name(
@@ -783,29 +806,40 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
             if tokens.get(1).copied() == Some("run") { 2 } else { 1 },
             &["-t", "--testNamePattern", "--testPathPattern", "--testPathPatterns"],
             true,
+            JS_SCOPE_VALUE_FLAGS,
         ),
         // `npm test x` / `npm run test x`: o posicional vem depois da palavra do
-        // script, que está no índice 1 ou 2.
+        // script, que está no índice 1 ou 2. Tudo depois dela é do script, não
+        // do gerenciador, então nenhuma flag de escopo é conhecida aqui.
         "npm" | "pnpm" | "yarn" | "bun" => {
             let start = if tokens.get(1).copied() == Some("run") { 3 } else { 2 };
-            narrows_by_name(&tokens, start, &[], true)
+            narrows_by_name(&tokens, start, &[], true, &[])
         }
         _ => false,
     }
 }
 
-/// A varredura compartilhada de [`test_runner_has_selector`]: a partir de
-/// `start`, procura uma das `name_flags` COM valor — e, quando
-/// `positional_narrows`, também um posicional.
+/// A varredura compartilhada de [`test_runner_has_selector`] e de
+/// [`is_weak_command_part`]: a partir de `start`, procura uma das `name_flags`
+/// COM valor — e, quando `positional_narrows`, também um posicional.
 ///
 /// `--` encaminha o resto ao executor, onde um não-flag é sempre nome de teste.
-/// Um `--flag=valor` é auto-contido; uma flag de escopo conhecida consome o
-/// token seguinte; toda outra flag é booleana.
+/// Um `--flag=valor` é auto-contido; uma flag de escopo conhecida (`scope_flags`,
+/// a lista DESTA família) consome o token seguinte; toda outra flag é booleana.
+///
+/// `scope_flags` é parâmetro e não constante porque a resposta depende da
+/// família: `-v` toma valor no `dotnet` e é booleana em todas as outras. Ver as
+/// listas acima.
+///
+/// Um token com `=` só é lido como `--flag=valor` quando começa com `-`. Um
+/// POSICIONAL pode carregar `=` — `pytest 'tests/x.py::test_y[a=1]'` é um node
+/// id, não uma flag — e lê-lo como flag pulava justamente o seletor.
 fn narrows_by_name(
     tokens: &[&str],
     start: usize,
     name_flags: &[&str],
     positional_narrows: bool,
+    scope_flags: &[&str],
 ) -> bool {
     let mut i = start;
     while i < tokens.len() {
@@ -813,22 +847,22 @@ fn narrows_by_name(
         if t == "--" {
             return tokens[i + 1..].iter().any(|a| !a.starts_with('-'));
         }
-        if let Some((flag, value)) = t.split_once('=') {
-            if name_flags.contains(&flag) && !value.is_empty() {
-                return true;
-            }
-            i += 1;
-            continue;
-        }
-        if name_flags.contains(&t) {
-            return tokens.get(i + 1).is_some_and(|v| !v.starts_with('-'));
-        }
-        if RUNNER_SCOPE_VALUE_FLAGS.contains(&t) {
-            i += 2;
-            continue;
-        }
         if t.starts_with('-') {
-            i += 1;
+            if let Some((flag, value)) = t.split_once('=') {
+                if name_flags.contains(&flag) && !value.is_empty() {
+                    return true;
+                }
+                i += 1;
+                continue;
+            }
+            if name_flags.contains(&t) {
+                return tokens.get(i + 1).is_some_and(|v| !v.starts_with('-'));
+            }
+            if scope_flags.contains(&t) {
+                i += 2;
+                continue;
+            }
+            i += 1; // booleana
             continue;
         }
         if positional_narrows {
@@ -1415,6 +1449,80 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let issues = validate(dir.path(), &path,&content);
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// A REGRESSÃO que este teste tranca: uma flag BOOLEANA antes do seletor
+    /// fazia o detector engolir o próprio seletor.
+    ///
+    /// `RUNNER_SCOPE_VALUE_FLAGS` era uma lista só para todas as famílias, e
+    /// `-v`/`-w`/`-f`/`-c`/`-j` só tomam valor no `dotnet`. Então
+    /// `go test ./... -v -run TestNewCase` pulava dois tokens no `-v`, engolia o
+    /// `-run` e lia `TestNewCase` como posicional de escopo: sem seletor. Nem o
+    /// aviso `test-ac-no-control` nem a recusa da prova negativa disparavam para
+    /// a população inteira que eles existem para pegar.
+    ///
+    /// Um comando por família, com a booleana ANTES do seletor.
+    #[test]
+    fn a_boolean_flag_before_the_selector_does_not_hide_it() {
+        for cmd in [
+            "go test ./... -v -run TestNewCase",
+            "pytest -v tests/test_x.py::test_y",
+            "vitest -w src/x.test.ts",
+            "jest -u src/x.test.js",
+            "cargo test -p mustard-rt --lib my_new_case",
+            // …e o `dotnet`, a ÚNICA família em que `-v` toma valor: ele
+            // continua consumindo `normal`, e o `--filter` depois é visto.
+            "dotnet test -v normal --filter Name~Novo",
+        ] {
+            assert!(
+                test_runner_has_selector(cmd),
+                "o seletor tem de ser visto em `{cmd}`",
+            );
+        }
+        // A outra metade: a suíte INTEIRA continua sem seletor, senão a
+        // exigência de `Control:` viraria fricção em todo critério do acervo.
+        for cmd in [
+            "go test ./...",
+            "pytest",
+            "vitest run",
+            "cargo test -p mustard-rt --lib",
+            "dotnet test -v normal",
+        ] {
+            assert!(
+                !test_runner_has_selector(cmd),
+                "a suíte inteira não tem filtro que possa vir vazio: `{cmd}`",
+            );
+        }
+        // Um POSICIONAL que carrega `=` é node id, não `--flag=valor`: lê-lo
+        // como flag pulava exatamente o seletor.
+        assert!(
+            test_runner_has_selector("pytest tests/x.py::test_y[a=1]"),
+            "um node id parametrizado é seleção por nome",
+        );
+    }
+
+    /// O cargo e o resto respondem pela MESMA varredura — a porta que julga o
+    /// comando fraco e a que exige o `Control:` não podem discordar sobre o que
+    /// é um seletor.
+    ///
+    /// Eram dois scanners para uma pergunta só (`cargo_test_has_filter` e
+    /// `narrows_by_name`), com 13 das 15 flags repetidas literalmente entre eles.
+    #[test]
+    fn the_weak_reader_and_the_selector_reader_agree_on_cargo() {
+        for cmd in [
+            "cargo test",
+            "cargo test -p mustard-rt --lib",
+            "cargo test -p mustard-rt --lib my_case",
+            "cargo test --features a,b --target-dir /tmp/x my_case",
+            "cargo test -- --exact my::case",
+            "cargo nextest run my_case",
+        ] {
+            assert_eq!(
+                is_weak_command_part(cmd),
+                !test_runner_has_selector(cmd),
+                "as duas portas têm de dar a MESMA resposta para `{cmd}`",
+            );
+        }
     }
 
     /// V6: a criterion the NEGATIVE TEST already measured is not reported as a

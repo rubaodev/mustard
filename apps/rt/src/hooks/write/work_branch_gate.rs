@@ -128,8 +128,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::commands::event::work_branch::{
-    base_for, busy_checkout_before_cut, checkout_work_branch, current_branch, is_protected,
-    name_dirty_paths, recorded_or_derived_base, refresh_integration_bases,
+    base_for, busy_checkout, checkout_work_branch, current_branch, is_protected, name_dirty_paths,
+    record_census_before_cut, recorded_or_derived_base, refresh_integration_bases,
 };
 use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
@@ -447,16 +447,15 @@ impl Check for WorkBranchGate {
         //     nothing to consume, and the next attempt (after the operator
         //     resolves git) retries the cut.
         //
-        //     E quando a decisão LIBERA o corte, o censo que sobrou sujo na
-        //     árvore é gravado aqui, antes do `checkout -b` do passo 4 — senão
-        //     `.claude/scan-map.md` e os moldes gerados viajam para dentro da
-        //     branch desta unidade e entram no diff dela. Uma chamada só decide
-        //     e liquida (`busy_checkout_before_cut`), pelo mesmo motivo que o
-        //     veredito é compartilhado: uma terceira porta não pode nascer
-        //     lembrando de uma metade e esquecendo a outra.
+        //     O censo que sobrou sujo NÃO é gravado aqui: um `None` desta
+        //     decisão não quer dizer "a árvore foi medida e só tem censo" —
+        //     numa posição protegida ela nem chega a ser medida. A gravação
+        //     mora no passo 3.4, depois de a base estar resolvida, que é o
+        //     primeiro ponto em que o corte vai mesmo acontecer. Ver
+        //     `record_census_before_cut`.
         if !in_submodule {
             if let Some(busy) =
-                busy_checkout_before_cut(Path::new(&local), current.as_deref(), &target, &config)
+                busy_checkout(Path::new(&local), current.as_deref(), &target, &config)
             {
                 return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) });
             }
@@ -493,6 +492,18 @@ impl Check for WorkBranchGate {
                 }
             },
         };
+
+        // 3.4 A base é um FATO agora, então o corte vai mesmo acontecer: grava
+        //     o censo que sobrou sujo ANTES do `checkout -b` do passo 4, senão
+        //     `.claude/scan-map.md` e os moldes gerados viajam para dentro da
+        //     branch desta unidade e entram no diff e no pull request dela. A
+        //     posição protegida e a não-medida ficam de fora — um hook não cria
+        //     commit numa base protegida atrás do operador (ver
+        //     `record_census_before_cut`); a porta explícita do `emit-pipeline`
+        //     continua gravando lá.
+        if !in_submodule {
+            record_census_before_cut(Path::new(&local), current.as_deref(), &config);
+        }
 
         // 3. Refresh the bases this cut may start from FIRST so the branch is
         //    cut from the latest of them — `base`, the one it will really use,

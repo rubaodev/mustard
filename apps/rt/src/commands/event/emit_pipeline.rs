@@ -514,12 +514,21 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) -> Vec<String> {
         // to establish.
         super::base_gate::BaseVerdict::Abstain => {}
         super::base_gate::BaseVerdict::Open(_) => {
-            // ANTES do mine: o que a passagem de enriquecimento deixou sujo é a
-            // única coisa na árvore, e enquanto continuar lá o próprio mine se
-            // considera impedido (a conjunção de `census_refresh_due` exige
-            // árvore limpa) e o corte da próxima unidade recusa por causa dela.
-            super::base_gate::record_leftover_census(root);
+            // A ORDEM: o mine PRIMEIRO, a gravação UMA vez, no fim.
+            //
+            // Era o contrário, e a árvore que carregasse resto de enriquecimento
+            // com o censo vencido ganhava DOIS commits de mesmo título: o
+            // primeiro gravava o modelo VELHO só para desimpedir o mine, e o
+            // mine em seguida gravava o novo sob o mesmo assunto — o primeiro
+            // registrando conteúdo que a própria ferramenta acabara de superar.
+            //
+            // O mine deixou de ser impedido pela saída da própria ferramenta
+            // (`census_refresh_due` desconta o censo), então nada precisa ser
+            // commitado antes dele. O que sobrar sujo depois — os restos do
+            // enriquecimento e o que o mine acabou de escrever — entra num
+            // commit só, aqui.
             super::base_gate::refresh_census_if_stale(root);
+            super::base_gate::record_leftover_census(root);
             // The census refresh only re-mines the DETERMINISTIC half. The
             // agent-written half — Guards prose, `{role}-pattern` molds — is
             // measured here and reported on stderr, unconditionally: a gap born
