@@ -11,6 +11,7 @@ use crate::commands::wave::wave_lib::{
     detect_role_with, load_role_patterns, load_wave_layer_order,
 };
 use mustard_core::{io::fs, RolePattern};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -443,6 +444,236 @@ fn declared_ref_position(v: &Value) -> Option<usize> {
     digits.parse::<usize>().ok().filter(|n| *n >= 1)
 }
 
+/// Uma colisão de arquivo entre duas ondas que o despacho solta na MESMA
+/// rodada, com o encadeamento mínimo que a zera.
+///
+/// É a saída que [`passthrough_plan_waves`] descartava: a união deduplicada
+/// apaga o arquivo compartilhado antes de qualquer checagem olhar para ele, e
+/// a dedup continua valendo na lista `files` (nenhum nó fantasma no grafo de
+/// imports) — a interseção passa a viajar ao lado dela, não no lugar dela.
+///
+/// A ordenação é `(level, waves[0], waves[1])` e `files` sai ordenado (vem de
+/// uma interseção de `BTreeSet`), então o array é byte-estável.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct FileCollision {
+    /// O nível topológico que as duas ondas COMPARTILHAM. Ondas de níveis
+    /// diferentes estão sequenciadas pela aresta que as separa e nunca aparecem
+    /// aqui.
+    pub(crate) level: u32,
+    /// As duas ondas, sempre em ordem crescente — a menor primeiro, que é o que
+    /// faz [`FileCollision::chain`] apontar sempre para trás. São os números que
+    /// as ondas DECLARAM: o que nomeia o diretório e a linha que o operador
+    /// edita.
+    pub(crate) waves: [u32; 2],
+    /// Os arquivos que AMBAS declaram, ordenados.
+    pub(crate) files: Vec<String>,
+    /// O encadeamento mínimo que zera a sobreposição, já em prosa acionável: uma
+    /// aresta só, na onda de número maior. Sequenciar as duas é a única coisa
+    /// que separa dois agentes editando o mesmo arquivo sem nada ordenando-os;
+    /// dividir o arquivo entre elas é a outra saída, e continua sendo escolha do
+    /// autor do plano.
+    pub(crate) chain: String,
+}
+
+impl FileCollision {
+    /// Monta a colisão a partir do par já ordenado (`a <= b`) e da interseção.
+    ///
+    /// `a == b` é o plano que numerou duas ondas igual. O encadeamento por número
+    /// não existe aí — `depends_on: [1]` numa das duas ondas 1 é ambíguo, quando
+    /// não uma auto-aresta —, então a prescrição nomeia o passo que falta antes:
+    /// dar número próprio a uma delas. Numerar é do autor do plano; renumerar
+    /// sozinho é Não-Objetivo declarado.
+    fn new(level: u32, a: u32, b: u32, files: Vec<String>) -> Self {
+        let chain = if a == b {
+            format!(
+                "two waves are both numbered {a} — give one of them its own n, then add wave {a} \
+                 to that wave's depends_on"
+            )
+        } else {
+            format!("add wave {a} to wave {b}'s depends_on")
+        };
+        Self { level, waves: [a, b], files, chain }
+    }
+}
+
+/// Os pares de ondas do MESMO nível de despacho que declaram o mesmo arquivo.
+///
+/// Cada entrada de `waves` é `(número que o chamador publica, nível topológico,
+/// arquivos declarados)`. O conjunto de arquivos entra SEM dedup entre ondas —
+/// deduplicar é exatamente o que apaga a evidência da colisão.
+///
+/// O agrupamento é por nível porque é por nível que o despacho paraleliza (ver
+/// [`crate::commands::pipeline::dispatch_plan`]): duas ondas do mesmo nível não
+/// têm aresta nenhuma entre si, logo nada as sequencia. É a mesma leitura que
+/// `wave-overlap-check` faz do plano já materializado, agora compartilhada, para
+/// que os dois passos não possam mais discordar sobre o mesmo plano.
+pub(crate) fn same_level_collisions(
+    waves: &[(u32, u32, BTreeSet<String>)],
+) -> Vec<FileCollision> {
+    let mut by_level: BTreeMap<u32, Vec<(u32, &BTreeSet<String>)>> = BTreeMap::new();
+    for (wave, level, files) in waves {
+        by_level.entry(*level).or_default().push((*wave, files));
+    }
+    let mut out: Vec<FileCollision> = Vec::new();
+    for (level, mut group) in by_level {
+        group.sort_by_key(|(wave, _)| *wave);
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let shared: Vec<String> = group[i].1.intersection(group[j].1).cloned().collect();
+                if !shared.is_empty() {
+                    out.push(FileCollision::new(level, group[i].0, group[j].0, shared));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Uma onda como o CENSO a lê — a leitura única do `plan.json` que os dois
+/// passos compartilham.
+pub(crate) struct DeclaredWave {
+    /// O número que a onda DECLARA (`n`), ou a posição de entrada quando ela não
+    /// declara nenhum. É o número que nomeia o diretório `wave-{n}-{role}` e a
+    /// linha de `depends_on` que o operador vai editar — logo é dele que o
+    /// relatório tem de falar.
+    pub(crate) number: u32,
+    /// O nível de despacho: ondas de mesmo nível saem juntas, sem nada entre
+    /// elas.
+    pub(crate) level: u32,
+    /// Os arquivos que ESTA onda declarou, sem dedup entre ondas — deduplicar é
+    /// exatamente o que apaga a evidência da colisão.
+    pub(crate) files: BTreeSet<String>,
+    /// As POSIÇÕES de entrada (0-based) que o `depends_on` desta onda alcança.
+    pub(crate) deps: BTreeSet<usize>,
+}
+
+/// Os arquivos que UMA onda do plano declara, na ordem de declaração e já lidos
+/// pelo normalizador único.
+///
+/// A leitura de caminho do `plan.json` mora aqui, e só aqui: o censo do portão,
+/// o `sharedFiles` do comando e a lista `files` que ele publica atravessam esta
+/// função. Enquanto havia duas leituras, um `./` numa das ondas bastava para o
+/// portão não ver a colisão que a auditoria via.
+fn declared_files(wave: &Value) -> impl Iterator<Item = String> + '_ {
+    wave.get("files")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(crate::commands::pipeline::dispatch_plan::normalise_declared_path)
+        .filter(|f| !f.is_empty())
+}
+
+/// O censo das ondas que um documento de plano declara: uma linha por onda, na
+/// ordem de entrada.
+///
+/// **Uma regra de numeração só**, e é a razão desta função existir. Antes, o
+/// portão numerava pelo `n` declarado e o passo do planejador pela posição de
+/// entrada, então os dois liam o MESMO plano e discordavam — um plano com ondas
+/// 2 e 3, a 3 dependendo de `wave-2-rt`, fazia o planejador acusar colisão entre
+/// "ondas 1 e 2" (que não existem) enquanto o portão via o plano correto. Acabar
+/// com essa discordância é a unidade inteira; deixar duas contagens vivas seria
+/// reabri-la.
+///
+/// - **identidade = a posição de entrada**, que é única. Chavear pelo número
+///   funde duas ondas de mesmo `n` numa só, e a colisão entre elas some do censo
+///   — a mesma perda que a dedup causava, por outra porta.
+/// - **número publicado = o `n` declarado** (a posição, quando ausente).
+/// - **arestas resolvidas contra o número declarado** das outras ondas, nunca
+///   contra a posição: `["wave-2-rt"]` e `[2]` alcançam a onda que se chama 2,
+///   esteja ela em que posição estiver. Uma referência a número que ninguém
+///   declara não alcança onda nenhuma, e uma auto-referência nunca sobrevive.
+/// - **caminho lido pelo normalizador ÚNICO**,
+///   [`crate::commands::pipeline::dispatch_plan::normalise_declared_path`] (`\`
+///   vira `/`, um `./` inicial cai, extremidades aparadas) — o mesmo que a
+///   auditoria irmã `wave-overlap-check` usa nos caminhos que lê do disco. Ler o
+///   caminho de dois jeitos era a última camada dividida entre os dois passos: um
+///   plano com `./src/shared.rs` numa onda e `src/shared.rs` na outra passava
+///   pelo portão e era acusado pela auditoria depois. Um caminho que se esvazia
+///   na normalização (uma linha em branco no `files`) não é arquivo e não entra
+///   no censo — senão duas ondas com uma linha vazia "colidiriam" nela.
+pub(crate) fn declared_wave_census(waves_in: &[Value]) -> Vec<DeclaredWave> {
+    let numbers: Vec<u32> = waves_in
+        .iter()
+        .enumerate()
+        .map(|(pos, wave)| {
+            wave.get("n")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or_else(|| u32::try_from(pos + 1).unwrap_or(0))
+        })
+        .collect();
+    let mut graph: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut rows: Vec<DeclaredWave> = Vec::new();
+    for (pos, wave) in waves_in.iter().enumerate() {
+        let refs: BTreeSet<u32> = wave
+            .get("dependsOn")
+            .or_else(|| wave.get("depends_on"))
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(declared_ref_position)
+            .filter_map(|p| u32::try_from(p).ok())
+            .collect();
+        let deps: BTreeSet<usize> = numbers
+            .iter()
+            .enumerate()
+            .filter(|(other, n)| *other != pos && refs.contains(n))
+            .map(|(other, _)| other)
+            .collect();
+        // Toda onda é nó do grafo, com aresta ou sem — sem isso ela não ganha
+        // nível e cairia fora do pareamento.
+        graph.insert(pos, deps.clone());
+        rows.push(DeclaredWave {
+            number: numbers[pos],
+            level: 0,
+            files: declared_files(wave).collect(),
+            deps,
+        });
+    }
+    let levels = crate::shared::dag::assign_levels(&graph);
+    for (pos, row) in rows.iter_mut().enumerate() {
+        row.level = levels.level.get(&pos).copied().unwrap_or(0);
+    }
+    rows
+}
+
+/// As colisões que um censo já lido carrega — o pareamento, separado da leitura,
+/// para que os dois passos façam a MESMA conta sobre a MESMA numeração.
+fn census_collisions(rows: &[DeclaredWave]) -> Vec<FileCollision> {
+    let census: Vec<(u32, u32, BTreeSet<String>)> =
+        rows.iter().map(|w| (w.number, w.level, w.files.clone())).collect();
+    same_level_collisions(&census)
+}
+
+/// As colisões de arquivo que um PLANO declara entre ondas do mesmo nível, lidas
+/// do próprio `plan.json`.
+///
+/// A porta in-process de [`crate::commands::pipeline::plan_materialize`], irmã
+/// de [`validate_plan_dag`]: a checagem roda em toda materialização, sem
+/// depender de o orquestrador relatar uma chamada separada. A numeração e as
+/// arestas saem de [`declared_wave_census`] — a mesma leitura que o
+/// `sharedFiles` do comando publica.
+///
+/// Um plano ilegível ou inválido devolve lista VAZIA: quem recusa por plano
+/// ilegível é o scaffold, com a mensagem que ensina o schema — não este cálculo,
+/// que só sabe falar de colisão.
+#[must_use]
+pub(crate) fn plan_file_collisions(plan_path: &Path) -> Vec<FileCollision> {
+    let Ok(raw) = fs::read_to_string(plan_path) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
+        return Vec::new();
+    };
+    let Some(waves_in) = parsed.get("waves").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    census_collisions(&declared_wave_census(waves_in))
+}
+
 /// Trust an explicit plan's wave boundaries (Option D). When the input is the
 /// rich PLAN shape (`waves: [{files:[...]}]`), emit the canonical
 /// `{waves, metadata}` from the planner's own boundaries — renumbered, with the
@@ -453,47 +684,57 @@ fn declared_ref_position(v: &Value) -> Option<usize> {
 /// `undeclared`) — the old `wave N depends on N-1` chain here was a fabrication
 /// that contradicted plans whose waves are independent. Files are deduped
 /// across waves (first occurrence wins, matching the DAG's no-phantom-node
-/// rule); a wave whose files all appeared earlier is dropped, and declared
+/// rule); a wave that declares NO file at all is dropped, and declared
 /// references are remapped onto the surviving output numbers (a reference to a
 /// dropped or unknown wave is itself dropped). Returns `None` for the bare
 /// `{files}` derivation shape (no `waves` key) or an all-empty plan, so the
 /// import-DAG path runs.
+///
+/// A dedup deixou de ser a única saída: `sharedFiles` publica a interseção que
+/// ela descarta, por par de ondas do MESMO nível de despacho, com o
+/// encadeamento mínimo que a zera — ver [`FileCollision`].
+///
+/// A leitura do plano é a de [`declared_wave_census`], a MESMA que o portão de
+/// [`plan_file_collisions`] usa: uma referência alcança a onda que se CHAMA
+/// aquele número, e é desse número que o `sharedFiles` fala. Resolver referência
+/// por posição de entrada era o que fazia os dois passos discordarem sobre o
+/// mesmo plano — a `depends_on: ["wave-2-rt"]` de uma onda numerada 3, escrita na
+/// segunda posição, virava auto-referência e sumia, inventando uma colisão entre
+/// duas ondas que não existiam. O campo `wave` continua sendo a posição de saída:
+/// o que muda é de qual número o relatório FALA, não qual número a onda tem.
 fn passthrough_plan_waves(parsed: &Value, role_patterns: &[RolePattern]) -> Option<Value> {
     let waves_in = parsed.get("waves").and_then(Value::as_array)?;
     if waves_in.is_empty() {
         return None;
     }
-    // Pass 1 — dedup files, keep non-empty waves, remember each survivor's
-    // INPUT position and its declared references (verbatim).
-    struct Kept<'a> {
+    let census = declared_wave_census(waves_in);
+    // Pass 1 — dedup files, keep every wave that DECLARED something, remember
+    // each survivor's INPUT position (0-based, o índice do censo).
+    struct Kept {
         input_pos: usize,
         files: Vec<String>,
-        declared: Option<&'a Vec<Value>>,
     }
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut kept: Vec<Kept<'_>> = Vec::new();
+    let mut kept: Vec<Kept> = Vec::new();
     for (pos, wave) in waves_in.iter().enumerate() {
+        // A dedup roda sobre o caminho NORMALIZADO, o mesmo que o censo lê:
+        // deduplicar a grafia crua deixava `./src/x.rs` e `src/x.rs` passarem
+        // como dois nós do mesmo arquivo — a divisão de leitura que este módulo
+        // acabou de fechar, reaberta na lista publicada.
         let mut rel: Vec<String> = Vec::new();
-        for f in wave
-            .get("files")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(Value::as_str)
-        {
-            if seen.insert(f.to_string()) {
-                rel.push(f.to_string());
+        for f in declared_files(wave) {
+            if seen.insert(f.clone()) {
+                rel.push(f);
             }
         }
-        if rel.is_empty() {
+        // O corte é sobre o que a onda DECLAROU, não sobre o que sobrou da
+        // dedup: uma onda cujos arquivos foram todos declarados antes é a
+        // colisão mais total que existe, e sumir com ela era perder justamente
+        // o caso que este cálculo tem de relatar.
+        if census.get(pos).is_none_or(|w| w.files.is_empty()) {
             continue;
         }
-        let declared = wave
-            .get("dependsOn")
-            .or_else(|| wave.get("depends_on"))
-            .and_then(Value::as_array);
-        kept.push(Kept { input_pos: pos + 1, files: rel, declared });
+        kept.push(Kept { input_pos: pos, files: rel });
     }
     if kept.is_empty() {
         return None;
@@ -514,18 +755,24 @@ fn passthrough_plan_waves(parsed: &Value, role_patterns: &[RolePattern]) -> Opti
         }
         widest = widest.max(k.files.len());
         total_files += k.files.len();
-        // The edges the author declared, remapped and deduped (sorted asc); a
-        // self-reference never survives.
-        let depends: BTreeSet<usize> = k
-            .declared
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(declared_ref_position)
-            .filter_map(|pos| out_number_of.get(&pos).copied())
+        // The edges the author declared, remapped onto the surviving output
+        // numbers and deduped (sorted asc); a reference to a dropped wave is
+        // itself dropped, and a self-reference never survives the census.
+        let row = census.get(k.input_pos);
+        let depends: BTreeSet<usize> = row
+            .map(|w| &w.deps)
+            .into_iter()
+            .flatten()
+            .filter_map(|pos| out_number_of.get(pos).copied())
             .filter(|&n| n != idx + 1)
             .collect();
-        let origin = if k.declared.is_some() { "declared" } else { "undeclared" };
+        let origin = if waves_in[k.input_pos].get("dependsOn").is_some()
+            || waves_in[k.input_pos].get("depends_on").is_some()
+        {
+            "declared"
+        } else {
+            "undeclared"
+        };
         out_waves.push(json!({
             "wave": idx + 1,
             "files": k.files,
@@ -534,9 +781,16 @@ fn passthrough_plan_waves(parsed: &Value, role_patterns: &[RolePattern]) -> Opti
             "dependsOnOrigin": origin,
         }));
     }
+    // A SEGUNDA saída: a interseção que a dedup acima descartava, pareada só
+    // entre ondas do mesmo nível — as que o despacho solta juntas. Sempre
+    // presente (vazia quando o plano é disjunto), para o documento manter uma
+    // forma só. Sai do censo INTEIRO, uma linha por onda: fundir duas ondas de
+    // mesmo `n` numa só faria a colisão entre elas sumir de novo.
+    let shared_files = census_collisions(&census);
     let total_waves = out_waves.len();
     Some(json!({
         "waves": out_waves,
+        "sharedFiles": shared_files,
         "metadata": {
             "totalWaves": total_waves,
             "totalFiles": total_files,
@@ -794,6 +1048,263 @@ mod tests {
         for w in waves {
             assert_eq!(w["dependsOnOrigin"].as_str(), Some("imports"), "origin: {derived}");
         }
+    }
+
+    /// AC-1 — o arquivo declarado por duas ondas sem dependência entre elas é
+    /// RELATADO, não descartado em silêncio.
+    ///
+    /// A dedup continua governando `files` (o motivo dela — não criar nó fantasma
+    /// no grafo de imports — segue valendo); o defeito era ela ser a ÚNICA saída.
+    /// `sharedFiles` é a segunda, com o encadeamento mínimo já derivado.
+    ///
+    /// Bilateral: o mesmo par com a aresta declarada não compartilha nível e não
+    /// produz entrada nenhuma, então a asserção não pode passar por o campo
+    /// listar todo arquivo repetido.
+    #[test]
+    fn passthrough_reports_the_intersection_it_used_to_drop() {
+        let colliding = json!({
+            "waves": [
+                { "files": ["PayableService.cs", "EffectivationService.cs"] },
+                { "files": ["PayableService.cs", "ReversalService.cs"] },
+            ]
+        });
+        let out = passthrough_plan_waves(&colliding, &[]).expect("rich plan → Some");
+        assert_eq!(
+            out["sharedFiles"],
+            json!([{
+                "level": 0,
+                "waves": [1, 2],
+                "files": ["PayableService.cs"],
+                "chain": "add wave 1 to wave 2's depends_on",
+            }]),
+            "the shared file must survive the dedup as its own answer: {out}"
+        );
+        // A dedup segue de pé na lista de arquivos: o compartilhado sai só na
+        // primeira onda, e o grafo continua sem nó duplicado.
+        assert_eq!(out["waves"][1]["files"], json!(["ReversalService.cs"]), "{out}");
+
+        // O outro lado — a aresta declarada sequencia as duas, nada colide.
+        let chained = json!({
+            "waves": [
+                { "files": ["PayableService.cs", "EffectivationService.cs"] },
+                { "files": ["PayableService.cs", "ReversalService.cs"], "dependsOn": [1] },
+            ]
+        });
+        let out = passthrough_plan_waves(&chained, &[]).expect("rich plan → Some");
+        assert_eq!(
+            out["sharedFiles"],
+            json!([]),
+            "waves on different levels are sequenced, never flagged: {out}"
+        );
+    }
+
+    /// Uma onda cujos arquivos foram TODOS declarados antes é a colisão mais
+    /// total que existe — e era a que sumia: o corte olhava o que sobrou da
+    /// dedup, então a onda inteira desaparecia do documento.
+    #[test]
+    fn a_fully_duplicated_wave_is_reported_not_dropped() {
+        let parsed = json!({
+            "waves": [
+                { "files": ["src/shared.rs"] },
+                { "files": ["src/shared.rs"] },
+            ]
+        });
+        let out = passthrough_plan_waves(&parsed, &[]).expect("rich plan → Some");
+        assert_eq!(out["metadata"]["totalWaves"].as_u64(), Some(2), "{out}");
+        assert_eq!(out["waves"][1]["files"], json!([]), "the dedup still stands: {out}");
+        assert_eq!(out["sharedFiles"][0]["files"], json!(["src/shared.rs"]), "{out}");
+    }
+
+    /// A leitura que `plan-materialize` faz do `plan.json`: numera pelo `n`
+    /// DECLARADO (o número que nomeia o diretório) e entende a aresta escrita
+    /// como nome de onda.
+    #[test]
+    fn plan_file_collisions_numbers_by_the_declared_n() {
+        let dir = tempdir().unwrap();
+        let plan = dir.path().join("plan.json");
+        std::fs::write(
+            &plan,
+            r#"{"waves":[
+                {"n":3,"role":"rt","files":["src/shared.rs"]},
+                {"n":7,"role":"cli","files":["src/shared.rs","src/other.rs"]}
+            ]}"#,
+        )
+        .unwrap();
+        let collisions = plan_file_collisions(&plan);
+        assert_eq!(collisions.len(), 1, "{collisions:?}");
+        assert_eq!(collisions[0].waves, [3, 7], "the DECLARED numbers: {collisions:?}");
+        assert_eq!(collisions[0].chain, "add wave 3 to wave 7's depends_on");
+
+        // A aresta escrita por NOME sequencia o par, exatamente como o número.
+        std::fs::write(
+            &plan,
+            r#"{"waves":[
+                {"n":3,"role":"rt","files":["src/shared.rs"]},
+                {"n":7,"role":"cli","depends_on":["wave-3-rt"],
+                 "files":["src/shared.rs","src/other.rs"]}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(plan_file_collisions(&plan).is_empty(), "a named edge sequences the pair");
+
+        // Fail-open na leitura: plano ausente não é colisão nenhuma — quem recusa
+        // por plano ilegível é o scaffold.
+        assert!(plan_file_collisions(&dir.path().join("nope.json")).is_empty());
+    }
+
+    /// As colisões que os DOIS passos veem no MESMO documento: o comando
+    /// (`sharedFiles`) e o portão (`plan_file_collisions`), lado a lado.
+    ///
+    /// Existe para que a asserção não possa passar num só deles — a contradição
+    /// entre os dois é o defeito que esta unidade acaba.
+    fn both_readings(plan_json: &str) -> (Value, Vec<FileCollision>) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("plan.json");
+        std::fs::write(&path, plan_json).unwrap();
+        let parsed: Value = serde_json::from_str(plan_json).unwrap();
+        let out = passthrough_plan_waves(&parsed, &[]).expect("rich plan → Some");
+        (out, plan_file_collisions(&path))
+    }
+
+    /// Os dois passos leem o mesmo plano e dão a MESMA resposta — a promessa que
+    /// abre o `## Contexto` da spec: "rodando os dois sobre o mesmo plano, eles se
+    /// contradizem".
+    ///
+    /// O plano é o do defeito: ondas numeradas 2 e 3, a 3 declarando
+    /// `depends_on: ["wave-2-rt"]`. Resolver a referência pela POSIÇÃO de entrada
+    /// a transformava em auto-aresta — que some —, e o passo do planejador
+    /// acusava colisão entre "ondas 1 e 2", números que aquele plano não tem.
+    #[test]
+    fn os_dois_passos_concordam_sobre_o_mesmo_plano() {
+        let chained = r#"{"waves":[
+            {"n":2,"role":"rt","files":["src/shared.rs","src/a.rs"]},
+            {"n":3,"role":"cli","depends_on":["wave-2-rt"],
+             "files":["src/shared.rs","src/b.rs"]}
+        ]}"#;
+        let (out, gate) = both_readings(chained);
+        assert_eq!(
+            out["sharedFiles"],
+            json!([]),
+            "a aresta declarada sequencia o par — nada colide: {out}"
+        );
+        assert!(gate.is_empty(), "e o portão lê o mesmo plano do mesmo jeito: {gate:?}");
+        // A aresta declarada por NOME sobrevive: ela alcança a onda que se CHAMA
+        // 2, não a que está na posição 2 (que é a própria autora da referência).
+        assert_eq!(
+            out["waves"][1]["dependsOn"],
+            json!([1]),
+            "a referência alcança a onda de número 2: {out}"
+        );
+
+        // O outro lado: sem a aresta, as duas saem juntas e o par é relatado —
+        // pelos NÚMEROS DECLARADOS, que são a linha que o operador edita.
+        let parallel = chained.replace(r#""depends_on":["wave-2-rt"],"#, "");
+        let (out, gate) = both_readings(&parallel);
+        assert_eq!(
+            out["sharedFiles"],
+            json!([{
+                "level": 0,
+                "waves": [2, 3],
+                "files": ["src/shared.rs"],
+                "chain": "add wave 2 to wave 3's depends_on",
+            }]),
+            "os números declarados, não a posição de entrada: {out}"
+        );
+        assert_eq!(gate.len(), 1, "{gate:?}");
+        assert_eq!(gate[0].waves, [2, 3], "e o portão diz o mesmo: {gate:?}");
+        assert_eq!(gate[0].chain, out["sharedFiles"][0]["chain"].as_str().unwrap_or_default());
+    }
+
+    /// Os dois passos leem o CAMINHO do mesmo jeito.
+    ///
+    /// Foi a terceira forma do mesmo defeito: primeiro a dedup apagava a colisão,
+    /// depois as duas funções numeravam onda por regras diferentes, e por último
+    /// elas LIAM O CAMINHO de jeitos diferentes — um `./` numa das ondas bastava
+    /// para o portão liberar um plano que a auditoria irmã acusava. Cada conserto
+    /// unificou uma camada e deixou a de baixo dividida, então esta asserção
+    /// prende as três grafias nos DOIS passos lado a lado, que é o teste que
+    /// faltava.
+    ///
+    /// Bilateral: o par disjunto ao final não emite nada em passo nenhum, logo a
+    /// asserção não pode passar por o campo acusar todo plano.
+    #[test]
+    fn as_tres_grafias_do_mesmo_caminho_dao_a_mesma_resposta() {
+        const SPELLINGS: [&str; 3] = ["./src/shared.rs", "src/shared.rs", "src\\shared.rs"];
+        for a in SPELLINGS {
+            for b in SPELLINGS {
+                let plan = serde_json::to_string(&json!({
+                    "waves": [
+                        { "n": 1, "role": "rt", "files": [a, "src/a.rs"] },
+                        { "n": 2, "role": "cli", "files": [b, "src/b.rs"] },
+                    ]
+                }))
+                .unwrap_or_default();
+                let (out, gate) = both_readings(&plan);
+                assert_eq!(
+                    out["sharedFiles"],
+                    json!([{
+                        "level": 0,
+                        "waves": [1, 2],
+                        "files": ["src/shared.rs"],
+                        "chain": "add wave 1 to wave 2's depends_on",
+                    }]),
+                    "o comando tem de ler `{a}` e `{b}` como um arquivo só: {out}"
+                );
+                assert_eq!(gate.len(), 1, "e o portão o mesmo — `{a}` × `{b}`: {gate:?}");
+                assert_eq!(gate[0].waves, [1, 2], "{gate:?}");
+                assert_eq!(gate[0].files, vec!["src/shared.rs".to_string()], "{gate:?}");
+                assert_eq!(
+                    gate[0].chain,
+                    out["sharedFiles"][0]["chain"].as_str().unwrap_or_default(),
+                    "a mesma prescrição nos dois: {gate:?} / {out}"
+                );
+                // A lista publicada atravessa o MESMO normalizador: a dedup vê um
+                // arquivo só, então a onda 2 sai com o que é dela e nada mais.
+                assert_eq!(out["waves"][1]["files"], json!(["src/b.rs"]), "{out}");
+            }
+        }
+
+        // O outro lado: grafias diferentes de arquivos DIFERENTES não colidem.
+        let (out, gate) = both_readings(
+            r#"{"waves":[
+                {"n":1,"role":"rt","files":["./src/a.rs"]},
+                {"n":2,"role":"cli","files":["src\\b.rs"]}
+            ]}"#,
+        );
+        assert_eq!(out["sharedFiles"], json!([]), "arquivos distintos não colidem: {out}");
+        assert!(gate.is_empty(), "e o portão lê o mesmo: {gate:?}");
+    }
+
+    /// Duas ondas de MESMO `n` continuam sendo duas ondas.
+    ///
+    /// O censo é indexado pela POSIÇÃO, não pelo número: chaveá-lo pelo número
+    /// fundia as duas numa só e a colisão entre elas sumia — a mesma perda que a
+    /// dedup causava, por outra porta. O despacho cria as duas pastas e solta os
+    /// dois agentes, então a colisão é bem real; e como não há como encadear duas
+    /// ondas de mesmo número, a prescrição nomeia o passo que falta antes.
+    #[test]
+    fn duas_ondas_de_mesmo_numero_nao_se_fundem() {
+        let (out, gate) = both_readings(
+            r#"{"waves":[
+                {"n":1,"role":"rt","files":["src/shared.rs"]},
+                {"n":1,"role":"cli","files":["src/shared.rs","src/other.rs"]}
+            ]}"#,
+        );
+        assert_eq!(gate.len(), 1, "a colisão não pode sumir na fusão: {gate:?}");
+        assert_eq!(gate[0].waves, [1, 1], "{gate:?}");
+        assert_eq!(gate[0].files, vec!["src/shared.rs".to_string()], "{gate:?}");
+        assert!(
+            gate[0].chain.contains("both numbered 1")
+                && gate[0].chain.contains("give one of them its own n"),
+            "encadear por número é impossível aqui — a prescrição diz o que fazer antes: {}",
+            gate[0].chain,
+        );
+        assert_eq!(
+            out["sharedFiles"][0]["waves"],
+            json!([1, 1]),
+            "e o comando relata a mesma colisão: {out}"
+        );
+        assert_eq!(out["metadata"]["totalWaves"].as_u64(), Some(2), "{out}");
     }
 
     #[test]

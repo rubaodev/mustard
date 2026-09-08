@@ -15,16 +15,26 @@
 //!    [`crate::commands::wave::wave_dependency::validate_plan_dag`] over the
 //!    plan's file union (WARN-level). Folded in so the check runs every time,
 //!    not only when the orchestrator relays a separate `wave-dependency` call.
-//! 4. `ac-negative-check`'s NEGATIVE TEST —
+//! 4. `wave-dependency`'s SAME-LEVEL FILE COLLISION check —
+//!    [`crate::commands::wave::wave_dependency::plan_file_collisions`] over the
+//!    plan's declared per-wave censuses. BLOCKING, unlike 3: two waves that share
+//!    a dispatch level have no edge between them and go out together, so a file
+//!    both declare puts two agents in it with nothing ordering them. The refusal
+//!    names the minimal chaining that zeroes each overlap. Like the coverage gate
+//!    below, it has NO env knob — the condition carries no false positive by
+//!    construction (same level IS parallel dispatch), and the advisory reading of
+//!    the same fact (`wave-overlap-check`, at the approval gate) was measured
+//!    insufficient in the field.
+//! 5. `ac-negative-check`'s NEGATIVE TEST —
 //!    [`crate::commands::review::ac_negative_check::check`] over the parent
 //!    `spec.md`'s own acceptance criteria. BLOCKING, unlike 2 and 3: a
 //!    criterion that was not proven ABLE to fail withholds the PLAN transition
 //!    and exits 2, exactly like the uncovered-criteria coverage gate below —
 //!    and, like it, with NO env knob.
-//! 5. `emit-pipeline --kind pipeline.scope` — the typed
+//! 6. `emit-pipeline --kind pipeline.scope` — the typed
 //!    [`PipelineScopePayload`] with `scope: "full"` (this composite exists for
 //!    the Full/wave-plan flow) + the scaffolded wave count.
-//! 6. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
+//! 7. `emit-phase --to PLAN` — [`crate::commands::event::emit_phase::run_at`]
 //!    (idempotent on the spec's last phase).
 //!
 //! Pressupposes `spec.md` + `meta.json` already materialised by `spec-draft`.
@@ -56,6 +66,7 @@
 //!   },
 //!   "validation": { "ok": true, "issues": [] },
 //!   "dependencies": { "ok": true, "issues": [] },
+//!   "sharedFiles": { "ok": true, "issues": [] },
 //!   "proof": { "ok": true, "proven": 0, "exempt": 0, "unproven": [] }
 //! }
 //! ```
@@ -124,6 +135,18 @@ const ERR_UNSUPPORTABLE_CLAIMS: &str = "unsupportable acceptance-criteria claims
 /// reader to edit different lines. Mapped to exit 2 like its two siblings.
 const ERR_CRITERIA_OUTSIDE_CLAIMANTS: &str = "acceptance criteria outside their claimants";
 
+/// Stdout `sharedFiles.error` marker for a plan whose dispatch-parallel waves
+/// declare the same file. [`run`] maps it to exit 2 and [`materialize`] withholds
+/// the PLAN transition — like the coverage gate, and with no env knob: waves of
+/// one level are dispatched together by definition, so nothing else in the plan
+/// is sequencing them, and the condition has no false positive to leave room for
+/// a mode.
+const ERR_SAME_LEVEL_FILE_COLLISION: &str = "same-level file collision";
+
+/// The `type` each collision issue carries — one string, so the report's rows and
+/// the prose that teaches them cannot drift apart.
+const TYPE_SAME_LEVEL_FILE_COLLISION: &str = "same-level-file-collision";
+
 /// Stdout `proof.error` marker for a spec carrying an acceptance criterion that
 /// was never proven ABLE to fail. [`run`] maps it to exit 2 and [`materialize`]
 /// withholds the PLAN transition — the negative-test gate, enforced
@@ -134,8 +157,9 @@ const ERR_UNPROVEN_ACS: &str = "unproven acceptance criteria";
 /// report. Exit code: 0 on success and on advisory failures (validation and the
 /// dependency DAG are WARN-level; failures are expressed in the JSON), 2 when
 /// the plan file could not be read/parsed, an uncovered acceptance criterion
-/// tripped the coverage gate, or an unproven one tripped the negative-test gate
-/// — either way a non-zero exit so the orchestrator notices.
+/// tripped the coverage gate, two dispatch-parallel waves declared the same
+/// file, or an unproven criterion tripped the negative-test gate — either way a
+/// non-zero exit so the orchestrator notices.
 pub fn run(opts: PlanMaterializeOpts) {
     let project = PathBuf::from(crate::shared::context::project_dir());
     // Accept the three spec-dir spellings (a directory, a `…/spec.md` path, a
@@ -160,17 +184,21 @@ pub fn run(opts: PlanMaterializeOpts) {
 /// caller's rollback can never disagree about what a refusal is.
 ///
 /// A refusal is a blocking gate: the plan could not be read, one of the three
-/// scaffold gates (coverage / unsupportable claims / sufficiency) fired, or the
-/// negative proof did. The two WARN-level steps (`validation`, `dependencies`)
-/// are NOT refusals — they are expressed in the JSON and the plan still
-/// materialises.
+/// scaffold gates (coverage / unsupportable claims / sufficiency) fired, two
+/// dispatch-parallel waves declared the same file, or the negative proof
+/// refused. The two WARN-level steps (`validation`, `dependencies`) are NOT
+/// refusals — they are expressed in the JSON and the plan still materialises.
 pub(crate) fn refused(report: &Value) -> bool {
     let scaffold_err = report["scaffold"]["error"].as_str();
     let proven = report["proof"]["ok"].as_bool().unwrap_or(false);
+    // Read exactly as `proof` is: every report this module builds carries the
+    // slot, so an absent one is a malformed document, not a clean plan.
+    let disjoint = report["sharedFiles"]["ok"].as_bool().unwrap_or(false);
     scaffold_err == Some(ERR_PLAN_UNREADABLE)
         || scaffold_err == Some(ERR_UNCOVERED_ACS)
         || scaffold_err == Some(ERR_UNSUPPORTABLE_CLAIMS)
         || scaffold_err == Some(ERR_CRITERIA_OUTSIDE_CLAIMANTS)
+        || !disjoint
         || !proven
 }
 
@@ -381,6 +409,45 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
     //     second import parser.
     let dependencies = wave_dependency::validate_plan_dag(plan_path, project);
 
+    // 2bb. The SAME-LEVEL file collision gate, read from the same plan.json —
+    //      BLOCKING, unlike 2b. A dependency level IS the dispatch round: two
+    //      waves that share one have no edge between them, so a file both
+    //      declare puts two agents in it concurrently with nothing sequencing
+    //      them. The advisory reading of this same fact already exists
+    //      (`wave-overlap-check`, at the approval gate) and was measured
+    //      insufficient — the field report took three manual rounds to zero a
+    //      four-wave, three-file overlap. Here the plan is still cheap to edit,
+    //      and the refusal hands over the one edge that fixes each pair.
+    let collisions = wave_dependency::plan_file_collisions(plan_path);
+    let disjoint = collisions.is_empty();
+    let collision_issues: Vec<Value> = collisions
+        .iter()
+        .map(|c| {
+            json!({
+                "severity": "ERROR",
+                "type": TYPE_SAME_LEVEL_FILE_COLLISION,
+                "level": c.level,
+                "waves": c.waves,
+                "files": c.files,
+                "chain": c.chain,
+                "message": format!(
+                    "waves {a} and {b} share dispatch level {level} — nothing sequences them — \
+                     and both declare {files}. Minimal chaining: {chain}. Splitting the file \
+                     between the two waves is the other repair, and stays the author's call.",
+                    a = c.waves[0],
+                    b = c.waves[1],
+                    level = c.level,
+                    files = c.files.join(", "),
+                    chain = c.chain,
+                ),
+            })
+        })
+        .collect();
+    let mut shared_files = json!({ "ok": disjoint, "issues": collision_issues });
+    if !disjoint {
+        shared_files["error"] = json!(ERR_SAME_LEVEL_FILE_COLLISION);
+    }
+
     // 2c. The negative test over the parent spec's own acceptance criteria —
     //     composed in-process from `ac-negative-check`, exactly as the two
     //     advisory steps above are. BLOCKING, and deliberately HERE: a refusal
@@ -394,7 +461,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
     //    transition for a spec whose scaffold failed or whose criteria were not
     //    proven able to fail) and a resolvable slug.
     let mut events: Vec<String> = Vec::new();
-    if scaffold_ok && proof_ok && !spec.is_empty() {
+    if scaffold_ok && disjoint && proof_ok && !spec.is_empty() {
         emit_scope_full(project, spec_dir, &spec);
         events.push(EVENT_PIPELINE_SCOPE.to_string());
         // Idempotent: a re-run whose last phase is already PLAN skips the
@@ -410,6 +477,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         "scaffold": scaffold_json,
         "validation": validation,
         "dependencies": dependencies,
+        "sharedFiles": shared_files,
         "proof": proof,
     })
 }
@@ -869,6 +937,110 @@ mod tests {
             allowed["events"],
             json!(["pipeline.scope", "pipeline.phase"]),
             "a proven plan materialises normally: {allowed}"
+        );
+    }
+
+    /// Seed a spec with two criteria (the first RED, so the proof clears; the
+    /// second the trailing build-green safety net) and a TWO-wave plan whose
+    /// waves declare `edges` between them and the file sets given.
+    ///
+    /// Every criterion is claimed and every claiming wave declares files, so the
+    /// three scaffold gates and the proof are all satisfied — only the collision
+    /// can refuse.
+    fn seed_collision_spec(
+        project: &Path,
+        slug: &str,
+        wave_two_depends_on: &[&str],
+    ) -> (PathBuf, PathBuf) {
+        let spec_dir = project.join(".claude").join("spec").join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# Demo\n\n## Files\n- `a.rs` (create)\n\n## Acceptance Criteria\n\
+                 - **AC-1** — when the work lands, then the new behaviour holds.\n  Command: `{RED_COMMAND}`\n\
+                 - **AC-2** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+            ),
+        )
+        .unwrap();
+        let plan_path = project.join(format!("{slug}-plan.json"));
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&json!({
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                      "files": ["src/shared.rs"], "satisfies": ["AC-1"] },
+                    { "n": 2, "role": "cli", "summary": "s", "tasks": ["do it"],
+                      "depends_on": wave_two_depends_on,
+                      // The SAME file as wave 1 — the whole point of the fixture.
+                      "files": ["src/shared.rs", "src/other.rs"], "satisfies": ["AC-2"] }
+                ],
+                "total_waves": 2,
+                "lang": "en-US"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        (spec_dir, plan_path)
+    }
+
+    /// AC-2 — two waves of the SAME dispatch level declaring one file is a
+    /// REFUSAL, and the refusal names the minimal chaining that zeroes it.
+    ///
+    /// Advisory was already measured insufficient: `wave-overlap-check` sees this
+    /// exact case at the approval gate and never blocks, and the field report is
+    /// the measurement — three manual rounds to zero a four-wave, three-file
+    /// overlap. The condition carries no false positive by construction: sharing
+    /// a level IS being dispatched together, so nothing else in the plan is
+    /// sequencing the two waves.
+    ///
+    /// Two-sided: the SAME two waves with the SAME shared file materialise
+    /// normally once wave 2 declares the edge, so the gate cannot pass by
+    /// refusing every plan that shares a path.
+    #[test]
+    fn materialize_recusa_colisao_no_mesmo_nivel() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let (spec_dir, plan_path) = seed_collision_spec(project, "demo-collide", &[]);
+
+        let blocked = materialize(project, &spec_dir, &plan_path);
+
+        assert!(refused(&blocked), "a same-level file collision refuses: {blocked}");
+        assert_eq!(blocked["sharedFiles"]["ok"], json!(false), "{blocked}");
+        assert_eq!(
+            blocked["sharedFiles"]["error"],
+            json!(ERR_SAME_LEVEL_FILE_COLLISION),
+            "{blocked}"
+        );
+        let issue = &blocked["sharedFiles"]["issues"][0];
+        assert_eq!(issue["type"], json!(TYPE_SAME_LEVEL_FILE_COLLISION), "{blocked}");
+        assert_eq!(issue["waves"], json!([1, 2]), "{blocked}");
+        assert_eq!(issue["files"], json!(["src/shared.rs"]), "{blocked}");
+        assert_eq!(
+            issue["chain"],
+            json!("add wave 1 to wave 2's depends_on"),
+            "the refusal must name the minimal chaining: {blocked}"
+        );
+        // The refusal is the COLLISION's, not a scaffold gate's or the proof's —
+        // otherwise the assertion above would pass for the wrong reason.
+        assert!(blocked["scaffold"]["error"].is_null(), "{blocked}");
+        assert_eq!(blocked["proof"]["ok"], json!(true), "{blocked}");
+        assert_eq!(
+            blocked["events"],
+            json!([]),
+            "a colliding plan withholds the PLAN transition: {blocked}"
+        );
+
+        // The other direction — the edge the refusal asked for.
+        let (spec_dir, plan_path) =
+            seed_collision_spec(project, "demo-chained", &["wave-1-rt"]);
+        let allowed = materialize(project, &spec_dir, &plan_path);
+        assert_eq!(allowed["sharedFiles"]["ok"], json!(true), "{allowed}");
+        assert_eq!(allowed["sharedFiles"]["issues"], json!([]), "{allowed}");
+        assert_eq!(
+            allowed["events"],
+            json!(["pipeline.scope", "pipeline.phase"]),
+            "a sequenced pair materialises normally: {allowed}"
         );
     }
 

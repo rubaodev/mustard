@@ -701,7 +701,14 @@ pub(crate) fn wave_declared_files(spec_dir: &Path, wave: u32, role: &str) -> Vec
 /// Light lexical path normalisation for cross-wave file comparison: unify the
 /// separator and drop a single leading `./`. Deliberately NOT a filesystem
 /// canonicalisation (see [`wave_declared_files`]).
-fn normalise_declared_path(raw: &str) -> String {
+///
+/// `pub(crate)` because the SAME reading has to serve the plan-JSON side:
+/// [`crate::commands::wave::wave_dependency::declared_wave_census`] reads the
+/// declared paths out of `plan.json` and must spell them exactly as this audit
+/// spells the ones it reads off disk. Two spellings of one rule is how a `./`
+/// prefix defeated the gate — the collision was real on disk and invisible in
+/// the plan.
+pub(crate) fn normalise_declared_path(raw: &str) -> String {
     let slashed = raw.trim().replace('\\', "/");
     slashed.strip_prefix("./").unwrap_or(&slashed).to_string()
 }
