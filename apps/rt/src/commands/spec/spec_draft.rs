@@ -496,6 +496,11 @@ fn append_material_sections(output: &Path, material: &ConversationMaterial) -> R
 /// Refuses (exit 0, `{"ok": false, …}` like every other refusal here) when the
 /// spec does not exist yet — this door updates, it never creates — and when no
 /// `--material` file was given, since there would be nothing to write.
+///
+/// Toca SÓ o `spec.md` do pai, então as ondas já no disco seguem com o recorte
+/// de material com que foram renderizadas. Isso é dito em vez de ficar em
+/// silêncio: `wavesStale` no relatório e uma linha de stderr nomeando o
+/// `plan-materialize` — ver [`stale_waves_warning`].
 fn material_only_refresh(
     project_root: &Path,
     opts: &SpecDraftOpts,
@@ -538,18 +543,80 @@ fn material_only_refresh(
         emit_error("write spec.md", &format!("{}: {e}", path.display()));
         return 0;
     }
-    println!(
-        "{}",
-        serde_json::json!({
-            "ok": true,
-            "spec": slug,
-            "path": path.display().to_string(),
-            "definitions": material.definitions.len(),
-            "decisions": material.decisions.len(),
-            "findings": material.findings.len(),
-        })
-    );
+    // Esta porta reescreve o `spec.md` do PAI e mais nada. As ondas já
+    // materializadas carregam o recorte de material feito quando
+    // `plan-materialize` rodou, então tudo o que acabou de entrar aqui está
+    // ausente delas — e ninguém era avisado disso. Uma decisão registrada que o
+    // executor da onda nunca lê é a mesma coisa que decisão nenhuma, então o
+    // desencontro é NOMEADO: na stderr, para o operador, e no relatório, para
+    // quem lê a saída por máquina.
+    let stale_waves = materialized_wave_dirs(&dir);
+    if !stale_waves.is_empty() {
+        eprintln!("spec-draft: WARN: {}", stale_waves_warning(slug, &stale_waves));
+    }
+    println!("{}", material_only_report(slug, &path, material, &stale_waves));
     0
+}
+
+/// O relatório do `--material-only`, montado num valor só — assim os bytes que
+/// um chamador lê são os mesmos bytes que um teste afirma.
+///
+/// `wavesStale` é o sinalizador e `staleWaves` é a evidência dele: o booleano
+/// sozinho manda um script re-materializar sem dizer O QUE ficou para trás. Os
+/// nomes chegam de [`materialized_wave_dirs`] já ordenados, então a saída
+/// continua byte-estável entre execuções.
+fn material_only_report(
+    slug: &str,
+    path: &Path,
+    material: &ConversationMaterial,
+    stale_waves: &[String],
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "spec": slug,
+        "path": path.display().to_string(),
+        "definitions": material.definitions.len(),
+        "decisions": material.decisions.len(),
+        "findings": material.findings.len(),
+        "wavesStale": !stale_waves.is_empty(),
+        "staleWaves": stale_waves,
+    })
+}
+
+/// Os diretórios `wave-N-*` que uma materialização anterior deixou sob
+/// `spec_dir`, ordenados — a ordem do `read_dir` não é estável e esta lista viaja
+/// num relatório que precisa ser.
+///
+/// Só os NOMES são coletados: quem pergunta quer saber QUAIS ondas ficaram para
+/// trás, nunca o que há dentro delas. Diretório ilegível devolve lista vazia —
+/// isto é uma linha de aviso, e recusar o refresh de material por causa de uma
+/// listagem que não abriu custaria mais do que a linha vale.
+fn materialized_wave_dirs(spec_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(spec_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("wave-"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// A linha de stderr de um refresh que caiu numa spec cujas ondas já estavam
+/// materializadas — ela precisa NOMEAR o comando que as reconcilia, senão o
+/// operador fica sabendo do problema e não do remédio.
+fn stale_waves_warning(slug: &str, waves: &[String]) -> String {
+    format!(
+        "the material sections changed, but {} already materialised ({}) and were NOT \
+         updated — their per-wave material cut still carries what the spec said before this \
+         refresh. Re-run `mustard-rt run plan-materialize --spec-dir {slug} --plan <plan.json>` \
+         to bring them forward.",
+        if waves.len() == 1 { "1 wave is" } else { "waves are" },
+        waves.join(", "),
+    )
 }
 
 /// Drop the three material sections from a spec body, heading and all, so the
@@ -3198,5 +3265,94 @@ mod tests {
             !holds_only_harness_state(&spec_dir),
             "a drafted spec.md must still demand --force"
         );
+    }
+
+    /// `--material-only` reescreve só o `spec.md` do pai — e agora DIZ isso.
+    ///
+    /// As ondas já materializadas carregam o recorte de material feito na
+    /// materialização anterior; um refresh que entra depois delas não as toca e,
+    /// até aqui, também não avisava. O executor da onda seguia lendo o material
+    /// antigo sem nenhum sinal de que havia material novo no pai — uma decisão
+    /// registrada que ninguém lê é decisão nenhuma. O `memory/` do fixture está
+    /// ali para provar que o detector olha o prefixo `wave-`, não "qualquer
+    /// subdiretório".
+    #[test]
+    fn material_only_warns_that_waves_went_stale() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+
+        let slug = "unidade-com-ondas";
+        let spec_dir = project.join(".claude").join("spec").join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Unidade\n\n## Context\n\nprosa que o refresh não pode tocar\n",
+        )
+        .unwrap();
+        // Criadas fora de ordem de propósito: a lista do relatório é ordenada.
+        for wave in ["wave-2-review", "wave-1-impl"] {
+            std::fs::create_dir_all(spec_dir.join(wave)).unwrap();
+            std::fs::write(spec_dir.join(wave).join("spec.md"), "# onda\n").unwrap();
+        }
+        std::fs::create_dir_all(spec_dir.join("memory")).unwrap();
+
+        let material_path = project.join("spec-material.json");
+        std::fs::write(
+            &material_path,
+            r#"{"decisions":[{"decision":"uma decisão nova","reason":"a razão dela"}]}"#,
+        )
+        .unwrap();
+
+        let code = run_at(
+            project,
+            SpecDraftOpts {
+                intent: "Unidade com ondas".into(),
+                slug: Some(slug.to_string()),
+                scope: "full".into(),
+                lang: "pt-BR".into(),
+                signals: None,
+                output: None,
+                material: Some(material_path),
+                material_only: true,
+                no_material_reason: None,
+                waves: 2,
+                plan: None,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            },
+        );
+        assert_eq!(code, 0, "o refresh de material continua saindo limpo");
+
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        assert!(body.contains("uma decisão nova"), "a decisão entrou no spec.md:\n{body}");
+        assert!(body.contains("prosa que o refresh não pode tocar"), "o resto do corpo fica:\n{body}");
+
+        // O detector enxerga as duas ondas, em ordem estável, e só elas.
+        let waves = materialized_wave_dirs(&spec_dir);
+        assert_eq!(waves, vec!["wave-1-impl".to_string(), "wave-2-review".to_string()]);
+
+        // O relatório diz que as ondas ficaram para trás, e quais.
+        let report =
+            material_only_report(slug, &spec_dir.join("spec.md"), &ConversationMaterial::default(), &waves);
+        assert_eq!(report["wavesStale"], serde_json::json!(true));
+        assert_eq!(report["staleWaves"], serde_json::json!(["wave-1-impl", "wave-2-review"]));
+
+        // Sem onda no disco o campo não mente — o aviso é a exceção, não a regra.
+        let clean = material_only_report(
+            slug,
+            &spec_dir.join("spec.md"),
+            &ConversationMaterial::default(),
+            &[],
+        );
+        assert_eq!(clean["wavesStale"], serde_json::json!(false));
+        assert_eq!(clean["staleWaves"], serde_json::json!([]));
+
+        // E a linha da stderr nomeia o comando que reconcilia as ondas.
+        let warn = stale_waves_warning(slug, &waves);
+        assert!(warn.contains("plan-materialize"), "o remédio é nomeado: {warn}");
+        assert!(warn.contains(slug), "e nomeia a unidade: {warn}");
+        assert!(warn.contains("wave-1-impl"), "e as ondas atrasadas: {warn}");
     }
 }
