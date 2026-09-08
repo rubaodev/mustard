@@ -83,6 +83,7 @@ The embedded file holds two `<!-- TEMPLATE: … -->` blocks — **preserve every
 ```text
 <!-- PREFIX-STABLE -->
 ## CONTEXT           (static ground rules: Guards pointer, sibling check, spec language)
+## WHY               ({why_block} — the parent spec's `## Context` + `## Non-Goals`)
 ## GUARDS            ({guards_summary})
 ## SHARED LANGUAGE   ({context_md} slice — stable across the wave)
 ## REFERENCE         ({reference_files} — paths + signatures)
@@ -95,11 +96,12 @@ The embedded file holds two `<!-- TEMPLATE: … -->` blocks — **preserve every
 ## PRIOR WAVE DIFF   ({prior_wave_diff})
 ## CHANGE REQUESTS   ({change_log})
 ## REALITY OBLIGATIONS ({reality_obligations} — duties to check the world outside the repo)
+## ACCEPTANCE        ({acceptance_block} — the criteria THIS wave satisfies, `Command:` and all)
 ## TASK              ({task_steps} — spec slice / --task-text)
 ```
 
-**`retry`** — labeled `<!-- VARIABLE -->`; the minimal re-dispatch prompt: `## RETRY CONTEXT` (`{retry_context}`) → `## EFFICIENCY` → `## TASK`. Selected by `--mode granular|fix-loop`.
+**`retry`** — labeled `<!-- VARIABLE -->`; the minimal re-dispatch prompt: `## RETRY CONTEXT` (`{retry_context}`) → `## WHY` (`{why_block}`) → `## EFFICIENCY` → `## ACCEPTANCE` (`{acceptance_block}`) → `## TASK`. Selected by `--mode granular|fix-loop`. The retry carries the two channels for the reason the mode exists: the `fix-loop` agent is re-dispatched precisely because it failed a criterion, so it is the LAST dispatch that may be denied the criterion.
 
-A `## ` section whose placeholder body resolves to "" is dropped (`collapse_empty_sections`) — typically `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## SKILLS`, `## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS`, `## REALITY OBLIGATIONS` on the spec-less / wave-1 / no-material / no-Files / no-duty / `patterns` paths; `## TASK` always survives (its trailing line is non-blank body).
+A `## ` section whose placeholder body resolves to "" is dropped (`collapse_empty_sections`) — typically `## WHY`, `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## SKILLS`, `## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS`, `## REALITY OBLIGATIONS`, `## ACCEPTANCE` on the spec-less / wave-1 / no-material / no-Files / no-duty / no-criterion / `patterns` paths; `## TASK` always survives (its trailing line is non-blank body).
 
 Prompt-cache rule: the Anthropic API bills a byte-identical prefix (≥1024 tokens; ~1024 chars is a safe floor) at 10% of input on nearby calls. The stable head of `dispatch` (`## CONTEXT`…`## EFFICIENCY`) is reused across a wave's dispatches; the per-dispatch tail (`## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY`, `## PRIOR WAVE DIFF`, `## CHANGE REQUESTS`, `## REALITY OBLIGATIONS`, `## TASK`) changes each round. That is why the per-wave material cut sits below the line and not above it: its content differs per wave by construction, so placing it in the head would defeat the cache for every dispatch of every spec that carries any. `{context_md}` is *content* but byte-identical across a wave (regenerated + cached on each wave transition), so it rides in the stable head. A prefix below 1024 chars is still valid — it just does not cache (gain 0).

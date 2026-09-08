@@ -39,7 +39,9 @@
 //!   none of those.
 
 use crate::commands::agent::context_inject;
-use crate::commands::pipeline::resume_bootstrap::resolve_operational_spec_path;
+use crate::commands::pipeline::resume_bootstrap::{
+    find_wave_spec_path, resolve_operational_spec_path,
+};
 use crate::shared::context::project_dir;
 use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
@@ -529,7 +531,21 @@ pub(crate) fn render_prompt_with_census(
     // subset each wave satisfies; this reads that section back, exactly as
     // `{task_steps}` reads back `## Tasks`. Empty for a spec that declares none
     // (heading collapses), which is the same silence the prompt had before.
-    let acceptance_block = read_wave_acceptance(&op_spec_path);
+    //
+    // A WAVE render reads the WAVE's own spec, never `op_spec_path`: that path
+    // falls back to the PARENT `spec.md` whenever the wave directory cannot be
+    // found (unmaterialised, a number past `total_waves`, a renamed folder), and
+    // the fallback would render the union of EVERY wave's criteria under "these
+    // are the JUDGE of this wave" — the exact noise the per-wave cut exists to
+    // remove. No wave directory means no ruler was materialised, and the honest
+    // answer is the empty section. A spec-level render (no `--wave`) is the unit
+    // itself, so there the parent's criteria ARE its ruler.
+    let acceptance_block = match wave {
+        Some(w) => find_wave_spec_path(&spec_dir, w)
+            .map(|path| read_wave_acceptance(&path))
+            .unwrap_or_default(),
+        None => read_wave_acceptance(&op_spec_path),
+    };
     // WHY the work exists, and the ground the unit deliberately does not cover —
     // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
     // (never the wave, which carries neither) through the same path already open
@@ -1546,6 +1562,30 @@ mod tests {
         let bare = render_wave(dir.path(), spec, 2);
         assert!(!bare.contains("## ACCEPTANCE"), "empty heading survived: {bare}");
         assert!(!bare.contains("AC-1"), "another wave's criterion leaked: {bare}");
+
+        // Uma onda cujo diretório NÃO existe não empresta a régua do pai. O
+        // caminho operacional cai para o `spec.md` do pai quando não acha a
+        // onda, e renderizar a UNIÃO dos critérios sob "estes são o JUIZ desta
+        // onda" é exatamente o ruído que o recorte por onda existe para tirar.
+        let ghost = render_wave(dir.path(), spec, 9);
+        assert!(
+            !ghost.contains("## ACCEPTANCE"),
+            "uma onda inexistente herdou a régua do pai: {ghost}"
+        );
+
+        // E o RE-DESPACHO carrega as duas seções. O agente de `fix-loop` é
+        // re-despachado justamente por ter falhado um critério, então era o
+        // único modo que nunca via o critério: os dois valores eram calculados e
+        // substituídos num texto que não tinha nenhum dos dois marcadores.
+        let retry = render_prompt_at(
+            dir.path(), Some(spec), Some(1), "impl", Path::new("."),
+            RenderMode::FixLoop, None, None, None,
+        );
+        assert!(retry.contains("## ACCEPTANCE"), "o re-despacho perdeu a régua: {retry}");
+        assert!(
+            retry.contains("Command: `cargo test alpha`"),
+            "e o comando que a julga: {retry}"
+        );
     }
 
     /// The wave's prompt carries the PARENT's `## Contexto` + `## Não-Objetivos`
@@ -1597,6 +1637,25 @@ mod tests {
             RenderMode::First, None, None, None,
         );
         assert!(!bare.contains("## WHY"), "empty heading survived: {bare}");
+
+        // O `## WHY` sobrevive ao ARQUIVAMENTO do spec do pai: um rewave renomeia
+        // `spec.md` para `spec.original.md` no passo 9, e sem o fallback este
+        // canal morre exatamente para a população que TEM ondas.
+        std::fs::rename(spec_dir.join("spec.md"), spec_dir.join("spec.original.md")).unwrap();
+        let after_rewave = render_wave(dir.path(), spec, 1);
+        assert!(
+            after_rewave.contains("o despacho chega sem o porquê"),
+            "o arquivamento do spec do pai não pode matar o canal: {after_rewave}"
+        );
+
+        // E o RE-DESPACHO carrega o porquê também — ver
+        // `wave_prompt_carries_its_acceptance` para a outra metade.
+        let retry = render_prompt_at(
+            dir.path(), Some(spec), Some(1), "impl", Path::new("."),
+            RenderMode::Granular, None, None, None,
+        );
+        assert!(retry.contains("## WHY"), "o re-despacho perdeu o porquê: {retry}");
+        assert!(retry.contains("o despacho chega sem o porquê"), "{retry}");
     }
 
     /// Um render de nível-spec SEM `## Tasks` — a forma tactical-fix / spec

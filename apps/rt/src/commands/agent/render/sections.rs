@@ -243,8 +243,18 @@ pub(crate) fn read_wave_acceptance(spec_path: &Path) -> String {
 ///
 /// Vazio quando o pai não declara nenhuma das duas, o que colapsa o título.
 /// Fail-open: spec ilegível devolve "".
+///
+/// `spec.original.md` é lido quando o `spec.md` não abre — a MESMA regra que o
+/// `wave-scaffold` aplica ao mesmo arquivo. Um rewave RENOMEIA o spec do pai
+/// para lá no passo 9 da decomposição, então sem o fallback este canal morre
+/// exatamente para a população que TEM ondas: os dois recortes falham, o bloco
+/// volta vazio e o `## WHY` colapsa em toda onda daquela spec.
 pub(crate) fn build_why_block(parent_spec: &Path) -> String {
-    let text = mfs::read_to_string(parent_spec).unwrap_or_default();
+    let archived =
+        parent_spec.parent().unwrap_or_else(|| Path::new(".")).join("spec.original.md");
+    let text = mfs::read_to_string(parent_spec)
+        .or_else(|_| mfs::read_to_string(&archived))
+        .unwrap_or_default();
     let mut parts: Vec<String> = Vec::new();
     for key in ["context", "non-goals"] {
         if let Some(body) = cut_section_by_key(&text, key) {

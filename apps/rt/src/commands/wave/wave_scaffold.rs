@@ -672,6 +672,10 @@ pub(crate) fn ac_pool(plan: &Plan, parent_ac_md: Option<&str>) -> AcPool {
 ///
 /// Quem chega primeiro fica (`or_insert`): a precedência do pool é decidida pela
 /// ordem em que [`ac_pool`] chama esta função.
+///
+/// A chave é o id NORMALIZADO (trim + maiúsculas), a mesma normalização que
+/// [`satisfied_ids`] aplica: é ela que consulta este mapa, e um `ac-1` escrito
+/// em minúsculas em qualquer das duas pontas casaria com nada.
 fn collect_ac_blocks(section: &str, out: &mut AcPool) {
     use crate::commands::review::qa_run::parse_ac_header;
     let lines: Vec<&str> = section.lines().collect();
@@ -691,7 +695,7 @@ fn collect_ac_blocks(section: &str, out: &mut AcPool) {
             block.push(line.trim_end().to_string());
             j += 1;
         }
-        out.entry(id).or_insert_with(|| block.join("\n"));
+        out.entry(id.trim().to_uppercase()).or_insert_with(|| block.join("\n"));
         i = j;
     }
 }
@@ -710,6 +714,12 @@ struct TraceGaps {
     /// this set ([`satisfied_ids`]). A wave with tasks and no criterion is an
     /// agent sent to work with no ruler, and it is still judged by one at QA.
     /// The remedy is the same one line the WARN already named.
+    ///
+    /// The PHANTOM `satisfies` id lands here too, because it is the same
+    /// sentence: an id naming no declared criterion cuts an EMPTY
+    /// `## Acceptance Criteria`, so the wave works with no ruler exactly as if
+    /// it had claimed nothing — while a non-empty `satisfies` hid that from the
+    /// no-criterion check.
     untraced_waves: Vec<String>,
     /// Gap 2 — an acceptance criterion NO wave satisfies. `defined` is the
     /// union of every wave's `acceptance` ids AND the parent spec.md
@@ -818,23 +828,64 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         }
     }
 
+    // O conjunto DEFINIDO fecha ANTES de qualquer onda ser julgada. Fechá-lo
+    // dentro do laço faria a onda 1 ser medida contra um conjunto que ainda não
+    // conhece os critérios que a onda 2 declara — e a pergunta "este id existe?"
+    // só tem uma resposta honesta depois de o plano inteiro ter sido lido.
     for w in &plan.waves {
         // The ACs this wave DEFINES, via the shared qa-run parser. Acceptance
         // lines may arrive without a leading bullet (the plan schema example
         // does); normalise to `- <line>` — exactly as `build_ac_block` does —
         // so the parser (which requires a bullet) finds them.
-        let ac_ids: Vec<String> = parse_ac_items(&wave_ac_text(w))
-            .into_iter()
-            .map(|it| norm(&it.id))
-            .collect();
-        for id in &ac_ids {
-            defined.insert(id.clone());
+        for it in parse_ac_items(&wave_ac_text(w)) {
+            defined.insert(norm(&it.id));
         }
+    }
+
+    for w in &plan.waves {
         // Conjunto satisfeito: a MESMA regra que o renderizador usa para recortar
         // o `## Acceptance Criteria` da onda — ver [`satisfied_ids`].
         let satisfied: Vec<String> = satisfied_ids(w);
         for id in &satisfied {
             covered.insert(id.clone());
+        }
+        // Um id que não nomeia critério NENHUM é um `satisfies` fantasma, e ele
+        // conta como onda sem régua. `AC-01` onde o pai define `AC-1` devolve um
+        // conjunto satisfeito NÃO-vazio, então a recusa por onda sem critério
+        // passava batida — e o `ac_pool` não tem essa chave, então a onda
+        // materializa SEM `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt
+        // colapsa. O id fantasma também só alimenta `defined - covered`, então
+        // nem a lacuna de cobertura dispara: um erro de digitação reproduzia em
+        // silêncio o defeito que esta unidade inteira existe para remover.
+        //
+        // Ele entra na lista das ondas sem rastreio (e não num canal próprio)
+        // porque é a mesma frase: a onda trabalha e nada a julga. O remédio
+        // continua sendo uma linha, e a mensagem nomeia o id e os ids que
+        // existem.
+        //
+        // O conjunto VAZIO é exceção, e por uma razão e não por conveniência:
+        // sem um único critério declarado no plano ou no pai, não há conjunto
+        // contra o qual comparar — todo id seria fantasma, inclusive num plano
+        // pré-critérios legítimo, e a recusa bloquearia a redação em vez de um
+        // erro. O silêncio ali já é dito pela lacuna de cobertura, que também
+        // não tem o que dizer.
+        let phantom: Vec<String> = if defined.is_empty() {
+            Vec::new()
+        } else {
+            satisfied.iter().filter(|id| !defined.contains(*id)).cloned().collect()
+        };
+        if !phantom.is_empty() {
+            untraced_waves.push(format!(
+                "wave-{n}-{role} declares `satisfies` ids that name no criterion: {phantom}. No \
+                 criterion carries that id, so nothing materialises into the wave's \
+                 `## Acceptance Criteria` and the dispatched prompt's `## ACCEPTANCE` block \
+                 collapses — the wave works with no ruler and is judged by one anyway. The ids \
+                 that DO exist: {known}",
+                n = w.n,
+                role = w.role,
+                phantom = phantom.join(", "),
+                known = defined.iter().cloned().collect::<Vec<_>>().join(", "),
+            ));
         }
         if !w.tasks.is_empty() && satisfied.is_empty() {
             untraced_waves.push(format!(
@@ -1446,17 +1497,19 @@ pub(crate) fn scaffold_warning_to(
     let wave_plan_md = render_wave_plan(&plan, &hd, ac_block.as_deref(), &parent_name);
     ledger.emit(&spec_dir.join("wave-plan.md"), &wave_plan_md);
 
-    // The parent spec body, read ONCE for the whole loop: each wave's `## Material`
-    // is cut from it. Absent parent (a re-wave before the archive lands) yields no
-    // material and the section simply does not render.
-    let parent_material_text = fs::read_to_string(spec_dir.join("spec.md")).unwrap_or_default();
-    // O spec monolítico do pai, lido UMA vez e usado por dois consumidores: o
-    // pool de texto dos critérios (abaixo, para o recorte por onda) e o portão de
-    // rastreabilidade (mais adiante). É `spec.md` no tempo do PLAN, ou
-    // `spec.original.md` depois que um rewave arquivou o original.
+    // O spec monolítico do pai, lido UMA vez — e uma vez de verdade: é `spec.md`
+    // no tempo do PLAN, ou `spec.original.md` depois que um rewave arquivou o
+    // original, e o fallback só é tentado quando a primeira leitura falhou.
+    //
+    // TRÊS consumidores saem daqui: o recorte de `## Material` por onda, o pool
+    // de texto dos critérios (para o recorte de `## Acceptance Criteria` por
+    // onda) e o portão de rastreabilidade. Pai ausente (um re-wave antes de o
+    // arquivo aterrissar) devolve `None`: o material não renderiza e o portão
+    // não recebe id nenhum do pai.
     let parent_ac_md = fs::read_to_string(spec_dir.join("spec.md"))
         .or_else(|_| fs::read_to_string(spec_dir.join("spec.original.md")))
         .ok();
+    let parent_material_text: &str = parent_ac_md.as_deref().unwrap_or_default();
     // O texto literal de cada critério, indexado pelo id — cada onda leva daqui
     // só o subconjunto que declara satisfazer.
     let pool = ac_pool(&plan, parent_ac_md.as_deref());
@@ -1477,7 +1530,7 @@ pub(crate) fn scaffold_warning_to(
         let dir = spec_dir.join(wave_name(w));
         ledger.emit(
             &dir.join("spec.md"),
-            &render_wave_spec(&parent_name, w, &hd, &parent_material_text, &pool),
+            &render_wave_spec(&parent_name, w, &hd, parent_material_text, &pool),
         );
     }
 
@@ -2567,6 +2620,61 @@ mod tests {
         // O isolamento, dito em asserção: nada MAIS recusou este relatório.
         assert_eq!(report["proof"]["ok"], json!(true), "{report}");
         assert_eq!(report["sharedFiles"]["ok"], json!(true), "{report}");
+    }
+
+    /// Um `satisfies` que nomeia critério NENHUM é recusado do mesmo jeito que
+    /// uma onda que não declara nada.
+    ///
+    /// O buraco que este teste fecha: `AC-01` onde o pai define `AC-1` devolve um
+    /// conjunto satisfeito NÃO-vazio, então a recusa por onda sem critério
+    /// passava batida; o `ac_pool` não tem essa chave, então a onda materializa
+    /// SEM `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt colapsa; e o id
+    /// fantasma só alimenta `defined - covered`, então a lacuna de cobertura
+    /// também não dispara. Um erro de digitação reproduzia em silêncio o defeito
+    /// que esta unidade existe para remover.
+    #[test]
+    fn a_satisfies_id_naming_no_criterion_is_refused() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-fantasma");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Epic\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — a. Command: `true`\n\
+             - **AC-2** — b. Command: `true`\n",
+        )
+        .unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"], "satisfies": ["AC-01"] },
+                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
+                  "files": ["src/b.rs"], "satisfies": ["AC-1", "AC-2"] }
+            ]),
+        );
+
+        let ScaffoldOutcome::Created { untraced_waves, .. } = scaffold(&spec_dir, &plan_path) else {
+            panic!("expected ScaffoldOutcome::Created");
+        };
+        let named = untraced_waves
+            .iter()
+            .find(|g| g.contains("wave-1-rt"))
+            .unwrap_or_else(|| panic!("o id fantasma tem de recusar o plano: {untraced_waves:?}"));
+        assert!(named.contains("AC-01"), "a mensagem nomeia o id fantasma: {named}");
+        assert!(named.contains("AC-1") && named.contains("AC-2"), "e os que existem: {named}");
+        assert!(
+            !untraced_waves.iter().any(|g| g.contains("wave-2-cli")),
+            "a onda que declara ids reais não entra na lista: {untraced_waves:?}"
+        );
+
+        // E o outro lado: a onda 1 realmente materializou SEM régua — que é o
+        // motivo pelo qual o id fantasma conta como onda sem rastreio.
+        let w1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        assert!(
+            !w1.contains("## Acceptance Criteria"),
+            "um id que não existe não materializa critério nenhum: {w1}"
+        );
     }
 
     /// One wave, fully specified — the fixture the claim-support gaps need,

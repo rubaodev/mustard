@@ -58,9 +58,11 @@ use post_execute_gate::{
 use stage_resolver::{
     detect_stage, detect_stub, extract_summary, read_first_lines, relativize,
 };
-use wave_progress::{
-    count_wave_progress_from_fs, derive_role_from_wave_path, find_wave_spec_path,
-};
+use wave_progress::{count_wave_progress_from_fs, derive_role_from_wave_path};
+/// The wave-spec locator, re-exported: the prompt renderer asks for the WAVE's
+/// own `spec.md` and must NOT get [`resolve_operational_spec_path`]'s parent
+/// fallback, so it needs the raw answer.
+pub(crate) use wave_progress::find_wave_spec_path;
 /// The dispatch record, re-exported: the `/spec` picker reads the same witness
 /// list this module folds into `neverDispatched`, so a scaffolded plan cannot
 /// be "never dispatched" here and "running" in the listing.

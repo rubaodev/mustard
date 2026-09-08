@@ -62,11 +62,17 @@ Guards carregados via {guards_file} acima — respeite sem exceção.
 ## RETRY CONTEXT
 {retry_context}
 
+## WHY
+{why_block}
+
 ## EFFICIENCY
 - Absolute paths, no cd
 - Read each file once (prior context cached — skip {guards_file}/guards/registry re-reads unless file changed on disk)
 - Max 3 build attempts, then STOP + report
 - Return cap: follow pipeline-config.md Max Return limits. Focus on: files changed + non-obvious decisions + blockers only.
+
+## ACCEPTANCE
+{acceptance_block}
 
 ## TASK
 {task_steps}

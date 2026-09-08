@@ -749,18 +749,6 @@ const CENSUS_SKILLS_DIR: &str = "skills";
 /// Ver [`CENSUS_SKILLS_DIR`].
 const CENSUS_SKILL_FILE: &str = "SKILL.md";
 
-/// A chave do frontmatter que diz QUEM escreve um molde, e o valor que a
-/// passagem de enriquecimento assume para si.
-///
-/// O par é o que separa as duas metades do `skills/`: `source: scan` (ou chave
-/// ausente, a forma histórica de um molde gerado) é saída da ferramenta, e
-/// [`CENSUS_SKILL_SOURCE_MANUAL`] é o molde ADOTADO — o próprio molde documenta
-/// que a partir dali as edições à mão não são mais sobrescritas, o que quer
-/// dizer que quem escreve ali é o operador.
-const CENSUS_SKILL_SOURCE_KEY: &str = "source:";
-/// Ver [`CENSUS_SKILL_SOURCE_KEY`].
-const CENSUS_SKILL_SOURCE_MANUAL: &str = "manual";
-
 /// De quem é um `.claude/skills/<molde>/SKILL.md`, lido do `source:` do
 /// frontmatter dele.
 ///
@@ -774,39 +762,35 @@ const CENSUS_SKILL_SOURCE_MANUAL: &str = "manual";
 /// dentro de um commit da ferramenta — a troca que a categoria existe para
 /// impedir.
 ///
-/// Ilegível ou sem frontmatter que se possa ler é [`DirtyPathKind::Work`], a
+/// A chave AUSENTE é o mesmo caso do `manual`, e é o comum: um
+/// `.claude/skills/<algo>/SKILL.md` escrito à mão — o lugar padrão de uma skill
+/// de projeto no Claude Code — quase nunca declara `source:`. Ler a ausência
+/// como censo reabriria a mesma troca por OMISSÃO de chave em vez de por
+/// escrita dela.
+///
+/// Por isso a leitura é [`DirtyPathKind::Census`] SÓ quando o `source:` resolve
+/// para `scan`. Todo o resto — `manual`, chave ausente, qualquer outro valor,
+/// arquivo ilegível, frontmatter que não fecha — é [`DirtyPathKind::Work`], a
 /// mesma direção segura que a regra de truncamento acima toma: errar para "tem
 /// trabalho" custa um commit, errar para o outro lado custa o trabalho de
 /// alguém.
+///
+/// A pergunta inteira vai para
+/// [`crate::commands::scan_patterns::origin::is_mustard_generated`], que É a
+/// regra canônica e já lê pelo parser de frontmatter do core (tolerante a BOM e
+/// a CRLF, e ciente do bloco `metadata:`, então um `source:` indentado ali
+/// dentro nunca é confundido com a chave de topo). Reescrever aqui as duas
+/// linhas equivalentes é exatamente como este portão e a varredura passariam a
+/// discordar sobre quem escreveu o mesmo arquivo — que foi o defeito.
 fn census_skill_kind(root: &Path, path: &str) -> DirtyPathKind {
     let Ok(text) = std::fs::read_to_string(root.join(path)) else {
         return DirtyPathKind::Work;
     };
-    let mut lines = text.lines();
-    // O frontmatter abre na PRIMEIRA linha; um arquivo que não abre assim não
-    // tem frontmatter para ler.
-    if lines.next().map(str::trim) != Some("---") {
-        return DirtyPathKind::Work;
+    if crate::commands::scan_patterns::origin::is_mustard_generated(&text) {
+        DirtyPathKind::Census
+    } else {
+        DirtyPathKind::Work
     }
-    for line in lines {
-        if line.trim() == "---" {
-            // Fechou o bloco sem declarar `source:` — a forma histórica de um
-            // molde gerado, que é censo.
-            return DirtyPathKind::Census;
-        }
-        // Só a chave de topo: o `source:` que porventura apareça indentado
-        // pertence a outro mapa (`metadata:`), não ao molde.
-        let Some(value) = line.strip_prefix(CENSUS_SKILL_SOURCE_KEY) else {
-            continue;
-        };
-        return if value.trim().trim_matches(['"', '\'']) == CENSUS_SKILL_SOURCE_MANUAL {
-            DirtyPathKind::Work
-        } else {
-            DirtyPathKind::Census
-        };
-    }
-    // Abriu o frontmatter e nunca fechou: não há bloco que se possa ler.
-    DirtyPathKind::Work
 }
 
 /// O que uma linha do `git status` É, para quem está prestes a levar o checkout
@@ -1012,6 +996,39 @@ pub(crate) fn busy_checkout(
     })
 }
 
+/// A MESMA decisão de [`busy_checkout`], tomada por quem vai efetivamente
+/// cortar — e que, ao liberar o corte, GRAVA antes o censo que sobrou sujo na
+/// árvore.
+///
+/// As duas metades andam juntas de propósito. [`CheckoutWork::CensusOnly`] passa
+/// como "não é trabalho de ninguém" em toda porta, mas só uma delas gravava o
+/// censo antes de cortar (o portão base, em
+/// [`crate::commands::event::emit_pipeline`]). Nas outras duas o `git checkout
+/// -b` levava `.claude/scan-map.md` e os moldes gerados para DENTRO da branch da
+/// unidade, onde eles entram no diff dela e no pull request dela — exatamente a
+/// atribuição que o assunto de commit do censo existe para evitar. Uma função
+/// que decide e liquida é o que impede a terceira porta de nascer esquecendo o
+/// mesmo passo.
+///
+/// Gravar não é condicionado ao veredito ser `CensusOnly`: quando a árvore está
+/// limpa, ou quando o checkout nem pertencia a outra unidade,
+/// [`crate::commands::event::base_gate::record_leftover_census`] mede de novo e
+/// não faz nada — e o corte que vem a seguir é o mesmo corte que carregaria o
+/// censo embora. Fail-open de ponta a ponta: censo invisível para o git, ou um
+/// git que recusa, deixa a escrita onde caiu e o corte segue como antes.
+pub(crate) fn busy_checkout_before_cut(
+    root: &Path,
+    current: Option<&str>,
+    target: &str,
+    config: &mustard_core::ProjectConfig,
+) -> Option<BusyCheckout> {
+    let busy = busy_checkout(root, current, target, config);
+    if busy.is_none() {
+        crate::commands::event::base_gate::record_leftover_census(root);
+    }
+    busy
+}
+
 /// What [`cut_pending_work_branch`] did — the closed set, so a caller that must
 /// decide (refuse? warn? say nothing?) reads a state instead of guessing from a
 /// bool. `NoPending` and `AlreadyThere` are deliberately apart: "no work unit
@@ -1103,7 +1120,9 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
 
     // The checkout may belong to ANOTHER unit that has not committed yet:
     // refuse before touching git, so its work stays where its author left it.
-    if let Some(busy) = busy_checkout(project, current.as_deref(), &target, &config) {
+    // Liberado o corte, o censo que sobrou sujo é gravado AQUI, antes do
+    // checkout — senão ele viaja para dentro da branch desta unidade.
+    if let Some(busy) = busy_checkout_before_cut(project, current.as_deref(), &target, &config) {
         return CutOutcome::Refused(busy);
     }
 
@@ -2277,8 +2296,9 @@ mod tests {
     #[test]
     fn a_truncated_directory_only_passes_when_all_of_it_is_scratch() {
         // A árvore só importa para os moldes: todo o resto se decide no nome.
-        // Dois moldes GERADOS aqui — um com `source: scan` e um sem chave
-        // nenhuma, a forma histórica — e um ADOTADO, no bloco de trabalho.
+        // UM molde gerado (`source: scan`, o único valor que declara censo), um
+        // ADOTADO (`source: manual`) e uma skill de projeto escrita à mão SEM
+        // chave `source:` — os dois últimos no bloco de trabalho.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let mold = |path: &str, body: &str| {
@@ -2291,8 +2311,8 @@ mod tests {
             "---\nname: rt-gate-pattern\nsource: scan\n---\n\n## Purpose\n",
         );
         mold(
-            ".claude/skills/core-doc-pattern/SKILL.md",
-            "---\nname: core-doc-pattern\n---\n\n## Purpose\n",
+            ".claude/skills/my-helper/SKILL.md",
+            "---\nname: my-helper\ndescription: Use when X.\n---\n\n## Purpose\n",
         );
         mold(
             "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",
@@ -2338,7 +2358,6 @@ mod tests {
             ".claude/scan-map.md",
             "apps/rt/.claude/scan-map.md",
             "apps/rt/.claude/skills/rt-gate-pattern/SKILL.md",
-            ".claude/skills/core-doc-pattern/SKILL.md",
             ".claude\\scan-map.md",
         ] {
             assert_eq!(
@@ -2378,6 +2397,12 @@ mod tests {
             // O molde ADOTADO (`source: manual`) é escrita do OPERADOR: o nome
             // do arquivo é o mesmo de um gerado e o frontmatter é o que separa.
             "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",
+            // A skill de projeto ORDINÁRIA: escrita à mão em
+            // `.claude/skills/<nome>/SKILL.md` — o lugar padrão do Claude Code —
+            // e SEM chave `source:`, que é como quase toda skill à mão nasce. A
+            // regra canônica diz humano; lê-la como censo faria o portão varrer
+            // a escrita do operador para dentro de um commit da ferramenta.
+            ".claude/skills/my-helper/SKILL.md",
             // Um molde que não existe no disco não pôde ser lido, e um que
             // abre frontmatter sem fechar não pôde ser interpretado — as duas
             // formas caem para o lado seguro.
@@ -2397,6 +2422,18 @@ mod tests {
             super::classify_dirty_path(root, ".claude/skills/truncado-pattern/SKILL.md"),
             super::DirtyPathKind::Work,
             "frontmatter sem fim não é bloco que se possa ler",
+        );
+
+        // O leitor é o CANÔNICO do core, então o BOM antes da cerca não muda
+        // nada — a mesma tolerância que `is_mustard_generated` documenta.
+        mold(
+            ".claude/skills/bom-pattern/SKILL.md",
+            "\u{feff}---\nname: bom-pattern\nsource: scan\n---\n\n## Purpose\n",
+        );
+        assert_eq!(
+            super::classify_dirty_path(root, ".claude/skills/bom-pattern/SKILL.md"),
+            super::DirtyPathKind::Census,
+            "um molde gerado com BOM não deixa de ser gerado",
         );
     }
 

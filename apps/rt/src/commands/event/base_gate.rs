@@ -69,7 +69,7 @@ use mustard_core::{
 use super::work_branch::{checkout_work, CheckoutWork};
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
-use crate::commands::spec::active_specs::active_spec_names;
+use crate::commands::spec::active_specs::{active_spec_names, without_spec_date_prefix};
 use crate::commands::spec::spec_slug::canonical_for_project;
 use crate::hooks::write::scan_clean_gate::tree_is_dirty;
 use crate::util::format_gate_message;
@@ -368,6 +368,14 @@ fn significant_tokens(slug: &str) -> std::collections::BTreeSet<String> {
 /// vem da MESMA derivação que nomeia a unidade, então os dois lados não têm como
 /// discordar sobre qual é ele.
 ///
+/// A comparação roda SEM o prefixo de data: um diretório pode se chamar
+/// `2026-05-23-harness-enxerga-toda-branch` e `canonical_for_project` nunca
+/// produz a data, então a exclusão exata não casava e a unidade se acusava de
+/// sobrepor a si mesma. A remoção vai pelo MESMO helper que o picker usa
+/// ([`without_spec_date_prefix`]) — [`significant_tokens`] já descarta os
+/// tokens puramente numéricos porque sabe que o prefixo existe; a exclusão
+/// passa a saber também.
+///
 /// Determinístico: a ordem é a do localizador (ordenada), e nada de timestamp
 /// ou caminho volátil entra no resultado.
 pub(crate) fn overlapping_active_specs(project: &Path, intent: &str) -> Vec<String> {
@@ -382,7 +390,7 @@ pub(crate) fn overlapping_active_specs(project: &Path, intent: &str) -> Vec<Stri
     }
     active_spec_names(project)
         .into_iter()
-        .filter(|name| name != &own)
+        .filter(|name| without_spec_date_prefix(name) != without_spec_date_prefix(&own))
         .filter(|name| {
             significant_tokens(name).intersection(&wanted).count() >= OVERLAP_MIN_TOKENS
         })
@@ -864,7 +872,14 @@ mod tests {
         std::fs::write(claude.join("scan-map.md"), "Tipo: cargo · 307 arquivos\n").unwrap();
         let mold = claude.join("skills").join("rt-gate-pattern");
         std::fs::create_dir_all(&mold).unwrap();
-        std::fs::write(mold.join("SKILL.md"), "---\nname: rt-gate-pattern\n---\n").unwrap();
+        // `source: scan` é o ÚNICO marcador que declara o molde como saída da
+        // ferramenta — a regra canônica de `scan_patterns::origin`, que é
+        // também a que a passagem de enriquecimento carimba em tudo que escreve.
+        std::fs::write(
+            mold.join("SKILL.md"),
+            "---\nname: rt-gate-pattern\nsource: scan\n---\n",
+        )
+        .unwrap();
     }
 
     /// Uma árvore suja SÓ com o censo não recusa o corte da próxima unidade — e
@@ -900,6 +915,70 @@ mod tests {
             "",
             "o portão gravou o que ele mesmo escreveu, sem commit manual no meio",
         );
+    }
+
+    /// …e o corte que a decisão liberou GRAVA o censo antes de cortar, em vez de
+    /// levá-lo embora dentro da branch da nova unidade.
+    ///
+    /// A regressão que este teste tranca: `CensusOnly` passava como limpo nas
+    /// três portas, mas só a do portão base gravava o censo antes. Nas outras
+    /// duas o `git checkout -b` carregava `.claude/scan-map.md` e os moldes
+    /// gerados para dentro da branch da unidade, onde eles entram no diff dela e
+    /// no pull request dela — a atribuição que o assunto de commit do censo
+    /// existe para evitar. A porta medida aqui é a do `spec-draft`
+    /// (`cut_pending_work_branch`); a do hook toma a MESMA chamada.
+    #[test]
+    fn the_cut_records_the_census_on_the_base_before_taking_the_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        // Escrito ANTES do `git init` da fixture, para entrar no commit inicial
+        // dela: um `mustard.json` solto seria trabalho do operador na árvore e a
+        // recusa de hoje — correta — abortaria o corte antes da medição.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        // A árvore fica na BASE, que é onde o portão a encontra: é dela que a
+        // próxima unidade é cortada, e é nela que o censo tem de aterrissar.
+        let model = repo_tracking_the_census(root);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+        let base_head = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let sid = "sess-cut-records-census";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        let outcome = crate::commands::event::work_branch::cut_pending_work_branch(root, sid);
+        assert_eq!(
+            outcome,
+            crate::commands::event::work_branch::CutOutcome::Cut("dev_second".to_string()),
+            "a árvore só com censo não recusa o corte: {outcome:?}",
+        );
+
+        let status = porcelain(root);
+        for artefact in ["scan-map.md", "grain.model.json", "grain.dictionary.json"] {
+            assert!(
+                !status.contains(artefact),
+                "o censo não viajou sujo para dentro da branch nova ({artefact}): {status}",
+            );
+        }
+        // O commit do censo ficou na BASE de onde o corte saiu, com o assunto do
+        // censo. `dev_second` foi cortada depois, então o herda como ancestral e
+        // o diff da unidade contra a base dela não carrega o censo.
+        let census_commit = git_out(root, &["rev-parse", "dev"]).expect("dev");
+        assert_ne!(census_commit, base_head, "o portão gravou um commit do censo");
+        let subject = git_out(root, &["log", "-1", "--format=%s", "dev"]).unwrap_or_default();
+        assert_eq!(
+            subject.trim(),
+            CENSUS_COMMIT_SUBJECT,
+            "e o assunto é o do censo, não o da unidade",
+        );
+        let carried =
+            git_out(root, &["diff", "--name-only", "dev", "dev_second"]).unwrap_or_default();
+        assert_eq!(carried.trim(), "", "e a branch nova nasce sem nada do censo no diff dela");
     }
 
     /// Um molde ADOTADO (`source: manual`) é escrita do OPERADOR, e o caminho

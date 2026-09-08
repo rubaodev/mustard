@@ -321,12 +321,27 @@ fn could_name_a_file(r: &str) -> bool {
 /// compartilha o nome: o primeiro é exatamente "o mesmo arquivo sob outro
 /// prefixo", o segundo é um homônimo. Empate fica com o primeiro encontrado.
 ///
+/// A DISTINÇÃO entre os dois viaja com a resposta ([`FoundElsewhere::suffix`]),
+/// porque a mensagem que sai delas não pode ser a mesma. Um sufixo verdadeiro é
+/// um endereço; um homônimo de nome-base é uma possibilidade — e nomes como
+/// `mod.rs`, `index.ts` e `cli.rs` fazem do homônimo o caso comum.
+///
 /// Determinística: as entradas de cada diretório são ordenadas pelo nome antes
 /// de descer, e a varredura é em LARGURA, então a resposta não depende da ordem
 /// que o sistema de arquivos devolve — a mensagem sai num JSON comparado byte a
 /// byte. Uma passada só para todas as referências, e nada é aberto quando
 /// nenhuma delas pode ser um arquivo ([`could_name_a_file`]).
-fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, String> {
+/// Onde um arquivo com o nome-base de uma referência foi encontrado, e SE o
+/// achado é o mesmo arquivo sob outro prefixo (`suffix`) ou apenas um homônimo.
+struct FoundElsewhere {
+    /// O caminho relativo ao repositório onde o arquivo está.
+    path: String,
+    /// `true` quando o caminho encontrado TERMINA na referência declarada — o
+    /// caso "mesmo arquivo, outro prefixo". `false` é homonímia de nome-base.
+    suffix: bool,
+}
+
+fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, FoundElsewhere> {
     // O que o `backtick_file_refs` recolhe não é só caminho: um `## ACCEPTANCE`
     // entre crases na própria seção `## Arquivos` chega aqui como referência que
     // não resolveu, e abrir 4000 diretórios atrás de um TÍTULO de seção é o
@@ -371,7 +386,9 @@ fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, String
         }
         frontier = next;
     }
-    best.into_iter().map(|(r, (_, found))| (r, found)).collect()
+    best.into_iter()
+        .map(|(r, (score, path))| (r, FoundElsewhere { path, suffix: score == 2 }))
+        .collect()
 }
 
 /// `true` when a bare (un-backticked) token names ONE concrete file: it survives
@@ -670,16 +687,7 @@ pub(crate) fn is_test_runner_command(command: &str) -> bool {
     {
         return false;
     }
-    // Os invólucros transparentes, em cadeia: `rtk npx vitest …` é um vitest.
-    let mut cmd = cmd;
-    while let Some(rest) = ["rtk ", "npx ", "bunx "]
-        .into_iter()
-        .find_map(|w| cmd.strip_prefix(w))
-        .map(str::trim_start)
-    {
-        cmd = rest;
-    }
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let tokens = runner_tokens(cmd);
     let Some(&first) = tokens.first() else {
         return false;
     };
@@ -695,6 +703,143 @@ pub(crate) fn is_test_runner_command(command: &str) -> bool {
         },
         _ => false,
     }
+}
+
+/// Os tokens de um comando, sem os invólucros transparentes — `rtk npx vitest …`
+/// chega aqui como `vitest …`.
+///
+/// UMA normalização, lida por [`is_test_runner_command`] e por
+/// [`test_runner_has_selector`]: a segunda pergunta é sobre o MESMO comando que
+/// a primeira reconheceu, e dois desembrulhadores é como elas passariam a falar
+/// de comandos diferentes.
+fn runner_tokens(command: &str) -> Vec<&str> {
+    let mut cmd = command.trim();
+    while let Some(rest) = ["rtk ", "npx ", "bunx "]
+        .into_iter()
+        .find_map(|w| cmd.strip_prefix(w))
+        .map(str::trim_start)
+    {
+        cmd = rest;
+    }
+    cmd.split_whitespace().collect()
+}
+
+/// Flags que consomem o token seguinte sem NOMEAR teste nenhum — escopo, não
+/// seleção. Compartilhadas pelas famílias abaixo; uma flag desconhecida que
+/// tome valor no formato separado pode ser lida como posicional, e essa direção
+/// (exigir o `Control:`) é a segura.
+const RUNNER_SCOPE_VALUE_FLAGS: &[&str] = &[
+    "-p", "--package", "--test", "--bench", "--example", "--bin", "--features", "-F",
+    "--manifest-path", "-j", "--jobs", "--target", "--profile", "--target-dir", "--color",
+    "--reporter", "--config", "-c", "--rootDir", "--maxWorkers", "-w", "--workers",
+    "--logger", "--results-directory", "-v", "--verbosity", "-f", "--framework",
+];
+
+/// `true` quando o comando de um executor de teste NARROWS BY NAME — carrega um
+/// filtro ou seletor que pode não casar nada.
+///
+/// ## O que conta como seletor, e por quê
+///
+/// A razão declarada da exigência de `Control:` é UMA: um executor de teste sai
+/// com código 0 quando o FILTRO dele não seleciona nada, então o vermelho do
+/// critério pode ser a seleção vazia em vez do comportamento ausente. Um comando
+/// que roda a SUÍTE INTEIRA (`cargo test -p mustard-rt --lib`, `pytest`,
+/// `go test ./...`) não tem filtro que possa selecionar nada — não existe o modo
+/// de falha que a exigência endereça, e cobrá-la ali é friccão pura. Pior: a
+/// prova negativa RE-JULGA registros já arquivados, então todo critério antigo
+/// dessa forma viraria `Unproven` sem sequer executar o comando.
+///
+/// Então o gatilho é NOMEAÇÃO, não escopo:
+///
+/// * **cargo** — um posicional depois de `test` ([`cargo_test_has_filter`]);
+///   `-p`, `--lib` e `--test <alvo>` escolhem ONDE rodar, e um alvo que não
+///   existe faz o cargo sair diferente de zero, alto.
+/// * **go** — `-run` / `-bench`; `./...` e um caminho de pacote são escopo.
+/// * **dotnet** — `--filter`.
+/// * **pytest** — `-k` / `-m`, ou um posicional (arquivo, diretório ou node id:
+///   ali o caminho É a seleção).
+/// * **vitest / jest** — `-t` / `--testNamePattern` / `--testPathPattern`, ou um
+///   posicional (o padrão de arquivo).
+/// * **npm/pnpm/yarn/bun** — um posicional depois da palavra do script.
+///
+/// Pura, total. Falso para tudo que [`is_test_runner_command`] não reconhece.
+pub(crate) fn test_runner_has_selector(command: &str) -> bool {
+    if !is_test_runner_command(command) {
+        return false;
+    }
+    let tokens = runner_tokens(command);
+    let Some(&first) = tokens.first() else {
+        return false;
+    };
+    match first {
+        "cargo" => cargo_test_has_filter(&tokens),
+        "go" => narrows_by_name(&tokens, 2, &["-run", "-bench"], false),
+        "dotnet" => narrows_by_name(&tokens, 2, &["--filter"], false),
+        "pytest" | "py.test" => narrows_by_name(&tokens, 1, &["-k", "-m"], true),
+        // `vitest run` é a invocação da suíte inteira fora do modo watch — o
+        // `run` é subcomando, não padrão de arquivo.
+        "vitest" | "jest" => narrows_by_name(
+            &tokens,
+            if tokens.get(1).copied() == Some("run") { 2 } else { 1 },
+            &["-t", "--testNamePattern", "--testPathPattern", "--testPathPatterns"],
+            true,
+        ),
+        // `npm test x` / `npm run test x`: o posicional vem depois da palavra do
+        // script, que está no índice 1 ou 2.
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            let start = if tokens.get(1).copied() == Some("run") { 3 } else { 2 };
+            narrows_by_name(&tokens, start, &[], true)
+        }
+        _ => false,
+    }
+}
+
+/// A varredura compartilhada de [`test_runner_has_selector`]: a partir de
+/// `start`, procura uma das `name_flags` COM valor — e, quando
+/// `positional_narrows`, também um posicional.
+///
+/// `--` encaminha o resto ao executor, onde um não-flag é sempre nome de teste.
+/// Um `--flag=valor` é auto-contido; uma flag de escopo conhecida consome o
+/// token seguinte; toda outra flag é booleana.
+fn narrows_by_name(
+    tokens: &[&str],
+    start: usize,
+    name_flags: &[&str],
+    positional_narrows: bool,
+) -> bool {
+    let mut i = start;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if t == "--" {
+            return tokens[i + 1..].iter().any(|a| !a.starts_with('-'));
+        }
+        if let Some((flag, value)) = t.split_once('=') {
+            if name_flags.contains(&flag) && !value.is_empty() {
+                return true;
+            }
+            i += 1;
+            continue;
+        }
+        if name_flags.contains(&t) {
+            return tokens.get(i + 1).is_some_and(|v| !v.starts_with('-'));
+        }
+        if RUNNER_SCOPE_VALUE_FLAGS.contains(&t) {
+            i += 2;
+            continue;
+        }
+        if t.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        if positional_narrows {
+            return true;
+        }
+        // Um posicional que NÃO seleciona por nome (o pacote do `go`, o
+        // `.csproj` do `dotnet`) é escopo: segue a varredura, senão uma flag de
+        // nome escrita DEPOIS dele nunca seria vista.
+        i += 1;
+    }
+    false
 }
 
 /// The ids the negative test has already MEASURED as able to fail — the
@@ -895,16 +1040,29 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
     // troca um palpite errado por um endereço.
     let elsewhere = refs_found_elsewhere(root, &missing);
     for r in missing {
+        let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
         let message = match elsewhere.get(&r) {
-            Some(found) => format!(
-                "File referenced as `{r}` but not found there — a file with that name exists at \
-                 `{found}`. Declare the path relative to the repository root (or to a subproject \
-                 root), so every reader resolves it the same way."
+            // O MESMO arquivo sob outro prefixo: o caminho encontrado termina na
+            // referência declarada, então isto é um endereço e não um palpite —
+            // e mandar marcar como novo aqui é mandar criar uma segunda cópia.
+            Some(found) if found.suffix => format!(
+                "File referenced as `{r}` but not found there — the same file exists at `{path}`. \
+                 Declare the path relative to the repository root (or to a subproject root), so \
+                 every reader resolves it the same way.",
+                path = found.path,
             ),
-            None => {
-                let accepted = i18n::file_marker_synonyms(i18n::FileMarker::Create).join(" / ");
-                format!("File referenced but not found and not marked {accepted}")
-            }
+            // Só o NOME-BASE bate. `mod.rs`, `index.ts` e `cli.rs` tornam isso
+            // rotina, então a dica do marcador CONTINUA sendo a resposta
+            // principal e o homônimo entra como possibilidade — nunca como
+            // fato, que é o que mandaria o autor a um arquivo sem relação.
+            Some(found) => format!(
+                "File referenced but not found and not marked {accepted} — if it is new, mark it. \
+                 A DIFFERENT file with the same name exists at `{path}`; if that is the one you \
+                 meant, declare the path relative to the repository root (or to a subproject \
+                 root).",
+                path = found.path,
+            ),
+            None => format!("File referenced but not found and not marked {accepted}"),
         };
         issues.push(json!({
             "severity": "WARN",
@@ -1098,8 +1256,13 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
         // cobrado aqui, na redação, onde o conserto custa uma linha.
         //
         // Este aviso e a RECUSA do `ac-negative-check` leem o MESMO predicado
-        // ([`is_test_runner_command`]): o critério que o portão vai recusar é
+        // ([`test_runner_has_selector`]): o critério que o portão vai recusar é
         // exatamente o que este aviso nomeia, nunca um vizinho parecido.
+        //
+        // E o predicado é o do FILTRO, não o do verbo. Uma suíte inteira
+        // (`cargo test -p x --lib`, `pytest`, `go test ./...`) não tem filtro que
+        // possa selecionar nada, então o modo de falha que a exigência endereça
+        // não existe ali — ver [`test_runner_has_selector`].
         // Excludes the trailing safety AC, `<…>` skeletons, and ids already
         // flagged weak (a tautology's fix is replacement, not a Control line).
         let no_control: Vec<String> = ac_items
@@ -1109,7 +1272,7 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                 *i != last
                     && item.control.is_none()
                     && !qa_run::is_skeleton(&item.command)
-                    && is_test_runner_command(&item.command)
+                    && test_runner_has_selector(&item.command)
                     && !weak.contains(&item.id)
             })
             .map(|(_, item)| item.id.clone())
@@ -1119,12 +1282,13 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                 "severity": "WARN",
                 "type": "test-ac-no-control",
                 "message": format!(
-                    "Test-runner acceptance criteria with no declared `Control:` command: {}. A \
-                     test runner exits 0 when its filter matches nothing, so a red here can be an \
-                     empty selection instead of the missing behaviour — add a `Control: \
-                     `<command>`` line that comes back GREEN against the tree as it is (the \
-                     unfiltered suite, or the file the new test lands in), so the red is proven \
-                     to be about the behaviour. `ac-negative-check` refuses such a criterion.",
+                    "Filtered test-runner acceptance criteria with no declared `Control:` \
+                     command: {}. A test runner exits 0 when its filter matches nothing, so a red \
+                     here can be an empty selection instead of the missing behaviour — add a \
+                     `Control: `<command>`` line that comes back GREEN against the tree as it is \
+                     (the unfiltered suite, or the file the new test lands in), so the red is \
+                     proven to be about the behaviour. `ac-negative-check` refuses such a \
+                     criterion.",
                     no_control.join(", ")
                 ),
             }));
@@ -1647,8 +1811,11 @@ mod tests {
         std::fs::create_dir_all(&real).unwrap();
         std::fs::write(real.join("list.rs"), "// existing").unwrap();
 
+        // …e um HOMÔNIMO: só o nome-base bate, o caminho não é sufixo nenhum.
+        std::fs::write(real.join("mod.rs"), "// unrelated").unwrap();
+
         let path = dir.path().join("spec.md");
-        let body = "# Spec\n## Files\n- `src/list.rs`\n- `ghost.rs`\n\
+        let body = "# Spec\n## Files\n- `src/list.rs`\n- `ghost.rs`\n- `helpers/mod.rs`\n\
                     ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
         std::fs::write(&path, body).unwrap();
         let issues = validate(dir.path(), &path, body);
@@ -1681,6 +1848,23 @@ mod tests {
         assert!(
             ghost_msg.contains("(create)") && ghost_msg.contains("(novo)"),
             "sem outro prefixo, a dica de marcador continua: {ghost_msg}"
+        );
+
+        // O terceiro lado: só o NOME-BASE bate. `mod.rs`, `index.ts` e `cli.rs`
+        // fazem disso rotina, e a dica do marcador não pode ser SUBSTITUÍDA por
+        // um endereço que aponta para outro arquivo.
+        let homonym = issues
+            .iter()
+            .find(|i| i["type"] == json!("missing-file") && i["file"] == json!("helpers/mod.rs"))
+            .unwrap_or_else(|| panic!("o homônimo continua sendo um WARN: {issues:?}"));
+        let homonym_msg = homonym["message"].as_str().unwrap_or_default();
+        assert!(
+            homonym_msg.contains("(create)") && homonym_msg.contains("(novo)"),
+            "a dica de marcador continua sendo a resposta principal: {homonym_msg}"
+        );
+        assert!(
+            homonym_msg.contains("apps/rt/src/mod.rs") && homonym_msg.contains("DIFFERENT"),
+            "e o homônimo entra como possibilidade, não como fato: {homonym_msg}"
         );
     }
 

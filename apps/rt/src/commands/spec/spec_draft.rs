@@ -506,15 +506,23 @@ fn material_only_refresh(
     opts: &SpecDraftOpts,
     material: &ConversationMaterial,
 ) -> i32 {
-    if let Some(report) = material_only_result(project_root, opts, material) {
+    if let Some((report, stale_waves)) = material_only_result(project_root, opts, material) {
+        // O aviso do operador sai AQUI, ao lado do `println!` do relatório: é
+        // saída, e saída é desta função. Deixá-lo dentro do resultado fazia a
+        // função "pura" imprimir, e um chamador que a consultasse depois de rodar
+        // o comando — o próprio teste dela faz isso — repetia o aviso.
+        if !stale_waves.is_empty() {
+            let slug = report["spec"].as_str().unwrap_or_default();
+            eprintln!("spec-draft: WARN: {}", stale_waves_warning(slug, &stale_waves));
+        }
         println!("{report}");
     }
     0
 }
 
 /// O `--material-only` INTEIRO menos a impressão: resolve a unidade, reescreve
-/// as seções de material do `spec.md` do pai, avisa na stderr sobre as ondas que
-/// ficaram para trás e devolve o relatório que o chamador imprime. `None` quando
+/// as seções de material do `spec.md` do pai e devolve o relatório que o
+/// chamador imprime, junto com as ondas que ficaram para trás. `None` quando
 /// recusou — o `emit_error` já disse por quê, e não há relatório a dar.
 ///
 /// Separado de [`material_only_refresh`] para que a FIAÇÃO seja afirmável: com
@@ -522,11 +530,17 @@ fn material_only_refresh(
 /// por fora, chamando [`material_only_report`] com uma lista de ondas que ele
 /// mesmo derivava — e aí nada travava o caminho real, do slug ao detector de
 /// ondas. Os bytes impressos continuam sendo estes.
+///
+/// Não IMPRIME nada — nem o relatório, nem o aviso de ondas desatualizadas. A
+/// lista viaja de volta e o aviso sai uma vez só, em
+/// [`material_only_refresh`]: um `eprintln!` aqui dentro fazia o teste desta
+/// função (que a chama uma vez pelo `run_at` e outra direto) imprimir o aviso do
+/// operador duas vezes por um refresh só.
 fn material_only_result(
     project_root: &Path,
     opts: &SpecDraftOpts,
     material: &ConversationMaterial,
-) -> Option<serde_json::Value> {
+) -> Option<(serde_json::Value, Vec<String>)> {
     let Some(slug) = opts.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         emit_error("--material-only needs --slug", "name the unit whose material to refresh");
         return None;
@@ -572,10 +586,8 @@ fn material_only_result(
     // desencontro é NOMEADO: na stderr, para o operador, e no relatório, para
     // quem lê a saída por máquina.
     let stale_waves = materialized_wave_dirs(&dir);
-    if !stale_waves.is_empty() {
-        eprintln!("spec-draft: WARN: {}", stale_waves_warning(slug, &stale_waves));
-    }
-    Some(material_only_report(slug, &path, material, &stale_waves))
+    let report = material_only_report(slug, &path, material, &stale_waves);
+    Some((report, stale_waves))
 }
 
 /// O relatório do `--material-only`, montado num valor só — assim os bytes que
@@ -612,13 +624,15 @@ fn material_only_report(
 /// isto é uma linha de aviso, e recusar o refresh de material por causa de uma
 /// listagem que não abriu custaria mais do que a linha vale.
 fn materialized_wave_dirs(spec_dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(spec_dir) else {
+    // Pela camada de fs do projeto (`mfs`), como todo o resto deste módulo: um
+    // `std::fs` solto aqui é um leitor a menos sob o mesmo controle.
+    let Ok(entries) = mfs::read_dir(spec_dir) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.file_name)
         .filter(|name| name.starts_with("wave-"))
         .collect();
     names.sort();
@@ -3364,8 +3378,11 @@ mod tests {
         // O relatório que o COMANDO imprime — o mesmo valor, pela mesma fiação
         // (slug, caminho, detector de ondas), não uma remontagem por fora.
         let material = load_material(&material_path).expect("material");
-        let report = material_only_result(project, &opts(), &material)
+        let (report, stale) = material_only_result(project, &opts(), &material)
             .expect("o refresh devolve relatório");
+        // A lista viaja de volta em vez de virar `eprintln!` aqui dentro: é o
+        // chamador que imprime, uma vez só por refresh.
+        assert_eq!(stale, vec!["wave-1-impl".to_string(), "wave-2-review".to_string()]);
         assert_eq!(report["spec"], serde_json::json!(slug));
         assert_eq!(
             report["path"],

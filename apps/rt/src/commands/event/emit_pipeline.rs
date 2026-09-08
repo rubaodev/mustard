@@ -2911,6 +2911,22 @@ mod tests {
             "a própria unidade não pode entrar na lista das suspeitas: {again:?}",
         );
 
+        // …e o mesmo vale para o diretório DATADO, que é como boa parte das
+        // specs deste projeto se chama: `canonical_for_project` nunca produz a
+        // data, então uma exclusão por string exata deixava a unidade se
+        // acusando de sobrepor a si mesma em todo re-despacho.
+        let dated = tempdir().unwrap();
+        let dated_project = dated.path();
+        active_spec(dated_project, "harness-ve-toda-branch-trabalho", "Execute");
+        active_spec(dated_project, "2026-05-23-harness-enxerga-toda-branch-trabalho", "Execute");
+        let dated_suspects =
+            crate::commands::event::base_gate::overlapping_active_specs(dated_project, intent);
+        assert_eq!(
+            dated_suspects,
+            vec!["harness-ve-toda-branch-trabalho".to_string()],
+            "o prefixo de data não pode fazer a unidade suspeitar de si mesma: {dated_suspects:?}",
+        );
+
         let line = success_line(
             EVENT_PIPELINE_KIND,
             "harness-enxerga-toda-branch-trabalho",

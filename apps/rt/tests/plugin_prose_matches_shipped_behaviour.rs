@@ -1194,9 +1194,16 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
          spec, waves and proof while `git status` named all three",
     );
     let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    // ONE entry point, called by BOTH doors: the shared refusal, plus the census
+    // recording the cut owes the base. A door that took only `busy_checkout`
+    // would refuse the same way and still carry `.claude/scan-map.md` and the
+    // generated molds into the unit's branch.
     assert!(
-        gate.contains("busy_checkout(Path::new(&local)"),
-        "the gate no longer takes the shared refusal, so the two doors can disagree",
+        gate.contains("busy_checkout_before_cut(Path::new(&local)")
+            && branch.contains("fn busy_checkout_before_cut")
+            && branch.contains("busy_checkout_before_cut(project,"),
+        "the two doors no longer take the SAME decide-and-settle call, so they can \
+         disagree — about the refusal, or about who records the census before the cut",
     );
     assert!(
         !gate.contains("hook_create"),

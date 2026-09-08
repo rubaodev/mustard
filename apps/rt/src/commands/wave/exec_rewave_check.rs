@@ -164,6 +164,44 @@ fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
     }
 }
 
+/// Carrega a RÉGUA do pai nas ondas de um plano de rewave: o `satisfies` de cada
+/// uma passa a nomear os critérios que o `spec.md` do pai declara.
+///
+/// As duas portas que criam onda passam a valer a MESMA invariante — toda onda
+/// que trabalha carrega o critério que a julga — por caminhos diferentes, porque
+/// as ondas delas são diferentes. No PLAN o autor declara `satisfies` e a
+/// materialização RECUSA quem não declara. Aqui as ondas nascem de um DAG de
+/// arquivos: não têm autor, não têm como declarar `satisfies`, e recusá-las
+/// desligaria a decomposição automática inteira, toda vez. Então a régua é
+/// CARREGADA em vez de cobrada.
+///
+/// A união, e não um recorte: o DAG separa por arquivo e não tem como dizer qual
+/// critério pertence a qual onda, e inventar esse mapeamento seria pior que a
+/// união honesta — que ao menos é declarada no `spec.md` da própria onda, e não
+/// um fallback silencioso. Sem isto toda onda rewaveada era despachada com
+/// `## ACCEPTANCE` vazio, que é exatamente o estado que a outra porta agora
+/// recusa com exit 2.
+///
+/// Os ids saem normalizados pelo MESMO parser que o `qa-run` executa, e no mesmo
+/// formato que [`crate::commands::wave::wave_scaffold::satisfied_ids`] espera —
+/// senão a chave não acha o bloco no pool. Um pai sem critério nenhum deixa o
+/// plano como estava. Pura.
+fn carry_parent_criteria(plan: &mut Plan, parent_spec_text: &str) {
+    use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
+    let ids: Vec<String> = extract_ac_section(parent_spec_text)
+        .map(|section| parse_ac_items(&section))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|it| it.id.trim().to_uppercase())
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    for entry in &mut plan.waves {
+        entry.satisfies.clone_from(&ids);
+    }
+}
+
 /// Resolve the parent spec's language for re-wave rendering.
 ///
 /// Prefers the `lang` recorded in the spec's `meta.json` sidecar (the same
@@ -276,7 +314,8 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    wikilink / heading machinery `/feature` uses at PLAN. No freeform
         //    renderer here — the output is byte-identical in form.
         let lang = parent_lang(spec_file);
-        let plan = dag_to_plan(&waves, &lang);
+        let mut plan = dag_to_plan(&waves, &lang);
+        carry_parent_criteria(&mut plan, &spec_text);
         // Wave headings are ENGLISH-FIXED machine artefacts, so a decomposed-at-
         // EXECUTE spec stays form-identical to a scaffolded-at-PLAN one regardless
         // of the parent spec's recorded `lang`.
@@ -302,9 +341,9 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         let parent_material_text =
             fs::read_to_string(spec_dir.join("spec.md")).unwrap_or_default();
         // O pool de texto dos critérios, montado do MESMO jeito que a
-        // materialização monta: as ondas do DAG não declaram `acceptance` nem
-        // `satisfies`, então nenhuma delas materializa a seção — o pai continua
-        // sendo a fonte do dia em que declararem.
+        // materialização monta. Ele é consultado de verdade: o `satisfies`
+        // carregado acima é a chave de cada bloco, então cada onda do rewave
+        // materializa `## Acceptance Criteria` em vez de nascer sem régua.
         let pool = crate::commands::wave::wave_scaffold::ac_pool(&plan, Some(&spec_text));
 
         let mut waves_meta: Vec<Value> = Vec::new();
@@ -424,6 +463,45 @@ mod tests {
         assert_eq!(plan.waves[1].depends_on, vec!["wave-1-domain".to_string()]);
         // The per-wave summary carries a real file census (no LLM, no LLM-ish stub).
         assert!(plan.waves[0].summary.contains("user.rs"), "{:?}", plan.waves[0].summary);
+    }
+
+    /// A onda nascida de um REWAVE carrega a régua do pai — e a carrega até o
+    /// `spec.md` dela, que é de onde o `## ACCEPTANCE` do prompt é lido.
+    ///
+    /// Sem isto o caminho do rewave desviava inteiro da invariante nova: as
+    /// ondas do DAG não declaram `acceptance` nem `satisfies`, o `ac_pool`
+    /// montado ali era trabalho morto (nenhuma consulta podia acertá-lo) e cada
+    /// onda era despachada com o `## ACCEPTANCE` vazio — exatamente o estado que
+    /// a outra porta de criação passou a recusar com exit 2.
+    #[test]
+    fn a_rewaved_wave_carries_the_parents_ruler() {
+        use crate::commands::wave::wave_scaffold::{ac_pool, render_wave_spec};
+
+        let waves = vec![
+            json!({ "wave": 1, "files": ["src/a.rs"], "roles": ["domain"], "dependsOn": [] }),
+            json!({ "wave": 2, "files": ["src/b.rs"], "roles": ["api"], "dependsOn": [1] }),
+        ];
+        let parent = "# Epic\n\n## Acceptance Criteria\n\n\
+                      - **AC-1** — alpha holds. Command: `cargo test alpha`\n\
+                      - **AC-2** — beta holds. Command: `cargo test beta`\n";
+
+        let mut plan = dag_to_plan(&waves, "pt-BR");
+        assert!(plan.waves[0].satisfies.is_empty(), "precondição: o DAG não declara nada");
+        carry_parent_criteria(&mut plan, parent);
+        assert_eq!(plan.waves[0].satisfies, vec!["AC-1".to_string(), "AC-2".to_string()]);
+        assert_eq!(plan.waves[1].satisfies, plan.waves[0].satisfies);
+
+        // …e a régua chega ao arquivo que o renderizador do prompt lê.
+        let hd = headings();
+        let pool = ac_pool(&plan, Some(parent));
+        let spec = render_wave_spec("epic-x", &plan.waves[0], &hd, "", &pool);
+        assert!(spec.contains("## Acceptance Criteria"), "a onda nasceu sem régua: {spec}");
+        assert!(spec.contains("Command: `cargo test alpha`"), "{spec}");
+
+        // Um pai sem critério nenhum deixa o plano exatamente como estava.
+        let mut untouched = dag_to_plan(&waves, "pt-BR");
+        carry_parent_criteria(&mut untouched, "# Epic\n\nsem critérios\n");
+        assert!(untouched.waves.iter().all(|w| w.satisfies.is_empty()));
     }
 
     /// **Convergence (F4-d item 2).** The EXECUTE-entry decomposition writes the

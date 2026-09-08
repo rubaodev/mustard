@@ -1289,13 +1289,39 @@ fn render_json(output: &ActiveSpecsOutput) -> String {
 // Date parsing for sort
 // ---------------------------------------------------------------------------
 
+/// Whether `name` opens with the `YYYY-MM-DD` prefix a spec directory may carry.
+///
+/// THE shape rule, written once: [`spec_date_prefix`] reads the prefix off it
+/// and [`without_spec_date_prefix`] takes it off, so "does this name carry a
+/// date" can never be answered two ways.
+fn has_spec_date_prefix(name: &str) -> bool {
+    name.len() >= 10 && name.chars().nth(4) == Some('-') && name.chars().nth(7) == Some('-')
+}
+
 /// Extract the `YYYY-MM-DD` prefix from a spec name for date-descending sort.
 /// Returns `"0000-00-00"` for names that don't start with a date.
 fn spec_date_prefix(name: &str) -> &str {
-    if name.len() >= 10 && name.chars().nth(4) == Some('-') && name.chars().nth(7) == Some('-') {
+    if has_spec_date_prefix(name) {
         &name[..10]
     } else {
         "0000-00-00"
+    }
+}
+
+/// O nome de uma spec SEM o prefixo de data que o diretório dela pode carregar:
+/// `2026-05-23-harness-enxerga-toda-branch` vira
+/// `harness-enxerga-toda-branch`. Um nome sem prefixo volta inteiro.
+///
+/// `pub(crate)` porque quem COMPARA um nome de diretório de spec com um slug
+/// derivado do intent precisa da mesma regra: `canonical_for_project` nunca
+/// produz a data, então uma comparação byte a byte com o diretório erra em toda
+/// spec datada — e a unidade passa a se acusar de sobrepor a si mesma
+/// ([`crate::commands::event::base_gate::overlapping_active_specs`]).
+pub(crate) fn without_spec_date_prefix(name: &str) -> &str {
+    if has_spec_date_prefix(name) && name.as_bytes().get(10) == Some(&b'-') {
+        &name[11..]
+    } else {
+        name
     }
 }
 

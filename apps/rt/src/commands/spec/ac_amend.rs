@@ -164,6 +164,22 @@ pub(crate) struct AcAmendReport {
     /// Every artefact whose criterion line was rewritten AND confirmed on
     /// re-read, as repo paths with forward slashes.
     pub(crate) rewritten: Vec<String>,
+    /// `true` when some materialised wave still carries the SUPERSEDED text of
+    /// this criterion — the flag, with [`Self::stale_waves`] as its evidence.
+    ///
+    /// The wave's `## Acceptance Criteria` is a verbatim COPY of the parent's,
+    /// and the prompt renders it under "each `Command:` below is run VERBATIM by
+    /// the QA gate". A copy the amendment did not reach makes that sentence
+    /// false — QA reads the union from `wave-plan.md`, so the wave is judged by
+    /// the NEW command while its own prompt shows the old one. The rewrite walks
+    /// the wave artefacts and normally lands there too; this names the ones
+    /// where it did not, instead of leaving the operator to find out at QA.
+    ///
+    /// The same shape `spec-draft --material-only` reports for the material
+    /// channel (`wavesStale`/`staleWaves`) — one signal, said the same way.
+    pub(crate) waves_stale: bool,
+    /// The wave directories whose copy of this criterion is stale, sorted.
+    pub(crate) stale_waves: Vec<String>,
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
     /// Refusal / failure code: `blank_reason`, `unknown_spec`,
@@ -187,6 +203,8 @@ impl AcAmendReport {
             superseded_expect: None,
             proof: None,
             rewritten: Vec::new(),
+            waves_stale: false,
+            stale_waves: Vec::new(),
             ledger: None,
             error: Some(error.to_string()),
             remedy: Some(remedy.to_string()),
@@ -600,6 +618,38 @@ fn artefacts(spec_dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// As ondas materializadas sob `spec_dir` que ainda carregam a versão SUPERADA
+/// de `id` — declaram o critério e, relidas, não confirmam `command`.
+///
+/// Não é uma suspeita: é a mesma releitura que [`landed`] faz sobre o `spec.md`
+/// do pai, aplicada ao `spec.md` de cada onda. Uma onda que não declara o id não
+/// tem cópia para ficar velha e não entra; uma que declara e já foi reescrita
+/// também não. Sobra exatamente o resíduo, e é dele que o operador precisa saber.
+///
+/// Ordenada e determinística: a lista viaja num relatório comparado byte a byte.
+/// Diretório ilegível devolve lista vazia — isto é um aviso, e recusar a emenda
+/// por causa de uma listagem que não abriu custaria mais do que ele vale.
+fn stale_wave_copies(spec_dir: &Path, id: &str, command: &str) -> Vec<String> {
+    let Ok(entries) = mfs::read_dir(spec_dir) else {
+        return Vec::new();
+    };
+    let mut stale: Vec<String> = entries
+        .into_iter()
+        .filter(|e| e.is_dir && e.file_name.starts_with("wave-"))
+        .filter(|e| {
+            let wave_spec = e.path.join("spec.md");
+            let Ok(body) = mfs::read_to_string(&wave_spec) else {
+                return false; // sem spec de onda não há cópia para envelhecer
+            };
+            criteria_of(&body).iter().any(|item| item.id == id)
+                && !landed(&wave_spec, id, command)
+        })
+        .map(|e| e.file_name)
+        .collect();
+    stale.sort();
+    stale
+}
+
 /// The criteria a markdown document declares, through the shared parser.
 ///
 /// `pub(super)` — the ADD door asks the same reader whether an id already
@@ -874,6 +924,17 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     }
     rewritten.sort();
 
+    // As ondas cuja CÓPIA do critério ficou para trás.
+    //
+    // O `## Acceptance Criteria` de uma onda é cópia literal do texto do pai, e o
+    // prompt a renderiza sob "cada `Command:` abaixo é rodado LITERALMENTE pelo
+    // portão de QA". Uma cópia que a reescrita não alcançou torna essa frase
+    // falsa: o QA lê a união do `wave-plan.md`, então a onda é julgada pelo
+    // comando NOVO enquanto o prompt dela mostra o antigo. A varredura de
+    // artefatos acima normalmente alcança a onda; o que fica aqui é o resíduo —
+    // uma onda que declara o id e cuja releitura não confirmou o comando novo.
+    let stale_waves = stale_wave_copies(&spec_dir, &id, &opts.command);
+
     // WHERE the red came from travels on the CRITERION's record, not only in
     // the amendment history — the approval gate reads `criteria`, and a gate
     // that cannot tell an imported proof from one taken in place cannot audit
@@ -894,10 +955,27 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         superseded_expect: superseded.expect.clone(),
         proof: Some(proof.clone()),
         rewritten: rewritten.clone(),
+        waves_stale: !stale_waves.is_empty(),
+        stale_waves: stale_waves.clone(),
         ledger: None,
         error: None,
         remedy: None,
     };
+    if !stale_waves.is_empty() {
+        // Alto na stderr, nunca no stdout — a linha JSON é comparada byte a
+        // byte. O aviso nomeia as ondas E o comando que reconcilia as cópias,
+        // pelo mesmo motivo que o do `--material-only`: quem fica sabendo do
+        // problema sem o remédio fica com o problema.
+        eprintln!(
+            "ac-amend: WARN: {id} was amended, but {n} materialised wave(s) still carry the \
+             superseded text ({waves}) — their dispatched `## ACCEPTANCE` shows a command QA no \
+             longer runs. Re-run `mustard-rt run plan-materialize --spec-dir {spec} --plan \
+             <plan.json>` to bring the copies forward.",
+            n = stale_waves.len(),
+            waves = stale_waves.join(", "),
+            spec = opts.spec,
+        );
+    }
 
     // The ROOT spec is the one artefact that must have changed: the criterion
     // was found there. Nothing confirmed there is a lost write, reported.
@@ -1353,6 +1431,39 @@ mod tests {
                 .unwrap()
                 .contains(GREEN_COMMAND),
             "the superseded command must be gone from the wave artefact"
+        );
+        // …and the staleness signal SAYS so, instead of leaving the operator to
+        // find out at QA which copy of the criterion the prompt is showing.
+        assert!(!report.waves_stale, "the wave copy was reached, so nothing is stale");
+        assert!(report.stale_waves.is_empty(), "{:?}", report.stale_waves);
+
+        // The other side of the same measurement, on a hand-built layout: a wave
+        // still carrying the SUPERSEDED command is named, and one already
+        // carrying the new one is not. Without this the flag could be a constant
+        // `false` and every assertion above would still pass.
+        let measured = tempdir().unwrap();
+        let hand = measured.path();
+        for (wave, command) in
+            [("wave-1-old", GREEN_COMMAND), ("wave-2-new", OTHER_RED_COMMAND)]
+        {
+            std::fs::create_dir_all(hand.join(wave)).unwrap();
+            std::fs::write(
+                hand.join(wave).join("spec.md"),
+                format!(
+                    "# W\n\n## Acceptance Criteria\n\
+                     - **AC-2** — when the work lands, then the other thing holds.\n  \
+                     Command: `{command}`\n"
+                ),
+            )
+            .unwrap();
+        }
+        // A wave that never carried the criterion has no copy to age.
+        std::fs::create_dir_all(hand.join("wave-3-none")).unwrap();
+        std::fs::write(hand.join("wave-3-none").join("spec.md"), "# W\n").unwrap();
+        assert_eq!(
+            stale_wave_copies(hand, "AC-2", OTHER_RED_COMMAND),
+            vec!["wave-1-old".to_string()],
+            "só a onda cuja cópia ficou para trás é nomeada",
         );
 
         // The sibling criteria are untouched — the rewrite is surgical, which is

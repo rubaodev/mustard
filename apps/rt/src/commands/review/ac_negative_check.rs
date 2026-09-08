@@ -32,13 +32,15 @@
 //! existed.
 //!
 //! With ONE exception, which is where the optional key stops being optional: a
-//! criterion whose command is a TEST RUNNER
-//! ([`super::analyze_validation::is_test_runner_command`]). Every runner in that
-//! family exits 0 when its FILTER selects nothing, so a typo'd test name, a path
-//! that does not exist and a behaviour that is genuinely absent all come back
-//! red — and with an `Expect:` regex in play, the red arrives on exit 0. That is
-//! the one shape where the red is worth nothing without a control, so there the
-//! absence is a REFUSAL rather than a WARN. `analyze_validation` names the same
+//! criterion whose command is a FILTERED TEST RUNNER
+//! ([`super::analyze_validation::test_runner_has_selector`]). Every runner in
+//! that family exits 0 when its FILTER selects nothing, so a typo'd test name, a
+//! path that does not exist and a behaviour that is genuinely absent all come
+//! back red — and with an `Expect:` regex in play, the red arrives on exit 0.
+//! That is the one shape where the red is worth nothing without a control, so
+//! there the absence is a REFUSAL rather than a WARN. The FILTER is the half
+//! that decides: an unfiltered whole-suite command has no selection that could
+//! come back empty, so it keeps the WARN. `analyze_validation` names the same
 //! criteria at drafting time (`test-ac-no-control`), off the same predicate, so
 //! the warning and the refusal can never point at different criteria.
 //!
@@ -648,17 +650,18 @@ const REASON_CONTROL_NOT_ATTEMPTED: &str = "the CONTROL was NEVER TAKEN: its com
      attempted at all (an unfilled `<…>` marker, or a program the shell could not find) — make \
      the control runnable, then take the proof";
 
-/// The reason a TEST-RUNNER criterion that declares NO `Control:` is refused.
-/// The one shape where the absent key stops being a WARN: a runner exits 0 when
-/// its filter selects nothing, so this criterion's red says nothing until
-/// something shows the filter can select at all. It names the action that clears
-/// it, and what a control for a test looks like.
+/// The reason a FILTERED TEST-RUNNER criterion that declares NO `Control:` is
+/// refused. The one shape where the absent key stops being a WARN: a runner
+/// exits 0 when its filter selects nothing, so this criterion's red says nothing
+/// until something shows the filter can select at all. It names the action that
+/// clears it, and what a control for a test looks like. An UNFILTERED runner
+/// command keeps the historical WARN — see [`control_required`].
 const REASON_CONTROL_REQUIRED: &str = "the CONTROL was NEVER DECLARED and this criterion's command \
-     is a TEST RUNNER, which exits 0 when its filter selects nothing — so its red can be an empty \
-     selection (a mistyped test name, a path that is not there) rather than the missing behaviour. \
-     Declare a `Control:` command that comes back GREEN against the tree as it is — the suite \
-     without the new filter, or a command naming the file the new test lands in — then take the \
-     proof";
+     is a FILTERED TEST RUNNER, which exits 0 when its filter selects nothing — so its red can be \
+     an empty selection (a mistyped test name, a path that is not there) rather than the missing \
+     behaviour. Declare a `Control:` command that comes back GREEN against the tree as it is — the \
+     suite without the new filter, or a command naming the file the new test lands in — then take \
+     the proof";
 
 /// The reason a criterion that is STILL red after its work landed is unproven.
 /// It names the opposite action to [`REASON_GREEN`]: finish the work, do not
@@ -774,19 +777,28 @@ pub(crate) fn is_exempt(index: usize, total: usize) -> bool {
 /// `true` quando este critério DEVE um `Control:` e não declara nenhum — a única
 /// forma em que a chave opcional deixa de ser opcional.
 ///
-/// A regra, numa frase: um EXECUTOR DE TESTE sai com 0 quando o filtro dele não
-/// casa nada, então um critério construído sobre um deles tem um vermelho que
-/// não diz nada enquanto um controle não mostrar que o filtro casa alguma coisa.
-/// Todo outro comando fica com o WARN histórico, porque recusá-los bloquearia
-/// toda spec escrita antes de a chave existir.
+/// A regra, numa frase: um EXECUTOR DE TESTE COM FILTRO sai com 0 quando o
+/// filtro dele não casa nada, então um critério construído sobre um deles tem um
+/// vermelho que não diz nada enquanto um controle não mostrar que o filtro casa
+/// alguma coisa. Todo outro comando fica com o WARN histórico, porque recusá-los
+/// bloquearia toda spec escrita antes de a chave existir.
 ///
-/// A pergunta "é executor de teste?" vai para o predicado COMPARTILHADO
-/// ([`super::analyze_validation::is_test_runner_command`]), que é também o que o
-/// lint `test-ac-no-control` pergunta na hora do rascunho — o critério que este
-/// portão recusa é exatamente o que o aviso nomeou. Pura, total.
+/// O FILTRO é a metade que decide, e não o verbo. Um comando de suíte inteira
+/// (`cargo test -p mustard-rt --lib`, `pytest`, `go test ./...`) não tem seleção
+/// que possa vir vazia — não existe ali o modo de falha que a exigência
+/// endereça. Cobrar o `Control:` dele seria fricção sem defeito atrás, e cara:
+/// [`run_pass`] RE-JULGA os registros mantidos do ledger, então todo critério
+/// arquivado dessa forma viraria `Unproven` na próxima passada, com o comando
+/// dele nem sendo executado. Estreitar o gatilho é o que torna esse re-julgamento
+/// seguro — e ele CONTINUA valendo, porque a regra deve alcançar o acervo.
+///
+/// A pergunta vai para o predicado COMPARTILHADO
+/// ([`super::analyze_validation::test_runner_has_selector`]), que é também o que
+/// o lint `test-ac-no-control` pergunta na hora do rascunho — o critério que
+/// este portão recusa é exatamente o que o aviso nomeou. Pura, total.
 fn control_required(command: &str, control: Option<&str>) -> bool {
     let declared = control.map(str::trim).is_some_and(|c| !c.is_empty());
-    !declared && super::analyze_validation::is_test_runner_command(command)
+    !declared && super::analyze_validation::test_runner_has_selector(command)
 }
 
 /// Classifica POR QUE um vermelho foi vermelho, a partir do que o executor já
@@ -2076,17 +2088,21 @@ mod tests {
     /// casa nada, então o vermelho pode ser a seleção vazia. Sem controle, esse
     /// vermelho não diz nada, e carimbá-lo `proven` é o carimbo vazio.
     ///
-    /// Três lados, para nenhum passar de graça:
+    /// Quatro lados, para nenhum passar de graça:
     ///
-    /// 1. **Executor de teste sem controle ⇒ recusa**, e NADA é executado: o
-    ///    comando nem é lançado, então a recusa não pode ser o eco de um
-    ///    `pytest` ausente na máquina.
+    /// 1. **Executor de teste COM FILTRO e sem controle ⇒ recusa**, e NADA é
+    ///    executado: o comando nem é lançado, então a recusa não pode ser o eco
+    ///    de um `pytest` ausente na máquina.
     /// 2. **Comando NÃO-teste sem controle ⇒ WARN, como sempre**, com o veredito
     ///    intacto — a recusa acima não é o motor recusando tudo.
     /// 3. **Um registro guardado não salva o critério**: uma prova vermelha
     ///    tirada antes de a exigência existir volta a ser julgada, porque a
     ///    exigência é sobre o par comando+controle de hoje e não sobre o que
     ///    rodou ontem.
+    /// 4. **A suíte INTEIRA, sem filtro, não deve nada**: não há seleção que
+    ///    possa vir vazia, então o modo de falha que a exigência endereça não
+    ///    existe ali — e como o passe re-julga o acervo, cobrá-lo viraria
+    ///    `Unproven` em toda spec antiga dessa forma.
     #[test]
     fn test_runner_ac_without_control_is_unproven() {
         let dir = tempdir().unwrap();
@@ -2171,6 +2187,44 @@ mod tests {
             e.reason,
         );
         assert_eq!(e.proof, Proof::Red, "e o vermelho já pago fica no registro");
+
+        // --- 4. A suíte INTEIRA, sem filtro, não deve `Control:` -------------
+        // Não há seleção que possa vir vazia, então o motivo da exigência não
+        // existe ali — e como este passe re-julga o acervo, cobrá-la viraria
+        // `Unproven` toda spec antiga dessa forma, sem sequer rodar o comando.
+        use super::control_required;
+        for whole_suite in [
+            "cargo test -p mustard-rt --lib",
+            "cargo test --workspace",
+            "pytest",
+            "go test ./...",
+            "dotnet test src/App.sln",
+            "npm test",
+            "vitest run",
+        ] {
+            assert!(
+                !control_required(whole_suite, None),
+                "a suíte inteira não tem filtro que possa selecionar nada: {whole_suite}",
+            );
+        }
+        for filtered in [
+            "cargo test -p mustard-rt --lib wave_prompt_carries_its_acceptance",
+            "pytest -k some_new_case",
+            "pytest tests/test_x.py::test_y",
+            "go test ./... -run TestNewCase",
+            "dotnet test --filter FullyQualifiedName~NewCase",
+            "npm test -- some_new_case",
+            "vitest run src/x.test.ts",
+        ] {
+            assert!(
+                control_required(filtered, None),
+                "e o filtro que pode não casar nada continua devendo controle: {filtered}",
+            );
+            assert!(
+                !control_required(filtered, Some("cargo test -p mustard-rt --lib")),
+                "um controle declarado limpa a exigência: {filtered}",
+            );
+        }
     }
 
     /// O registro diz POR QUE o vermelho foi vermelho: sair 0 com o `Expect:`

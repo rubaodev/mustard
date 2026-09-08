@@ -128,7 +128,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::commands::event::work_branch::{
-    base_for, busy_checkout, checkout_work_branch, current_branch, is_protected,
+    base_for, busy_checkout_before_cut, checkout_work_branch, current_branch, is_protected,
     name_dirty_paths, recorded_or_derived_base, refresh_integration_bases,
 };
 use crate::commands::work_unit_open::dirty_paths;
@@ -446,9 +446,17 @@ impl Check for WorkBranchGate {
         //     The marker is KEPT: the unit was never started, so there is
         //     nothing to consume, and the next attempt (after the operator
         //     resolves git) retries the cut.
+        //
+        //     E quando a decisão LIBERA o corte, o censo que sobrou sujo na
+        //     árvore é gravado aqui, antes do `checkout -b` do passo 4 — senão
+        //     `.claude/scan-map.md` e os moldes gerados viajam para dentro da
+        //     branch desta unidade e entram no diff dela. Uma chamada só decide
+        //     e liquida (`busy_checkout_before_cut`), pelo mesmo motivo que o
+        //     veredito é compartilhado: uma terceira porta não pode nascer
+        //     lembrando de uma metade e esquecendo a outra.
         if !in_submodule {
             if let Some(busy) =
-                busy_checkout(Path::new(&local), current.as_deref(), &target, &config)
+                busy_checkout_before_cut(Path::new(&local), current.as_deref(), &target, &config)
             {
                 return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) });
             }
