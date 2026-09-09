@@ -1243,7 +1243,8 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 /// `Err(detail)` covers the two outcomes the draft must not survive:
 ///
 /// 1. the checkout holds ANOTHER unit's branch with uncommitted work, so the
-///    cut was REFUSED ([`crate::commands::event::work_branch::busy_checkout`]).
+///    cut was REFUSED
+///    ([`crate::commands::event::census_settlement::settle`]).
 ///    Proceeding would write this unit's spec, waves and proof onto the other
 ///    unit's branch — and drafting is the moment that arrangement is decided,
 ///    because this door opens before any `Write` reaches the hook gate. The

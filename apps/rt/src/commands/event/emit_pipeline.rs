@@ -501,7 +501,7 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 /// `kind_base` é a base que esta abertura vai cortar de
 /// ([`resolve_kind_base_or_exit`]) — `Some` exatamente quando `--kind` é
 /// `pipeline.kind`. Ela entra porque a gravação do censo é POSICIONAL: ver
-/// [`super::work_branch::census_commit_belongs_here`].
+/// [`super::census_settlement`].
 fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts, kind_base: Option<&str>) -> Vec<String> {
     if opts.kind != EVENT_PIPELINE_KIND {
         return Vec::new();
@@ -533,39 +533,29 @@ pub(super) fn enforce_base_gate_at(
         // to establish.
         super::base_gate::BaseVerdict::Abstain => {}
         super::base_gate::BaseVerdict::Open(current) => {
-            // A ORDEM: o mine PRIMEIRO, a gravação UMA vez, no fim.
+            // A PERGUNTA INTEIRA, feita uma vez, e nenhum passo executado aqui.
             //
-            // Era o contrário, e a árvore que carregasse resto de enriquecimento
-            // com o censo vencido ganhava DOIS commits de mesmo título: o
-            // primeiro gravava o modelo VELHO só para desimpedir o mine, e o
-            // mine em seguida gravava o novo sob o mesmo assunto — o primeiro
-            // registrando conteúdo que a própria ferramenta acabara de superar.
-            //
-            // O mine deixou de ser impedido pela saída da própria ferramenta
-            // (`census_refresh_due` desconta o censo), então nada precisa ser
-            // commitado antes dele. O que sobrar sujo depois — os restos do
-            // enriquecimento e o que o mine acabou de escrever — entra num
-            // commit só, aqui.
-            super::base_gate::refresh_census_if_stale(root);
-            // E a gravação é POSICIONAL, pela MESMA regra que as duas portas de
-            // corte leem — uma condição só, num lugar só.
+            // Esta porta já foi três coisas erradas ao mesmo tempo. Ela mandava
+            // minerar sem saber onde a árvore estava parada; gravava o censo
+            // sem atualizar a base antes, que é a ordem que as duas portas de
+            // corte já tinham consertado; e a gravação do PRÓPRIO mine não
+            // passava por condição nenhuma — era o único escritor do commit do
+            // censo que nenhuma rodada de revisão cobriu. As três somem juntas
+            // porque a porta parou de executar: ela diz o que está acontecendo
+            // e onde a árvore está, e obedece.
             //
             // `evaluate` devolve `Open(current)` para QUALQUER nome de branch
             // desde que ela não esteja atrás do remoto (a checagem de
-            // pertencimento foi removida de propósito), então sem esta pergunta
-            // um `emit-pipeline --kind pipeline.kind` disparado de
-            // `feature/outra-unidade` commitava o censo na cabeça DAQUELA
-            // unidade, sob o assunto do censo — a mis-atribuição que a porta de
-            // corte já recusa, aberta na porta ao lado.
-            if super::work_branch::census_commit_belongs_here(
+            // pertencimento foi removida de propósito), então a posição é um
+            // insumo obrigatório: sem ela um `emit-pipeline --kind
+            // pipeline.kind` disparado de `feature/outra-unidade` commitava o
+            // censo na cabeça DAQUELA unidade.
+            let _ = super::census_settlement::settle(
                 root,
-                Some(&current),
-                kind_base,
+                super::census_settlement::CheckoutPosition::at(Some(&current), None, kind_base),
                 &config,
-                super::work_branch::CensusDoor::Explicit,
-            ) {
-                super::base_gate::record_leftover_census(root);
-            }
+                super::census_settlement::CensusDoor::ExplicitOpen,
+            );
             // The census refresh only re-mines the DETERMINISTIC half. The
             // agent-written half — Guards prose, `{role}-pattern` molds — is
             // measured here and reported on stderr, unconditionally: a gap born

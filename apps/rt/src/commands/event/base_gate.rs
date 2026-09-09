@@ -47,11 +47,15 @@
 //! triggered from this gate instead of from a door the user has to remember. It
 //! is best-effort throughout: a stale census is a worse map, never a blocker.
 //!
-//! And it FINISHES that commit rather than announcing it: on a tree the refresh
-//! itself found clean, the re-mined census is recorded on the spot
-//! ([`record_census`]). Leaving it dirty made the next unit's branch cut refuse,
-//! attributing the write to another unit of the operator's work — one manual
-//! commit per pipeline opened.
+//! And it FINISHES that commit rather than announcing it. This module no longer
+//! decides WHEN or WHERE, though: the re-mine writes files and stops
+//! ([`mine_census_if_stale`]), and the commit is made by
+//! [`super::census_settlement`], the one place that weighs what is dirty,
+//! where the checkout stands and what is about to happen. Leaving the write
+//! dirty made the next unit's branch cut refuse, attributing the write to
+//! another unit of the operator's work — one manual commit per pipeline opened;
+//! deciding it HERE, in a second spelling, is how the recording and the cut came
+//! to disagree about the same tree.
 //!
 //! In a PRIVATE install the census is invisible to the host repository's git,
 //! so there is no commit to keep apart and the tree's state decides nothing —
@@ -62,11 +66,9 @@
 
 use std::path::Path;
 
-use mustard_core::{
-    record_written_path, translate, worktree_is_clean, ProjectConfig, RecordOutcome, Scan,
-};
+use mustard_core::{record_written_path, RecordOutcome, ProjectConfig, Scan};
 
-use super::work_branch::{checkout_work, CheckoutWork};
+use super::work_branch::CheckoutWork;
 use crate::commands::git_settle::git_out;
 use crate::commands::scan::{default_model_path, hollow_submodules};
 use crate::commands::spec::active_specs::{active_spec_names, without_spec_date_prefix};
@@ -169,9 +171,14 @@ fn commits_behind_remote(project: &Path, base: &str) -> Option<u64> {
 /// `true` when the deterministic census is worth re-mining AND re-mining it
 /// can still be a commit of its own — the conjunction the gate acts on.
 ///
-/// Split out of [`refresh_census_if_stale`] so the DECISION is testable without
+/// Split out of [`mine_census_if_stale`] so the DECISION is testable without
 /// the grain sidecar binary: the effect needs it, the judgement does not.
-pub(crate) fn census_refresh_due(project: &Path, model: &Path) -> bool {
+///
+/// `work` is the tree as [`super::census_settlement`] measured it — HANDED IN,
+/// never measured again here. This function used to run its own
+/// `git status --porcelain --untracked-files=all`, which made one pipeline
+/// opening walk the whole tree twice for one answer.
+pub(crate) fn census_refresh_due(project: &Path, model: &Path, work: &CheckoutWork) -> bool {
     if !census_is_stale(project, model) {
         return false;
     }
@@ -201,17 +208,15 @@ pub(crate) fn census_refresh_due(project: &Path, model: &Path) -> bool {
     // gravava o modelo novo sob o MESMO assunto, e sobravam dois commits com o
     // mesmo título, o primeiro registrando conteúdo que a própria ferramenta
     // acabara de superar. Descontando a saída da ferramenta, o mine roda
-    // primeiro e a gravação acontece uma vez só, no fim
-    // ([`record_leftover_census`]).
+    // primeiro e a gravação acontece uma vez só, no fim — e não aqui, e sim em
+    // [`super::census_settlement::settle`], que é quem decide onde ela pode
+    // cair.
     //
     // O que NÃO é descontado continua sendo tudo: uma linha do operador junto
     // devolve `Holds` e o mine segue impedido, que é a regra de sempre.
     // `Unproven` (sem git, status ilegível) não autoriza nada, exatamente como
     // o `None` de antes.
-    matches!(
-        super::work_branch::checkout_work(project),
-        CheckoutWork::ProvenClean | CheckoutWork::CensusOnly(_)
-    )
+    matches!(work, CheckoutWork::ProvenClean | CheckoutWork::CensusOnly(_))
 }
 
 /// `true` when the census on disk describes an older tree than the one checked
@@ -254,15 +259,41 @@ fn census_is_stale(project: &Path, model: &Path) -> bool {
 /// Fail-open at every step, and loud on stderr rather than on stdout: this runs
 /// inside `emit-pipeline`, whose one JSON line is byte-compared by gates.
 ///
-/// The refresh RECORDS itself. Where the census is versioned, re-mining it used
-/// to leave the file dirty and say so — a task handed to the operator that the
-/// product never finished, and that the next unit's branch cut then refused,
-/// blaming the write on another unit of their work. The tree is sampled before
-/// the miner runs, so the refresh can tell its own change apart from theirs.
-pub(crate) fn refresh_census_if_stale(project: &Path) {
+/// **It writes FILES and records NOTHING.** The commit that finishes the job is
+/// [`super::census_settlement::settle`]'s, and that is the whole point of the
+/// split: this function used to record on its own terms — a `worktree_is_clean`
+/// sample of its own, with no idea where the checkout was standing — which made
+/// it the one writer of the census commit that no positional guard ever
+/// covered. It could commit the census onto another unit's branch while the two
+/// cutting doors, three call sites away, were refusing to do exactly that.
+///
+/// `work` is the tree as the settlement measured it, and `on_the_base` is that
+/// settlement's positional answer. The second one gates the WRITE, not just the
+/// commit: mining a VISIBLE census where it could not be recorded only dirties
+/// the tree for the next cut to refuse — the tool blocking itself on its own
+/// output, one step upstream. A census git cannot see is exempt, because it
+/// fuses with nobody's work and lands in no commit, so no position is wrong for
+/// it (a private install is dirty nearly always, and gating it on position
+/// would mean its census never refreshed at all).
+///
+/// `true` when the miner was actually invoked — the only observable this
+/// function has, and what the postponement above is tested through.
+pub(crate) fn mine_census_if_stale(
+    project: &Path,
+    work: &CheckoutWork,
+    on_the_base: bool,
+) -> bool {
     let model = default_model_path(project);
-    if !census_refresh_due(project, &model) {
-        return;
+    if !census_refresh_due(project, &model, work) {
+        return false;
+    }
+    if census_is_visible_to_git(project, &model) && !on_the_base {
+        eprintln!(
+            "base-gate: census refresh postponed — the checkout is not the base this open cuts \
+             from, so a re-mined census could not be recorded here and would be left for the \
+             next branch cut to refuse"
+        );
+        return false;
     }
     // The same preflight `scan` runs: an unpopulated submodule is
     // indistinguishable from an absent subtree once the walk starts, and the
@@ -274,87 +305,69 @@ pub(crate) fn refresh_census_if_stale(project: &Path) {
              silently omit them. Run: git submodule update --init --recursive",
             hollow.join(", ")
         );
-        return;
+        return false;
     }
-    // Sampled BEFORE the miner writes a byte: the only moment at which the
-    // operator's work and what this refresh is about to write can still be told
-    // apart. Read by `record_census` below.
-    let found_clean = worktree_is_clean(project);
     match Scan::locate().scan(project, &model) {
-        Ok(()) => {
-            let path = model.display();
-            match record_census(project, &model, found_clean) {
-                RecordOutcome::Recorded => eprintln!(
-                    "base-gate: census refreshed ({path}) and recorded on this base — the tree \
-                     is clean again"
-                ),
-                RecordOutcome::Nothing => eprintln!(
-                    "base-gate: census refreshed ({path}) — this repository's git has nothing \
-                     to see"
-                ),
-                RecordOutcome::TreeNotClean => eprintln!(
-                    "base-gate: census refreshed ({path}) — the tree already carried other \
-                     changes, so it was not recorded here: the census pass right after this one \
-                     records it when nothing but the census is dirty, and otherwise it is yours \
-                     to commit alongside your work"
-                ),
-                RecordOutcome::Unavailable => eprintln!(
-                    "base-gate: census refreshed ({path}) — git would not record it, so it \
-                     stays uncommitted"
-                ),
-            }
-        }
+        Ok(()) => eprintln!(
+            "base-gate: census refreshed ({}) — the recording that follows is the settlement's",
+            model.display()
+        ),
         Err(e) => eprintln!("base-gate: census refresh failed ({e}); the previous model stands"),
     }
+    true
 }
 
-/// Grava os artefatos do censo que SOBRARAM sujos na árvore — a saída da
-/// passagem de enriquecimento (`scan-map.md`, os `SKILL.md` dos moldes, o
-/// modelo e o dicionário), que o mine determinístico daqui não grava porque não
-/// foi ele quem a escreveu.
+/// Os caminhos que o mine determinístico ESCREVE, relativos à raiz — o modelo e
+/// o dicionário ao lado dele —, e só os que existem mesmo em disco.
 ///
-/// O portão se barrava nas próprias saídas: essa sujeira ficava para o corte da
-/// PRÓXIMA unidade recusar, atribuindo ao operador uma escrita que não é dele.
-/// Gravar é a mesma resposta que [`refresh_census_if_stale`] já dá para o mine
-/// determinístico, pela mesma máquina ([`record_written_path`]) e sob o mesmo
-/// assunto de commit ([`CENSUS_COMMIT_SUBJECT`]).
+/// DERIVADOS, nunca medidos de novo: um `git status` a mais por causa de dois
+/// caminhos conhecidos é exatamente a segunda varredura que este trabalho
+/// removeu. Um pathspec para um arquivo que não mudou é inócuo para o gravador
+/// (ele compara o porcelain dos caminhos dados e devolve `Nothing` se não houver
+/// nada), mas um pathspec para um arquivo AUSENTE aborta o `git add` inteiro
+/// (`fatal: pathspec did not match any files`) e levaria o outro junto — o
+/// resultado que esta filtragem existe para evitar, alcançado por excesso de
+/// zelo.
+pub(crate) fn mined_census_paths(project: &Path) -> Vec<String> {
+    let model = default_model_path(project);
+    [model.clone(), model.with_file_name(GRAIN_DICTIONARY)]
+        .into_iter()
+        .filter(|written| written.is_file())
+        .filter_map(|written| {
+            written.strip_prefix(project).ok().map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        })
+        .collect()
+}
+
+/// Grava `paths` como UM commit do censo, pela única máquina que o produto usa
+/// para tudo que escreve numa árvore que o repositório versiona
+/// ([`record_written_path`]), sob o assunto do censo
+/// ([`CENSUS_COMMIT_SUBJECT`]).
 ///
-/// A precondição é a MEDIÇÃO, não uma suposição: só age quando
-/// [`checkout_work`] responde [`CheckoutWork::CensusOnly`] — a árvore inteira,
-/// com o índice, não tem uma linha do operador. Sobrando qualquer coisa dele
-/// junto, não grava nada e a recusa de hoje continua valendo; um probe que não
-/// respondeu ([`CheckoutWork::Unproven`]) também não autoriza nada. Por isso o
-/// `found_clean` passado adiante é `Some(true)`: é exatamente o fato que
-/// `record_written_path` usa para saber que o índice não tem nada do operador
-/// para o commit varrer junto.
+/// SEM DECIDIR NADA. Quem decidiu que havia um commit a fazer, e onde ele podia
+/// cair, foi [`super::census_settlement::settle`] — esta função é o efeito, e a
+/// separação é o que impede a terceira leitura da mesma pergunta. Por isso o
+/// `found_clean` é `Some(true)` sem hesitação: o chamador só chega aqui depois
+/// de ter medido que a árvore e o índice não têm uma linha do operador para o
+/// commit varrer junto, que é exatamente o fato que `record_written_path` pede.
 ///
-/// A POSIÇÃO, ao contrário, NÃO é precondição desta função — é dos chamadores,
-/// e é obrigatória. Esta função grava na cabeça de qualquer branch em que a
-/// árvore esteja parada; o commit do censo pertence à BASE e a mais nada, e
-/// quem responde isso é
-/// [`crate::commands::event::work_branch::census_commit_belongs_here`], lido
-/// pelas três portas que chamam aqui. Um chamador novo que não o leia commita o
-/// censo dentro da branch de uma unidade.
-///
-/// Fail-open de ponta a ponta, e alto no stderr — nunca no stdout, que carrega
-/// a linha JSON que os portões comparam byte a byte.
-pub(crate) fn record_leftover_census(project: &Path) {
-    let CheckoutWork::CensusOnly(paths) = checkout_work(project) else {
-        return;
-    };
+/// `true` quando o commit foi mesmo escrito. Ignorado, invisível para o git ou
+/// recusado por ele: `false`, a escrita fica onde caiu e nada é dito ao
+/// operador — fail-open, como o mine determinístico já degrada.
+pub(crate) fn commit_census(project: &Path, paths: &[String]) -> bool {
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     if record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, Some(true))
         != RecordOutcome::Recorded
     {
-        // Ignorado, invisível para o git ou recusado pelo git: a escrita fica
-        // onde caiu, exatamente como o mine determinístico já degrada.
-        return;
+        return false;
     }
     let lang = ProjectConfig::load(project).i18n().lang;
     eprintln!(
         "{}",
-        translate("basegate.census.recorded", lang).replace("{paths}", &paths.join(", "))
+        mustard_core::translate("basegate.census.recorded", lang)
+            .replace("{paths}", &paths.join(", "))
     );
+    true
 }
 
 /// Quantos tokens significativos duas unidades precisam compartilhar para uma
@@ -435,13 +448,6 @@ const CENSUS_COMMIT_SUBJECT: &str = "chore: refresh the deterministic project ce
 /// leaving it out left the tree dirty under a message claiming it was clean.
 const GRAIN_DICTIONARY: &str = "grain.dictionary.json";
 
-/// Record the census this gate just re-mined, through the ONE mechanism the
-/// product uses for every artifact it writes into a tree the host repository
-/// versions ([`record_written_path`]).
-///
-/// Split out of [`refresh_census_if_stale`] for the same reason
-/// [`census_refresh_due`] is: the RECORDING is testable without the grain
-/// sidecar binary — the effect needs it, the bookkeeping does not.
 /// Whether git would SEE the census — asked of the files, not of the install
 /// mode.
 ///
@@ -480,41 +486,51 @@ pub(crate) fn path_is_ignored(project: &Path, rel: &str) -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
-/// A scan writes TWO artifacts, not one: the model and its byte-stable
-/// `grain.dictionary.json` sidecar beside it. Recording only the model left the
-/// sidecar modified, so the tree stayed dirty and the next branch cut still
-/// refused — while this gate printed that the tree was clean again. Both go in,
-/// derived from the model path the same way the rest of the runtime derives the
-/// sidecar (`scan.rs` uses `with_file_name` for exactly this).
-fn record_census(project: &Path, model: &Path, found_clean: Option<bool>) -> RecordOutcome {
-    // Each pathspec is DERIVED from a path that was really written, so no
-    // pathspec can name a file the scan did not touch. Forward-slashed: a git
-    // pathspec is not a Windows path.
-    // Only paths that actually EXIST. `git add -- <a> <missing>` aborts
-    // wholesale (`fatal: pathspec did not match any files`), so naming an
-    // absent sidecar would take the model down with it and leave the tree dirty
-    // — the outcome this function exists to prevent, reached by being thorough.
-    let mut paths: Vec<String> = Vec::with_capacity(2);
-    for written in [model.to_path_buf(), model.with_file_name(GRAIN_DICTIONARY)] {
-        if !written.is_file() {
-            continue;
-        }
-        let Ok(rel) = written.strip_prefix(project) else {
-            return RecordOutcome::Unavailable;
-        };
-        paths.push(rel.to_string_lossy().replace('\\', "/"));
-    }
-    if paths.is_empty() {
-        return RecordOutcome::Nothing; // the miner wrote nothing to record.
-    }
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, found_clean)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::event::census_settlement::{
+        settle, CensusDoor, CensusSettlement, CheckoutPosition,
+    };
+    use crate::commands::event::work_branch::checkout_work;
     use std::process::Command;
+
+    /// A pergunta inteira, feita como a porta de CORTE a faz.
+    ///
+    /// As fixtures deste módulo medem pelo MESMO ponto de entrada que o produto
+    /// usa, e não por uma metade dele: enquanto mediam a decisão de um lado e a
+    /// gravação do outro, as duas ficaram verdes enquanto o par entre elas
+    /// estava quebrado — quatro rodadas seguidas.
+    fn settle_cut(
+        root: &Path,
+        current: Option<&str>,
+        target: &str,
+        base: Option<&str>,
+        config: &ProjectConfig,
+    ) -> CensusSettlement {
+        settle(
+            root,
+            CheckoutPosition::at(current, Some(target), base),
+            config,
+            CensusDoor::BranchCut,
+        )
+    }
+
+    /// …e como a porta EXPLÍCITA do `emit-pipeline` a faz: sem alvo, porque ali
+    /// nada é checado out e portanto nada pode viajar.
+    fn settle_open(
+        root: &Path,
+        current: Option<&str>,
+        base: Option<&str>,
+        config: &ProjectConfig,
+    ) -> CensusSettlement {
+        settle(
+            root,
+            CheckoutPosition::at(current, None, base),
+            config,
+            CensusDoor::ExplicitOpen,
+        )
+    }
 
     /// Run a git command in `root`, asserting success — test scaffolding only.
     fn git(root: &Path, args: &[&str]) {
@@ -711,7 +727,7 @@ mod tests {
 
         std::fs::write(root.join("stray.txt"), "x").unwrap();
         assert!(
-            census_refresh_due(root, &model),
+            census_refresh_due(root, &model, &checkout_work(root)),
             "a census git cannot see has no commit of its own to keep apart from the dirt",
         );
     }
@@ -734,7 +750,7 @@ mod tests {
 
         std::fs::write(root.join("stray.txt"), "x").unwrap();
         assert!(
-            !census_refresh_due(root, &model),
+            !census_refresh_due(root, &model, &checkout_work(root)),
             "the marks say `private` but nothing hides the census: mining here would leave \
              a versioned file dirty, which is the debt this unit removes",
         );
@@ -751,14 +767,14 @@ mod tests {
         let model = default_model_path(root);
 
         assert!(
-            census_refresh_due(root, &model),
+            census_refresh_due(root, &model, &checkout_work(root)),
             "no model at all on a clean tree is the clearest possible staleness",
         );
 
         // Dirty the tree with a file `git add -A` would stage.
         std::fs::write(root.join("stray.txt"), "x").unwrap();
         assert!(
-            !census_refresh_due(root, &model),
+            !census_refresh_due(root, &model, &checkout_work(root)),
             "a dirty tree fuses the refresh with the user's work — never mine there",
         );
 
@@ -774,7 +790,7 @@ mod tests {
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
         std::fs::write(&model, "{}").unwrap();
         assert!(
-            !census_refresh_due(root, &model),
+            !census_refresh_due(root, &model, &checkout_work(root)),
             "a model newer than HEAD is not stale: {}",
             model.display(),
         );
@@ -810,6 +826,11 @@ mod tests {
         model
     }
 
+    /// O caminho do modelo desta árvore, para quem só tem a raiz em mãos.
+    fn model_of(root: &Path) -> std::path::PathBuf {
+        default_model_path(root)
+    }
+
     /// Everything a scan writes, as the miner would — model AND sidecar.
     fn remine(model: &Path) {
         std::fs::write(model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
@@ -829,18 +850,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let model = repo_tracking_the_census(root);
-
-        // Sampled BEFORE the write, exactly as `refresh_census_if_stale` does.
-        let found_clean = worktree_is_clean(root);
-        assert_eq!(found_clean, Some(true), "the fixture tree is clean");
+        assert_eq!(porcelain(root), "", "the fixture tree is clean");
 
         // The miner's effect, without the grain binary — BOTH artifacts move.
         remine(&model);
         assert_ne!(porcelain(root), "", "the re-mined census really did dirty the tree");
 
-        assert_eq!(
-            record_census(root, &model, found_clean),
-            RecordOutcome::Recorded,
+        // Through the real door. The recording used to be reachable on its own,
+        // with a clean-tree sample of its own — which is precisely how it became
+        // the one writer no positional guard ever covered.
+        assert!(
+            matches!(
+                settle_open(root, Some("dev"), Some("dev"), &flow_config()),
+                CensusSettlement::Recorded(_)
+            ),
             "a census the gate itself wrote on a clean base is the gate's to record",
         );
         assert_eq!(
@@ -863,14 +886,13 @@ mod tests {
 
         // The operator's work, present BEFORE the gate looks.
         std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
-        let found_clean = worktree_is_clean(root);
-        assert_eq!(found_clean, Some(false), "the tree already carried their work");
+        assert!(porcelain(root).contains("theirs.txt"), "the tree already carried their work");
 
         std::fs::write(&model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
 
         assert_eq!(
-            record_census(root, &model, found_clean),
-            RecordOutcome::TreeNotClean,
+            settle_open(root, Some("dev"), Some("dev"), &flow_config()),
+            CensusSettlement::Proceed,
             "with the operator's work in the tree the gate records nothing",
         );
         assert_eq!(
@@ -924,7 +946,7 @@ mod tests {
     /// da branch nova — as duas metades têm de ser medidas na mesma corrida.
     #[test]
     fn a_census_only_dirty_tree_does_not_refuse_the_cut() {
-        use crate::commands::event::work_branch::{busy_checkout, cut_pending_work_branch, CutOutcome};
+        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -943,15 +965,16 @@ mod tests {
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
 
-        assert_eq!(
-            busy_checkout(root, Some("dev"), "dev_second", Some("dev"), &flow_config()),
-            None,
-            "nada disso é trabalho de ninguém — recusar aqui é a ferramenta se \
-             barrando na própria saída",
-        );
-
-        // E a porta real: o corte acontece de verdade, e a árvore volta limpa
-        // porque a gravação mora no mesmo caminho que a decisão liberou.
+        // A porta real, e só ela: nada disso é trabalho de ninguém, então o
+        // corte acontece de verdade e a árvore volta limpa porque a gravação
+        // mora dentro da mesma resposta que liberou o corte.
+        //
+        // A asserção que vinha antes desta media a metade DECISÃO por um
+        // predicado à parte (`busy_checkout`). Esse predicado não existe mais:
+        // decidir e gravar são o mesmo passo agora, e chamá-lo aqui gravaria o
+        // censo e deixaria a asserção de árvore limpa abaixo trivialmente
+        // verdadeira. A cobertura "as quatro portas respondem igual" mudou de
+        // lugar, para `every_writer_answers_the_same_for_the_same_tree`.
         let sid = "sess-census-only-open";
         crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = cut_pending_work_branch(root, sid);
@@ -1230,16 +1253,17 @@ mod tests {
         );
         assert!(
             git_out(root, &["rev-parse", "--verify", "hotfix/urgente"]).is_none(),
-            "e nenhuma branch foi criada — é esta metade que autoriza `busy_checkout` a \
-             não falar do censo quando a base não é um fato",
+            "e nenhuma branch foi criada — é esta metade que autoriza a resposta \
+             compartilhada a não falar do censo quando a base não é um fato",
         );
     }
 
-    /// …e a outra metade: numa posição PROTEGIDA o corte não grava nada, porque
-    /// ali a decisão nem chega a MEDIR a árvore — `holds_other_work` devolve
-    /// `false` no `is_protected` e sai. Um hook não cria commit numa base
-    /// protegida atrás do operador; a porta explícita do `emit-pipeline`
-    /// continua gravando lá.
+    /// …e a outra metade: numa posição PROTEGIDA o corte não grava nada. A
+    /// árvore é medida (uma vez, como sempre), e a resposta é que o commit do
+    /// censo não pertence ali: um hook não cria commit numa base protegida atrás
+    /// do operador. É a ÚNICA divergência legítima entre as portas, e ela é um
+    /// insumo nomeado da decisão ([`CensusDoor`]) — a porta explícita do
+    /// `emit-pipeline`, onde o operador digitou o comando, continua gravando lá.
     #[test]
     fn the_cut_does_not_commit_the_census_onto_a_protected_checkout() {
         let dir = tempfile::tempdir().unwrap();
@@ -1262,12 +1286,7 @@ mod tests {
             crate::commands::event::work_branch::is_protected(root, "dev", &config),
             "a fixture precisa de uma posição realmente protegida",
         );
-        crate::commands::event::work_branch::record_census_before_cut(
-            root,
-            Some("dev"),
-            "dev",
-            &config,
-        );
+        settle_cut(root, Some("dev"), "dev_second", Some("dev"), &config);
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
@@ -1275,13 +1294,8 @@ mod tests {
         );
 
         // E a posição NÃO MEDIDA (`HEAD` destacado, ou ilegível) idem.
-        crate::commands::event::work_branch::record_census_before_cut(
-            root,
-            Some("HEAD"),
-            "dev",
-            &config,
-        );
-        crate::commands::event::work_branch::record_census_before_cut(root, None, "dev", &config);
+        settle_cut(root, Some("HEAD"), "dev_second", Some("dev"), &config);
+        settle_cut(root, None, "dev_second", Some("dev"), &config);
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
@@ -1327,12 +1341,7 @@ mod tests {
             ),
             "a fixture precisa de uma posição NÃO protegida, senão mede a exclusão antiga",
         );
-        crate::commands::event::work_branch::record_census_before_cut(
-            root,
-            Some("feature/outra-unidade"),
-            "dev",
-            &config,
-        );
+        settle_cut(root, Some("feature/outra-unidade"), "dev_second", Some("dev"), &config);
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
@@ -1350,12 +1359,7 @@ mod tests {
         remine(&model);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a fixture precisa da árvore suja de novo");
-        crate::commands::event::work_branch::record_census_before_cut(
-            root,
-            Some("dev"),
-            "dev",
-            &config,
-        );
+        settle_cut(root, Some("dev"), "dev_second", Some("dev"), &config);
         assert_eq!(
             porcelain(root),
             "",
@@ -1371,7 +1375,7 @@ mod tests {
     /// ABRE a unidade commitava `.claude/scan-map.md` e os moldes gerados na
     /// cabeça de `feature/outra-unidade`, sob o assunto do censo: exatamente a
     /// mis-atribuição que a porta de CORTE já recusava. Uma condição posicional
-    /// só, lida pelas duas ([`crate::commands::event::work_branch::census_commit_belongs_here`]).
+    /// só, lida pelas duas ([`crate::commands::event::census_settlement`]).
     ///
     /// As duas metades na mesma corrida: fora da base a cabeça não se mexe, e
     /// PARADO na base a gravação continua acontecendo.
@@ -1423,17 +1427,251 @@ mod tests {
         );
     }
 
+    /// A árvore que TODAS as escritoras recebem neste módulo: o censo
+    /// re-minerado e a saída da passagem de enriquecimento, e mais nada do
+    /// operador. `stand_on` põe a árvore fora da base quando é `Some`.
+    fn a_tree_dirty_only_with_the_census(root: &Path, stand_on: Option<&str>) {
+        // Escrito ANTES do `git init` da fixture, para entrar no commit inicial:
+        // um `mustard.json` solto seria trabalho do operador na árvore.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+        if let Some(branch) = stand_on {
+            git(root, &["checkout", "-b", branch]);
+        }
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+    }
+
+    /// O que uma escritora deixou observável: o commit do censo caiu na BASE, e
+    /// o censo saiu da frente do próximo corte?
+    ///
+    /// As DUAS metades juntas, sempre. Foi medindo uma de cada vez que quatro
+    /// rodadas seguidas ficaram verdes com o par quebrado: a decisão liberava e
+    /// a gravação declinava, cada metade correta sozinha.
+    #[derive(Debug, PartialEq, Eq)]
+    struct CensusAnswerSeen {
+        base_carries_the_census_commit: bool,
+        census_still_in_the_way: bool,
+    }
+
+    fn what_the_writer_answered(root: &Path) -> CensusAnswerSeen {
+        let subject = git_out(root, &["log", "-1", "--format=%s", "dev"]).unwrap_or_default();
+        CensusAnswerSeen {
+            base_carries_the_census_commit: subject.trim() == CENSUS_COMMIT_SUBJECT,
+            // Lido pela classificação do PRÓPRIO produto, e não por um
+            // `git status --porcelain` cru: aquele COLAPSA um diretório
+            // inteiramente não rastreado numa linha só, então procurar
+            // "scan-map.md" nele responde sobre o formato da saída do git em vez
+            // de sobre o censo.
+            census_still_in_the_way: matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+        }
+    }
+
+    /// A entrada do hook de escrita, montada aqui porque este é o único teste
+    /// que precisa das QUATRO escritoras lado a lado.
+    fn write_hook_verdict(root: &Path, sid: &str) {
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let root_s = root.to_string_lossy().to_string();
+        let input = HookInput {
+            tool_name: Some("Write".to_string()),
+            tool_input: serde_json::json!({ "file_path": "f.txt", "content": "x" }),
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(root_s.clone()),
+            session_id: Some(sid.to_string()),
+            ..HookInput::default()
+        };
+        let ctx = Ctx {
+            project_dir: root_s,
+            trigger: Some(Trigger::PreToolUse),
+            workspace_root: None,
+            inject_only: None,
+        };
+        let _ = crate::hooks::write::work_branch_gate::WorkBranchGate.evaluate(&input, &ctx);
+    }
+
+    /// A PROVA DO COLAPSO — e o teste que nenhuma rodada anterior podia ter
+    /// escrito.
+    ///
+    /// As QUATRO escritoras da decisão do censo recebem a MESMA árvore na MESMA
+    /// posição, e respondem a mesma coisa. Eram quatro condições, escritas em
+    /// três arquivos, e cada uma das seis rodadas de revisão consertou as que
+    /// enxergava: as três primeiras nunca souberam da gravação do próprio mine,
+    /// e a sétima corrigiu a ORDEM em duas portas de três. Nenhuma delas tinha
+    /// uma pergunta única para fazer às quatro — e por isso nenhuma delas podia
+    /// medir isto.
+    ///
+    /// É este teste que torna impossível a próxima chamadora esquecida: uma
+    /// escritora nova que não passe pela resposta compartilhada diverge das
+    /// outras três aqui, na linha que compara as quatro respostas entre si.
+    #[test]
+    fn every_writer_answers_the_same_for_the_same_tree() {
+        // As quatro, nomeadas como o relatório de revisão as nomeou. A segunda é
+        // o caminho que a gravação do PRÓPRIO mine ocupava: a mesma porta
+        // explícita, com o censo VENCIDO (o modelo apagado é a forma mais clara
+        // de "mais velho que a árvore"), que era exatamente quando aquele
+        // escritor não-guardado disparava.
+        type Writer = fn(&Path, &str);
+        let writers: [(&str, Writer, bool); 4] = [
+            (
+                "emit-pipeline (a porta explícita)",
+                |root, _sid| {
+                    let _ = crate::commands::event::emit_pipeline::enforce_base_gate_at(
+                        root,
+                        None,
+                        Some("dev"),
+                    );
+                },
+                false,
+            ),
+            (
+                "emit-pipeline (o caminho da gravação do próprio mine)",
+                |root, _sid| {
+                    let _ = crate::commands::event::emit_pipeline::enforce_base_gate_at(
+                        root,
+                        None,
+                        Some("dev"),
+                    );
+                },
+                true,
+            ),
+            (
+                "spec-draft (o corte da branch)",
+                |root, sid| {
+                    let root_s = root.to_string_lossy().to_string();
+                    crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+                    let _ =
+                        crate::commands::event::work_branch::cut_pending_work_branch(root, sid);
+                },
+                false,
+            ),
+            (
+                "o hook de escrita",
+                |root, sid| {
+                    let root_s = root.to_string_lossy().to_string();
+                    crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+                    write_hook_verdict(root, sid);
+                },
+                false,
+            ),
+        ];
+
+        // Duas posições, e a divergência histórica mora na segunda.
+        for (position, stand_on, expected) in [
+            (
+                "parado NA base",
+                None,
+                CensusAnswerSeen {
+                    base_carries_the_census_commit: true,
+                    census_still_in_the_way: false,
+                },
+            ),
+            (
+                "parado na branch de OUTRA unidade",
+                Some("feature/outra-unidade"),
+                CensusAnswerSeen {
+                    base_carries_the_census_commit: false,
+                    census_still_in_the_way: true,
+                },
+            ),
+        ] {
+            let mut answers: Vec<(&str, CensusAnswerSeen)> = Vec::with_capacity(writers.len());
+            for (name, writer, stale_census) in writers {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path();
+                a_tree_dirty_only_with_the_census(root, stand_on);
+                if stale_census {
+                    std::fs::remove_file(default_model_path(root)).unwrap();
+                }
+                writer(root, "sess-collapse");
+                answers.push((name, what_the_writer_answered(root)));
+            }
+            for (name, answer) in &answers {
+                assert_eq!(
+                    answer, &expected,
+                    "{position}: '{name}' respondeu diferente do contrato — as quatro \
+                     escritoras leem a MESMA resposta ou não colapsaram",
+                );
+            }
+            // E entre si, explicitamente: é a divergência ENTRE portas que as
+            // seis rodadas produziram, não o desvio de uma porta do contrato.
+            let (first_name, first) = &answers[0];
+            for (name, answer) in &answers[1..] {
+                assert_eq!(
+                    answer, first,
+                    "{position}: '{name}' e '{first_name}' discordam sobre a mesma árvore",
+                );
+            }
+        }
+    }
+
+    /// UMA porta, UMA varredura da árvore.
+    ///
+    /// `checkout_work` roda um `git status --porcelain --untracked-files=all` do
+    /// repositório inteiro e abre cada `SKILL.md` sujo. Antes do colapso ele
+    /// rodava DUAS vezes por porta — a decisão de recusa media, e a gravação
+    /// media de novo, cada uma com sua ideia do que "sujo" queria dizer — e três
+    /// vezes numa abertura de pipeline com o corte que a segue.
+    ///
+    /// O contador é por THREAD, e o harness do cargo dá uma thread a cada teste,
+    /// então a contagem de um vizinho rodando em paralelo não vaza para cá.
+    #[test]
+    fn each_door_walks_the_tree_exactly_once() {
+        use crate::commands::event::work_branch::TREE_PROBES;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        a_tree_dirty_only_with_the_census(root, None);
+
+        TREE_PROBES.with(|n| n.set(0));
+        let _ = crate::commands::event::emit_pipeline::enforce_base_gate_at(root, None, Some("dev"));
+        assert_eq!(
+            TREE_PROBES.with(|n| n.get()),
+            1,
+            "a porta explícita mede a árvore uma vez: o mine e a gravação leem a MESMA medição",
+        );
+
+        // …e com o censo VENCIDO, que é quando a gravação do próprio mine
+        // disparava: ali eram DUAS varreduras, uma para autorizar o mine e outra
+        // para achar o que gravar.
+        remine(&model_of(root));
+        leftover_enrichment(root);
+        std::fs::remove_file(default_model_path(root)).unwrap();
+        TREE_PROBES.with(|n| n.set(0));
+        let _ = crate::commands::event::emit_pipeline::enforce_base_gate_at(root, None, Some("dev"));
+        assert_eq!(
+            TREE_PROBES.with(|n| n.get()),
+            1,
+            "o censo vencido não compra uma segunda varredura: o mine lê a medição da decisão",
+        );
+
+        TREE_PROBES.with(|n| n.set(0));
+        crate::shared::context::set_pending_branch(&root_s, "sess-one-probe", "dev_second", None);
+        let _ = crate::commands::event::work_branch::cut_pending_work_branch(root, "sess-one-probe");
+        assert_eq!(
+            TREE_PROBES.with(|n| n.get()),
+            1,
+            "e a porta de corte também: a recusa e a gravação são a mesma resposta",
+        );
+    }
+
     /// Um molde ADOTADO (`source: manual`) é escrita do OPERADOR, e o caminho
     /// dele é igualzinho ao de um molde gerado — o frontmatter é o que separa.
     ///
     /// Lê-lo como censo faz o corte parar de recusar por causa da edição à mão
-    /// de alguém e [`record_leftover_census`] varrê-la para dentro de um commit
-    /// da ferramenta, que é exatamente a troca que a categoria existe para
-    /// impedir.
+    /// de alguém e a gravação varrê-la para dentro de um commit da ferramenta,
+    /// que é exatamente a troca que a categoria existe para impedir.
+    ///
+    /// As duas metades numa resposta só, que é a forma nova: a recusa NOMEIA o
+    /// molde adotado, e uma recusa não grava nada por construção — ela devolve
+    /// antes de qualquer fetch, mine ou commit.
     #[test]
     fn an_adopted_mold_is_the_operators_writing_not_the_census() {
-        use crate::commands::event::work_branch::{busy_checkout, CheckoutWork};
-
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let model = repo_tracking_the_census(root);
@@ -1457,8 +1695,11 @@ mod tests {
         .unwrap();
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
-        let busy = busy_checkout(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
-            .expect("a edição à mão do operador recusa o corte");
+        let CensusSettlement::Refuse(busy) =
+            settle_cut(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
+        else {
+            panic!("a edição à mão do operador recusa o corte");
+        };
         let CheckoutWork::Holds(dirty) = &busy.work else {
             panic!("os caminhos foram observados, veio {:?}", busy.work);
         };
@@ -1467,8 +1708,6 @@ mod tests {
             &vec!["apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md".to_string()],
             "a recusa nomeia o molde adotado e só ele: {dirty:?}",
         );
-
-        record_leftover_census(root);
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
@@ -1493,13 +1732,13 @@ mod tests {
         // O censo precisa estar VENCIDO para a pergunta ter conteúdo: o modelo
         // é apagado, que é a forma mais clara de "mais velho que a árvore".
         std::fs::remove_file(&model).unwrap();
-        assert!(census_refresh_due(root, &model), "precondição: o mine está vencido");
+        assert!(census_refresh_due(root, &model, &checkout_work(root)), "precondição: o mine está vencido");
 
         // A saída da passagem de enriquecimento, e só ela.
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a árvore está suja — só de censo");
         assert!(
-            census_refresh_due(root, &model),
+            census_refresh_due(root, &model, &checkout_work(root)),
             "a ferramenta não pode se impedir com a própria saída: enquanto isso for \
              `false`, o portão precisa gravar antes do mine e sobram dois commits de \
              mesmo título",
@@ -1509,8 +1748,114 @@ mod tests {
         // impedido — o desconto é do censo, não da sujeira em geral.
         std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
         assert!(
-            !census_refresh_due(root, &model),
+            !census_refresh_due(root, &model, &checkout_work(root)),
             "com trabalho do operador na árvore o mine continua impedido",
+        );
+    }
+
+    /// Uma RECUSA não deixa nada para trás — nem um fetch, nem um avanço da
+    /// base, nem um commit.
+    ///
+    /// A resposta `Refuse` promete isso na própria documentação dela, e uma
+    /// promessa sobre o que outra parte do código faz é exatamente o tipo de
+    /// comentário que este trabalho encontrou desatualizado em três arquivos. A
+    /// ordem que a sustenta — recusar ANTES de agir — não tem como ser lida do
+    /// resultado: sem o `origin` adiantado desta fixture, agir primeiro e
+    /// recusar depois passa despercebido.
+    #[test]
+    fn a_refusal_leaves_the_repository_exactly_as_it_found_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Árvore e `origin` LADO A LADO: um repositório DENTRO da árvore seria
+        // trabalho não versionado do operador.
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let origin = tmp.path().join("origin.git");
+        let origin_s = origin.to_string_lossy().to_string();
+        a_tree_dirty_only_with_the_census(root, None);
+
+        // Um `origin` cuja `dev` está um commit VAZIO à frente da base local.
+        git(root, &["init", "--bare", "-q", &origin_s]);
+        git(root, &["remote", "add", "origin", &origin_s]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "origin moved"]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        git(root, &["reset", "-q", "--hard", "HEAD~1"]);
+        // …e a árvore parada na branch de OUTRA unidade, que é onde o censo não
+        // tem para onde ir e o corte é recusado.
+        git(root, &["checkout", "-q", "-b", "feature/outra-unidade"]);
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let settled = settle_cut(
+            root,
+            Some("feature/outra-unidade"),
+            "dev_second",
+            Some("dev"),
+            &flow_config(),
+        );
+        assert!(
+            matches!(settled, CensusSettlement::Refuse(_)),
+            "a precondição é a recusa: {settled:?}",
+        );
+        assert!(
+            !git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base NÃO foi avançada: quem recusa não age antes de recusar",
+        );
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "e nada foi commitado onde a árvore estava parada",
+        );
+    }
+
+    /// O mine não escreve onde a gravação não poderia cair.
+    ///
+    /// Um censo VISÍVEL re-minerado fora da base suja a árvore com arquivos
+    /// versionados que a resposta compartilhada não vai gravar ali — e o corte
+    /// seguinte recusa por causa deles. É a ferramenta se barrando na própria
+    /// saída, um passo acima de onde este trabalho a encontrou.
+    ///
+    /// A outra metade, que não pode ser apertada junto: um censo que o git NÃO
+    /// vê não entra em commit nenhum, então nenhuma posição está errada para ele
+    /// — e um install privado, que está sujo quase sempre, nunca re-mineraria se
+    /// a posição valesse também ali.
+    #[test]
+    fn a_visible_census_is_not_mined_where_it_could_not_be_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+        std::fs::remove_file(&model).unwrap();
+        let work = checkout_work(root);
+        assert!(
+            census_refresh_due(root, &model, &work),
+            "precondição: o mine está vencido e a árvore só tem censo",
+        );
+
+        assert!(
+            !mine_census_if_stale(root, &work, false),
+            "fora da base o mine é adiado: o que ele escrevesse ficaria sujo para o \
+             próximo corte recusar",
+        );
+
+        // E o censo INVISÍVEL, na MESMA posição, é minerado. Repositório
+        // próprio porque a fixture acima RASTREIA o censo, e um caminho já
+        // rastreado não é "ignorado" para o git por mais regras de exclude que
+        // se escreva — é a mesma razão pela qual a pergunta é feita dos
+        // ARQUIVOS e não do modo de instalação.
+        let hidden = tempfile::tempdir().unwrap();
+        let hidden = hidden.path();
+        init_repo_on(hidden, "dev");
+        let info = hidden.join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        let mut rules: Vec<String> =
+            mustard_core::PRIVATE_MARKS.iter().map(|m| (*m).to_string()).collect();
+        rules.push(".claude/grain.model.json".to_string());
+        rules.push(".claude/grain.dictionary.json".to_string());
+        std::fs::write(info.join("exclude"), rules.join("\n") + "\n").unwrap();
+        assert!(
+            mine_census_if_stale(hidden, &checkout_work(hidden), false),
+            "um censo que o git não vê não depende de posição nenhuma",
         );
     }
 
@@ -1520,8 +1865,6 @@ mod tests {
     /// dentro de um commit da ferramenta.
     #[test]
     fn operator_work_beside_the_census_still_refuses_and_names_only_theirs() {
-        use crate::commands::event::work_branch::{busy_checkout, CheckoutWork};
-
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let model = repo_tracking_the_census(root);
@@ -1532,8 +1875,11 @@ mod tests {
         std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
-        let busy = busy_checkout(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
-            .expect("o trabalho do operador ainda recusa o corte");
+        let CensusSettlement::Refuse(busy) =
+            settle_cut(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
+        else {
+            panic!("o trabalho do operador ainda recusa o corte");
+        };
         let CheckoutWork::Holds(dirty) = &busy.work else {
             panic!("os caminhos foram observados, veio {:?}", busy.work);
         };
@@ -1542,8 +1888,6 @@ mod tests {
             &vec!["theirs.txt".to_string()],
             "a recusa nomeia só o que é do operador: {dirty:?}",
         );
-
-        record_leftover_census(root);
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,

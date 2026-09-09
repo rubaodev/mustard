@@ -20,8 +20,10 @@
 //!    on a branch it never asked for. The `Deny` names the branch, the paths
 //!    holding the work, and the act that unblocks it (commit or stash). The
 //!    decision itself is
-//!    [`crate::commands::event::work_branch::busy_checkout`], shared with
-//!    `spec-draft`'s cut so both doors refuse the same thing in the same words.
+//!    [`crate::commands::event::census_settlement::settle`], shared with
+//!    `spec-draft`'s cut so both doors refuse the same thing in the same words
+//!    — and it also PERFORMS the base refresh and the census commit, so neither
+//!    door can get their order wrong.
 //!    Diverting the second unit into its own worktree was tried and withdrawn:
 //!    such a worktree needed the project's git-ignored environment linked into
 //!    it, and `git worktree remove` DESCENDS a Windows junction, so removing
@@ -127,9 +129,12 @@ use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::commands::event::census_settlement::{
+    settle, CensusDoor, CensusSettlement, CheckoutPosition,
+};
 use crate::commands::event::work_branch::{
-    base_for, busy_checkout, checkout_work_branch, current_branch, is_protected, name_dirty_paths,
-    record_census_before_cut, recorded_or_derived_base, refresh_integration_bases,
+    base_for, checkout_work_branch, current_branch, is_protected, name_dirty_paths,
+    recorded_or_derived_base,
 };
 use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
@@ -434,7 +439,8 @@ impl Check for WorkBranchGate {
         //     junction, so the removal deleted the main checkout's own
         //     directory.
         //
-        //     The decision is `busy_checkout`, shared with `spec-draft`'s cut —
+        //     The decision is `census_settlement::settle`, shared with
+        //     `spec-draft`'s cut —
         //     that door opens FIRST (at approval, before any Write), so a guard
         //     living only here never ran. It is taken here on the SAME terms:
         //     this gate used to ask `is_main_checkout` first, which the cut
@@ -450,30 +456,35 @@ impl Check for WorkBranchGate {
         //
         //     A SUBMODULE is still excluded, for a reason of its own that
         //     survives: its HEAD is judged against the SUPERproject's bases,
-        //     which misreads its position outright.
+        //     which misreads its position outright. It is stated as an INPUT —
+        //     a position this decision cannot attribute — rather than as an
+        //     `if` around the call, because an `if` around the call is exactly
+        //     how this door kept ending up with a rule the other doors did not
+        //     have. The base refresh still runs there, as it always did: that
+        //     step never depended on attribution.
         //
         //     The marker is KEPT: the unit was never started, so there is
         //     nothing to consume, and the next attempt (after the operator
         //     resolves git) retries the cut.
         //
-        //     O censo que sobrou sujo NÃO é gravado aqui: um `None` desta
-        //     decisão não quer dizer "a árvore foi medida e só tem censo" —
-        //     numa posição protegida ela nem chega a ser medida. A gravação
-        //     mora no passo 3.4, depois de a base estar resolvida, que é o
-        //     primeiro ponto em que o corte vai mesmo acontecer. Ver
-        //     `record_census_before_cut`.
-        //
-        //     A base entra na decisão como DICA porque a pergunta sobre o censo
-        //     é posicional: só parado NA base ele tem onde ser gravado, e fora
-        //     dela viajaria para dentro da branch nova. Uma regra só, lida
-        //     aqui e no passo 3.4 — ver `census_commit_belongs_here`.
+        //     There is no step 3 or 3.4 here any more. The base refresh and the
+        //     census commit used to be two further statements in this function,
+        //     each with its own condition, and keeping the two conditions and
+        //     their ORDER in agreement with the two other doors is what failed
+        //     five times. The one call below performs them, in the one order,
+        //     and answers what this gate should do.
         let base_hint = resolved_base.as_deref().ok();
-        if !in_submodule {
-            if let Some(busy) =
-                busy_checkout(Path::new(&local), current.as_deref(), &target, base_hint, &config)
-            {
-                return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) });
+        match settle(
+            Path::new(&local),
+            CheckoutPosition::at(current.as_deref(), Some(target.as_str()), base_hint)
+                .attributable(!in_submodule),
+            &config,
+            CensusDoor::WriteHookPass,
+        ) {
+            CensusSettlement::Refuse(busy) => {
+                return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) })
             }
+            CensusSettlement::Recorded(_) | CensusSettlement::Proceed => {}
         }
 
         // 2.9 WHERE from — the answer resolved at 2.4 becomes REQUIRED here,
@@ -505,38 +516,6 @@ impl Check for WorkBranchGate {
                 });
             }
         };
-
-        // 3. Refresh the bases this cut may start from FIRST so the branch is
-        //    cut from the latest of them — `base`, the one it will really use,
-        //    included, because the pick now comes out of the catalogue and need
-        //    not be declared. Fail-open: offline / no remote / non-ff never
-        //    blocks the edit (see refresh_integration_bases).
-        //
-        //    FIRST also means before the census commit of 3.4, and that order is
-        //    the one that makes this step work at all: it advances the base with
-        //    `merge --ff-only`, and a census commit written onto the base ahead
-        //    of it makes the base diverge from `origin/{base}` — the advance is
-        //    no longer a fast-forward, it is refused, and the refusal is dropped
-        //    (best-effort, per base). The unit would be cut from a stale base
-        //    with nothing said.
-        refresh_integration_bases(&vcs, &local, &config, current.as_deref(), Some(&base));
-
-        // 3.4 A base é um FATO agora e já está atualizada, então o corte vai
-        //     mesmo acontecer: grava o censo que sobrou sujo ANTES do
-        //     `checkout -b` do passo 4, senão `.claude/scan-map.md` e os moldes
-        //     gerados viajam para dentro da branch desta unidade e entram no
-        //     diff e no pull request dela.
-        //
-        //     E grava SÓ se a árvore estiver parada na própria `base`: o commit
-        //     do censo pertence à base e a mais nada. Uma posição em OUTRA
-        //     branch de unidade não é protegida nem é o alvo, então passava por
-        //     todas as exclusões e recebia o commit na cabeça dela — a mesma
-        //     mis-atribuição, num lugar pior. A protegida e a não-medida
-        //     continuam de fora (ver `record_census_before_cut`); a porta
-        //     explícita do `emit-pipeline` continua gravando lá.
-        if !in_submodule {
-            record_census_before_cut(Path::new(&local), current.as_deref(), &base, &config);
-        }
 
         // 3.5 Pre-check the dirty tree with the SAME probe the worktree door
         //     uses, BEFORE the attempt. The cut itself still carries changes

@@ -658,7 +658,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // (sai no stderr da abertura do pipeline), então mora no catálogo como
         // manda a nota do topo deste arquivo, e não embutida no portão em um
         // idioma só. `{paths}` é interpolado por
-        // `base_gate::record_leftover_census`.
+        // `base_gate::commit_census`, chamado só de
+        // `census_settlement::settle`.
         ("basegate.census.recorded", Locale::PtBr) => {
             "base-gate: os artefatos do censo ({paths}) eram a única coisa não commitada na \
              árvore — foram gravados aqui mesmo, na base, para que o corte da próxima unidade \

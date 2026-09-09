@@ -1178,7 +1178,7 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
     // Without this half every sentence above outlives its mechanism.
     let branch = read("apps/rt/src/commands/event/work_branch.rs");
     assert!(
-        branch.contains("fn holds_other_work") && branch.contains("fn busy_checkout"),
+        branch.contains("fn holds_other_work"),
         "nothing asks whether the checkout holds another unit's uncommitted work",
     );
     assert!(
@@ -1194,22 +1194,41 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
          spec, waves and proof while `git status` named all three",
     );
     let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
-    // ONE decision and ONE settlement, and BOTH doors take BOTH: the shared
-    // refusal (`busy_checkout`) and the census recording the cut owes the base
-    // (`record_census_before_cut`). They are two calls rather than one because
-    // the recording must land AFTER the base resolves — a cut denied for an
-    // unknown base has to leave no commit behind. A door that took only the
-    // refusal would refuse the same way and still carry `.claude/scan-map.md`
-    // and the generated molds into the unit's branch.
+    // ONE question, asked once per door, and NO door performs a step.
+    //
+    // This used to demand the opposite: two calls per door — the shared refusal
+    // and the census recording — kept in agreement by hand, in three files. Six
+    // review rounds each put a condition at a call site, and the seventh found
+    // the call site the sixth had missed; the refresh/record ORDER ended up
+    // right in two doors of three, and the re-mine's own recording was never
+    // guarded at all. The pair is now one function that decides AND acts, so the
+    // structural claim worth locking is that the doors stay stepless: a door
+    // that performs a step is a door that can perform it in the wrong order, or
+    // forget it.
+    let settlement = read("apps/rt/src/commands/event/census_settlement.rs");
     assert!(
-        gate.contains("busy_checkout(Path::new(&local)")
-            && gate.contains("record_census_before_cut(Path::new(&local)")
-            && branch.contains("fn record_census_before_cut")
-            && branch.contains("busy_checkout(project,")
-            && branch.contains("record_census_before_cut(project,"),
-        "the two doors no longer take the SAME decide-and-settle pair, so they can \
-         disagree — about the refusal, or about who records the census before the cut",
+        settlement.contains("pub(crate) fn settle(")
+            && settlement.contains("let work = checkout_work(root);"),
+        "the shared answer is gone, or it stopped measuring the tree itself — and a \
+         decision that does not own its measurement is two decisions again",
     );
+    let emit = read("apps/rt/src/commands/event/emit_pipeline.rs");
+    for (door, src) in [
+        ("emit-pipeline (the explicit open)", &emit),
+        ("spec-draft's cut", &branch),
+        ("the write hook", &gate),
+    ] {
+        assert!(src.contains("settle("), "{door} no longer asks the shared question");
+        // The steps the answer performs. `refresh_integration_bases(&vcs` is the
+        // CALL shape — `work_branch.rs` still defines the function.
+        for step in ["refresh_integration_bases(&vcs", "commit_census(", "mine_census_if_stale("] {
+            assert!(
+                !src.contains(step),
+                "{door} performs `{step}` itself again — the step a door performs is the \
+                 step the next door forgets",
+            );
+        }
+    }
     assert!(
         !gate.contains("hook_create"),
         "the gate cuts a worktree again — the divert the prose says is withdrawn",

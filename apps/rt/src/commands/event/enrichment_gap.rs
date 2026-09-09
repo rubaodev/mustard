@@ -4,7 +4,7 @@
 //! a notice that fell silent while the gap persisted would read as "closed".
 //!
 //! The scan has two halves. The DETERMINISTIC half is `grain.model.json`, and
-//! [`super::base_gate::refresh_census_if_stale`] already re-mines it from this
+//! [`super::base_gate::mine_census_if_stale`] already re-mines it from this
 //! very gate whenever it goes stale. The ENRICHED half is the one only an agent
 //! can write — each subproject's `## Guards` prose and the `{role}-pattern`
 //! molds — and until now nothing measured it at all: a subproject installed
@@ -21,7 +21,7 @@
 //!
 //! [`measure_with_targets`] is pure: it reads, it never prints, and it returns
 //! the gap plus its write set. [`report_if_stale`] is the whole effect. The split mirrors
-//! [`super::base_gate::census_refresh_due`] vs `refresh_census_if_stale` in the
+//! [`super::base_gate::census_refresh_due`] vs `mine_census_if_stale` in the
 //! sibling module, and it is what makes the judgement testable with no output to
 //! capture.
 //!

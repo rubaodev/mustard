@@ -352,12 +352,14 @@ pub(crate) fn checkout_work_branch(
 /// so a local base carrying unpushed commits is refused and kept, never
 /// rewritten.
 ///
-/// Which is also why the two cutting doors call this BEFORE
-/// [`record_census_before_cut`] and never after: that step commits onto the base
-/// itself, and a base carrying a commit `origin` does not have is exactly the
-/// "commit próprio" case the ff refuses — silently, since every per-base result
-/// is dropped here. Refreshing second turned a stale base into the normal
-/// outcome of any cut that followed a census refresh.
+/// Which is also why NO door calls this any more. It runs from inside
+/// [`crate::commands::event::census_settlement::settle`], immediately before the
+/// census commit and never after: that commit lands on the base itself, and a
+/// base carrying a commit `origin` does not have is exactly the "commit próprio"
+/// case the ff refuses — silently, since every per-base result is dropped here.
+/// Refreshing second turned a stale base into the normal outcome of any cut that
+/// followed a census refresh, and it was fixed door by door twice before the
+/// order was moved somewhere no door can reach it.
 pub(crate) fn refresh_integration_bases(
     vcs: &str,
     root: &str,
@@ -566,14 +568,13 @@ pub(crate) enum CheckoutWork {
     ProvenClean,
     /// A única coisa suja na árvore são artefatos do censo
     /// ([`DirtyPathKind::Census`]), nomeados aqui. Não é trabalho de ninguém: a
-    /// ferramenta os escreveu e a ferramenta os grava
-    /// ([`crate::commands::event::base_gate::record_leftover_census`]).
+    /// ferramenta os escreveu e a ferramenta os grava.
     ///
     /// Isso NÃO quer dizer "o corte nunca é recusado por causa deles": a
-    /// gravação só existe na BASE ([`census_commit_belongs_here`]), e fora dela
-    /// esses caminhos viajariam para dentro da branch nova exatamente como o
-    /// trabalho de alguém viajaria. Quem decide é [`busy_checkout`], que faz a
-    /// mesma pergunta posicional que a gravação faz.
+    /// gravação só existe na BASE, e fora dela esses caminhos viajariam para
+    /// dentro da branch nova exatamente como o trabalho de alguém viajaria. Quem
+    /// pesa as duas coisas — o que está sujo E onde o checkout está — é
+    /// [`crate::commands::event::census_settlement::settle`], numa resposta só.
     ///
     /// Mantido APARTE de [`Self::ProvenClean`] porque quem grava precisa saber
     /// QUAIS caminhos são, e uma árvore limpa não tem nenhum.
@@ -615,6 +616,12 @@ pub(crate) enum CheckoutWork {
 ///    silently. So an unanswerable probe is [`CheckoutWork::Unproven`], and the
 ///    caller refuses on it.
 pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
+    // ONE settlement, ONE measurement. The counter is the regression test for
+    // that: it is per-THREAD, and cargo's harness gives each test its own
+    // thread, so a test can assert how many times a door walked the tree
+    // without the count of a neighbour running in parallel leaking into it.
+    #[cfg(test)]
+    TREE_PROBES.with(|n| n.set(n.get() + 1));
     // `--untracked-files=all` is load-bearing, not tidiness. By default git
     // COLLAPSES an entirely-untracked directory into one entry: a fresh
     // `.claude/` arrives as a single `?? .claude/` line that stands for the
@@ -687,6 +694,18 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
     CheckoutWork::ProvenClean
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many whole-tree probes [`checkout_work`] has run on THIS thread.
+    ///
+    /// Test scaffolding for one specific claim: the collapsed settlement
+    /// measures the tree exactly once per door. Before the collapse a single
+    /// pipeline opening walked the tree up to three times — the re-mine's own
+    /// gate, the recording, and the cut's refusal decision — each with its own
+    /// idea of what "dirty" meant.
+    pub(crate) static TREE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Directory names the harness writes DIRECTLY under a `.claude/` for itself.
 ///
 /// Owned here, deliberately. The seeded `.claude/.gitignore` covers the same
@@ -750,11 +769,11 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// descartá-los aqui os deixaria de fora de todo commit. Trabalho também não:
 /// a ferramenta os escreve e a ferramenta os grava, então cobrá-los do operador
 /// NA BASE é recusar o corte por causa da saída da própria ferramenta — o atrito
-/// que [`crate::commands::event::base_gate::record_leftover_census`] fecha.
+/// que [`crate::commands::event::census_settlement::settle`] fecha.
 ///
 /// FORA da base não há gravação nenhuma para fechar esse atrito, e aí a
 /// categoria continua nomeando os caminhos mas não libera nada: ver
-/// [`census_commit_belongs_here`].
+/// [`crate::commands::event::census_settlement`].
 const CENSUS_FILES: &[&str] =
     &["grain.model.json", "grain.dictionary.json", "scan-declined.json", "scan-map.md"];
 
@@ -775,9 +794,8 @@ const CENSUS_SKILL_FILE: &str = "SKILL.md";
 /// cujo significado documentado é "edições à mão não são sobrescritas". Tratar
 /// todo `SKILL.md` como censo faz a edição à mão do operador deixar de ser
 /// trabalho dele: o corte para de recusar por causa dela e
-/// [`crate::commands::event::base_gate::record_leftover_census`] a varre para
-/// dentro de um commit da ferramenta — a troca que a categoria existe para
-/// impedir.
+/// a gravação do censo a varre para dentro de um commit da ferramenta — a troca
+/// que a categoria existe para impedir.
 ///
 /// A chave AUSENTE é o mesmo caso do `manual`, e é o comum: um
 /// `.claude/skills/<algo>/SKILL.md` escrito à mão — o lugar padrão de uma skill
@@ -947,8 +965,9 @@ pub(crate) struct BusyCheckout {
     /// [`CheckoutWork::ProvenClean`] never appears here — that is not busy.
     /// [`CheckoutWork::CensusOnly`] DOES appear, and only in one position: fora
     /// da base, onde o censo não tem onde ser gravado e por isso não pode
-    /// viajar. Ver [`census_commit_belongs_here`] e [`busy_checkout`] — parado
-    /// NA base ele passa, e aí nunca chega aqui.
+    /// viajar — parado NA base ele passa, e aí nunca chega aqui. Quem responde
+    /// isso é [`crate::commands::event::census_settlement::settle`], que é o
+    /// único construtor desta struct.
     pub(crate) work: CheckoutWork,
 }
 
@@ -982,186 +1001,6 @@ impl BusyCheckout {
     }
 }
 
-/// THE decision — taken once, for both doors. `Some` when cutting `target` in
-/// `root` would take a checkout that belongs to another unit AND destroy nothing
-/// less than its uncommitted work; `None` when the cut is safe to make.
-///
-/// Both conditions are required and neither is enough alone: another unit's
-/// branch with a CLEAN tree loses nothing (the branch keeps its commits, and the
-/// cut still comes off the integration base), while a dirty tree on THIS unit's
-/// branch or on a bare base is the ordinary first-unit case.
-///
-/// The work at risk is measured with [`checkout_work`], this decision's OWN
-/// probe — NOT [`crate::commands::work_unit_open::dirty_paths`], which drops
-/// every path under `.claude/` and reads a failed probe as clean. Both of those
-/// are right for the callers that REFUSE a cut on what they measure and wrong
-/// here, where an unseen path is another unit's work carried off in silence: a
-/// unit's uncommitted `.claude/spec/…` IS its work between approval and merge,
-/// and "could not measure" means "there IS work" (see [`checkout_work`]).
-/// `base` é a base que ESTE corte vai usar, quando ela já é um fato; `None`
-/// quando o chamador ainda não a estabeleceu (ou não conseguiu), e aí a resposta
-/// é `false` — uma base que ninguém sabe qual é não autoriza commit nenhum.
-pub(crate) fn busy_checkout(
-    root: &Path,
-    current: Option<&str>,
-    target: &str,
-    base: Option<&str>,
-    config: &mustard_core::ProjectConfig,
-) -> Option<BusyCheckout> {
-    if !holds_other_work(root, current, target, config) {
-        return None;
-    }
-    let work = checkout_work(root);
-    if matches!(work, CheckoutWork::ProvenClean) {
-        return None;
-    }
-    // `CensusOnly` passa como `ProvenClean` — mas SÓ onde o censo tem para onde
-    // ir. A pergunta é a MESMA que [`record_census_before_cut`] faz logo abaixo,
-    // pelo MESMO predicado ([`census_commit_belongs_here`]), e é por isso que
-    // ela é feita aqui em vez de assumida: a versão anterior liberava o corte em
-    // QUALQUER posição "porque o portão base grava antes", e a gravação declinava
-    // fora da base — as duas metades verdes, o par quebrado, e o `git checkout
-    // -b` levando `.claude/scan-map.md` e os moldes gerados para dentro da branch
-    // da unidade nova. Fora da base o censo é o que sempre foi para quem vai
-    // levar o checkout embora: caminho sujo no caminho, e o corte é recusado
-    // nomeando-o — exatamente como antes desta unidade.
-    //
-    // `base = None` é a terceira leitura, e ela não é a mesma pergunta: quer
-    // dizer que a base NÃO é um fato, e sem base nenhuma das duas portas chega a
-    // cortar — a do `spec-draft` devolve `BaseUnknown` e a do hook recusa ou
-    // avisa, ambas antes de qualquer `git checkout -b`. Nada vai se mover, então
-    // o censo não tem como viajar e esta decisão não tem por que falar dele: a
-    // frase que o operador precisa ler é a da base, não "commite ou guarde o
-    // censo". Trancado pelo par em
-    // `base_gate::tests::a_cut_denied_for_an_unknown_base_leaves_no_census_commit`.
-    if matches!(work, CheckoutWork::CensusOnly(_))
-        && (base.is_none()
-            || census_commit_belongs_here(root, current, base, config, CensusDoor::Cut))
-    {
-        return None;
-    }
-    Some(BusyCheckout {
-        current: current.unwrap_or_default().to_string(),
-        target: target.to_string(),
-        work,
-    })
-}
-
-/// Quem pergunta a [`census_commit_belongs_here`] — a única coisa em que as
-/// portas divergem, dita aqui em vez de replicada em cada chamador.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CensusDoor {
-    /// As duas portas que CORTAM ([`cut_pending_work_branch`] e
-    /// [`crate::hooks::write::work_branch_gate`]). Uma base PROTEGIDA fica de
-    /// fora delas: um hook não cria commit numa base protegida sem o operador
-    /// ter pedido nada.
-    Cut,
-    /// A porta EXPLÍCITA do `emit-pipeline`, onde o operador digitou o comando
-    /// que abre a unidade. Ali a base protegida grava, e sempre gravou — é o
-    /// único ponto do fluxo em que a árvore limpa na base é uma premissa do
-    /// próprio comando.
-    Explicit,
-}
-
-/// A INVARIANTE POSICIONAL do commit do censo, dita UMA vez e lida pelas TRÊS
-/// portas que a precisam: a decisão que libera o corte ([`busy_checkout`]), a
-/// gravação que acontece antes dele ([`record_census_before_cut`]) e a porta
-/// explícita do `emit-pipeline`
-/// ([`crate::commands::event::emit_pipeline`]).
-///
-/// ## O commit do censo pertence à BASE e a mais nada
-///
-/// O censo é saída da ferramenta sobre o projeto INTEIRO, não trabalho de
-/// unidade nenhuma. Gravá-lo em qualquer outro lugar é a mis-atribuição que
-/// [`crate::commands::event::base_gate::CENSUS_COMMIT_SUBJECT`] existe para
-/// evitar: dentro da branch de uma unidade ele entra no diff dela e no pull
-/// request dela, como se aquela unidade tivesse reescrito o mapa do repositório.
-///
-/// Por isso a condição é POSICIONAL e não uma lista de exclusões: só responde
-/// `true` quando o checkout ESTÁ na base resolvida deste corte. Duas iterações
-/// anteriores tentaram a lista — "não protegida", "não `HEAD`", "medida" — e as
-/// duas deixaram passar a posição que nenhuma delas nomeia: uma OUTRA branch de
-/// unidade (`feature/outra`), que não é protegida, não é a base e não é o alvo.
-///
-/// As condições, e todas necessárias:
-///
-/// 1. a posição foi MEDIDA (`current` é um nome de branch, não `None` nem
-///    `HEAD`) — uma posição que não foi medida não autoriza nada;
-/// 2. a `base` é um FATO (`Some`, não vazia) — uma base que ninguém estabeleceu
-///    não tem como ser a posição;
-/// 3. a posição É essa base;
-/// 4. e, só para [`CensusDoor::Cut`], a base NÃO é protegida.
-///
-/// Uma resposta `false` significa coisas diferentes para cada leitor, e é isso
-/// que os mantém consistentes: para a gravação é "não grave"; para a decisão de
-/// corte é "então o censo não tem para onde ir, e não pode viajar" — logo, o
-/// corte é recusado.
-pub(crate) fn census_commit_belongs_here(
-    root: &Path,
-    current: Option<&str>,
-    base: Option<&str>,
-    config: &mustard_core::ProjectConfig,
-    door: CensusDoor,
-) -> bool {
-    let Some(branch) = current.filter(|b| *b != "HEAD") else {
-        return false;
-    };
-    let Some(base) = base.map(str::trim).filter(|b| !b.is_empty()) else {
-        return false;
-    };
-    if branch != base {
-        return false;
-    }
-    match door {
-        CensusDoor::Explicit => true,
-        CensusDoor::Cut => !is_protected(root, branch, config),
-    }
-}
-
-/// Grava o censo que sobrou sujo na árvore, no ÚNICO ponto em que o corte vai
-/// mesmo acontecer — chamado pelas duas portas que cortam, DEPOIS de a base
-/// estar resolvida e ANTES do `git checkout -b`.
-///
-/// [`CheckoutWork::CensusOnly`] passa como "não é trabalho de ninguém" NA BASE,
-/// e só ali, porque só ali existe este ponto de gravação. Sem ele o `git
-/// checkout -b` levava `.claude/scan-map.md` e os moldes gerados para DENTRO da
-/// branch da unidade, onde entram no diff e no pull request dela — a atribuição
-/// que o assunto de commit do censo existe para evitar.
-///
-/// A CONDIÇÃO é [`census_commit_belongs_here`], o predicado posicional que
-/// [`busy_checkout`] lê para a mesma árvore alguns passos antes — uma regra só,
-/// escrita num lugar só. Enquanto foram duas, elas discordaram: a decisão
-/// liberava o corte em qualquer posição e esta gravação declinava fora da base,
-/// e o censo viajava para dentro da branch nova com as duas metades verdes.
-///
-/// A ela se soma a única condição que NÃO é posicional: a árvore, medida de novo
-/// por [`crate::commands::event::base_gate::record_leftover_census`], responde
-/// `CensusOnly` — sobrando qualquer linha do operador, nada é gravado.
-///
-/// E o MOMENTO importa tanto quanto a condição: a chamada mora depois da
-/// resolução da base, porque um corte recusado ali (`workbranch.base.unknown`)
-/// deixava para trás um commit do censo de um corte que nunca aconteceu — e
-/// porque antes dela a base, que é a condição posicional, ainda não é um fato.
-///
-/// Depois também de [`refresh_integration_bases`], e por isto: escrever este
-/// commit na base ANTES da atualização a faz divergir de `origin/{base}`, o
-/// `merge --ff-only` daquele passo deixa de ser possível, e a unidade sai de uma
-/// base velha em silêncio. As duas portas que cortam chamam nesta ordem.
-///
-/// Fail-open de ponta a ponta: censo invisível para o git, ou um git que recusa,
-/// deixa a escrita onde caiu e o corte segue como antes.
-pub(crate) fn record_census_before_cut(
-    root: &Path,
-    current: Option<&str>,
-    base: &str,
-    config: &mustard_core::ProjectConfig,
-) {
-    if !census_commit_belongs_here(root, current, Some(base), config, CensusDoor::Cut) {
-        return;
-    }
-    crate::commands::event::base_gate::record_leftover_census(root);
-}
-
 /// What [`cut_pending_work_branch`] did — the closed set, so a caller that must
 /// decide (refuse? warn? say nothing?) reads a state instead of guessing from a
 /// bool. `NoPending` and `AlreadyThere` are deliberately apart: "no work unit
@@ -1181,7 +1020,8 @@ pub(crate) enum CutOutcome {
     /// The branch was created (or checked out) by this call. Carries its name.
     Cut(String),
     /// REFUSED: the checkout holds another unit's branch with uncommitted work,
-    /// so cutting here would carry that work off ([`busy_checkout`]). Nothing
+    /// so cutting here would carry that work off
+    /// ([`crate::commands::event::census_settlement::settle`]). Nothing
     /// was touched and the marker is KEPT — the unit was never started, so
     /// there is nothing to consume.
     Refused(BusyCheckout),
@@ -1231,8 +1071,9 @@ pub(crate) enum CutOutcome {
 /// The refusal is the point the review found missing: this door opens FIRST
 /// (`spec-draft` calls it at approval, before any `Write` reaches the hook
 /// gate), so a guard living only in the gate never ran. The decision is
-/// [`busy_checkout`], the same one the gate takes — one predicate, one message,
-/// two doors.
+/// [`crate::commands::event::census_settlement::settle`], the same one the gate
+/// takes — one question, one answer, and the base refresh and the census commit
+/// happen inside it rather than in either door.
 pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
     let config = mustard_core::ProjectConfig::load(project);
     // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
@@ -1251,19 +1092,36 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         return CutOutcome::AlreadyThere(target);
     }
 
-    // WHERE from, RESOLVIDO PRIMEIRO e uma vez só: as duas decisões abaixo leem
-    // a mesma resposta, e a recusa por checkout ocupado precisa saber se a
-    // posição é a base para decidir sobre o censo
-    // ([`census_commit_belongs_here`]). Resolver aqui não muda a ORDEM das
-    // recusas — `Refused` continua vindo antes de `BaseUnknown`, porque este
-    // passo não retorna nada por si.
+    // WHERE from, RESOLVIDO PRIMEIRO e uma vez só: é um dos três insumos da
+    // pergunta abaixo, e a resposta dela precisa saber se a posição É a base.
+    // Resolver aqui não muda a ORDEM das recusas — `Refused` continua vindo
+    // antes de `BaseUnknown`, porque este passo não retorna nada por si.
     let resolved_base = recorded_or_derived_base(&root, session, &target, &config);
     let base_hint = resolved_base.as_deref().ok();
 
-    // The checkout may belong to ANOTHER unit that has not committed yet:
-    // refuse before touching git, so its work stays where its author left it.
-    if let Some(busy) = busy_checkout(project, current.as_deref(), &target, base_hint, &config) {
-        return CutOutcome::Refused(busy);
+    // A PERGUNTA INTEIRA, feita uma vez: o que está sujo, onde o checkout está,
+    // e o que vai acontecer. A resposta já veio com os efeitos feitos — a base
+    // atualizada a partir do `origin` e o censo gravado nela, nessa ordem —, e
+    // esta porta não executa passo nenhum: enquanto executava, cada rodada de
+    // revisão achava a porta que tinha esquecido um deles.
+    match crate::commands::event::census_settlement::settle(
+        project,
+        crate::commands::event::census_settlement::CheckoutPosition::at(
+            current.as_deref(),
+            Some(&target),
+            base_hint,
+        ),
+        &config,
+        crate::commands::event::census_settlement::CensusDoor::BranchCut,
+    ) {
+        // O checkout pertence a OUTRA unidade que ainda não commitou: recusar
+        // antes de tocar no git é o que deixa o trabalho dela onde o autor
+        // deixou.
+        crate::commands::event::census_settlement::CensusSettlement::Refuse(busy) => {
+            return CutOutcome::Refused(busy)
+        }
+        crate::commands::event::census_settlement::CensusSettlement::Recorded(_)
+        | crate::commands::event::census_settlement::CensusSettlement::Proceed => {}
     }
 
     // An emergency whose pick nothing carries has no honest base, and cutting it
@@ -1280,26 +1138,6 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         }
     };
 
-    // Refresh from origin FIRST so the unit is cut from the latest base — the
-    // base this cut will really use included, declared or not.
-    //
-    // E antes da gravação do censo, que é a ordem que faz a atualização
-    // funcionar: o passo é `merge --ff-only`, e um commit do censo escrito na
-    // base ANTES dele faz a base divergir de `origin/{base}` — o avanço deixa de
-    // ser fast-forward, é recusado, e o resultado é descartado aqui dentro
-    // (best-effort, por base). A unidade sairia de uma base velha sem nada
-    // dizer, e o `git pull --ff-only origin {base}` que a recusa do portão base
-    // prescreve falharia também para o operador.
-    refresh_integration_bases(&vcs, &root, &config, current.as_deref(), Some(&base));
-
-    // A base está resolvida e já atualizada, então o corte vai mesmo acontecer:
-    // é AQUI que o censo que sobrou sujo é gravado, antes do checkout — senão
-    // ele viaja para dentro da branch desta unidade. Nem antes da base ser
-    // resolvida (um corte recusado por base desconhecida deixaria um commit do
-    // censo para trás), nem por qualquer `None` da decisão, e SÓ se a árvore
-    // estiver parada na própria `base`: o commit do censo pertence à base e a
-    // mais nada — ver [`record_census_before_cut`].
-    record_census_before_cut(project, current.as_deref(), &base, &config);
     match checkout_work_branch(&vcs, &root, &target, &base) {
         Ok(()) => {
             // The marker that carried the operator's answer is about to be
