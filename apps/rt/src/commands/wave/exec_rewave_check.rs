@@ -33,7 +33,7 @@ use crate::commands::spec::scope_decompose::decide;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use crate::commands::wave::wave_scaffold::{
-    Plan, WavePlanEntry, headings, render_wave_plan, render_wave_spec, wave_name,
+    Plan, WavePlanEntry, headings_for_rewave, render_wave_plan, render_wave_spec, wave_name,
 };
 use crate::util::json_io;
 use mustard_core::time::now_iso8601;
@@ -164,6 +164,53 @@ fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
     }
 }
 
+/// Carrega a RÉGUA do pai nas ondas de um plano de rewave: o `satisfies` de cada
+/// uma passa a nomear os critérios que o `spec.md` do pai declara.
+///
+/// As duas portas que criam onda passam a valer a MESMA invariante — toda onda
+/// que trabalha carrega o critério que a julga — por caminhos diferentes, porque
+/// as ondas delas são diferentes. No PLAN o autor declara `satisfies` e a
+/// materialização AVISA quem não declara (`untraced_waves`, nunca recusa). Aqui
+/// as ondas nascem de um DAG de arquivos: não têm autor e não têm como declarar
+/// `satisfies`. Então a régua é CARREGADA em vez de cobrada.
+///
+/// A união, e não um recorte: o DAG separa por arquivo e não tem como dizer qual
+/// critério pertence a qual onda, e inventar esse mapeamento seria pior que a
+/// união honesta — que ao menos é declarada no frontmatter da própria onda, e
+/// não um fallback silencioso. Sem isto toda onda rewaveada era despachada com
+/// `## ACCEPTANCE` vazio, que é exatamente o estado sobre o qual a outra porta
+/// avisa.
+///
+/// E a união é DECLARADA como união. O prompt renderiza aquela seção sob "estes
+/// critérios são o JUIZ desta onda", e com a régua carregada inteira essa frase
+/// afirma uma atribuição que o plano não fez — o mesmo ruído que o recorte por
+/// onda existe para tirar, reentrando pelo arquivo que o renderizador lê. Das
+/// duas saídas possíveis (recortar por onda, ou dizer que não dá), esta porta
+/// escolhe a segunda, porque o DAG realmente não tem a informação: o
+/// frontmatter de cada onda rewaveada carrega `satisfies-scope: unit`
+/// ([`crate::commands::wave::wave_scaffold::headings_for_rewave`]), e o
+/// renderizador põe a nota que o explica no topo do `## ACCEPTANCE`.
+///
+/// Os ids saem normalizados pelo MESMO parser que o `qa-run` executa, e no mesmo
+/// formato que [`crate::commands::wave::wave_scaffold::satisfied_ids`] espera —
+/// senão a linha não casa com o id do pai na hora do render. Um pai sem
+/// critério nenhum deixa o plano como estava. Pura.
+fn carry_parent_criteria(plan: &mut Plan, parent_spec_text: &str) {
+    use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
+    let ids: Vec<String> = extract_ac_section(parent_spec_text)
+        .map(|section| parse_ac_items(&section))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|it| it.id.trim().to_uppercase())
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    for entry in &mut plan.waves {
+        entry.satisfies.clone_from(&ids);
+    }
+}
+
 /// Resolve the parent spec's language for re-wave rendering.
 ///
 /// Prefers the `lang` recorded in the spec's `meta.json` sidecar (the same
@@ -276,11 +323,16 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    wikilink / heading machinery `/feature` uses at PLAN. No freeform
         //    renderer here — the output is byte-identical in form.
         let lang = parent_lang(spec_file);
-        let plan = dag_to_plan(&waves, &lang);
+        let mut plan = dag_to_plan(&waves, &lang);
+        carry_parent_criteria(&mut plan, &spec_text);
         // Wave headings are ENGLISH-FIXED machine artefacts, so a decomposed-at-
         // EXECUTE spec stays form-identical to a scaffolded-at-PLAN one regardless
         // of the parent spec's recorded `lang`.
-        let hd = headings();
+        //
+        // O conjunto DESTA porta traz a nota que declara a régua como união do
+        // pai — ver [`carry_parent_criteria`]. O `wave-plan.md` não a lê, então
+        // ele continua byte-idêntico ao da porta do PLAN.
+        let hd = headings_for_rewave();
 
         // Carry the parent spec's `## Acceptance Criteria` into the wave-plan so
         // the QA gate (which reads global ACs from `wave-plan.md` once `spec.md`
@@ -306,6 +358,9 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         for (entry, dag_wave) in plan.waves.iter().zip(waves.iter()) {
             let wave_dir = spec_dir.join(wave_name(entry));
             let _ = fs::create_dir_all(&wave_dir);
+            // O `satisfies` carregado acima vira a linha de frontmatter da onda;
+            // o texto dos critérios continua no pai (arquivado como
+            // `spec.original.md` no passo 9), de onde o prompt o lê.
             let wave_spec_content =
                 render_wave_spec(&spec_name, entry, &hd, &parent_material_text);
             let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
@@ -421,6 +476,78 @@ mod tests {
         assert!(plan.waves[0].summary.contains("user.rs"), "{:?}", plan.waves[0].summary);
     }
 
+    /// A onda nascida de um REWAVE carrega a régua do pai — no frontmatter dela,
+    /// que é o filtro pelo qual o `## ACCEPTANCE` do prompt é lido do pai,
+    /// mesmo depois de o pai ser arquivado como `spec.original.md`.
+    ///
+    /// Sem isto o caminho do rewave desviava inteiro da invariante nova: as
+    /// ondas do DAG não declaram `acceptance` nem `satisfies`, e cada onda era
+    /// despachada com o `## ACCEPTANCE` vazio — exatamente o estado sobre o
+    /// qual a outra porta de criação avisa.
+    #[test]
+    fn a_rewaved_wave_carries_the_parents_ruler() {
+        use crate::commands::agent::render::sections::read_wave_acceptance;
+        use crate::commands::wave::wave_scaffold::{headings, parse_wave_ruler, render_wave_spec};
+
+        let waves = vec![
+            json!({ "wave": 1, "files": ["src/a.rs"], "roles": ["domain"], "dependsOn": [] }),
+            json!({ "wave": 2, "files": ["src/b.rs"], "roles": ["api"], "dependsOn": [1] }),
+        ];
+        let parent = "# Epic\n\n## Acceptance Criteria\n\n\
+                      - **AC-1** — alpha holds. Command: `cargo test alpha`\n\
+                      - **AC-2** — beta holds. Command: `cargo test beta`\n";
+
+        let mut plan = dag_to_plan(&waves, "pt-BR");
+        assert!(plan.waves[0].satisfies.is_empty(), "precondição: o DAG não declara nada");
+        carry_parent_criteria(&mut plan, parent);
+        assert_eq!(plan.waves[0].satisfies, vec!["AC-1".to_string(), "AC-2".to_string()]);
+        assert_eq!(plan.waves[1].satisfies, plan.waves[0].satisfies);
+
+        // …e a régua chega ao frontmatter que o renderizador do prompt lê,
+        // marcada como união.
+        let hd = headings_for_rewave();
+        let spec = render_wave_spec("epic-x", &plan.waves[0], &hd, "");
+        let ruler = parse_wave_ruler(&spec);
+        assert_eq!(ruler.satisfies, ["AC-1", "AC-2"], "a onda nasceu sem régua: {spec}");
+        assert!(ruler.carried_whole, "a união tem de se declarar união: {spec}");
+        assert!(!spec.contains("cargo test alpha"), "o texto não é copiado: {spec}");
+
+        // O prompt, lido do pai ARQUIVADO (o passo 9 renomeia o `spec.md`):
+        // os critérios vêm literais, e a nota que declara a união vem ANTES
+        // deles, qualificando o conjunto todo. Sem ela o prompt afirma "estes
+        // critérios são o JUIZ desta onda" sobre um conjunto que o DAG nunca
+        // atribuiu.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wave-1-domain")).unwrap();
+        std::fs::write(dir.path().join("spec.original.md"), parent).unwrap();
+        let wave_path = dir.path().join("wave-1-domain").join("spec.md");
+        std::fs::write(&wave_path, &spec).unwrap();
+        let rendered = read_wave_acceptance(&dir.path().join("spec.md"), Some(&wave_path));
+        assert!(rendered.contains("Command: `cargo test alpha`"), "{rendered}");
+        assert!(rendered.contains("Command: `cargo test beta`"), "{rendered}");
+        assert!(rendered.contains("Carried WHOLE from the parent"), "{rendered}");
+        assert!(rendered.contains("dependency graph"), "e dizer POR QUE não foi recortada: {rendered}");
+        let note_at = rendered.find("Carried WHOLE").expect("nota");
+        let first_ac = rendered.find("**AC-1**").expect("AC-1");
+        assert!(note_at < first_ac, "a nota qualifica o conjunto, não segue nele: {rendered}");
+
+        // A porta do PLAN não carrega marca nenhuma: lá o `satisfies` é do
+        // autor e o recorte é real, então o prompt sai sem a nota.
+        let plan_side = render_wave_spec("epic-x", &plan.waves[0], &headings(), "");
+        assert!(!parse_wave_ruler(&plan_side).carried_whole, "{plan_side}");
+        std::fs::write(&wave_path, &plan_side).unwrap();
+        let rendered = read_wave_acceptance(&dir.path().join("spec.md"), Some(&wave_path));
+        assert!(
+            !rendered.contains("Carried WHOLE from the parent"),
+            "o recorte declarado pelo autor não é união: {rendered}",
+        );
+
+        // Um pai sem critério nenhum deixa o plano exatamente como estava.
+        let mut untouched = dag_to_plan(&waves, "pt-BR");
+        carry_parent_criteria(&mut untouched, "# Epic\n\nsem critérios\n");
+        assert!(untouched.waves.iter().all(|w| w.satisfies.is_empty()));
+    }
+
     /// **Convergence (F4-d item 2).** The EXECUTE-entry decomposition writes the
     /// exact same `wave-plan.md` the PLAN-time scaffold would, for the same
     /// plan. We prove it by rendering the canonical plan two ways — the
@@ -435,7 +562,7 @@ mod tests {
         let lang = "pt-BR";
         // Both paths render through the SAME ENGLISH-FIXED heading set (machine
         // artefact), so the byte-equality holds regardless of the plan's `lang`.
-        let hd = headings();
+        let hd = crate::commands::wave::wave_scaffold::headings();
         // Path A: the re-wave converter + canonical renderer.
         let plan_a = dag_to_plan(&waves, lang);
         let rendered_a = render_wave_plan(&plan_a, &hd, None, "epic-x");

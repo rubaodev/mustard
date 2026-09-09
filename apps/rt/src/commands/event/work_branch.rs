@@ -283,10 +283,11 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
 ///    because it is the base the operator is actually standing in: a base
 ///    carrying commits that were never pushed is still that operator's base,
 ///    and starting from the remote instead would silently drop them out of the
-///    unit's history. Staleness is not the reason to skip it — the caller has
-///    just handed this very base to [`refresh_integration_bases`], which
-///    fast-forwards it toward `origin` where git would allow it, and refuses
-///    (keeping it) exactly where those unpushed commits are.
+///    unit's history. Staleness is not the reason to skip it — the settlement
+///    the caller just obeyed handed this very base to [`fast_forward_base`],
+///    which fast-forwards it toward `origin` where git would allow it, keeps it
+///    exactly where those unpushed commits are, and REFUSES the cut where it
+///    still trails the remote.
 /// 2. the REMOTE-TRACKING ref `refs/remotes/origin/{base}` — the clone shape,
 ///    and the reason this step had to exist. The base is now the operator's
 ///    pick out of the REAL catalogue ([`resolve_kind_base`]), which offers
@@ -323,63 +324,390 @@ pub(crate) fn checkout_work_branch(
     run_git(vcs, root, &["checkout", "-b", target])
 }
 
-/// Refresh the bases this cut may start from to their `origin` remotes BEFORE
-/// a work branch is cut, so the branch is always based on the latest of them.
-/// Fire-and-forget: it returns nothing the caller must act on, and every git
-/// failure is swallowed. Offline, no remote, or a diverged base never blocks
-/// the cut and never panics.
+/// `git fetch origin`, so the remote-tracking refs describe what `origin` has
+/// NOW. `false` when the fetch failed — offline, no remote — and nothing about
+/// the remote could be measured; the caller then cuts from the local base as it
+/// always did, since refusing there would ground every offline session on a
+/// fact nobody measured.
 ///
-/// 1. `git fetch origin` — on failure (offline / no remote) RETURN early and
-///    do nothing else; the branch is still cut from the local base.
-/// 2. For each base `B`:
-///    - when `B` is the checked-out branch (`Some(B) == current`) →
-///      `git merge --ff-only origin/B` fast-forwards it in place;
-///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
-///      make non-ff, so it safely fast-forwards the local ref without a
-///      checkout.
-///      Every per-base error (no matching origin ref, a diverged base, a base
-///      checked out in another worktree, …) is ignored — best-effort, keep going.
+/// The fetch changes which branches `origin` is known to have, and that answer
+/// is memoised per process. Leaving the stale picture in place means a branch
+/// that only MATERIALISED here reads as absent for the rest of this dispatch —
+/// and the reader that consults it then drops the operator's recorded base for
+/// a branch that does exist.
 ///
-/// **`cut_from` is why the set is no longer the declared flow alone.** The
-/// pre-selected list used to BE the set of bases a cut could start from — the
-/// pick was filtered down to it before it ever reached here — so refreshing the
-/// declared names refreshed every possible starting point. The pick now comes
-/// out of the REAL catalogue, so a base the flow never declared is an ordinary
-/// answer, and leaving it out of this step would cut the unit from whatever
-/// stale local head happened to carry that name. Passing the base the cut is
-/// about to use keeps the guarantee this function exists for — cut from the
-/// latest — pointed at the branch the operator actually chose. A ff-only step,
-/// so a local base carrying unpushed commits is refused and kept, never
-/// rewritten.
-pub(crate) fn refresh_integration_bases(
+/// Called from ONE place — [`crate::commands::event::census_settlement::settle`]
+/// — never from a door: the refresh is a step of the settlement, in the order
+/// that function's body states.
+pub(crate) fn fetch_origin(vcs: &str, root: &str) -> bool {
+    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
+        return false;
+    }
+    crate::shared::work_kind::forget_remote_names(Path::new(root));
+    true
+}
+
+/// `true` when `ancestor` is reachable from `descendant` — `git merge-base
+/// --is-ancestor`. `false` on any failure, including a ref that does not
+/// exist: a relation git could not establish is not a fact.
+fn is_ancestor(vcs: &str, root: &str, ancestor: &str, descendant: &str) -> bool {
+    run_git(vcs, root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+}
+
+/// Which of `candidates` the advance of the checked-out `base` to
+/// `origin/{base}` would OVERWRITE — the paths a `merge --ff-only` refuses on
+/// when they are dirty. Measured with `git diff --name-only HEAD origin/{base}`
+/// and intersected with what the caller hands in; never a whole-tree probe.
+///
+/// Empty when the advance is not a fast-forward at all (HEAD is not an
+/// ancestor of `origin/{base}`): there the merge refuses on its own for a
+/// reason no set-aside could fix, so nothing must be set aside ahead of a
+/// refusal — a refused move leaves the tree as it found it.
+///
+/// Read only after [`fetch_origin`] answered `true`: the remote-tracking ref it
+/// compares against is the one that fetch just wrote.
+pub(crate) fn paths_the_advance_overwrites(
     vcs: &str,
     root: &str,
-    config: &mustard_core::ProjectConfig,
-    current: Option<&str>,
-    cut_from: Option<&str>,
-) {
-    // Offline / no remote → nothing to refresh; the branch is cut from the
-    // local base as before. Do NOT propagate the error.
-    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
-        return;
+    base: &str,
+    candidates: &[String],
+) -> Vec<String> {
+    let remote = format!("origin/{base}");
+    if candidates.is_empty() || !is_ancestor(vcs, root, "HEAD", &remote) {
+        return Vec::new();
     }
-    // The fetch just changed which branches `origin` is known to have, and the
-    // answer to that question is memoised per process. Leaving the stale picture
-    // in place means a branch that only MATERIALISED in the line above reads as
-    // absent for the rest of this dispatch — and the reader that consults it
-    // then drops the operator's recorded base for a branch that does exist.
-    crate::shared::work_kind::forget_remote_names(Path::new(root));
-    let mut bases = config.git.preselected_bases();
-    if let Some(base) = cut_from.map(str::trim).filter(|b| !b.is_empty()) {
-        bases.insert(base.to_string());
+    let Some(changed) = crate::commands::git_settle::git_out(
+        Path::new(root),
+        &["diff", "--name-only", "HEAD", &remote],
+    ) else {
+        return Vec::new();
+    };
+    let changed: std::collections::BTreeSet<&str> = changed.lines().map(str::trim).collect();
+    candidates.iter().filter(|p| changed.contains(p.as_str())).cloned().collect()
+}
+
+/// The TOPLEVEL of the repository that contains `root` — `git rev-parse
+/// --show-toplevel` — or `None` when git could not answer (not a repository,
+/// no binary).
+///
+/// Every path a settlement handles is read from `git status --porcelain` and
+/// `git diff --name-only`, which answer RELATIVE TO THE TOPLEVEL — while every
+/// pathspec it hands back (`stash push -- p`, `add -- p`, `status -- p`) is
+/// resolved against the process CWD. Run from anywhere but the toplevel the
+/// two disagree in silence: the pathspec matches nothing, the set-aside is a
+/// no-op, the recording answers "nothing to record", and the census rides into
+/// the unit. So the settlement resolves its root HERE, once, whatever a door
+/// passed it — a door cannot get this wrong because a door no longer chooses.
+pub(crate) fn toplevel_of(vcs: &str, root: &Path) -> Option<std::path::PathBuf> {
+    let out = Command::new(vcs)
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
     }
-    for base in bases {
-        // Best-effort per base — drop the result either way.
-        let _ = if current == Some(base.as_str()) {
-            run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!top.is_empty()).then(|| std::path::PathBuf::from(top))
+}
+
+/// The census paths a settlement put out of the advance's way — and how to
+/// put them back, or account for every one of them once the base advanced.
+///
+/// SET ASIDE, never discarded. The previous shape of this step restored each
+/// path to the index and removed the untracked ones, which had three costs at
+/// once: a STAGED census change was invisible to it (the fast-forward stayed
+/// blocked, and the remedy the refusal prescribed failed identically); a base
+/// that then failed to advance had already lost its untracked census files
+/// before refusing; and a `source: scan` mold — LLM-authored by the
+/// enrichment pass, NOT regenerated by the deterministic mine — was deleted
+/// outright whenever `origin`'s advance touched it too.
+///
+/// A `git stash push --include-untracked -- <paths>` holds all three states
+/// (staged, unstaged, untracked) in one entry that git keeps until this value
+/// says what becomes of it: [`Self::put_back`] on a refused advance restores
+/// the tree exactly as it was found; [`Self::settle_after_advance`] on a
+/// successful one accounts for each path by what it IS — miner output yields
+/// to `origin`'s (the re-mine wins), an authored mold is kept BESIDE `origin`'s
+/// — and only then drops the entry.
+#[derive(Debug)]
+pub(crate) struct CensusSetAside {
+    /// The stash entry's commit, `None` when nothing was stashed (no paths, or
+    /// git declined — the fast-forward then refuses on its own and there is
+    /// nothing to put back).
+    stash: Option<String>,
+    /// Every path that was asked to be set aside, toplevel-relative.
+    paths: Vec<String>,
+    /// The authored molds among `paths`, with their bytes as found — read
+    /// BEFORE the stash so a mold `origin` also rewrote can be kept beside
+    /// `origin`'s without a second visit to the stash's trees.
+    authored: Vec<(String, Vec<u8>)>,
+}
+
+/// What [`CensusSetAside::settle_after_advance`] did with each path.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct SetAsideReport {
+    /// Miner output `origin`'s advance rewrote: `origin`'s version stands, the
+    /// local one was regenerable and is gone with the stash entry.
+    pub(crate) origin_kept: Vec<String>,
+    /// Authored molds `origin`'s advance rewrote: `(path, sibling)` — `origin`'s
+    /// text is at `path`, the text found here is at `sibling`, and nobody's
+    /// text was deleted.
+    pub(crate) kept_both: Vec<(String, String)>,
+    /// Paths still held in the stash because the sibling could not be written.
+    pub(crate) left_in_stash: Vec<String>,
+}
+
+/// `true` for a census path whose content is AUTHORED — a `.claude/skills/
+/// <mold>/SKILL.md` — as opposed to miner output. The caller already
+/// classified it [`DirtyPathKind::Census`] (which for a mold means `source:
+/// scan`, read by [`census_skill_kind`]), so the shape of the path is the whole
+/// remaining question: the miner writes only [`CENSUS_FILES`].
+pub(crate) fn census_path_is_authored(path: &str) -> bool {
+    let normalised = path.replace('\\', "/");
+    let mut segments = normalised.split('/').filter(|s| !s.is_empty());
+    if !segments.any(|s| s == ".claude") {
+        return false;
+    }
+    let rest: Vec<&str> = segments.collect();
+    rest.first() == Some(&CENSUS_SKILLS_DIR) && rest.last() == Some(&CENSUS_SKILL_FILE)
+}
+
+/// Where an authored mold found here is kept when `origin` rewrote it too:
+/// `SKILL.md` → `SKILL.set-aside.md`, beside the original. A path that is not
+/// `.md` gets `.set-aside` appended. The sibling is never a `SKILL.md`, so it
+/// reads as the operator's work at the next measurement — which is what it is:
+/// two authored texts, theirs to reconcile.
+pub(crate) fn set_aside_sibling(path: &str) -> String {
+    match path.strip_suffix(".md") {
+        Some(stem) => format!("{stem}.set-aside.md"),
+        None => format!("{path}.set-aside"),
+    }
+}
+
+/// The stash entry currently at `refs/stash`, `None` when there is none.
+fn stash_head(vcs: &str, root: &str) -> Option<String> {
+    let out = Command::new(vcs)
+        .args(["rev-parse", "--verify", "--quiet", "refs/stash"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+impl CensusSetAside {
+    /// Nothing set aside — the value every settlement starts from.
+    pub(crate) fn none() -> Self {
+        Self {
+            stash: None,
+            paths: Vec::new(),
+            authored: Vec::new(),
+        }
+    }
+
+    /// Put `paths` — census paths only, toplevel-relative, the ones
+    /// [`paths_the_advance_overwrites`] named — out of the advance's way.
+    ///
+    /// Best-effort: a stash git declined leaves every path where it was, the
+    /// fast-forward then refuses on it, and the refusal says so in git's words.
+    /// The entry is identified by its commit, never by position, so a stash the
+    /// operator already had is never mistaken for this one.
+    pub(crate) fn push(vcs: &str, root: &Path, base: &str, paths: &[String]) -> Self {
+        if paths.is_empty() {
+            return Self::none();
+        }
+        let root_s = root.to_string_lossy().into_owned();
+        let authored: Vec<(String, Vec<u8>)> = paths
+            .iter()
+            .filter(|p| census_path_is_authored(p))
+            .filter_map(|p| std::fs::read(root.join(p)).ok().map(|bytes| (p.clone(), bytes)))
+            .collect();
+        let before = stash_head(vcs, &root_s);
+        let message = format!("mustard: census set aside so '{base}' can advance");
+        let mut args: Vec<&str> = vec![
+            "stash",
+            "push",
+            "--include-untracked",
+            "--quiet",
+            "-m",
+            &message,
+            "--",
+        ];
+        args.extend(paths.iter().map(String::as_str));
+        let pushed = run_git(vcs, &root_s, &args).is_ok();
+        let after = stash_head(vcs, &root_s);
+        // A push that saved nothing ("No local changes to save") exits 0 and
+        // writes no entry: only a NEW head is ours.
+        let stash = (pushed && after != before).then_some(after).flatten();
+        Self {
+            stash,
+            paths: paths.to_vec(),
+            authored,
+        }
+    }
+
+    /// The paths this value set aside (empty when nothing was).
+    pub(crate) fn paths(&self) -> &[String] {
+        if self.stash.is_some() {
+            &self.paths
         } else {
-            run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+            &[]
+        }
+    }
+
+    /// `true` when the stash entry is still the one at `refs/stash`.
+    fn is_at_head(&self, vcs: &str, root: &str) -> bool {
+        self.stash.is_some() && stash_head(vcs, root) == self.stash
+    }
+
+    /// The advance was REFUSED: restore every path — index state included —
+    /// so the tree is exactly as the settlement found it. HEAD did not move,
+    /// so the restore is a clean reverse of the push. `true` when the stash
+    /// entry was consumed; `false` (and a line on stderr naming the entry)
+    /// when git could not apply it, in which case nothing was lost: the entry
+    /// stays in `git stash list`.
+    pub(crate) fn put_back(&self, vcs: &str, root: &str) -> bool {
+        let Some(sha) = &self.stash else {
+            return true;
         };
+        if !self.is_at_head(vcs, root) {
+            eprintln!(
+                "base-gate: census set-aside {sha} is no longer the newest stash entry; left \
+                 in `git stash list` for you to apply — {}",
+                self.paths.join(", ")
+            );
+            return false;
+        }
+        let restored = run_git(vcs, root, &["stash", "pop", "--index", "--quiet"]).is_ok()
+            || run_git(vcs, root, &["stash", "pop", "--quiet"]).is_ok();
+        if !restored {
+            eprintln!(
+                "base-gate: census set-aside could not be put back and stays in `git stash \
+                 list` ({sha}) — {}",
+                self.paths.join(", ")
+            );
+        }
+        restored
+    }
+
+    /// The advance SUCCEEDED and `origin`'s version of every path set aside is
+    /// now in the tree. Account for each one:
+    ///
+    /// - miner output (the model, the dictionary, a subproject map, the
+    ///   declined list): `origin`'s stands — the deterministic mine regenerates
+    ///   it, and at the door that re-mines it is about to;
+    /// - an authored mold: `origin`'s stays at its path and the text found here
+    ///   is written to [`set_aside_sibling`] beside it, so BOTH survive.
+    ///
+    /// Only when every authored text has a home is the stash entry dropped; a
+    /// sibling that could not be written keeps the entry, and the report names
+    /// it. The report is returned, not printed: the settlement says it in its
+    /// own words.
+    pub(crate) fn settle_after_advance(self, vcs: &str, root: &Path) -> SetAsideReport {
+        let mut report = SetAsideReport::default();
+        let Some(sha) = &self.stash else {
+            return report;
+        };
+        let root_s = root.to_string_lossy().into_owned();
+        let mut all_homed = true;
+        for (path, bytes) in &self.authored {
+            let sibling = set_aside_sibling(path);
+            if std::fs::write(root.join(&sibling), bytes).is_ok() {
+                report.kept_both.push((path.clone(), sibling));
+            } else {
+                all_homed = false;
+                report.left_in_stash.push(path.clone());
+            }
+        }
+        for path in &self.paths {
+            if !census_path_is_authored(path) {
+                report.origin_kept.push(path.clone());
+            }
+        }
+        if all_homed && self.is_at_head(vcs, &root_s) {
+            let _ = run_git(vcs, &root_s, &["stash", "drop", "--quiet"]);
+        } else if !all_homed {
+            eprintln!(
+                "base-gate: census set-aside kept in `git stash list` ({sha}): an authored mold \
+                 could not be written beside origin's — {}",
+                report.left_in_stash.join(", ")
+            );
+        }
+        report
+    }
+}
+
+/// What [`fast_forward_base`] established about ONE base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BaseRefresh {
+    /// The base is at — or ahead of — `origin/{base}`, or there was nothing to
+    /// measure it against: no `origin/{base}`, or no local head at all (the cut
+    /// then starts from the remote-tracking ref, which is current by
+    /// definition). The cut may start from it.
+    Current,
+    /// `origin/{base}` carries commits the local base does not, and the
+    /// fast-forward could not be made. Carries git's own words, so the operator
+    /// reads the reason git gave and not a paraphrase of it.
+    Stale { base: String, error: String },
+}
+
+/// Fast-forward ONE base — the one a settlement is about — to `origin/{base}`,
+/// and say whether it is current afterwards.
+///
+/// - when `base` is the checked-out branch (`current == Some(base)`) →
+///   `git merge --ff-only origin/{base}` advances it in place;
+/// - otherwise → `git fetch origin {base}:{base}`, a refspec fetch git refuses
+///   to make non-ff, so it safely advances the local ref without a checkout.
+///
+/// **Scope is the point.** This used to walk every preselected base of the
+/// declared flow and advance each one, and it ran from the explicit open too —
+/// so `emit-pipeline` moved local `main` and `release/*` refs the operator never
+/// asked about. Moving other refs was never this decision's job: a settlement
+/// is about the base the unit is cut from or opened on, and it refreshes that
+/// one.
+///
+/// **The result is read, never dropped.** A base carrying an unpushed commit of
+/// its own is kept, never rewritten, and is `Current` — the operator's base is
+/// the one they are standing in. A base that still TRAILS its remote after the
+/// attempt is `Stale`, with git's words: a unit cut from it re-does merged work,
+/// and the `git pull --ff-only origin {base}` the gate prescribes afterwards
+/// cannot succeed on a branch that has meanwhile diverged. Dropping this result
+/// is how the census commit came to land on a stale base in silence.
+///
+/// Read only after [`fetch_origin`] answered `true`: offline there is no
+/// evidence the base is behind, and the cut takes the local base as before.
+pub(crate) fn fast_forward_base(
+    vcs: &str,
+    root: &str,
+    current: Option<&str>,
+    base: &str,
+) -> BaseRefresh {
+    if !remote_branch_exists(vcs, root, base) {
+        return BaseRefresh::Current;
+    }
+    let remote = format!("origin/{base}");
+    let attempt = if current == Some(base) {
+        run_git(vcs, root, &["merge", "--ff-only", &remote])
+    } else if local_branch_exists(vcs, root, base) {
+        run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+    } else {
+        // No local head to advance: the cut starts from `origin/{base}` itself
+        // ([`checkout_work_branch`], step 2), and that ref was just fetched.
+        return BaseRefresh::Current;
+    };
+    match attempt {
+        Ok(()) => BaseRefresh::Current,
+        // Ahead of (or level with) the remote: nothing to advance, and an
+        // unpushed commit of the operator's is kept, not a defect.
+        Err(_) if is_ancestor(vcs, root, &remote, base) => BaseRefresh::Current,
+        Err(error) => BaseRefresh::Stale {
+            base: base.to_string(),
+            error,
+        },
     }
 }
 
@@ -557,9 +885,30 @@ pub(crate) enum CheckoutWork {
     /// git answered for this tree and reported nothing: a plain checkout carries
     /// nothing off, so the cut is safe to make.
     ProvenClean,
+    /// A única coisa suja na árvore são artefatos do censo
+    /// ([`DirtyPathKind::Census`]), nomeados aqui. Não é trabalho de ninguém: a
+    /// ferramenta os escreveu e a ferramenta os grava.
+    ///
+    /// Isso NÃO quer dizer "o corte nunca é recusado por causa deles": a
+    /// gravação só existe na BASE, e fora dela esses caminhos viajariam para
+    /// dentro da branch nova exatamente como o trabalho de alguém viajaria. Quem
+    /// pesa as duas coisas — o que está sujo E onde o checkout está — é
+    /// [`crate::commands::event::census_settlement::settle`], numa resposta só.
+    ///
+    /// Mantido APARTE de [`Self::ProvenClean`] porque quem grava precisa saber
+    /// QUAIS caminhos são, e uma árvore limpa não tem nenhum.
+    CensusOnly(Vec<String>),
     /// Paths positively observed as uncommitted or untracked — `.claude/`
-    /// included.
-    Holds(Vec<String>),
+    /// included. `theirs` é só o que é do OPERADOR, para que a recusa nomeie
+    /// apenas o que é dele; `census` é o que a ferramenta escreveu e veio JUNTO
+    /// na mesma árvore. O segundo campo existe porque a base avança por cima
+    /// do censo tanto quanto numa árvore [`Self::CensusOnly`], e um censo que
+    /// sumisse da leitura por haver trabalho do operador ao lado prendia a base
+    /// atrás do `origin` com uma recusa cujo remédio falhava do mesmo jeito.
+    Holds {
+        theirs: Vec<String>,
+        census: Vec<String>,
+    },
     /// Nothing could be established: the probe failed, or git answered in a
     /// shape this parser does not understand. Never an authorisation.
     Unproven,
@@ -582,8 +931,9 @@ pub(crate) enum CheckoutWork {
 ///    redirected shared state; that reasoning does not hold for this consumer,
 ///    where `.claude/spec/…` is branch content that rides a checkout exactly
 ///    like source code does. The VOLATILE harness state is separated from it by
-///    [`is_harness_scratch`], a list this probe OWNS — not by the project's
-///    `.gitignore`, which cannot be relied on to say anything (see there).
+///    [`classify_dirty_path`], a list this probe OWNS — not by the project's
+///    `.gitignore`, which cannot be relied on to say anything (see there). O
+///    censo sai por essa mesma porta, para uma categoria só dele.
 /// 2. **A failed measurement is not "clean".** `dirty_paths` reads an
 ///    unanswerable probe as an empty list, which is right for ITS callers: they
 ///    REFUSE a cut, so an unmeasured probe merely lets the ordinary path
@@ -592,6 +942,12 @@ pub(crate) enum CheckoutWork {
 ///    silently. So an unanswerable probe is [`CheckoutWork::Unproven`], and the
 ///    caller refuses on it.
 pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
+    // ONE settlement, ONE measurement. The counter is the regression test for
+    // that: it is per-THREAD, and cargo's harness gives each test its own
+    // thread, so a test can assert how many times a door walked the tree
+    // without the count of a neighbour running in parallel leaking into it.
+    #[cfg(test)]
+    TREE_PROBES.with(|n| n.set(n.get() + 1));
     // `--untracked-files=all` is load-bearing, not tidiness. By default git
     // COLLAPSES an entirely-untracked directory into one entry: a fresh
     // `.claude/` arrives as a single `?? .claude/` line that stands for the
@@ -607,6 +963,7 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
         return CheckoutWork::Unproven;
     };
     let mut paths = Vec::new();
+    let mut census = Vec::new();
     let mut unparsed = 0usize;
     for line in out.lines() {
         let line = line.trim_start();
@@ -632,13 +989,24 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
             unparsed += 1;
             continue;
         }
-        if is_harness_scratch(path) {
-            continue; // the harness's own droppings are nobody's work
+        match classify_dirty_path(root, path) {
+            // the harness's own droppings are nobody's work
+            DirtyPathKind::Scratch => {}
+            // …e o censo também não é de ninguém, mas precisa ser GRAVADO, não
+            // descartado: fica de lado, com nome e tudo.
+            DirtyPathKind::Census => census.push(path.to_string()),
+            DirtyPathKind::Work => paths.push(path.to_string()),
         }
-        paths.push(path.to_string());
     }
+    // O trabalho do operador decide primeiro e sozinho: com uma linha dele na
+    // árvore o corte é recusado, e a recusa nomeia só o que é dele — o censo
+    // que porventura veio junto não entra na frase, mas continua VISÍVEL na
+    // leitura: é ele que a base precisa pôr de lado para avançar.
     if !paths.is_empty() {
-        return CheckoutWork::Holds(paths);
+        return CheckoutWork::Holds {
+            theirs: paths,
+            census,
+        };
     }
     // git SPOKE and this parser did not understand part of it. That is a failed
     // measurement, not an empty tree — and reading it as empty is exactly how
@@ -649,7 +1017,23 @@ pub(crate) fn checkout_work(root: &Path) -> CheckoutWork {
     if unparsed > 0 {
         return CheckoutWork::Unproven;
     }
+    // Nada do operador e nada por medir: sobrou o censo, e ele tem dono.
+    if !census.is_empty() {
+        return CheckoutWork::CensusOnly(census);
+    }
     CheckoutWork::ProvenClean
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many whole-tree probes [`checkout_work`] has run on THIS thread.
+    ///
+    /// Test scaffolding for one specific claim: the collapsed settlement
+    /// measures the tree exactly once per door. Before the collapse a single
+    /// pipeline opening walked the tree up to three times — the re-mine's own
+    /// gate, the recording, and the cut's refusal decision — each with its own
+    /// idea of what "dirty" meant.
+    pub(crate) static TREE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Directory names the harness writes DIRECTLY under a `.claude/` for itself.
@@ -704,6 +1088,90 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
     ".dashboard.port",
 ];
 
+/// Os arquivos que o próprio Mustard escreve ao MAPEAR o projeto — o censo.
+/// Lidos diretamente sob um `.claude/`, em qualquer profundidade da árvore: o
+/// `scan-map.md` de cada subprojeto mora no `.claude/` dele, e o modelo, o
+/// dicionário e a lista de recusas moram no do raiz.
+///
+/// Categoria PRÓPRIA, nem rascunho nem trabalho, e as duas leituras erradas
+/// custam coisas diferentes. Rascunho não serve: nenhuma regra de ignore os
+/// cobre num install compartilhado — eles são versionados de propósito, e
+/// descartá-los aqui os deixaria de fora de todo commit. Trabalho também não:
+/// a ferramenta os escreve e a ferramenta os grava, então cobrá-los do operador
+/// NA BASE é recusar o corte por causa da saída da própria ferramenta — o atrito
+/// que [`crate::commands::event::census_settlement::settle`] fecha.
+///
+/// FORA da base não há gravação nenhuma para fechar esse atrito, e aí a
+/// categoria continua nomeando os caminhos mas não libera nada: ver
+/// [`crate::commands::event::census_settlement`].
+const CENSUS_FILES: &[&str] =
+    &["grain.model.json", "grain.dictionary.json", "scan-declined.json", "scan-map.md"];
+
+/// A subárvore sob um `.claude/` onde os moldes `{papel}-pattern` do censo
+/// vivem, e o nome do arquivo que fecha cada um. A passagem de enriquecimento
+/// reescreve `.claude/skills/<molde>/SKILL.md`, então o par identifica a outra
+/// metade do censo sem precisar conhecer o nome de nenhum molde.
+const CENSUS_SKILLS_DIR: &str = "skills";
+/// Ver [`CENSUS_SKILLS_DIR`].
+const CENSUS_SKILL_FILE: &str = "SKILL.md";
+
+/// De quem é um `.claude/skills/<molde>/SKILL.md`, lido do `source:` do
+/// frontmatter dele.
+///
+/// O nome do arquivo NÃO responde a pergunta. Os dois moldes curados deste
+/// repositório (`rt-verdict-pattern`, `core-function-pattern`) têm exatamente o
+/// mesmo caminho de um molde gerado e carregam `source: manual` — o marcador
+/// cujo significado documentado é "edições à mão não são sobrescritas". Tratar
+/// todo `SKILL.md` como censo faz a edição à mão do operador deixar de ser
+/// trabalho dele: o corte para de recusar por causa dela e
+/// a gravação do censo a varre para dentro de um commit da ferramenta — a troca
+/// que a categoria existe para impedir.
+///
+/// A chave AUSENTE é o mesmo caso do `manual`, e é o comum: um
+/// `.claude/skills/<algo>/SKILL.md` escrito à mão — o lugar padrão de uma skill
+/// de projeto no Claude Code — quase nunca declara `source:`. Ler a ausência
+/// como censo reabriria a mesma troca por OMISSÃO de chave em vez de por
+/// escrita dela.
+///
+/// Por isso a leitura é [`DirtyPathKind::Census`] SÓ quando o `source:` resolve
+/// para `scan`. Todo o resto — `manual`, chave ausente, qualquer outro valor,
+/// arquivo ilegível, frontmatter que não fecha — é [`DirtyPathKind::Work`], a
+/// mesma direção segura que a regra de truncamento acima toma: errar para "tem
+/// trabalho" custa um commit, errar para o outro lado custa o trabalho de
+/// alguém.
+///
+/// A pergunta inteira vai para
+/// [`crate::commands::scan_patterns::origin::is_mustard_generated`], que É a
+/// regra canônica e já lê pelo parser de frontmatter do core (tolerante a BOM e
+/// a CRLF, e ciente do bloco `metadata:`, então um `source:` indentado ali
+/// dentro nunca é confundido com a chave de topo). Reescrever aqui as duas
+/// linhas equivalentes é exatamente como este portão e a varredura passariam a
+/// discordar sobre quem escreveu o mesmo arquivo — que foi o defeito.
+fn census_skill_kind(root: &Path, path: &str) -> DirtyPathKind {
+    let Ok(text) = std::fs::read_to_string(root.join(path)) else {
+        return DirtyPathKind::Work;
+    };
+    if crate::commands::scan_patterns::origin::is_mustard_generated(&text) {
+        DirtyPathKind::Census
+    } else {
+        DirtyPathKind::Work
+    }
+}
+
+/// O que uma linha do `git status` É, para quem está prestes a levar o checkout
+/// embora — as três categorias que [`checkout_work`] separa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirtyPathKind {
+    /// Rascunho do harness: regenerável ou por-máquina. Ninguém precisa dele, e
+    /// levá-lo junto não custa nada — some da medição.
+    Scratch,
+    /// Artefato do censo: escrito pela ferramenta, versionado de propósito.
+    Census,
+    /// O trabalho de alguém — ou um caminho que não se provou ser nenhuma das
+    /// duas coisas acima, que é a direção segura para este chamador.
+    Work,
+}
+
 /// The per-spec spill: written INSIDE a unit's own directory, but by the
 /// harness for itself, not by the unit. Everything else under
 /// `.claude/spec/<unit>/` is the unit's work.
@@ -719,10 +1187,11 @@ const SPEC_SCRATCH_DIRS: &[&str] = &[".events", ".blobs", ".dispatch"];
 /// directory is that unit's work.
 const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved", CUT_BASE_FILE];
 
-/// `true` when a `git status` path names the harness's OWN scratch under a
-/// `.claude/`, at any depth of the tree — a subproject's nested `.claude/` is
-/// the same harness writing the same state, which is why the root `.gitignore`
-/// spells those rules `**/.claude/…`.
+/// Classifica um caminho do `git status` nas três categorias de
+/// [`DirtyPathKind`], lendo-o sob um `.claude/` a qualquer profundidade da
+/// árvore — o `.claude/` aninhado de um subprojeto é o mesmo harness escrevendo
+/// o mesmo estado, que é por isso que o `.gitignore` do raiz soletra aquelas
+/// regras como `**/.claude/…`.
 ///
 /// TRUNCATION. git can report a DIRECTORY where a file was expected — one entry
 /// standing for everything below it. [`checkout_work`] asks git to enumerate,
@@ -737,35 +1206,57 @@ const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved", CUT_BASE_FILE];
 /// being wrong the other way costs somebody their work), and with the
 /// enumeration in place it no longer strands the project whose `.claude/` was
 /// never committed: that tree now arrives as its individual files.
-fn is_harness_scratch(path: &str) -> bool {
+///
+/// A mesma regra vale para o censo: só um caminho INTEIRO se classifica como
+/// [`DirtyPathKind::Census`] — `.claude/skills/` truncado continua sendo
+/// trabalho, porque este teste não mediu o que há embaixo.
+///
+/// `root` existe por causa de UMA pergunta que o caminho não responde: um
+/// `SKILL.md` é do censo ou do operador conforme o `source:` do frontmatter
+/// dele, então esse caso — e só ele — abre o arquivo ([`census_skill_kind`]).
+fn classify_dirty_path(root: &Path, path: &str) -> DirtyPathKind {
     let normalised = path.replace('\\', "/");
     let mut segments = normalised.split('/').filter(|s| !s.is_empty());
     // Everything up to the first `.claude` segment is somebody else's tree.
     // `.claude/.claude/` cannot occur (guarded in `ClaudePaths`), so the first
     // occurrence is the only one worth reading.
     if !segments.any(|s| s == ".claude") {
-        return false;
+        return DirtyPathKind::Work;
     }
     let rest: Vec<&str> = segments.collect();
     // A bare `.claude` / `.claude/`: measured nothing, so it counts.
     let Some(first) = rest.first() else {
-        return false;
+        return DirtyPathKind::Work;
     };
     if HARNESS_SCRATCH_DIRS.contains(first) {
-        return true;
+        return DirtyPathKind::Scratch;
     }
-    if rest.len() == 1 && HARNESS_SCRATCH_FILES.contains(first) {
-        return true;
+    if rest.len() == 1 {
+        if HARNESS_SCRATCH_FILES.contains(first) {
+            return DirtyPathKind::Scratch;
+        }
+        if CENSUS_FILES.contains(first) {
+            return DirtyPathKind::Census;
+        }
+        return DirtyPathKind::Work;
+    }
+    // `.claude/skills/<molde>/…/SKILL.md` — o molde inteiro, nunca um diretório
+    // truncado que só COMEÇA em `skills/`. Quem escreve o molde está no
+    // frontmatter dele, não no caminho.
+    if *first == CENSUS_SKILLS_DIR && rest.last() == Some(&CENSUS_SKILL_FILE) {
+        return census_skill_kind(root, &normalised);
     }
     if *first != "spec" {
-        return false;
+        return DirtyPathKind::Work;
     }
     // `.claude/spec/<unit>/<child>/…` — only the spill is scratch. A shorter
     // path is a truncated directory that may hold the unit's own spec.
     match rest.get(2) {
-        Some(child) if SPEC_SCRATCH_DIRS.contains(child) => true,
-        Some(child) => rest.len() == 3 && SPEC_SCRATCH_FILES.contains(child),
-        None => false,
+        Some(child) if SPEC_SCRATCH_DIRS.contains(child) => DirtyPathKind::Scratch,
+        Some(child) if rest.len() == 3 && SPEC_SCRATCH_FILES.contains(child) => {
+            DirtyPathKind::Scratch
+        }
+        _ => DirtyPathKind::Work,
     }
 }
 
@@ -793,75 +1284,103 @@ pub(crate) fn name_dirty_paths(dirty: &[String]) -> (String, String) {
 /// gate and the draft REPORT the same refusal in their own shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BusyCheckout {
-    /// The branch the checkout is on — another unit's.
+    /// The branch the checkout is on — another unit's, a protected base, or
+    /// the stale base itself, depending on [`Self::cause`].
     pub(crate) current: String,
-    /// The branch that was going to be cut here.
+    /// The branch that was going to be cut here. Empty at the explicit open,
+    /// which cuts nothing and can only be refused for a stale base.
     pub(crate) target: String,
-    /// WHAT was established about the work that would have ridden along: the
-    /// paths positively observed ([`CheckoutWork::Holds`]), or the fact that the
-    /// probe could not answer ([`CheckoutWork::Unproven`]).
-    /// [`CheckoutWork::ProvenClean`] never appears here — that is not busy.
+    /// WHAT was established about the tree: the paths positively observed
+    /// ([`CheckoutWork::Holds`], [`CheckoutWork::CensusOnly`]), or the fact
+    /// that the probe could not answer ([`CheckoutWork::Unproven`]).
+    ///
+    /// [`CheckoutWork::ProvenClean`] appears only under
+    /// [`RefusalCause::BaseStale`] — a clean tree on a base that trails its
+    /// remote is refused for the base, not for the tree. Under
+    /// [`RefusalCause::BaseBlockedByWork`] it is the [`CheckoutWork::Holds`]
+    /// reading whose `theirs` the advance would overwrite. Quem constrói isto é
+    /// [`crate::commands::event::census_settlement::settle`], o único construtor
+    /// desta struct.
     pub(crate) work: CheckoutWork,
+    /// WHY the move was refused — the row of the settlement's table that
+    /// answered, so the sentence can say what unblocks it. See
+    /// [`RefusalCause`].
+    pub(crate) cause: RefusalCause,
+}
+
+/// The reasons a settlement refuses — one per ROW of the decision table in
+/// [`crate::commands::event::census_settlement::settle`], because each row
+/// needs a different sentence: what is in the way differs, and so does what
+/// the operator has to do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefusalCause {
+    /// The checkout is another unit's branch and holds work that is not this
+    /// unit's (or a tree that could not be measured); a plain checkout would
+    /// carry it onto the new branch.
+    WorkWouldTravel,
+    /// The tree is dirty ONLY with the census, and the checkout is not the
+    /// base it is recorded on — another unit's branch, a protected branch that
+    /// is not the base, a detached HEAD. The census cannot land here, so it
+    /// must not travel either; the base it belongs to is named.
+    CensusOffBase { base: String },
+    /// The tree is dirty ONLY with the census and the checkout IS the base —
+    /// but the base is protected, and this door (a cut, a hook) may not commit
+    /// there behind the operator's back. The explicit open can, and is named.
+    CensusOnProtectedBase,
+    /// The base this move is about trails `origin/{base}` and could not be
+    /// fast-forwarded ([`BaseRefresh::Stale`]). Carries git's own words.
+    BaseStale { base: String, error: String },
+    /// The base trails `origin/{base}`, the advance IS a fast-forward, and it
+    /// would overwrite uncommitted work of the OPERATOR's — `paths`, measured
+    /// with [`paths_the_advance_overwrites`] before anything was touched. The
+    /// census beside it is the tool's and would have been set aside; their
+    /// files are theirs, so the sentence names them and prescribes the stash
+    /// that unblocks the advance — not a `git pull` that fails the same way.
+    BaseBlockedByWork { base: String, paths: Vec<String> },
 }
 
 impl BusyCheckout {
-    /// The one sentence both doors say: WHERE the checkout is, WHAT is
-    /// uncommitted there, and WHAT to do about it. Catalogue-rendered in the
-    /// project's configured language.
+    /// The one sentence every door says: WHERE the checkout is, WHAT is in the
+    /// way, and WHAT to do about it. Catalogue-rendered in the project's
+    /// configured language, one sentence per [`RefusalCause`].
     ///
-    /// Two sentences, one per measurement. An unmeasured checkout says exactly
-    /// that: rendering the named-paths sentence with an empty list would print
-    /// "uncommitted work in: ." and teach the operator that the refusal is
-    /// noise.
+    /// Under [`RefusalCause::WorkWouldTravel`] the sentence follows what was
+    /// MEASURED: an unmeasured checkout says exactly that, because rendering
+    /// the named-paths sentence with an empty list would print "uncommitted
+    /// work in: ." and teach the operator that the refusal is noise.
     pub(crate) fn reason(&self, lang: mustard_core::platform::i18n::Locale) -> String {
-        let CheckoutWork::Holds(dirty) = &self.work else {
-            return mustard_core::platform::i18n::translate("workbranch.busy.unmeasured", lang)
-                .replace("{current}", &self.current)
-                .replace("{target}", &self.target);
+        use mustard_core::platform::i18n::translate;
+        let named = match (&self.cause, &self.work) {
+            // The advance was blocked by SPECIFIC files of theirs: those are
+            // the ones to name, not everything dirty in the tree.
+            (RefusalCause::BaseBlockedByWork { paths, .. }, _) => Some(name_dirty_paths(paths)),
+            (_, CheckoutWork::Holds { theirs, .. }) => Some(name_dirty_paths(theirs)),
+            (_, CheckoutWork::CensusOnly(dirty)) => Some(name_dirty_paths(dirty)),
+            (_, CheckoutWork::ProvenClean | CheckoutWork::Unproven) => None,
         };
-        let (paths, more) = name_dirty_paths(dirty);
-        mustard_core::platform::i18n::translate("workbranch.busy.refusal", lang)
+        let (paths, more) = named.clone().unwrap_or_default();
+        let key = match &self.cause {
+            RefusalCause::WorkWouldTravel if named.is_none() => "workbranch.busy.unmeasured",
+            RefusalCause::WorkWouldTravel => "workbranch.busy.refusal",
+            RefusalCause::CensusOffBase { .. } => "workbranch.busy.census_off_base",
+            RefusalCause::CensusOnProtectedBase => "workbranch.busy.census_protected",
+            RefusalCause::BaseStale { .. } => "workbranch.busy.base_stale",
+            RefusalCause::BaseBlockedByWork { .. } => "workbranch.busy.base_blocked",
+        };
+        let (base, error) = match &self.cause {
+            RefusalCause::CensusOffBase { base } => (base.as_str(), ""),
+            RefusalCause::BaseBlockedByWork { base, .. } => (base.as_str(), ""),
+            RefusalCause::BaseStale { base, error } => (base.as_str(), error.as_str()),
+            RefusalCause::WorkWouldTravel | RefusalCause::CensusOnProtectedBase => ("", ""),
+        };
+        translate(key, lang)
             .replace("{current}", &self.current)
             .replace("{target}", &self.target)
             .replace("{paths}", &paths)
             .replace("{more}", &more)
+            .replace("{base}", base)
+            .replace("{error}", error)
     }
-}
-
-/// THE decision — taken once, for both doors. `Some` when cutting `target` in
-/// `root` would take a checkout that belongs to another unit AND destroy nothing
-/// less than its uncommitted work; `None` when the cut is safe to make.
-///
-/// Both conditions are required and neither is enough alone: another unit's
-/// branch with a CLEAN tree loses nothing (the branch keeps its commits, and the
-/// cut still comes off the integration base), while a dirty tree on THIS unit's
-/// branch or on a bare base is the ordinary first-unit case.
-///
-/// The work at risk is measured with [`checkout_work`], this decision's OWN
-/// probe — NOT [`crate::commands::work_unit_open::dirty_paths`], which drops
-/// every path under `.claude/` and reads a failed probe as clean. Both of those
-/// are right for the callers that REFUSE a cut on what they measure and wrong
-/// here, where an unseen path is another unit's work carried off in silence: a
-/// unit's uncommitted `.claude/spec/…` IS its work between approval and merge,
-/// and "could not measure" means "there IS work" (see [`checkout_work`]).
-pub(crate) fn busy_checkout(
-    root: &Path,
-    current: Option<&str>,
-    target: &str,
-    config: &mustard_core::ProjectConfig,
-) -> Option<BusyCheckout> {
-    if !holds_other_work(root, current, target, config) {
-        return None;
-    }
-    let work = checkout_work(root);
-    if matches!(work, CheckoutWork::ProvenClean) {
-        return None;
-    }
-    Some(BusyCheckout {
-        current: current.unwrap_or_default().to_string(),
-        target: target.to_string(),
-        work,
-    })
 }
 
 /// What [`cut_pending_work_branch`] did — the closed set, so a caller that must
@@ -883,7 +1402,8 @@ pub(crate) enum CutOutcome {
     /// The branch was created (or checked out) by this call. Carries its name.
     Cut(String),
     /// REFUSED: the checkout holds another unit's branch with uncommitted work,
-    /// so cutting here would carry that work off ([`busy_checkout`]). Nothing
+    /// so cutting here would carry that work off
+    /// ([`crate::commands::event::census_settlement::settle`]). Nothing
     /// was touched and the marker is KEPT — the unit was never started, so
     /// there is nothing to consume.
     Refused(BusyCheckout),
@@ -933,8 +1453,9 @@ pub(crate) enum CutOutcome {
 /// The refusal is the point the review found missing: this door opens FIRST
 /// (`spec-draft` calls it at approval, before any `Write` reaches the hook
 /// gate), so a guard living only in the gate never ran. The decision is
-/// [`busy_checkout`], the same one the gate takes — one predicate, one message,
-/// two doors.
+/// [`crate::commands::event::census_settlement::settle`], the same one the gate
+/// takes — one question, one answer, and the base refresh and the census commit
+/// happen inside it rather than in either door.
 pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
     let config = mustard_core::ProjectConfig::load(project);
     // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
@@ -953,16 +1474,42 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         return CutOutcome::AlreadyThere(target);
     }
 
-    // The checkout may belong to ANOTHER unit that has not committed yet:
-    // refuse before touching git, so its work stays where its author left it.
-    if let Some(busy) = busy_checkout(project, current.as_deref(), &target, &config) {
-        return CutOutcome::Refused(busy);
+    // WHERE from, RESOLVIDO PRIMEIRO e uma vez só: é um dos três insumos da
+    // pergunta abaixo, e a resposta dela precisa saber se a posição É a base.
+    // Resolver aqui não muda a ORDEM das recusas — `Refused` continua vindo
+    // antes de `BaseUnknown`, porque este passo não retorna nada por si.
+    let resolved_base = recorded_or_derived_base(&root, session, &target, &config);
+    let base_hint = resolved_base.as_deref().ok();
+
+    // A PERGUNTA INTEIRA, feita uma vez: o que está sujo, onde o checkout está,
+    // e o que vai acontecer. A resposta já veio com os efeitos feitos — a base
+    // atualizada a partir do `origin` e o censo gravado nela, nessa ordem —, e
+    // esta porta não executa passo nenhum: enquanto executava, cada rodada de
+    // revisão achava a porta que tinha esquecido um deles.
+    match crate::commands::event::census_settlement::settle(
+        project,
+        crate::commands::event::census_settlement::CheckoutPosition::at(
+            current.as_deref(),
+            Some(&target),
+            base_hint,
+        ),
+        &config,
+        crate::commands::event::census_settlement::CensusDoor::BranchCut,
+    ) {
+        // O checkout pertence a OUTRA unidade que ainda não commitou: recusar
+        // antes de tocar no git é o que deixa o trabalho dela onde o autor
+        // deixou.
+        crate::commands::event::census_settlement::CensusSettlement::Refuse(busy) => {
+            return CutOutcome::Refused(busy)
+        }
+        crate::commands::event::census_settlement::CensusSettlement::Recorded(_)
+        | crate::commands::event::census_settlement::CensusSettlement::Proceed => {}
     }
 
-    // WHERE from, before anything is touched: an emergency whose pick nothing
-    // carries has no honest base, and cutting it from the outermost candidate
-    // is the silent replacement of the operator's answer this refuses to make.
-    let base = match recorded_or_derived_base(&root, session, &target, &config) {
+    // An emergency whose pick nothing carries has no honest base, and cutting it
+    // from the outermost candidate is the silent replacement of the operator's
+    // answer this refuses to make.
+    let base = match resolved_base {
         Ok(base) => base,
         Err(candidates) => {
             return CutOutcome::BaseUnknown {
@@ -973,9 +1520,6 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         }
     };
 
-    // Refresh from origin FIRST so the unit is cut from the latest base — the
-    // base this cut will really use included, declared or not.
-    refresh_integration_bases(&vcs, &root, &config, current.as_deref(), Some(&base));
     match checkout_work_branch(&vcs, &root, &target, &base) {
         Ok(()) => {
             // The marker that carried the operator's answer is about to be
@@ -1532,11 +2076,11 @@ mod tests {
         // ── and now a REAL clone, with a remote that ANSWERS ─────────────────
         //
         // Everything above runs against a repository with no remote at all, so
-        // `refresh_integration_bases` fetches, fails, and returns having done
-        // nothing — which is one road through the cut, not the ordinary one. A
-        // machine that is online takes the other: the fetch succeeds, and the
-        // refresh is what has to reach the picked base, because that step used
-        // to iterate the DECLARED flow alone. Both roads have to land on the
+        // `fetch_origin` fails and the settlement refreshes nothing — which is
+        // one road through the cut, not the ordinary one. A machine that is
+        // online takes the other: the fetch succeeds, and `fast_forward_base`
+        // is what has to reach the picked base, because that step used to
+        // iterate the DECLARED flow alone. Both roads have to land on the
         // commit the operator chose, and only a real remote drives this one.
         let dir = tempfile::tempdir().expect("tempdir");
         let bare = seed_real_origin(dir.path());
@@ -1982,7 +2526,7 @@ mod tests {
         };
         assert_eq!(busy.current, "dev_first");
         assert_eq!(busy.target, "dev_second");
-        let super::CheckoutWork::Holds(dirty) = &busy.work else {
+        let super::CheckoutWork::Holds { theirs: dirty, .. } = &busy.work else {
             panic!("the paths were positively observed, got {:?}", busy.work);
         };
         assert!(
@@ -2128,6 +2672,30 @@ mod tests {
     /// probe measured neither, so it counts.
     #[test]
     fn a_truncated_directory_only_passes_when_all_of_it_is_scratch() {
+        // A árvore só importa para os moldes: todo o resto se decide no nome.
+        // UM molde gerado (`source: scan`, o único valor que declara censo), um
+        // ADOTADO (`source: manual`) e uma skill de projeto escrita à mão SEM
+        // chave `source:` — os dois últimos no bloco de trabalho.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let mold = |path: &str, body: &str| {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mold dir");
+            std::fs::write(&full, body).expect("mold file");
+        };
+        mold(
+            "apps/rt/.claude/skills/rt-gate-pattern/SKILL.md",
+            "---\nname: rt-gate-pattern\nsource: scan\n---\n\n## Purpose\n",
+        );
+        mold(
+            ".claude/skills/my-helper/SKILL.md",
+            "---\nname: my-helper\ndescription: Use when X.\n---\n\n## Purpose\n",
+        );
+        mold(
+            "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",
+            "---\nname: rt-verdict-pattern\nsource: manual\n---\n\n## Purpose\n",
+        );
+
         // Scratch, whole — including the collapsed-directory spelling git uses.
         for scratch in [
             ".claude/.session/sess-x/pending-work-branch",
@@ -2150,7 +2718,30 @@ mod tests {
             // Windows separators, should git or a caller ever hand them over.
             ".claude\\.session\\sess-x\\pending-work-branch",
         ] {
-            assert!(super::is_harness_scratch(scratch), "scratch: {scratch}");
+            assert_eq!(
+                super::classify_dirty_path(root, scratch),
+                super::DirtyPathKind::Scratch,
+                "scratch: {scratch}",
+            );
+        }
+
+        // Censo — escrito pela ferramenta, versionado de propósito. Nem
+        // rascunho (seria descartado de todo commit) nem trabalho (recusaria o
+        // corte pela saída da própria ferramenta).
+        for census in [
+            ".claude/grain.model.json",
+            ".claude/grain.dictionary.json",
+            ".claude/scan-declined.json",
+            ".claude/scan-map.md",
+            "apps/rt/.claude/scan-map.md",
+            "apps/rt/.claude/skills/rt-gate-pattern/SKILL.md",
+            ".claude\\scan-map.md",
+        ] {
+            assert_eq!(
+                super::classify_dirty_path(root, census),
+                super::DirtyPathKind::Census,
+                "census: {census}",
+            );
         }
 
         // Work — the unit's own artefacts, and every truncated directory that
@@ -2173,9 +2764,54 @@ mod tests {
             // Not under a `.claude/` segment at all.
             "src/.session/x",
             ".claudeignore",
+            // O censo tem nome inteiro ou não é censo: um diretório truncado
+            // que só COMEÇA em `skills/` não foi medido, e um `scan-map.md`
+            // fora de um `.claude/` é de quem o escreveu.
+            ".claude/skills/",
+            ".claude/skills/rt-gate-pattern/",
+            "docs/scan-map.md",
+            ".claude/grain.model.json.bak",
+            // O molde ADOTADO (`source: manual`) é escrita do OPERADOR: o nome
+            // do arquivo é o mesmo de um gerado e o frontmatter é o que separa.
+            "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",
+            // A skill de projeto ORDINÁRIA: escrita à mão em
+            // `.claude/skills/<nome>/SKILL.md` — o lugar padrão do Claude Code —
+            // e SEM chave `source:`, que é como quase toda skill à mão nasce. A
+            // regra canônica diz humano; lê-la como censo faria o portão varrer
+            // a escrita do operador para dentro de um commit da ferramenta.
+            ".claude/skills/my-helper/SKILL.md",
+            // Um molde que não existe no disco não pôde ser lido, e um que
+            // abre frontmatter sem fechar não pôde ser interpretado — as duas
+            // formas caem para o lado seguro.
+            "apps/rt/.claude/skills/ausente-pattern/SKILL.md",
         ] {
-            assert!(!super::is_harness_scratch(work), "work: {work}");
+            assert_eq!(
+                super::classify_dirty_path(root, work),
+                super::DirtyPathKind::Work,
+                "work: {work}",
+            );
         }
+
+        // …e o frontmatter que abre, não declara `source:` e nunca fecha: não há
+        // bloco a ler, e o lado seguro é dizer que ali tem trabalho.
+        mold(".claude/skills/truncado-pattern/SKILL.md", "---\nname: truncado-pattern\n");
+        assert_eq!(
+            super::classify_dirty_path(root, ".claude/skills/truncado-pattern/SKILL.md"),
+            super::DirtyPathKind::Work,
+            "frontmatter sem fim não é bloco que se possa ler",
+        );
+
+        // O leitor é o CANÔNICO do core, então o BOM antes da cerca não muda
+        // nada — a mesma tolerância que `is_mustard_generated` documenta.
+        mold(
+            ".claude/skills/bom-pattern/SKILL.md",
+            "\u{feff}---\nname: bom-pattern\nsource: scan\n---\n\n## Purpose\n",
+        );
+        assert_eq!(
+            super::classify_dirty_path(root, ".claude/skills/bom-pattern/SKILL.md"),
+            super::DirtyPathKind::Census,
+            "um molde gerado com BOM não deixa de ser gerado",
+        );
     }
 
     /// The other side of the same list: in that SAME seeded shape, a real
@@ -2204,7 +2840,7 @@ mod tests {
         let sid = "sess-cut-spec-counts";
         crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
 
-        let super::CheckoutWork::Holds(dirty) = super::checkout_work(root) else {
+        let super::CheckoutWork::Holds { theirs: dirty, .. } = super::checkout_work(root) else {
             panic!("the unit's own spec is uncommitted work: {:?}", super::checkout_work(root));
         };
         assert!(

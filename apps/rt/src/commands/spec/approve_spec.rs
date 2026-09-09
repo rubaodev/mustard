@@ -350,6 +350,11 @@ const WHY_NO_VERDICT: &str = "the proof was TAKEN but the command was killed by 
 const WHY_NOT_ATTEMPTED: &str =
     "the proof was NEVER TAKEN: the producer could not attempt the command at all";
 
+/// A proof taken twice whose two runs disagreed — neither colour, so neither
+/// [`WHY_GREEN`]'s remedy nor a red. The action is to make the answer stable.
+const WHY_UNSTABLE: &str = "the proof was TAKEN TWICE and the two runs disagreed, so the \
+     criterion is non-deterministic — make the command's answer stable, then take the proof again";
+
 /// The CONFIRMED column came back red — read, never re-run. It asks for the
 /// work to be finished, which is the opposite of [`WHY_GREEN`]'s remedy.
 const WHY_CONFIRMATION_RED: &str = "the confirmation was TAKEN and the command still came back \
@@ -414,6 +419,7 @@ fn why_unsatisfied(p: &ac_negative_check::AcProof) -> &'static str {
             Proof::Green => WHY_GREEN,
             Proof::NoVerdict => WHY_NO_VERDICT,
             Proof::NotAttempted => WHY_NOT_ATTEMPTED,
+            Proof::Unstable => WHY_UNSTABLE,
             // A red proof IS evidence, so this arm is likewise unreachable;
             // treat any such record as no record at all.
             Proof::Red => WHY_NEVER_TAKEN,

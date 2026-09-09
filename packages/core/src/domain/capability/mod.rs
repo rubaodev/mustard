@@ -177,6 +177,10 @@ impl Capability {
                     id: format!("{}-{}", self.id, slug(&scenario.name)),
                     statement: scenario_statement(&scenario.when, &scenario.then),
                     command: command.to_string(),
+                    // A scenario carries no control of its own; the criterion
+                    // it compiles into is offered the placeholder at render
+                    // time, like every criterion that declares none.
+                    control: None,
                 });
             }
         }

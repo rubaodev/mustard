@@ -496,14 +496,54 @@ fn append_material_sections(output: &Path, material: &ConversationMaterial) -> R
 /// Refuses (exit 0, `{"ok": false, …}` like every other refusal here) when the
 /// spec does not exist yet — this door updates, it never creates — and when no
 /// `--material` file was given, since there would be nothing to write.
+///
+/// Toca SÓ o `spec.md` do pai, então as ondas já no disco seguem com o recorte
+/// de material com que foram renderizadas. Isso é dito em vez de ficar em
+/// silêncio: `wavesStale` no relatório e uma linha de stderr nomeando o
+/// `plan-materialize` — ver [`stale_waves_warning`].
 fn material_only_refresh(
     project_root: &Path,
     opts: &SpecDraftOpts,
     material: &ConversationMaterial,
 ) -> i32 {
+    if let Some((report, stale_waves)) = material_only_result(project_root, opts, material) {
+        // O aviso do operador sai AQUI, ao lado do `println!` do relatório: é
+        // saída, e saída é desta função. Deixá-lo dentro do resultado fazia a
+        // função "pura" imprimir, e um chamador que a consultasse depois de rodar
+        // o comando — o próprio teste dela faz isso — repetia o aviso.
+        if !stale_waves.is_empty() {
+            let slug = report["spec"].as_str().unwrap_or_default();
+            eprintln!("spec-draft: WARN: {}", stale_waves_warning(slug, &stale_waves));
+        }
+        println!("{report}");
+    }
+    0
+}
+
+/// O `--material-only` INTEIRO menos a impressão: resolve a unidade, reescreve
+/// as seções de material do `spec.md` do pai e devolve o relatório que o
+/// chamador imprime, junto com as ondas que ficaram para trás. `None` quando
+/// recusou — o `emit_error` já disse por quê, e não há relatório a dar.
+///
+/// Separado de [`material_only_refresh`] para que a FIAÇÃO seja afirmável: com
+/// tudo dentro da função que imprime, um teste só conseguia remontar o relatório
+/// por fora, chamando [`material_only_report`] com uma lista de ondas que ele
+/// mesmo derivava — e aí nada travava o caminho real, do slug ao detector de
+/// ondas. Os bytes impressos continuam sendo estes.
+///
+/// Não IMPRIME nada — nem o relatório, nem o aviso de ondas desatualizadas. A
+/// lista viaja de volta e o aviso sai uma vez só, em
+/// [`material_only_refresh`]: um `eprintln!` aqui dentro fazia o teste desta
+/// função (que a chama uma vez pelo `run_at` e outra direto) imprimir o aviso do
+/// operador duas vezes por um refresh só.
+fn material_only_result(
+    project_root: &Path,
+    opts: &SpecDraftOpts,
+    material: &ConversationMaterial,
+) -> Option<(serde_json::Value, Vec<String>)> {
     let Some(slug) = opts.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         emit_error("--material-only needs --slug", "name the unit whose material to refresh");
-        return 0;
+        return None;
     };
     let dir = opts.output.clone().unwrap_or_else(|| {
         mustard_core::ClaudePaths::spec_dir_or_unchecked(project_root, slug)
@@ -514,18 +554,18 @@ fn material_only_refresh(
             "--material-only found no spec to update",
             &format!("{} does not exist — draft the spec first", path.display()),
         );
-        return 0;
+        return None;
     }
     if opts.material.is_none() {
         emit_error(
             "--material-only needs --material",
             "pass the unit's `spec-material.json`; without it there is nothing to write",
         );
-        return 0;
+        return None;
     }
     let Ok(body) = mfs::read_to_string(&path) else {
         emit_error("could not read spec.md", &path.display().to_string());
-        return 0;
+        return None;
     };
     let mut out = strip_material_sections(&body);
     if let Some(block) = render_material_sections(material) {
@@ -536,20 +576,169 @@ fn material_only_refresh(
     }
     if let Err(e) = mfs::write_atomic(&path, out.as_bytes()) {
         emit_error("write spec.md", &format!("{}: {e}", path.display()));
-        return 0;
+        return None;
     }
-    println!(
-        "{}",
-        serde_json::json!({
-            "ok": true,
-            "spec": slug,
-            "path": path.display().to_string(),
-            "definitions": material.definitions.len(),
-            "decisions": material.decisions.len(),
-            "findings": material.findings.len(),
+    // Esta porta reescreve o `spec.md` do PAI e mais nada. As ondas já
+    // materializadas carregam o recorte de material feito quando
+    // `plan-materialize` rodou, então o que acabou de entrar aqui pode estar
+    // ausente delas — e ninguém era avisado disso. Uma decisão registrada que o
+    // executor da onda nunca lê é a mesma coisa que decisão nenhuma, então o
+    // desencontro é NOMEADO: na stderr, para o operador, e no relatório, para
+    // quem lê a saída por máquina.
+    //
+    // O corpo NOVO do pai (`out`) é o que a comparação usa — o mesmo que acabou
+    // de ir para o disco, não o que estava lá antes.
+    let stale_waves = waves_missing_the_new_material(&dir, &out);
+    let report = material_only_report(slug, &path, material, &stale_waves);
+    Some((report, stale_waves))
+}
+
+/// O relatório do `--material-only`, montado num valor só — assim os bytes que
+/// um chamador lê são os mesmos bytes que um teste afirma.
+///
+/// `wavesStale` é o sinalizador e `staleWaves` é a evidência dele: o booleano
+/// sozinho manda um script re-materializar sem dizer O QUE ficou para trás. Os
+/// nomes chegam de [`materialized_wave_dirs`] já ordenados, então a saída
+/// continua byte-estável entre execuções.
+fn material_only_report(
+    slug: &str,
+    path: &Path,
+    material: &ConversationMaterial,
+    stale_waves: &[String],
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "spec": slug,
+        "path": path.display().to_string(),
+        "definitions": material.definitions.len(),
+        "decisions": material.decisions.len(),
+        "findings": material.findings.len(),
+        "wavesStale": !stale_waves.is_empty(),
+        "staleWaves": stale_waves,
+    })
+}
+
+/// As ondas materializadas sob `spec_dir` cujo `## Material` NÃO confirma o
+/// recorte que o corpo NOVO do pai produz — ordenadas, porque esta lista viaja
+/// num relatório byte-estável e a ordem do `read_dir` não é.
+///
+/// A versão anterior listava TODA onda no disco, sem comparar nada: re-rodar o
+/// `--material-only` com o mesmo arquivo de material — ou com um que só remove
+/// seções — marcava as ondas como desatualizadas do mesmo jeito. Um sinal que
+/// dispara quando nada mudou é o modo de falha que esta unidade cita para o
+/// antigo WARN de rastreio, reproduzido no canal que veio consertá-lo.
+///
+/// A regra é uma releitura: a onda só entra na lista quando o que ela carrega
+/// NÃO confirma o texto novo. O material É copiado por onda, de propósito — é
+/// recortado por relevância, e o pai não tem como dizer o que cabe a cada onda
+/// sem esse recorte —, então este sinal é honesto; os critérios, ao contrário,
+/// não são copiados (o prompt os lê do pai na hora do despacho) e não têm
+/// canal de desatualização nenhum. O recorte comparado é o MESMO que a materialização faria — os arquivos
+/// que a onda declara, pelo mesmo
+/// [`cut_material_for_files`](crate::commands::agent::render::sections::cut_material_for_files)
+/// — senão a comparação e a re-materialização discordariam sobre o que a onda
+/// deveria carregar.
+///
+/// Uma onda sem `spec.md` legível não tem cópia para envelhecer e não entra;
+/// diretório ilegível devolve lista vazia — isto é uma linha de aviso, e recusar
+/// o refresh por causa de uma listagem que não abriu custaria mais do que ela
+/// vale.
+fn waves_missing_the_new_material(spec_dir: &Path, parent_body: &str) -> Vec<String> {
+    // Pela camada de fs do projeto (`mfs`), como todo o resto deste módulo: um
+    // `std::fs` solto aqui é um leitor a menos sob o mesmo controle.
+    let Ok(entries) = mfs::read_dir(spec_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .into_iter()
+        .filter(|e| e.is_dir && e.file_name.starts_with("wave-"))
+        .filter(|e| {
+            let Ok(body) = mfs::read_to_string(e.path.join("spec.md")) else {
+                return false;
+            };
+            let files = declared_files(&body);
+            let (fresh, _) =
+                crate::commands::agent::render::sections::cut_material_for_files(
+                    parent_body,
+                    &files,
+                );
+            held_material(&body).trim() != fresh.trim()
         })
-    );
-    0
+        .map(|e| e.file_name)
+        .collect();
+    names.sort();
+    names
+}
+
+/// Os caminhos que o `## Files` de uma onda declara — a chave do recorte de
+/// material por onda.
+///
+/// A materialização os escreve como `` - `caminho` ``
+/// ([`crate::commands::wave::wave_scaffold::render_wave_spec`]); o desmarcar
+/// aceita a linha sem crase também, para não depender de um detalhe de
+/// formatação para responder "mudou?".
+fn declared_files(wave_body: &str) -> Vec<String> {
+    let Some(block) = crate::commands::spec::spec_sections::section_block(wave_body, "files")
+    else {
+        return Vec::new();
+    };
+    block
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- "))
+        .map(|p| p.trim().trim_matches('`').trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// O material que a onda carrega HOJE — o corpo do `## Material` dela sem o
+/// título nem a linha de procedência que a materialização escreve.
+///
+/// O título é o literal EN que o renderizador de onda usa (artefato de máquina,
+/// idioma fixo), então não há chave canônica a resolver: o resolvedor de seções
+/// não conhece `material` justamente porque ele é só do arquivo de onda.
+/// Devolve "" quando a onda não tem a seção — que é o estado de uma onda
+/// materializada antes de o canal existir, e ele COMPARA igual a um recorte
+/// vazio.
+fn held_material(wave_body: &str) -> String {
+    let lines: Vec<&str> = wave_body.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim_end() == "## Material") else {
+        return String::new();
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.starts_with("## "))
+        .map_or(lines.len(), |i| start + 1 + i);
+    lines[start + 1..end]
+        .iter()
+        .filter(|l| !l.trim_start().starts_with("_Copied from the parent spec"))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// A linha de stderr de um refresh que caiu numa spec cujas ondas já estavam
+/// materializadas — ela precisa NOMEAR o comando que as reconcilia, senão o
+/// operador fica sabendo do problema e não do remédio.
+fn stale_waves_warning(slug: &str, waves: &[String]) -> String {
+    // Uma onda só e a frase inteira concorda com ela — sujeito, verbo e
+    // possessivo. Misturar "1 wave is" com "were NOT updated" na mesma linha faz
+    // o operador reler a frase para descobrir quantas ondas ela está contando.
+    let n = waves.len();
+    let (subject, verb, theirs) = if n == 1 {
+        ("1 wave is".to_string(), "was", "its")
+    } else {
+        (format!("{n} waves are"), "were", "their")
+    };
+    format!(
+        "the material sections changed, but {subject} already materialised ({}) and {verb} NOT \
+         updated — {theirs} per-wave material cut still carries what the spec said before this \
+         refresh. Re-run `mustard-rt run plan-materialize --spec-dir {slug} --plan <plan.json>` \
+         to bring {} forward.",
+        waves.join(", "),
+        if n == 1 { "it" } else { "them" },
+    )
 }
 
 /// Drop the three material sections from a spec body, heading and all, so the
@@ -1057,7 +1246,8 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 /// `Err(detail)` covers the two outcomes the draft must not survive:
 ///
 /// 1. the checkout holds ANOTHER unit's branch with uncommitted work, so the
-///    cut was REFUSED ([`crate::commands::event::work_branch::busy_checkout`]).
+///    cut was REFUSED
+///    ([`crate::commands::event::census_settlement::settle`]).
 ///    Proceeding would write this unit's spec, waves and proof onto the other
 ///    unit's branch — and drafting is the moment that arrangement is decided,
 ///    because this door opens before any `Write` reaches the hook gate. The
@@ -1483,6 +1673,20 @@ fn build_input(
 /// the single tautology `analyze-validation`'s weak-AC linter tolerates). The
 /// old lone "Pipeline build green" AC passed whether or not the feature existed;
 /// it survives only as the LAST safety net here, never as the only criterion.
+///
+/// The behaviour criteria are SEEDED with a `Control:` — the same build
+/// command the trailing safety criterion runs. It is the one command known to
+/// be GREEN on a fresh tree by construction (that is the whole reason the
+/// safety criterion is exempt from the negative proof: green before the work
+/// by design), so the control never refuses a criterion for a reason that has
+/// nothing to do with the criterion. Seeding it, rather than offering an
+/// unfilled marker, is what makes the channel exist: a field measured across
+/// the archive turned out to appear ONLY when a human typed it, in either
+/// scope, and the specs that declared none paid for it at close. The author
+/// is free to narrow it to a control that proves more (a filtered runner
+/// selecting a sibling test); what they can no longer do is leave it blank by
+/// omission. The trailing criterion carries none: it is exempt from the proof,
+/// so a control on it would answer a question nobody asks.
 fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<AcceptanceCriterion> {
     use mustard_core::domain::capability::scenario_statement;
     let skeleton_command = translate("ac.skeleton.command", lang).to_string();
@@ -1494,6 +1698,7 @@ fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<Acceptance
                 translate("ac.skeleton.then_primary", lang),
             ),
             command: skeleton_command.clone(),
+            control: Some(build_command.to_string()),
         },
         AcceptanceCriterion {
             id: "AC-2".to_string(),
@@ -1502,11 +1707,13 @@ fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<Acceptance
                 translate("ac.skeleton.then_secondary", lang),
             ),
             command: skeleton_command,
+            control: Some(build_command.to_string()),
         },
         AcceptanceCriterion {
             id: "AC-3".to_string(),
             statement: translate("ac.safety.build_green", lang).to_string(),
             command: build_command.to_string(),
+            control: None,
         },
     ]
 }
@@ -2224,6 +2431,13 @@ mod tests {
         assert!(acs[0].statement.contains("then <"), "AC-1 carries a then-clause: {}", acs[0].statement);
         assert_ne!(acs[0].command, "pnpm build", "skeleton AC command is not the build");
         assert!(acs[0].command.contains('<'), "skeleton AC command is a fill-me placeholder: {}", acs[0].command);
+        // The behaviour ACs are SEEDED with a control — the build command, the
+        // one command green on a fresh tree by construction — while the
+        // trailing safety AC carries none (exempt from the proof anyway).
+        // Measured before this: the field appeared only when a human typed it.
+        assert_eq!(acs[0].control.as_deref(), Some("pnpm build"), "AC-1 is seeded a green control");
+        assert_eq!(acs[1].control.as_deref(), Some("pnpm build"), "AC-2 too");
+        assert_eq!(acs.last().unwrap().control, None, "the trailing safety AC has nothing to control for");
         // Neutral fallback flows through verbatim when no buildCommand is set.
         let input2 = build_input(
             "demo",
@@ -2834,6 +3048,57 @@ mod tests {
         );
     }
 
+    /// A `Control:` the PLAN wrote into an acceptance line reaches `spec.md`
+    /// verbatim, exactly as `Command:` and `Expect:` do — the adoption carries
+    /// the line, it does not re-derive it. And a plan that declares NO control
+    /// still adopts: the field is optional on read, and the negative proof
+    /// names its absence as a WARN, never this door.
+    ///
+    /// Two-sided in one plan: AC-1 declares a control, AC-2 does not, and the
+    /// parsed items say which is which.
+    #[test]
+    fn adopt_plan_keeps_a_plan_written_control_verbatim() {
+        use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("adopted");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(
+            output.join("spec.md"),
+            "# S\n\n## Acceptance Criteria\n\n- **AC-1** — placeholder.\n  Command: `<x>`\n\n<!-- PLAN -->\n\n## Files\n\n- f\n",
+        )
+        .unwrap();
+        let plan = dir.path().join("plan.json");
+        std::fs::write(
+            &plan,
+            serde_json::to_string(&json!({
+                "waves": [{
+                    "n": 1, "role": "rt", "summary": "s", "tasks": ["t"], "files": ["f"],
+                    "acceptance": [
+                        format!("**AC-1** — when x, then y.\n  Command: `{RED_COMMAND}`\n  Expect: `nope`\n  Control: `{GREEN_COMMAND}`"),
+                        format!("**AC-2** — build green.\n  Command: `{GREEN_COMMAND}`"),
+                    ],
+                    "satisfies": ["AC-1", "AC-2"],
+                }],
+                "total_waves": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(adopt_plan_acceptance_criteria(&output, &plan), Ok(true));
+        let body = std::fs::read_to_string(output.join("spec.md")).unwrap();
+        assert!(
+            body.contains(&format!("Control: `{GREEN_COMMAND}`")),
+            "the plan's control reaches spec.md untouched:\n{body}"
+        );
+        let items = parse_ac_items(&extract_ac_section(&body).expect("AC section"));
+        assert_eq!(items.len(), 2, "{body}");
+        assert_eq!(items[0].control.as_deref(), Some(GREEN_COMMAND), "AC-1 keeps its control");
+        assert_eq!(items[0].expect.as_deref(), Some("nope"), "and its expect");
+        assert_eq!(items[1].control, None, "AC-2 declared none and still adopted");
+        assert!(body.contains("<!-- PLAN -->"), "the structural marker survives:\n{body}");
+    }
+
     /// The other half, and the obligation that comes with fusing: a criterion
     /// that was never proven ABLE to fail refuses the call (exit 2) and leaves
     /// NO layout behind — so the operator's retry meets a directory it did not
@@ -3197,6 +3462,162 @@ mod tests {
         assert!(
             !holds_only_harness_state(&spec_dir),
             "a drafted spec.md must still demand --force"
+        );
+    }
+
+    /// `--material-only` reescreve só o `spec.md` do pai — e agora DIZ isso.
+    ///
+    /// As ondas já materializadas carregam o recorte de material feito na
+    /// materialização anterior; um refresh que entra depois delas não as toca e,
+    /// até aqui, também não avisava. O executor da onda seguia lendo o material
+    /// antigo sem nenhum sinal de que havia material novo no pai — uma decisão
+    /// registrada que ninguém lê é decisão nenhuma. O `memory/` do fixture está
+    /// ali para provar que o detector olha o prefixo `wave-`, não "qualquer
+    /// subdiretório".
+    #[test]
+    fn material_only_warns_that_waves_went_stale() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+
+        let slug = "unidade-com-ondas";
+        let spec_dir = project.join(".claude").join("spec").join(slug);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Unidade\n\n## Context\n\nprosa que o refresh não pode tocar\n",
+        )
+        .unwrap();
+        // Criadas fora de ordem de propósito: a lista do relatório é ordenada.
+        for wave in ["wave-2-review", "wave-1-impl"] {
+            std::fs::create_dir_all(spec_dir.join(wave)).unwrap();
+            std::fs::write(spec_dir.join(wave).join("spec.md"), "# onda\n").unwrap();
+        }
+        std::fs::create_dir_all(spec_dir.join("memory")).unwrap();
+
+        let material_path = project.join("spec-material.json");
+        std::fs::write(
+            &material_path,
+            r#"{"decisions":[{"decision":"uma decisão nova","reason":"a razão dela"}]}"#,
+        )
+        .unwrap();
+
+        let opts = || SpecDraftOpts {
+            intent: "Unidade com ondas".into(),
+            slug: Some(slug.to_string()),
+            scope: "full".into(),
+            lang: "pt-BR".into(),
+            signals: None,
+            output: None,
+            material: Some(material_path.clone()),
+            material_only: true,
+            no_material_reason: None,
+            waves: 2,
+            plan: None,
+            force: false,
+            query_terms: None,
+            force_scope: false,
+        };
+
+        let code = run_at(project, opts());
+        assert_eq!(code, 0, "o refresh de material continua saindo limpo");
+
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        assert!(body.contains("uma decisão nova"), "a decisão entrou no spec.md:\n{body}");
+        assert!(body.contains("prosa que o refresh não pode tocar"), "o resto do corpo fica:\n{body}");
+
+        // O detector enxerga as duas ondas, em ordem estável, e só elas — as
+        // duas foram materializadas ANTES desta decisão, então nenhuma a
+        // carrega.
+        let new_body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        let waves = waves_missing_the_new_material(&spec_dir, &new_body);
+        assert_eq!(waves, vec!["wave-1-impl".to_string(), "wave-2-review".to_string()]);
+
+        // …e o sinal dispara por MUDANÇA, não por existência: uma onda cujo
+        // `## Material` já confirma o recorte novo não é desatualizada.
+        let caught_up = spec_dir.join("wave-1-impl");
+        let (fresh, _) = crate::commands::agent::render::sections::cut_material_for_files(
+            &new_body,
+            &[],
+        );
+        assert!(!fresh.is_empty(), "a decisão nova tem de entrar no recorte");
+        std::fs::write(
+            caught_up.join("spec.md"),
+            format!("# onda\n\n## Material\n\n{fresh}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            waves_missing_the_new_material(&spec_dir, &new_body),
+            vec!["wave-2-review".to_string()],
+            "a onda que já carrega o texto novo sai da lista; a que não carrega fica",
+        );
+
+        // E a re-execução com o MESMO material não inventa desatualização
+        // nenhuma: nada mudou, nada é reportado.
+        std::fs::write(
+            spec_dir.join("wave-2-review").join("spec.md"),
+            format!("# onda\n\n## Material\n\n{fresh}\n"),
+        )
+        .unwrap();
+        assert!(
+            waves_missing_the_new_material(&spec_dir, &new_body).is_empty(),
+            "um sinal que dispara quando nada mudou é ruído, não aviso",
+        );
+        // Restaurada a fixture, porque o resto do teste mede o relatório do
+        // caminho real com as duas ondas para trás.
+        for wave in ["wave-1-impl", "wave-2-review"] {
+            std::fs::write(spec_dir.join(wave).join("spec.md"), "# onda\n").unwrap();
+        }
+
+        // O relatório que o COMANDO imprime — o mesmo valor, pela mesma fiação
+        // (slug, caminho, detector de ondas), não uma remontagem por fora.
+        let material = load_material(&material_path).expect("material");
+        let (report, stale) = material_only_result(project, &opts(), &material)
+            .expect("o refresh devolve relatório");
+        // A lista viaja de volta em vez de virar `eprintln!` aqui dentro: é o
+        // chamador que imprime, uma vez só por refresh.
+        assert_eq!(stale, vec!["wave-1-impl".to_string(), "wave-2-review".to_string()]);
+        assert_eq!(report["spec"], serde_json::json!(slug));
+        assert_eq!(
+            report["path"],
+            serde_json::json!(spec_dir.join("spec.md").display().to_string())
+        );
+        assert_eq!(report["decisions"], serde_json::json!(1), "a decisão contada: {report}");
+        assert_eq!(report["wavesStale"], serde_json::json!(true));
+        assert_eq!(report["staleWaves"], serde_json::json!(["wave-1-impl", "wave-2-review"]));
+
+        // Sem `--slug` a porta recusa e não há relatório nenhum a imprimir.
+        let mut headless = opts();
+        headless.slug = None;
+        assert!(
+            material_only_result(project, &headless, &material).is_none(),
+            "uma recusa não imprime relatório",
+        );
+
+        // Sem onda no disco o campo não mente — o aviso é a exceção, não a regra.
+        let clean = material_only_report(
+            slug,
+            &spec_dir.join("spec.md"),
+            &ConversationMaterial::default(),
+            &[],
+        );
+        assert_eq!(clean["wavesStale"], serde_json::json!(false));
+        assert_eq!(clean["staleWaves"], serde_json::json!([]));
+
+        // E a linha da stderr nomeia o comando que reconcilia as ondas.
+        let warn = stale_waves_warning(slug, &waves);
+        assert!(warn.contains("plan-materialize"), "o remédio é nomeado: {warn}");
+        assert!(warn.contains(slug), "e nomeia a unidade: {warn}");
+        assert!(warn.contains("wave-1-impl"), "e as ondas atrasadas: {warn}");
+        // A frase concorda com o número que ela mesma conta, nos dois lados.
+        assert!(
+            warn.contains("2 waves are") && warn.contains("were NOT updated"),
+            "plural: {warn}",
+        );
+        let one = stale_waves_warning(slug, &waves[..1]);
+        assert!(
+            one.contains("1 wave is") && one.contains("was NOT updated"),
+            "singular: {one}",
         );
     }
 }

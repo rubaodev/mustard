@@ -1289,13 +1289,39 @@ fn render_json(output: &ActiveSpecsOutput) -> String {
 // Date parsing for sort
 // ---------------------------------------------------------------------------
 
+/// Whether `name` opens with the `YYYY-MM-DD` prefix a spec directory may carry.
+///
+/// THE shape rule, written once: [`spec_date_prefix`] reads the prefix off it
+/// and [`without_spec_date_prefix`] takes it off, so "does this name carry a
+/// date" can never be answered two ways.
+fn has_spec_date_prefix(name: &str) -> bool {
+    name.len() >= 10 && name.chars().nth(4) == Some('-') && name.chars().nth(7) == Some('-')
+}
+
 /// Extract the `YYYY-MM-DD` prefix from a spec name for date-descending sort.
 /// Returns `"0000-00-00"` for names that don't start with a date.
 fn spec_date_prefix(name: &str) -> &str {
-    if name.len() >= 10 && name.chars().nth(4) == Some('-') && name.chars().nth(7) == Some('-') {
+    if has_spec_date_prefix(name) {
         &name[..10]
     } else {
         "0000-00-00"
+    }
+}
+
+/// O nome de uma spec SEM o prefixo de data que o diretório dela pode carregar:
+/// `2026-05-23-harness-enxerga-toda-branch` vira
+/// `harness-enxerga-toda-branch`. Um nome sem prefixo volta inteiro.
+///
+/// `pub(crate)` porque quem COMPARA um nome de diretório de spec com um slug
+/// derivado do intent precisa da mesma regra: `canonical_for_project` nunca
+/// produz a data, então uma comparação byte a byte com o diretório erra em toda
+/// spec datada — e a unidade passa a se acusar de sobrepor a si mesma
+/// ([`crate::commands::event::base_gate::overlapping_active_specs`]).
+pub(crate) fn without_spec_date_prefix(name: &str) -> &str {
+    if has_spec_date_prefix(name) && name.as_bytes().get(10) == Some(&b'-') {
+        &name[11..]
+    } else {
+        name
     }
 }
 
@@ -1329,10 +1355,28 @@ fn spec_date_prefix(name: &str) -> &str {
 /// value as authoritative for an *upper* bound check.
 #[must_use]
 pub fn count_active(root: &Path) -> usize {
-    discover_root_specs(root)
-        .iter()
+    active_spec_names(root).len()
+}
+
+/// Os NOMES do mesmo conjunto que [`count_active`] conta — a descoberta do
+/// picker ([`discover_root_specs`] + [`classify_spec`]), na árvore de trabalho
+/// e só nela, ordenada para a saída ser byte-estável.
+///
+/// `pub(crate)` porque o portão base pergunta o que está aberto para cruzar com
+/// o `--intent` da unidade sendo aberta, e um segundo enumerador ali seria a
+/// terceira leitura de "o que está ativo" neste repositório: o portão passaria
+/// a suspeitar de specs que o picker não lista, ou a calar sobre as que lista.
+/// [`count_active`] agora deriva daqui pela mesma razão — a contagem que barra
+/// uma edição e a lista que o portão relata não podem discordar.
+#[must_use]
+pub(crate) fn active_spec_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = discover_root_specs(root)
+        .into_iter()
         .filter(|c| classify_spec(&c.header) == Some(SpecKind::Active))
-        .count()
+        .map(|c| c.name)
+        .collect();
+    names.sort();
+    names
 }
 
 /// The spec a picker ROW LETTER names, resolved through the SAME enumeration

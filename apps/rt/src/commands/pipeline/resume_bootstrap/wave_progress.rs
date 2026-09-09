@@ -51,7 +51,13 @@ pub(crate) fn wave_dispatch_recorded(events: &[HarnessEvent], spec: &str) -> boo
 }
 
 /// Walk the spec dir for `wave-{N}-*/spec.md`. Returns the first match.
-pub(super) fn find_wave_spec_path(spec_dir: &Path, wave: u32) -> Option<PathBuf> {
+///
+/// `pub(crate)` (re-exported from [`super`]) because the prompt renderer needs
+/// the answer WITHOUT the parent fallback
+/// [`super::resolve_operational_spec_path`] adds: the wave's `## ACCEPTANCE`
+/// block is the ruler of THIS wave, and falling back to the parent renders every
+/// wave's criteria under "these are the JUDGE of this wave".
+pub(crate) fn find_wave_spec_path(spec_dir: &Path, wave: u32) -> Option<PathBuf> {
     let entries = mfs::read_dir(spec_dir).ok()?;
     let prefix = format!("wave-{wave}-");
     for entry in entries {

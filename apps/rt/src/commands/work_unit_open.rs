@@ -175,11 +175,11 @@ fn current_unit_branch(cwd: &Path, flow: &BaseFlow) -> Option<String> {
 /// 3. `origin/HEAD` when resolvable, else the local `HEAD` — today's behaviour,
 ///    kept verbatim for a project that declares no flow.
 ///
-/// Freshness is best-effort exactly like `work_branch_gate`'s
-/// `refresh_integration_bases`: the fetch may fail (offline, no remote,
-/// diverged) and the cut then degrades to the LOCAL base. A stale-but-local
-/// base is a worse cut, never a failure — a non-zero exit here would ABORT the
-/// worktree creation.
+/// Freshness is best-effort here, unlike the in-place cut's settlement
+/// (`census_settlement::settle`, which refuses a base `fast_forward_base` could
+/// not advance): the fetch may fail (offline, no remote, diverged) and the cut
+/// then degrades to the LOCAL base. A stale-but-local base is a worse cut,
+/// never a failure — a non-zero exit here would ABORT the worktree creation.
 fn non_unit_start(
     main: &Path,
     cwd: &Path,

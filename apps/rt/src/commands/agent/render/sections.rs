@@ -118,11 +118,20 @@ pub(crate) fn read_spec_lang(spec_path: &Path) -> String {
 /// `## Causa raiz` / `## Plano`. When the structured section is missing or has
 /// no body, fall back to [`build_task_fallback`] so the dispatched agent still
 /// receives a non-empty TASK block (root cause + plan, or — when those are
-/// absent too — the spec's Context + Acceptance Criteria sections under an
-/// origin header, plus a read-the-spec cue) instead of a blank one. Full specs
+/// absent too — a POINTER at the `## WHY` / `## ACCEPTANCE` sections this prompt
+/// already carries, plus a read-the-spec cue) instead of a blank one. Full specs
 /// are unaffected: a present, non-empty `## Tasks` section is always preferred
 /// and returned byte-identical.
-pub(crate) fn read_task_steps(spec_path: &Path) -> String {
+/// `why_block` e `acceptance_block` são os corpos JÁ COMPOSTOS das duas seções
+/// que este prompt vai carregar ([`build_why_block`] e [`read_wave_acceptance`],
+/// vazios quando a seção colapsa). Eles entram porque o tier 2 do fallback é um
+/// PONTEIRO, e um ponteiro só pode ser escrito a partir do que está mesmo no
+/// prompt — ver [`task_fallback_pointer`].
+pub(crate) fn read_task_steps(
+    spec_path: &Path,
+    why_block: &str,
+    acceptance_block: &str,
+) -> String {
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
     if text.is_empty() {
         return String::new();
@@ -131,7 +140,7 @@ pub(crate) fn read_task_steps(spec_path: &Path) -> String {
     if !structured.is_empty() {
         return structured;
     }
-    build_task_fallback(&text, spec_path)
+    build_task_fallback(&text, spec_path, why_block, acceptance_block)
 }
 
 /// Extract the `## Tasks` / `## Tarefas` / `## Checklist` section body (heading
@@ -190,17 +199,260 @@ pub(crate) fn read_reality_obligations(spec_path: &Path) -> String {
     out
 }
 
+/// Monta o corpo do `## ACCEPTANCE` — os critérios que o QA vai EXECUTAR,
+/// literais, com as linhas `Command:` / `Expect:` / `Control:` intactas,
+/// filtrados pelo `satisfies:` do frontmatter da onda quando há uma.
+///
+/// Os critérios são a RÉGUA, e até aqui a onda nunca a via: a união mora no
+/// `wave-plan.md` (de onde o QA lê) e o prompt da onda carregava 15 campos, e
+/// nenhum deles era um critério. O primeiro remédio COPIOU o subconjunto para
+/// o spec da onda, e a cópia era um retrato: o layout congela na aprovação, e
+/// um critério que o `ac-amend` reescrevia ou o `ac-add` criava aterrissava no
+/// pai e nunca chegava ao prompt de onda nenhuma — o agente re-despachado por
+/// um achado da review era justamente quem não via o critério escrito para ele.
+///
+/// Um prompt é renderizado na hora do despacho, e lê a fonte ATUAL — a MESMA
+/// que o juiz lê ([`ruler_source`]): a união do `wave-plan.md`, e o
+/// `## Acceptance Criteria` do pai só para a spec que plano de ondas nenhum
+/// materializou. Ler o pai aqui discordava do QA em dois casos medidos, e nos
+/// dois o agente era julgado por um texto que nunca viu: uma onda com linhas de
+/// `acceptance` PRÓPRIAS (o pai não define o id, o bloco colapsava, e a
+/// rastreabilidade contava a onda como coberta), e um rewave (o pai vira
+/// `spec.original.md`, que o `ac-amend` não reescreve, então o prompt mostrava
+/// o comando VELHO e o QA rodava o novo). A seção é escolhida pelo MESMO
+/// `section_block` que o `qa-run` usa, então um rascunho legado com o título
+/// duplicado rende a lista, não o placeholder. A onda contribui só o filtro
+/// ([`wave_scaffold::parse_wave_ruler`]): sem `satisfies` não há régua e o
+/// bloco volta vazio; sem onda (render de nível-spec) a seção inteira é a régua
+/// da unidade.
+///
+/// A linha de instrução é composta AQUI em vez de ficar estática sob o título do
+/// template, pelo mesmo motivo que [`read_reality_obligations`] compõe a dela:
+/// um corpo estático manteria o título vivo para toda onda que não declara
+/// critério nenhum, e uma seção presente e vazia se lê como "não há nenhum"
+/// quando quer dizer "esta onda não disse". Uma onda de REWAVE carrega a régua
+/// inteira e diz isso ([`wave_scaffold::REWAVE_ACCEPTANCE_NOTE`]) antes da
+/// lista, para o "JUIZ desta onda" não afirmar uma atribuição que o DAG não fez.
+///
+/// O título recortado é rebaixado para `###` para aninhar sob o `## ACCEPTANCE`
+/// em vez de encerrá-lo — ver [`demote_heading`]. Fail-open: spec ilegível
+/// devolve "". O TEXTO da instrução fica em EN, pela política de prompt de
+/// agente.
+pub(crate) fn read_wave_acceptance(parent_spec: &Path, wave_spec: Option<&Path>) -> String {
+    use crate::commands::wave::wave_scaffold::{parse_wave_ruler, REWAVE_ACCEPTANCE_NOTE};
+    let Some(section) = ruler_source(parent_spec) else {
+        return String::new();
+    };
+    let section = section.trim_end();
+    let (heading, items) = section.split_once('\n').unwrap_or((section, ""));
+    let heading = demote_heading(heading);
+    let mut parts: Vec<String> = Vec::new();
+    match wave_spec {
+        None => parts.push(demote_heading(section)),
+        Some(wave) => {
+            let ruler = parse_wave_ruler(&mfs::read_to_string(wave).unwrap_or_default());
+            let mine: Vec<String> = criterion_blocks(items)
+                .into_iter()
+                .filter(|(id, _)| ruler.satisfies.contains(id))
+                .map(|(_, block)| block)
+                .collect();
+            if mine.is_empty() {
+                return String::new();
+            }
+            parts.push(heading);
+            if ruler.carried_whole {
+                parts.push(REWAVE_ACCEPTANCE_NOTE.to_string());
+            }
+            parts.push(mine.join("\n"));
+        }
+    }
+    if parts.iter().all(|p| p.trim().is_empty()) {
+        return String::new();
+    }
+    format!(
+        "These criteria are the JUDGE of this wave, not a suggestion: each `Command:` below is \
+         run VERBATIM by the QA gate, and its exit code (plus the `Expect:` pattern when one is \
+         declared) is the verdict on your work. Read them BEFORE you write code, and make each \
+         one pass — do not restate, reinterpret or narrow them.\n\n{}",
+        parts.join("\n\n")
+    )
+}
+
+/// Fatia o corpo de um `## Acceptance Criteria` em UM bloco literal por critério
+/// — a linha de cabeçalho mais as suas linhas de continuação (`Command:`,
+/// `Expect:`, `Control:`) — na ordem do documento, com o id NORMALIZADO (trim +
+/// maiúsculas, a mesma normalização do `satisfies:` que o consulta).
+///
+/// A fronteira é a MESMA que o lookahead do `parse_ac_items` varre (próximo
+/// cabeçalho de AC, linha em branco ou `## `), e o cabeçalho é reconhecido pelo
+/// MESMO `parse_ac_header` que o `qa-run` usa — um segundo leitor de linha de
+/// critério é um segundo jeito de errar qual comando julga a onda.
+fn criterion_blocks(section: &str) -> Vec<(String, String)> {
+    use crate::commands::review::qa_run::parse_ac_header;
+    let lines: Vec<&str> = section.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let Some((id, _)) = parse_ac_header(lines[i]) else {
+            i += 1;
+            continue;
+        };
+        let mut block: Vec<&str> = vec![lines[i].trim_end()];
+        let mut j = i + 1;
+        while j < lines.len() {
+            let line = lines[j];
+            if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ") {
+                break;
+            }
+            block.push(line.trim_end());
+            j += 1;
+        }
+        out.push((id.trim().to_uppercase(), block.join("\n")));
+        i = j;
+    }
+    out
+}
+
+/// O nome do índice do plano, ao lado do spec do pai — o arquivo de onde o QA
+/// lê a união dos critérios.
+const WAVE_PLAN_MD: &str = "wave-plan.md";
+
+/// A seção `## Acceptance Criteria` que o JUIZ vai executar, cortada pelo mesmo
+/// `section_block` que o `qa-run` usa: a união do `wave-plan.md` quando o plano
+/// materializou uma, e a seção do PAI ([`read_parent_spec`]) quando não há plano
+/// de ondas — a spec light / tactical-fix, cujo caminho isto não muda.
+///
+/// UM arquivo para o leitor e para o juiz, por construção. Enquanto a régua saía
+/// do pai, dois casos medidos rendiam prompt e veredito de fontes diferentes: a
+/// onda com `acceptance` PRÓPRIA (o id só existe na união, então o pai não
+/// definia nada e o bloco colapsava — e o portão de rastreabilidade ainda
+/// contava a onda como coberta) e o rewave (o pai é renomeado para
+/// `spec.original.md`, que o `ac-amend`/`ac-add` não reescreve: o prompt
+/// mostrava o comando superado sob "estes são o JUIZ desta onda"). A ordem
+/// aqui é a mesma que o `qa_run::find_spec_file` aplica quando o `spec.md`
+/// some, e não há um segundo jeito de escolher a régua.
+///
+/// `None` quando nem a união nem o pai declaram a seção. Fail-open: arquivo
+/// ilegível é o mesmo que arquivo ausente.
+fn ruler_source(parent_spec: &Path) -> Option<String> {
+    use crate::commands::spec::spec_sections::section_block;
+    let dir = parent_spec.parent().unwrap_or_else(|| Path::new("."));
+    let union = mfs::read_to_string(dir.join(WAVE_PLAN_MD)).unwrap_or_default();
+    section_block(&union, "acceptance-criteria")
+        .or_else(|| section_block(&read_parent_spec(parent_spec), "acceptance-criteria"))
+}
+
+/// O spec do PAI, lido pela regra que o `wave-scaffold` aplica ao mesmo arquivo:
+/// `spec.md`, e `spec.original.md` quando aquele não abre. Um rewave RENOMEIA o
+/// spec do pai para lá no passo 9 da decomposição, então sem o fallback os dois
+/// canais que são MESMO do pai (`## WHY` e `## CONVERSATION MATERIAL`) morrem
+/// exatamente para a população que TEM ondas. A régua NÃO é um deles: ela sai da
+/// união que o QA executa ([`ruler_source`]), e só cai aqui quando plano de
+/// ondas nenhum existe. Fail-open: nada legível devolve "".
+fn read_parent_spec(parent_spec: &Path) -> String {
+    let archived =
+        parent_spec.parent().unwrap_or_else(|| Path::new(".")).join("spec.original.md");
+    mfs::read_to_string(parent_spec)
+        .or_else(|_| mfs::read_to_string(&archived))
+        .unwrap_or_default()
+}
+
+/// Monta o corpo do `## WHY` de uma onda despachada — as seções `## Context` e
+/// `## Non-Goals` do spec do PAI, recortadas por chave canônica (então
+/// `## Contexto` / `## Não-Objetivos` resolvem igual).
+///
+/// O arquivo da onda carrega O QUÊ e ONDE; o motivo de o trabalho existir, e o
+/// terreno que a unidade deliberadamente NÃO cobre, moram uma vez só no pai e
+/// não chegavam a onda nenhuma. O único caminho que tinham era o fallback de
+/// TASK, que só dispara para um spec sem `## Tasks` — e onda de escopo completo
+/// sempre tem uma.
+///
+/// O título de cada seção recortada é rebaixado para `###` ([`demote_heading`]):
+/// uma linha `## ` como primeira linha do corpo encerraria a seção `## WHY` em
+/// vez de ficar dentro dela, e o `collapse_empty_sections` então derrubaria o
+/// título WHY como vazio deixando o corpo órfão para trás.
+///
+/// Vazio quando o pai não declara nenhuma das duas, o que colapsa o título.
+/// Fail-open: spec ilegível devolve "". O pai é aberto por [`read_parent_spec`]
+/// — a mesma resolução (`spec.md` → `spec.original.md`) que o `## CONVERSATION
+/// MATERIAL` usa, para os dois canais que são do PAI não discordarem sobre qual
+/// arquivo ele é. A régua não passa por aqui: ela sai da união que o QA executa
+/// ([`ruler_source`]).
+pub(crate) fn build_why_block(parent_spec: &Path) -> String {
+    let text = read_parent_spec(parent_spec);
+    let mut parts: Vec<String> = Vec::new();
+    for key in ["context", "non-goals"] {
+        if let Some(body) = cut_section_by_key(&text, key) {
+            parts.push(demote_heading(&body));
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// Rebaixa o título `## ` que abre uma seção recortada para `### `, deixando
+/// toda outra linha em paz.
+///
+/// A seção recortada chega COM o título dela, e uma linha `## ` dentro do corpo
+/// de uma `## SECTION` renderizada não é conteúdo aninhado — é a próxima seção,
+/// tanto para quem lê quanto para o [`collapse_empty_sections`]. Um `#` é o
+/// conserto inteiro, e ele preserva o título que o autor escreveu (no idioma
+/// dele) em vez de trocá-lo por um rótulo fixo em inglês.
+fn demote_heading(block: &str) -> String {
+    if block.starts_with("## ") {
+        format!("#{block}")
+    } else {
+        block.to_string()
+    }
+}
+
 /// Build a TASK block from the spec body when no structured `## Tasks` section
 /// exists. Tier 1: the `## Causa raiz` / `## Root cause` section (when
 /// present) plus the `## Plano` / `## Plan` section. Tier 2 (when tier 1 finds
-/// nothing — the tactical-fix / drafted-spec shape): the spec's `## Context` /
-/// `## Contexto` + `## Acceptance Criteria` / `## Critérios de Aceitação`
-/// sections (canonical `is_heading` keys), prefixed with a header naming the
-/// origin so the agent knows it is reading narrative, not a checklist. Both
-/// tiers append an explicit instruction to read the full spec before editing.
-/// Empty only when no narrative section is present at all (the renderer then
-/// degrades to a blank TASK as before).
-fn build_task_fallback(text: &str, spec_path: &Path) -> String {
+/// nothing — the tactical-fix / drafted-spec shape): a POINTER naming where the
+/// narrative and the ruler already are in this same prompt. Both tiers append an
+/// explicit instruction to read the full spec before editing. Empty only when no
+/// narrative section is present at all (the renderer then degrades to a blank
+/// TASK as before).
+///
+/// O tier 2 copiava as duas seções, e nenhuma das duas é dele. Os critérios
+/// saíram primeiro, porque passaram a ter bloco próprio (`## ACCEPTANCE`,
+/// [`read_wave_acceptance`]); o `## Contexto` saiu pelo MESMO argumento, que
+/// ninguém tinha aplicado nele: o `## WHY` ([`build_why_block`]) recorta esse
+/// mesmo texto do mesmo arquivo, e num render de nível-spec — que é justamente
+/// onde este fallback dispara — os dois recortes são do mesmo `spec.md`, então o
+/// Contexto saía DUAS vezes no prompt.
+///
+/// O que sobrou no tier 2 é um PONTEIRO — e um ponteiro só vale enquanto aponta
+/// para algo que ESTÁ no prompt. Duas coisas seguem daí, e as duas são regra:
+///
+/// 1. **Dispara por QUALQUER uma das duas.** Condicionar o tier inteiro ao
+///    `## Contexto` deixava indespachável a spec que declara critérios sob um
+///    título narrativo diferente (`## Problema`, `## Resumo`): o TASK voltava
+///    vazio e o `render::run` RECUSA um `## TASK` vazio com exit 2. Uma spec sem
+///    o título canônico é uma spec que degrada, nunca uma spec que não anda.
+/// 2. **Nomeia SÓ o que vai ser renderizado.** O `## ACCEPTANCE` colapsa quando
+///    a spec não declara critério ([`read_wave_acceptance`] devolve "" e o
+///    [`collapse_empty_sections`] derruba o título), e o `## WHY` colapsa quando
+///    ela não tem `## Contexto` nem `## Não-Objetivos` ([`build_why_block`]).
+///    Apontar para uma seção que não está no prompt é pior que não apontar: o
+///    agente vai procurar e não acha.
+///
+/// A pergunta NÃO é feita ao texto que este fallback tem em mãos: é feita aos
+/// BLOCOS que o compositor já montou, e é por isso que eles descem até aqui.
+/// Perguntar ao texto local funcionava enquanto os três recortes saíam do mesmo
+/// arquivo — o render de nível-spec —, e mentia no render de ONDA: o `## WHY` é
+/// recortado do spec do PAI e este texto é o da onda, então uma onda sem
+/// `## Contexto` próprio, cujo pai tem um, recebia o `## WHY` renderizado e,
+/// logo abaixo dele, a frase dizendo que o prompt não carrega narrativa nenhuma.
+///
+/// Vazio só quando não há nem narrativa nem régua para apontar: aí não existe
+/// ponteiro honesto a dar, e o TASK em branco de sempre é a resposta.
+fn build_task_fallback(
+    text: &str,
+    spec_path: &Path,
+    why_block: &str,
+    acceptance_block: &str,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(body) = cut_section_by_display(text, &["Root cause", "Causa raiz"]) {
         parts.push(body);
@@ -209,20 +461,12 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
         parts.push(body);
     }
     if parts.is_empty() {
-        let mut tier2: Vec<String> = Vec::new();
-        if let Some(body) = cut_section_by_key(text, "context") {
-            tier2.push(body);
-        }
-        if let Some(body) = cut_section_by_key(text, "acceptance-criteria") {
-            tier2.push(body);
-        }
-        if !tier2.is_empty() {
-            parts.push(
-                "> TASK fallback: the spec has no `## Tasks` section — the content below \
-                 is its Context + Acceptance Criteria sections, verbatim."
-                    .to_string(),
-            );
-            parts.append(&mut tier2);
+        // O ponteiro, não a cópia: a narrativa já viaja no `## WHY` e os
+        // critérios no `## ACCEPTANCE`.
+        if let Some(pointer) =
+            task_fallback_pointer(!why_block.trim().is_empty(), !acceptance_block.trim().is_empty())
+        {
+            parts.push(pointer);
         }
     }
     if parts.is_empty() {
@@ -233,6 +477,48 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
         spec_path.display()
     ));
     parts.join("\n\n")
+}
+
+/// O ponteiro do tier 2, nomeando SÓ as seções que o prompt vai mesmo carregar.
+///
+/// `why` e `ruler` NÃO são medidos aqui, e é a correção inteira: eles são a
+/// presença dos blocos que o compositor montou ([`build_why_block`] e
+/// [`read_wave_acceptance`]), passados por quem os montou. Enquanto esta função
+/// os re-media do texto local, ela media o arquivo ERRADO num render de onda — o
+/// `## WHY` sai do spec do PAI, e a onda cujo `spec.md` não tem `## Contexto`
+/// recebia a seção renderizada com a frase "this prompt does not say why the
+/// work exists" logo abaixo dela. Uma pergunta que se responde do mesmo lugar de
+/// onde o texto é recortado não tem como discordar dele.
+///
+/// Sem nenhuma das duas não há para onde apontar, e o retorno é `None` — o TASK
+/// em branco de sempre.
+///
+/// Pura, total; EN pela política de prompt de agente, como todo o resto do
+/// bloco.
+fn task_fallback_pointer(why: bool, ruler: bool) -> Option<String> {
+    let head = "> TASK fallback: the spec has no `## Tasks` section.";
+    let tail = "Derive the steps from it.";
+    // As frases falam do PROMPT, nunca de "this same spec": num render de onda o
+    // `## WHY` vem do spec do PAI e o `## ACCEPTANCE` do da onda, então a
+    // procedência que a frase antiga afirmava era falsa metade das vezes. O que o
+    // agente precisa saber é onde a seção está — e ela está aqui.
+    Some(match (why, ruler) {
+        (true, true) => format!(
+            "{head} The story of WHY this work exists is in `## WHY` above, and the criteria \
+             this work is judged by are in `## ACCEPTANCE` — both already in this prompt. \
+             Derive the steps from them."
+        ),
+        (true, false) => format!(
+            "{head} The story of WHY this work exists is in `## WHY` above. Nothing in this \
+             prompt states how the work will be judged — no acceptance criteria reached it. \
+             {tail}"
+        ),
+        (false, true) => format!(
+            "{head} The criteria this work is judged by are in `## ACCEPTANCE` above. Nothing \
+             in this prompt says why the work exists — no narrative section reached it. {tail}"
+        ),
+        (false, false) => return None,
+    })
 }
 
 /// Cut a `## <name>` section body (heading included) by literal display name,
@@ -257,9 +543,10 @@ fn cut_section_by_display(text: &str, names: &[&str]) -> Option<String> {
 
 /// Cut a `## <key>` section body (heading included) by canonical section key
 /// via [`is_heading`] — i18n-aware, so `context` matches both `## Context` and
-/// `## Contexto`, and `acceptance-criteria` matches `## Acceptance Criteria`
-/// and `## Critérios de Aceitação`. Returns `None` when the heading is absent
-/// or carries no body content.
+/// `## Contexto`. Returns `None` when the heading is absent or carries no body
+/// content. FIRST heading wins — fine for the narrative sections this serves;
+/// the criteria go through `spec_sections::section_block`, whose defensive pick
+/// among duplicated headings is the one QA uses.
 fn cut_section_by_key(text: &str, key: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.iter().position(|l| is_heading(l, key))?;
@@ -316,6 +603,14 @@ const MATERIAL_EVIDENCE: &str = "### Evidence";
 /// byte-identical to one rendered before this channel existed. Fail-open: an
 /// unreadable spec yields "".
 ///
+/// The parent is opened by [`read_parent_spec`] — the SAME `spec.md` →
+/// `spec.original.md` resolution `## WHY` uses. A rewave archives the parent
+/// under that name, and this arm used to read `spec.md` directly: every wave
+/// rendered after the archiving carried the story from the archive and an EMPTY
+/// material section, so the definitions/decisions/evidence channel died for
+/// exactly the population that has waves. (`## ACCEPTANCE` no longer reads the
+/// parent at all — its source is the union QA executes, [`ruler_source`].)
+///
 /// Returns the rendered block AND the [`MaterialCensus`] of what the cut did, so
 /// the dispatch can REPORT what it held back instead of printing a bare total
 /// that reads as a truncation. The census is computed by the cut ITSELF — a
@@ -325,7 +620,7 @@ pub(crate) fn build_conversation_material(
     parent_spec: &Path,
     wave_spec: &Path,
 ) -> (String, MaterialCensus) {
-    let text = mfs::read_to_string(parent_spec).unwrap_or_default();
+    let text = read_parent_spec(parent_spec);
     let wave_text = mfs::read_to_string(wave_spec).unwrap_or_default();
     cut_material_for_files(&text, &files_section_paths(&wave_text))
 }
@@ -791,6 +1086,14 @@ pub(crate) fn collapse_empty_sections(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// O que o COMPOSITOR faz num render de nível-spec: os dois blocos são
+    /// montados primeiro, do mesmo arquivo, e o TASK é lido com eles em mãos —
+    /// o ponteiro do tier 2 nunca se pergunta nada por conta própria. Ver a
+    /// ordem em `render::render_prompt_at`.
+    fn task_steps_of(path: &Path) -> String {
+        read_task_steps(path, &build_why_block(path), &read_wave_acceptance(path, None))
+    }
+
     use super::*;
     use tempfile::tempdir;
 
@@ -1086,7 +1389,7 @@ mod tests {
             "# Title\n## Resumo\nx\n## Tarefas\n- [ ] do a\n- [ ] do b\n## Deps\nz\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("Tarefas"));
         assert!(steps.contains("do a"));
         assert!(!steps.contains("Deps"));
@@ -1106,7 +1409,7 @@ mod tests {
              - fix the lock ordering\n## Critérios de Aceitação\n- repro exits 0\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(!steps.is_empty(), "TASK block must not be empty for a lean spec");
         assert!(steps.contains("race on shutdown"), "root cause missing: {steps}");
         assert!(steps.contains("fix the lock ordering"), "plan missing: {steps}");
@@ -1117,11 +1420,16 @@ mod tests {
     }
 
     #[test]
-    fn task_fallback_tf_without_tasks_yields_context_and_ac() {
+    fn task_fallback_tf_without_tasks_yields_context_only() {
         // A tactical-fix / drafted spec: no `## Tasks`, no `## Causa raiz` /
         // `## Plano` — only `## Contexto` + `## Critérios de Aceitação`. The
-        // TASK block must be non-empty, carry both sections and a header
-        // naming the origin, instead of degrading to a blank TASK.
+        // TASK block must be non-empty and POINT at where the narrative and the
+        // ruler are, instead of degrading to a blank TASK.
+        //
+        // Nem os critérios nem o Contexto entram aqui: cada um tem bloco próprio
+        // no prompt (`## ACCEPTANCE`, `read_wave_acceptance`; `## WHY`,
+        // `build_why_block`), recortado deste mesmo spec — copiá-los aqui
+        // imprimiria os dois duas vezes.
         let dir = tempdir().unwrap();
         let path = dir.path().join("spec.md");
         std::fs::write(
@@ -1130,12 +1438,89 @@ mod tests {
              ## Critérios de Aceitação\n- **AC-1** — repro query returns hits\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(!steps.is_empty(), "TASK must not be empty for a TF spec");
         assert!(steps.contains("TASK fallback"), "origin header missing: {steps}");
-        assert!(steps.contains("the digest misses pt intents"), "context missing: {steps}");
-        assert!(steps.contains("AC-1"), "acceptance criteria missing: {steps}");
+        assert!(steps.contains("`## WHY`"), "the pointer must name the story: {steps}");
+        assert!(steps.contains("`## ACCEPTANCE`"), "the pointer must name the ruler: {steps}");
+        assert!(
+            !steps.contains("the digest misses pt intents"),
+            "the context must not be copied in too: {steps}"
+        );
+        assert!(!steps.contains("AC-1"), "the criteria must not ride in TASK too: {steps}");
         assert!(steps.contains("Read the full spec at"), "read-the-spec cue missing: {steps}");
+
+        // ...and both DO reach the prompt, each through its own channel.
+        let acceptance = read_wave_acceptance(&path, None);
+        assert!(acceptance.contains("AC-1"), "criteria lost entirely: {acceptance}");
+        assert!(acceptance.contains("JUDGE"), "the ruler must name itself: {acceptance}");
+        assert!(
+            build_why_block(&path).contains("the digest misses pt intents"),
+            "the story must still reach the prompt through `## WHY`"
+        );
+
+        // Sem narrativa NEM régua não há para onde apontar, e o bloco volta a
+        // ser vazio — o TASK em branco de sempre, nunca um ponteiro para o nada.
+        let bare = dir.path().join("bare.md");
+        std::fs::write(&bare, "# TF\n## Limites\nIN: nada\n").unwrap();
+        assert!(task_steps_of(&bare).is_empty(), "{:?}", task_steps_of(&bare));
+    }
+
+    /// A REGRESSÃO que este teste tranca: uma spec que declara critérios sob um
+    /// título narrativo que não é `## Contexto` voltava com `## TASK` VAZIO, e
+    /// `render::run` recusa um TASK vazio com exit 2 — a spec ficava
+    /// indespachável em vez de degradar.
+    ///
+    /// E o ponteiro nomeia SÓ o que o prompt carrega: sem `## Contexto` nem
+    /// `## Não-Objetivos` o `## WHY` colapsa, então mandar o agente lê-lo seria
+    /// mandá-lo procurar uma seção que não está ali.
+    #[test]
+    fn task_fallback_fires_on_criteria_alone_and_points_only_at_what_renders() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(
+            &path,
+            "# TF\n## Problema\no digest perde intents pt\n\
+             ## Critérios de Aceitação\n- **AC-1** — repro query returns hits\n",
+        )
+        .unwrap();
+        let steps = task_steps_of(&path);
+        assert!(!steps.is_empty(), "a spec ficou indespachável: TASK vazio");
+        assert!(steps.contains("`## ACCEPTANCE`"), "a régua tem de ser nomeada: {steps}");
+        assert!(
+            !steps.contains("`## WHY`"),
+            "o `## WHY` colapsa nesta spec — apontar para ele manda procurar o que não existe: \
+             {steps}"
+        );
+        assert!(steps.contains("Read the full spec at"), "read-the-spec cue missing: {steps}");
+        // E a outra metade da mesma regra: o bloco que ele nomeia é o que
+        // realmente renderiza, e o que ele NÃO nomeia é o que colapsa.
+        assert!(read_wave_acceptance(&path, None).contains("AC-1"), "a régua renderiza");
+        assert!(build_why_block(&path).is_empty(), "e o `## WHY` colapsa mesmo");
+    }
+
+    /// O espelho: narrativa sem régua. O `## ACCEPTANCE` colapsa, então o
+    /// ponteiro fala só do `## WHY`.
+    #[test]
+    fn task_fallback_points_only_at_why_when_the_spec_declares_no_criteria() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        std::fs::write(&path, "# TF\n## Contexto\na história inteira\n").unwrap();
+        let steps = task_steps_of(&path);
+        assert!(steps.contains("`## WHY`"), "a história tem de ser nomeada: {steps}");
+        assert!(
+            !steps.contains("`## ACCEPTANCE`"),
+            "sem critério declarado o `## ACCEPTANCE` colapsa: {steps}"
+        );
+        assert!(read_wave_acceptance(&path, None).is_empty(), "e ele colapsa mesmo");
+
+        // `## Não-Objetivos` sozinho também arma o `## WHY`, pela mesma regra
+        // que o [`build_why_block`] usa — as duas seções, não só a primeira.
+        let ng = dir.path().join("ng.md");
+        std::fs::write(&ng, "# TF\n## Não-Objetivos\n- não mexer no portão\n").unwrap();
+        let steps = task_steps_of(&ng);
+        assert!(steps.contains("`## WHY`"), "o não-objetivo também é história: {steps}");
+        assert!(!build_why_block(&ng).is_empty(), "e o bloco renderiza mesmo");
     }
 
     #[test]
@@ -1150,9 +1535,22 @@ mod tests {
              ## Acceptance Criteria\n- **AC-1** — cache invalidates on write\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
-        assert!(steps.contains("widget cache is stale"), "context missing: {steps}");
-        assert!(steps.contains("cache invalidates on write"), "AC missing: {steps}");
+        let steps = task_steps_of(&path);
+        // O `## Context` em EN resolve pela mesma chave canônica — é ele que
+        // arma o tier 2, mesmo agora que o tier 2 aponta em vez de copiar.
+        assert!(steps.contains("TASK fallback"), "the EN heading must arm tier 2: {steps}");
+        assert!(!steps.contains("widget cache is stale"), "context copied into TASK: {steps}");
+        // The EN `## Acceptance Criteria` resolves through the same canonical
+        // key — for the ACCEPTANCE block now, not for the TASK fallback.
+        assert!(!steps.contains("cache invalidates on write"), "AC leaked into TASK: {steps}");
+        assert!(
+            read_wave_acceptance(&path, None).contains("cache invalidates on write"),
+            "the EN heading must resolve for the ruler too"
+        );
+        assert!(
+            build_why_block(&path).contains("widget cache is stale"),
+            "and the EN `## Context` must resolve for the story too"
+        );
     }
 
     #[test]
@@ -1167,7 +1565,7 @@ mod tests {
              ## Critérios de Aceitação\n- **AC-1** — gate passes\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert_eq!(steps, "## Tasks\n- [ ] do the thing", "structured cut must be byte-identical");
         assert!(!steps.contains("TASK fallback"), "fallback header leaked: {steps}");
     }
@@ -1184,7 +1582,7 @@ mod tests {
              ## Plano\n- fix lock order\n## Critérios de Aceitação\n- repro exits 0\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("race on shutdown"));
         assert!(steps.contains("fix lock order"));
         assert!(!steps.contains("TASK fallback"), "tier-2 header leaked: {steps}");
@@ -1201,7 +1599,7 @@ mod tests {
             "# T\n## Causa raiz\nthe cause\n## Plano\nthe plan\n## Tasks\n- [ ] do the thing\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("do the thing"));
         assert!(!steps.contains("Read the full spec at"), "fallback leaked: {steps}");
         assert!(!steps.contains("the cause"), "root cause leaked: {steps}");

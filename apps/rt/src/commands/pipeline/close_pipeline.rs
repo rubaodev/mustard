@@ -1036,6 +1036,8 @@ mod tests {
             control_exit: None,
             confirmation,
             exit: Some(1),
+            red_reason: Some(ac_negative_check::RedReason::NonzeroExit),
+            second_exit: None,
             confirmation_exit: None,
             removal: ac_negative_check::Removal::NotTaken,
             removal_exit: None,

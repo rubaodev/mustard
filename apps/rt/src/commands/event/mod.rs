@@ -2,6 +2,7 @@ pub mod cli;
 
 pub mod base_candidates;
 pub(crate) mod base_gate;
+pub(crate) mod census_settlement;
 pub mod emit_event;
 pub mod emit_phase;
 pub mod emit_pipeline;

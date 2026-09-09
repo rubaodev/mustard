@@ -62,7 +62,8 @@
 //! {
 //!   "events": ["pipeline.scope", "pipeline.phase"],
 //!   "scaffold": {
-//!     "created_files": [], "skipped": [], "refreshed": [], "removed": []
+//!     "created_files": [], "skipped": [], "refreshed": [], "removed": [],
+//!     "untraced_waves": []
 //!   },
 //!   "validation": { "ok": true, "issues": [] },
 //!   "dependencies": { "ok": true, "issues": [] },
@@ -80,7 +81,10 @@
 //! scaffold failed — no phase transition is recorded for a plan that did not
 //! materialise). The four scaffold lists are ALWAYS present (empty when nothing
 //! changed) and `refreshed` / `removed` are sorted, so re-running an unchanged
-//! plan prints the same bytes. `refreshed` / `removed` are non-empty only before
+//! plan prints the same bytes. `untraced_waves` is advisory — a wave with tasks
+//! that traces to no existing criterion, or a `satisfies` id no criterion
+//! defines — and travels whether or not the scaffold refused, like
+//! `validation.issues`. `refreshed` / `removed` are non-empty only before
 //! the user approves the spec — see
 //! [`crate::commands::wave::wave_scaffold`]'s write modes. Keys serialize in
 //! insertion order (the workspace enables serde_json's `preserve_order`), which
@@ -186,8 +190,9 @@ pub fn run(opts: PlanMaterializeOpts) {
 /// A refusal is a blocking gate: the plan could not be read, one of the three
 /// scaffold gates (coverage / unsupportable claims / sufficiency) fired, two
 /// dispatch-parallel waves declared the same file, or the negative proof
-/// refused. The two WARN-level steps (`validation`, `dependencies`) are NOT
-/// refusals — they are expressed in the JSON and the plan still materialises.
+/// refused. The WARN-level signals (`validation`, `dependencies`, and the
+/// scaffold's `untraced_waves`) are NOT refusals — they are expressed in the
+/// JSON and the plan still materialises.
 pub(crate) fn refused(report: &Value) -> bool {
     let scaffold_err = report["scaffold"]["error"].as_str();
     let proven = report["proof"]["ok"].as_bool().unwrap_or(false);
@@ -311,6 +316,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         // criterion that no wave covers BLOCKS the PLAN transition. The layout
         // was materialised (idempotent), but `scaffold_ok=false` withholds the
         // events and `run` exits non-zero, so the gap is fixed before EXECUTE.
+        //
+        // `untraced_waves` travels in BOTH arms and decides neither: it is
+        // advisory, like `validation.issues` — a wave with tasks and no
+        // criterion is dispatched with its `## ACCEPTANCE` collapsed, and the
+        // report says so without withholding the plan.
         ScaffoldOutcome::Created {
             created,
             skipped,
@@ -319,6 +329,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             uncovered_acs,
             unsupportable_claims,
             criteria_outside_claimants,
+            untraced_waves,
         } if uncovered_acs.is_empty()
             && unsupportable_claims.is_empty()
             && criteria_outside_claimants.is_empty() =>
@@ -329,6 +340,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                     "skipped": skipped,
                     "refreshed": refreshed,
                     "removed": removed,
+                    "untraced_waves": untraced_waves,
                 }),
                 true,
             )
@@ -347,6 +359,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             uncovered_acs,
             unsupportable_claims,
             criteria_outside_claimants,
+            untraced_waves,
         } => (
             json!({
                 "created_files": created,
@@ -367,6 +380,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                 "uncovered_acs": uncovered_acs,
                 "unsupportable_claims": unsupportable_claims,
                 "criteria_outside_claimants": criteria_outside_claimants,
+                "untraced_waves": untraced_waves,
             }),
             false,
         ),
@@ -614,20 +628,35 @@ mod tests {
     fn seed(project: &Path, slug: &str) -> (PathBuf, PathBuf) {
         let spec_dir = project.join(".claude").join("spec").join(slug);
         std::fs::create_dir_all(&spec_dir).unwrap();
+        // O `## Acceptance Criteria` do pai é load-bearing: o `satisfies` de cada
+        // onda só é régua se nomear um critério que EXISTE. Sem esta seção os
+        // dois ids são fantasmas e o plano é recusado — que é o caso que a
+        // fixture NÃO quer medir.
         std::fs::write(
             spec_dir.join("spec.md"),
-            "# Demo\n\n## Files\n- `a.rs` (create)\n\n### Backend Agent\n- [ ] t1\n- [ ] t2\n",
+            "# Demo\n\n## Files\n- `a.rs` (create)\n\n### Backend Agent\n- [ ] t1\n- [ ] t2\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
         )
         .unwrap();
         let plan_path = project.join("plan.json");
         std::fs::write(
             &plan_path,
             serde_json::to_string(&json!({
+                // `files` + `satisfies` are load-bearing, not decoration: a wave
+                // that does work and traces to NO criterion is refused (its
+                // dispatched prompt would carry no ruler), and one that claims a
+                // criterion while declaring nowhere to do the work is refused by
+                // the claim-support gap. This fixture is the HAPPY path, so it
+                // has to clear both.
                 "waves": [
                     { "n": 1, "role": "rt", "summary": "base", "depends_on": [],
-                      "tasks": ["do the thing"] },
+                      "tasks": ["do the thing"], "files": ["src/rt.rs"],
+                      "satisfies": ["AC-1"] },
                     { "n": 2, "role": "cli", "summary": "wire", "depends_on": ["wave-1-rt"],
-                      "tasks": ["wire it"] }
+                      "tasks": ["wire it"], "files": ["src/cli.rs"],
+                      "satisfies": ["AC-2"] }
                 ],
                 "total_waves": 2,
                 "lang": "en-US"
@@ -1059,19 +1088,32 @@ mod tests {
         std::fs::write(project.join("mustard.json"), b"{}").unwrap();
         let spec_dir = project.join(".claude").join("spec").join("reality-plan");
         std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# Demo\n\n## Files\n- `a.rs` (create)\n").unwrap();
+        // Os critérios que o `satisfies` das ondas nomeia: um id que não existe
+        // não é régua, e o plano seria recusado por uma razão que não é a desta
+        // fixture.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Demo\n\n## Files\n- `a.rs` (create)\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
+        )
+        .unwrap();
         let plan_path = project.join("plan.json");
         std::fs::write(
             &plan_path,
             serde_json::to_string(&json!({
                 "waves": [
+                    // `satisfies` on both waves: a wave with tasks and no
+                    // criterion is refused, and this fixture is about the DUTY
+                    // path — it must not trip an unrelated gate.
                     { "n": 1, "role": "rt", "summary": "wire it", "tasks": ["wire the webhook"],
-                      "files": ["src/hook.rs"],
+                      "files": ["src/hook.rs"], "satisfies": ["AC-1"],
                       "reality_obligations": [
                           "read the provider's official webhook doc for the retry semantics"
                       ] },
                     { "n": 2, "role": "cli", "summary": "render it", "tasks": ["render it"],
-                      "files": ["src/cli.rs"] }
+                      "files": ["src/cli.rs"], "satisfies": ["AC-2"] }
                 ],
                 "total_waves": 2,
                 "lang": "en-US"

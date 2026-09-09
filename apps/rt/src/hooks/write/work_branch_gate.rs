@@ -20,8 +20,10 @@
 //!    on a branch it never asked for. The `Deny` names the branch, the paths
 //!    holding the work, and the act that unblocks it (commit or stash). The
 //!    decision itself is
-//!    [`crate::commands::event::work_branch::busy_checkout`], shared with
-//!    `spec-draft`'s cut so both doors refuse the same thing in the same words.
+//!    [`crate::commands::event::census_settlement::settle`], shared with
+//!    `spec-draft`'s cut so both doors refuse the same thing in the same words
+//!    — and it also PERFORMS the base refresh and the census commit, so neither
+//!    door can get their order wrong.
 //!    Diverting the second unit into its own worktree was tried and withdrawn:
 //!    such a worktree needed the project's git-ignored environment linked into
 //!    it, and `git worktree remove` DESCENDS a Windows junction, so removing
@@ -127,9 +129,12 @@ use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::commands::event::census_settlement::{
+    settle, CensusDoor, CensusSettlement, CheckoutPosition,
+};
 use crate::commands::event::work_branch::{
-    base_for, busy_checkout, checkout_work_branch, current_branch, is_protected,
-    name_dirty_paths, recorded_or_derived_base, refresh_integration_bases,
+    base_for, checkout_work_branch, current_branch, is_protected, name_dirty_paths,
+    recorded_or_derived_base,
 };
 use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
@@ -397,10 +402,9 @@ impl Check for WorkBranchGate {
         // below) pair otherwise.
         let nested = nested_work_target_base(&vcs, &project, &local, &target, &config);
         let in_submodule = nested.is_some();
-        // The NAME is resolved here and the BASE is not: the base is only needed
-        // by a cut that actually happens, and asking for it earlier would make a
-        // session ALREADY sitting on its own branch (the fast path below) depend
-        // on an answer that changes nothing for it.
+        // The NAME is resolved here and the BASE is not: it waits for step 2.4,
+        // AFTER the fast path below, so a session ALREADY sitting on its own
+        // branch never depends on an answer that changes nothing for it.
         let (target, nested_base) = match nested {
             Some((target, base)) => (target, Some(base)),
             None => (target.clone(), None),
@@ -411,6 +415,16 @@ impl Check for WorkBranchGate {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         }
+
+        // 2.4 WHERE from, resolved ONCE — read by the refusal at 2.5, by the
+        //     census recording at 3.4 and by the checkout at 4, so the three
+        //     cannot disagree about which base this cut has. It returns nothing
+        //     by itself, so the ORDER of the refusals below is unchanged: a busy
+        //     checkout is still refused before an unknown base is reported.
+        let resolved_base: Result<String, Vec<String>> = match nested_base {
+            Some(base) => Ok(base),
+            None => recorded_or_derived_base(&project, &sid, &target, &config),
+        };
 
         // 2.5 The MAIN checkout is ALREADY HOLDING another unit, and that unit
         //     has not committed. Taking it is the defect this step exists to
@@ -425,7 +439,8 @@ impl Check for WorkBranchGate {
         //     junction, so the removal deleted the main checkout's own
         //     directory.
         //
-        //     The decision is `busy_checkout`, shared with `spec-draft`'s cut —
+        //     The decision is `census_settlement::settle`, shared with
+        //     `spec-draft`'s cut —
         //     that door opens FIRST (at approval, before any Write), so a guard
         //     living only here never ran. It is taken here on the SAME terms:
         //     this gate used to ask `is_main_checkout` first, which the cut
@@ -441,23 +456,48 @@ impl Check for WorkBranchGate {
         //
         //     A SUBMODULE is still excluded, for a reason of its own that
         //     survives: its HEAD is judged against the SUPERproject's bases,
-        //     which misreads its position outright.
+        //     which misreads its position outright. It is stated as an INPUT —
+        //     a position this decision cannot attribute — rather than as an
+        //     `if` around the call, because an `if` around the call is exactly
+        //     how this door kept ending up with a rule the other doors did not
+        //     have. The base refresh still runs there, as it always did: that
+        //     step never depended on attribution.
         //
         //     The marker is KEPT: the unit was never started, so there is
         //     nothing to consume, and the next attempt (after the operator
         //     resolves git) retries the cut.
-        if !in_submodule {
-            if let Some(busy) =
-                busy_checkout(Path::new(&local), current.as_deref(), &target, &config)
-            {
-                return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) });
+        //
+        //     There is no step 3 or 3.4 here any more. The base refresh and the
+        //     census commit used to be two further statements in this function,
+        //     each with its own condition, and keeping the two conditions and
+        //     their ORDER in agreement with the two other doors is what failed
+        //     five times. The one call below performs them, in the one order,
+        //     and answers what this gate should do.
+        //
+        //     The root handed over is the LOCAL tree — the edited file's own
+        //     directory, which may sit several levels below the toplevel. The
+        //     settlement resolves the repository's toplevel from it itself;
+        //     this door does not, because a door choosing the root is how the
+        //     recording once ran with pathspecs that matched nothing.
+        let base_hint = resolved_base.as_deref().ok();
+        match settle(
+            Path::new(&local),
+            CheckoutPosition::at(current.as_deref(), Some(target.as_str()), base_hint)
+                .attributable(!in_submodule),
+            &config,
+            CensusDoor::WriteHookPass,
+        ) {
+            CensusSettlement::Refuse(busy) => {
+                return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) })
             }
+            CensusSettlement::Recorded(_) | CensusSettlement::Proceed => {}
         }
 
-        // 2.9 WHERE from — asked now, because now a cut is really going to
-        //     happen. The SAME base resolution `spec-draft`'s cut takes: the
-        //     operator's recorded answer when the derivation cannot reproduce
-        //     it, else the base the unit's kind implies. Two doors, one branch.
+        // 2.9 WHERE from — the answer resolved at 2.4 becomes REQUIRED here,
+        //     because now a cut is really going to happen. The SAME base
+        //     resolution `spec-draft`'s cut takes: the operator's recorded
+        //     answer when the derivation cannot reproduce it, else the base the
+        //     unit's kind implies. Two doors, one branch.
         //
         //     When NOTHING says which base this emergency came from and the flow
         //     declares several it could have, there is no honest cut to make.
@@ -468,30 +508,20 @@ impl Check for WorkBranchGate {
         //     Say it where it IS read, and cut nothing. The marker is KEPT: the
         //     unit was never started, so nothing is consumed and the attempt
         //     that follows an explicit `--base` still has its intent.
-        let base = match nested_base {
-            Some(base) => base,
-            None => match recorded_or_derived_base(&project, &sid, &target, &config) {
-                Ok(base) => base,
-                Err(candidates) => {
-                    let message = translate("workbranch.base.unknown", config.i18n().lang)
-                        .replace("{target}", &target)
-                        .replace("{candidates}", &candidates.join(", "));
-                    return Ok(if on_protected {
-                        // Staying here would land the edit on the base itself.
-                        Verdict::Deny { reason: message }
-                    } else {
-                        Verdict::Warn { message }
-                    });
-                }
-            },
+        let base = match resolved_base {
+            Ok(base) => base,
+            Err(candidates) => {
+                let message = translate("workbranch.base.unknown", config.i18n().lang)
+                    .replace("{target}", &target)
+                    .replace("{candidates}", &candidates.join(", "));
+                return Ok(if on_protected {
+                    // Staying here would land the edit on the base itself.
+                    Verdict::Deny { reason: message }
+                } else {
+                    Verdict::Warn { message }
+                });
+            }
         };
-
-        // 3. Refresh the bases this cut may start from FIRST so the branch is
-        //    cut from the latest of them — `base`, the one it will really use,
-        //    included, because the pick now comes out of the catalogue and need
-        //    not be declared. Fail-open: offline / no remote / non-ff never
-        //    blocks the edit (see refresh_integration_bases).
-        refresh_integration_bases(&vcs, &local, &config, current.as_deref(), Some(&base));
 
         // 3.5 Pre-check the dirty tree with the SAME probe the worktree door
         //     uses, BEFORE the attempt. The cut itself still carries changes
@@ -1038,6 +1068,71 @@ mod tests {
         assert_eq!(
             head_sha, ahead_sha,
             "the work branch is based on the fast-forwarded dev (latest origin commit)",
+        );
+    }
+
+    /// The census settlement lands on the BASE whatever directory the edit is
+    /// in. This door hands the settlement the edited file's directory (the
+    /// local tree), never the toplevel; the settlement resolves the toplevel
+    /// itself. Before it did, an edit three directories deep made every
+    /// pathspec inside the settlement miss (they are CWD-relative, while the
+    /// paths git reported were toplevel-relative): the recording answered
+    /// "nothing to record" and the dirty census rode into the unit's branch.
+    #[test]
+    fn a_deep_edit_still_records_the_census_on_the_base() {
+        use crate::commands::event::base_gate::CENSUS_COMMIT_SUBJECT;
+        use crate::commands::event::work_branch::{checkout_work, CheckoutWork};
+        use crate::commands::scan::default_model_path;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        // Flow only, nothing protected: a protected base would turn this into
+        // the census-on-protected-base refusal, which is another row.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        init_repo_on(root, "dev");
+        let model = default_model_path(root);
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        std::fs::write(model.with_file_name("grain.dictionary.json"), "{\"terms\":[]}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "track the census"]);
+        // The census re-mined since, dirty and the tool's.
+        std::fs::write(&model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "precondition: only the census is dirty",
+        );
+
+        // The first edit of the unit, THREE directories below the toplevel.
+        let deep = root.join("apps").join("rt").join("src");
+        std::fs::create_dir_all(&deep).unwrap();
+        let sid = "sess-deep-edit";
+        context::set_pending_branch(root_s, sid, "dev_deep", None);
+        let (input, ctx) =
+            pre_edit_input_for(root_s, sid, deep.join("lib.rs").to_str().unwrap());
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
+        assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_deep"));
+
+        let subject = Command::new("git")
+            .args(["log", "-1", "--format=%s", "dev"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&subject.stdout).trim(),
+            CENSUS_COMMIT_SUBJECT,
+            "the census landed on the base, not in the unit",
+        );
+        assert_eq!(
+            checkout_work(root),
+            CheckoutWork::ProvenClean,
+            "and nothing of it rode into the new branch",
         );
     }
 
