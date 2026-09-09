@@ -47,10 +47,11 @@
 //! 2. **Only the root is edited.** `wave-plan.md` carries the criterion lines
 //!    too — the union QA executes — and a root-only edit leaves QA running the
 //!    superseded command. The wave specs carry NO copy: each names only WHICH
-//!    ids it satisfies (`satisfies:` frontmatter), and the dispatch prompt is
-//!    rendered from the parent's CURRENT section at dispatch time — so an
-//!    amendment written to the parent reaches every wave's prompt without
-//!    touching a frozen layout.
+//!    ids it satisfies (`satisfies:` frontmatter), and the dispatch prompt cuts
+//!    that CURRENT section — the very file the judge reads, the union first —
+//!    at dispatch time, so an amendment written here reaches every wave's
+//!    prompt without touching a frozen layout, and reaches it even after a
+//!    rewave archives the root to `spec.original.md`.
 //!
 //! ## What this door does NOT do: ADD
 //!

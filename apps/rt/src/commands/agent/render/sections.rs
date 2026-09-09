@@ -199,9 +199,9 @@ pub(crate) fn read_reality_obligations(spec_path: &Path) -> String {
     out
 }
 
-/// Monta o corpo do `## ACCEPTANCE` — os critérios que o `spec.md` do PAI
-/// declara HOJE, literais, com as linhas `Command:` / `Expect:` / `Control:`
-/// intactas, filtrados pelo `satisfies:` do frontmatter da onda quando há uma.
+/// Monta o corpo do `## ACCEPTANCE` — os critérios que o QA vai EXECUTAR,
+/// literais, com as linhas `Command:` / `Expect:` / `Control:` intactas,
+/// filtrados pelo `satisfies:` do frontmatter da onda quando há uma.
 ///
 /// Os critérios são a RÉGUA, e até aqui a onda nunca a via: a união mora no
 /// `wave-plan.md` (de onde o QA lê) e o prompt da onda carregava 15 campos, e
@@ -211,14 +211,20 @@ pub(crate) fn read_reality_obligations(spec_path: &Path) -> String {
 /// pai e nunca chegava ao prompt de onda nenhuma — o agente re-despachado por
 /// um achado da review era justamente quem não via o critério escrito para ele.
 ///
-/// Um prompt é renderizado na hora do despacho, e lê a fonte ATUAL. O pai é
-/// aberto pela MESMA resolução que o [`build_why_block`] usa — `spec.md`, senão
-/// `spec.original.md` depois de um rewave arquivar o original — e a seção é
-/// escolhida pelo MESMO `section_block` que o `qa-run` usa, então um rascunho
-/// legado com o título duplicado rende a lista, não o placeholder. A onda
-/// contribui só o filtro ([`wave_scaffold::parse_wave_ruler`]): sem `satisfies`
-/// não há régua e o bloco volta vazio; sem onda (render de nível-spec) a seção
-/// inteira é a régua da unidade.
+/// Um prompt é renderizado na hora do despacho, e lê a fonte ATUAL — a MESMA
+/// que o juiz lê ([`ruler_source`]): a união do `wave-plan.md`, e o
+/// `## Acceptance Criteria` do pai só para a spec que plano de ondas nenhum
+/// materializou. Ler o pai aqui discordava do QA em dois casos medidos, e nos
+/// dois o agente era julgado por um texto que nunca viu: uma onda com linhas de
+/// `acceptance` PRÓPRIAS (o pai não define o id, o bloco colapsava, e a
+/// rastreabilidade contava a onda como coberta), e um rewave (o pai vira
+/// `spec.original.md`, que o `ac-amend` não reescreve, então o prompt mostrava
+/// o comando VELHO e o QA rodava o novo). A seção é escolhida pelo MESMO
+/// `section_block` que o `qa-run` usa, então um rascunho legado com o título
+/// duplicado rende a lista, não o placeholder. A onda contribui só o filtro
+/// ([`wave_scaffold::parse_wave_ruler`]): sem `satisfies` não há régua e o
+/// bloco volta vazio; sem onda (render de nível-spec) a seção inteira é a régua
+/// da unidade.
 ///
 /// A linha de instrução é composta AQUI em vez de ficar estática sob o título do
 /// template, pelo mesmo motivo que [`read_reality_obligations`] compõe a dela:
@@ -233,10 +239,8 @@ pub(crate) fn read_reality_obligations(spec_path: &Path) -> String {
 /// devolve "". O TEXTO da instrução fica em EN, pela política de prompt de
 /// agente.
 pub(crate) fn read_wave_acceptance(parent_spec: &Path, wave_spec: Option<&Path>) -> String {
-    use crate::commands::spec::spec_sections::section_block;
     use crate::commands::wave::wave_scaffold::{parse_wave_ruler, REWAVE_ACCEPTANCE_NOTE};
-    let text = read_parent_spec(parent_spec);
-    let Some(section) = section_block(&text, "acceptance-criteria") else {
+    let Some(section) = ruler_source(parent_spec) else {
         return String::new();
     };
     let section = section.trim_end();
@@ -309,12 +313,42 @@ fn criterion_blocks(section: &str) -> Vec<(String, String)> {
     out
 }
 
+/// O nome do índice do plano, ao lado do spec do pai — o arquivo de onde o QA
+/// lê a união dos critérios.
+const WAVE_PLAN_MD: &str = "wave-plan.md";
+
+/// A seção `## Acceptance Criteria` que o JUIZ vai executar, cortada pelo mesmo
+/// `section_block` que o `qa-run` usa: a união do `wave-plan.md` quando o plano
+/// materializou uma, e a seção do PAI ([`read_parent_spec`]) quando não há plano
+/// de ondas — a spec light / tactical-fix, cujo caminho isto não muda.
+///
+/// UM arquivo para o leitor e para o juiz, por construção. Enquanto a régua saía
+/// do pai, dois casos medidos rendiam prompt e veredito de fontes diferentes: a
+/// onda com `acceptance` PRÓPRIA (o id só existe na união, então o pai não
+/// definia nada e o bloco colapsava — e o portão de rastreabilidade ainda
+/// contava a onda como coberta) e o rewave (o pai é renomeado para
+/// `spec.original.md`, que o `ac-amend`/`ac-add` não reescreve: o prompt
+/// mostrava o comando superado sob "estes são o JUIZ desta onda"). A ordem
+/// aqui é a mesma que o `qa_run::find_spec_file` aplica quando o `spec.md`
+/// some, e não há um segundo jeito de escolher a régua.
+///
+/// `None` quando nem a união nem o pai declaram a seção. Fail-open: arquivo
+/// ilegível é o mesmo que arquivo ausente.
+fn ruler_source(parent_spec: &Path) -> Option<String> {
+    use crate::commands::spec::spec_sections::section_block;
+    let dir = parent_spec.parent().unwrap_or_else(|| Path::new("."));
+    let union = mfs::read_to_string(dir.join(WAVE_PLAN_MD)).unwrap_or_default();
+    section_block(&union, "acceptance-criteria")
+        .or_else(|| section_block(&read_parent_spec(parent_spec), "acceptance-criteria"))
+}
+
 /// O spec do PAI, lido pela regra que o `wave-scaffold` aplica ao mesmo arquivo:
 /// `spec.md`, e `spec.original.md` quando aquele não abre. Um rewave RENOMEIA o
-/// spec do pai para lá no passo 9 da decomposição, então sem o fallback os três
-/// canais que leem o pai (`## WHY`, `## ACCEPTANCE` e `## CONVERSATION
-/// MATERIAL`) morrem exatamente para a população que TEM ondas. Fail-open: nada
-/// legível devolve "".
+/// spec do pai para lá no passo 9 da decomposição, então sem o fallback os dois
+/// canais que são MESMO do pai (`## WHY` e `## CONVERSATION MATERIAL`) morrem
+/// exatamente para a população que TEM ondas. A régua NÃO é um deles: ela sai da
+/// união que o QA executa ([`ruler_source`]), e só cai aqui quando plano de
+/// ondas nenhum existe. Fail-open: nada legível devolve "".
 fn read_parent_spec(parent_spec: &Path) -> String {
     let archived =
         parent_spec.parent().unwrap_or_else(|| Path::new(".")).join("spec.original.md");
@@ -340,8 +374,10 @@ fn read_parent_spec(parent_spec: &Path) -> String {
 ///
 /// Vazio quando o pai não declara nenhuma das duas, o que colapsa o título.
 /// Fail-open: spec ilegível devolve "". O pai é aberto por [`read_parent_spec`]
-/// — a mesma resolução (`spec.md` → `spec.original.md`) que o `## ACCEPTANCE`
-/// usa, para os dois canais não discordarem sobre qual arquivo é o pai.
+/// — a mesma resolução (`spec.md` → `spec.original.md`) que o `## CONVERSATION
+/// MATERIAL` usa, para os dois canais que são do PAI não discordarem sobre qual
+/// arquivo ele é. A régua não passa por aqui: ela sai da união que o QA executa
+/// ([`ruler_source`]).
 pub(crate) fn build_why_block(parent_spec: &Path) -> String {
     let text = read_parent_spec(parent_spec);
     let mut parts: Vec<String> = Vec::new();
@@ -568,12 +604,12 @@ const MATERIAL_EVIDENCE: &str = "### Evidence";
 /// unreadable spec yields "".
 ///
 /// The parent is opened by [`read_parent_spec`] — the SAME `spec.md` →
-/// `spec.original.md` resolution `## WHY` and `## ACCEPTANCE` use. A rewave
-/// archives the parent under that name, and this arm used to read `spec.md`
-/// directly: every wave rendered after the archiving carried the other two
-/// sections from the archive and an EMPTY material section, so the
-/// definitions/decisions/evidence channel died for exactly the population
-/// that has waves.
+/// `spec.original.md` resolution `## WHY` uses. A rewave archives the parent
+/// under that name, and this arm used to read `spec.md` directly: every wave
+/// rendered after the archiving carried the story from the archive and an EMPTY
+/// material section, so the definitions/decisions/evidence channel died for
+/// exactly the population that has waves. (`## ACCEPTANCE` no longer reads the
+/// parent at all — its source is the union QA executes, [`ruler_source`].)
 ///
 /// Returns the rendered block AND the [`MaterialCensus`] of what the cut did, so
 /// the dispatch can REPORT what it held back instead of printing a bare total

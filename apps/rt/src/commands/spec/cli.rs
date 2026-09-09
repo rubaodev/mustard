@@ -465,13 +465,6 @@ pub enum SpecCmd {
         /// `control: not-declared` — a WARN at drafting, never a refusal.
         #[arg(long)]
         control: Option<String>,
-        /// The wave that will be JUDGED by the new criterion: its number is
-        /// appended to that wave's `satisfies:` frontmatter line, so the next
-        /// dispatch of the wave renders the criterion under `## ACCEPTANCE`.
-        /// Omitted, the criterion is judged by no wave until a line names it,
-        /// and the WARN on stderr says which line.
-        #[arg(long)]
-        wave: Option<u32>,
         /// Take the proof against ANOTHER checkout — one that does not carry
         /// the work yet — instead of this tree.
         ///
@@ -646,7 +639,6 @@ pub fn dispatch(cmd: SpecCmd) {
             expect,
             reason,
             control,
-            wave,
             proof_tree,
         } => {
             spec::ac_add::run(spec::ac_add::AcAddOpts {
@@ -658,7 +650,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 reason,
                 control,
                 proof_tree,
-                wave,
             });
         }
         SpecCmd::MarkFinding { spec: slug, id, to, reason } => {

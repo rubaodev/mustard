@@ -51,10 +51,11 @@
 //!   `spec_sections::section_block(_, "acceptanceCriteria")` — that union is the
 //!   judge and stays intact. The wave's `spec.md` carries NO copy of the text:
 //!   only WHICH ids it satisfies, as `satisfies:` frontmatter (see
-//!   [`satisfied_ids`]), and the dispatch prompt reads the criteria themselves
-//!   from the parent's CURRENT section at render time. A copy would be a
-//!   snapshot, and the layout is frozen after approval — an `ac-amend` or
-//!   `ac-add` would never reach it.
+//!   [`satisfied_ids`]), and the dispatch prompt cuts the criteria themselves
+//!   out of that same union at render time (falling back to the parent only for
+//!   a spec whose plan declares no `acceptance` line at all) — one file for the
+//!   reader and the judge. A copy would be a snapshot, and the layout is frozen
+//!   after approval — an `ac-amend` or `ac-add` would never reach it.
 //! - `reality_obligations` — duties to check the world OUTSIDE the repository
 //!   before writing the code they govern. Materialised as
 //!   `## Reality Obligations` with `- **RO-{n}.{i}** — {duty}` items; the
@@ -425,7 +426,9 @@ fn wave_self_link(parent: &str, w: &WavePlanEntry) -> String {
 /// So the wave persists only the ids it satisfies ([`satisfied_ids`]), as one
 /// `satisfies:` frontmatter line ([`SATISFIES_KEY`]), written once and stable
 /// across the unit's life. The prompt is rendered at DISPATCH time from the
-/// parent's CURRENT `## Acceptance Criteria`, filtered by that line
+/// CURRENT `## Acceptance Criteria` of the file the JUDGE reads — the union in
+/// `wave-plan.md`, and the parent only for a spec that materialised no plan —
+/// filtered by that line
 /// ([`crate::commands::agent::render::sections::read_wave_acceptance`]). A
 /// wave that satisfies nothing gets no line, and renders no `## ACCEPTANCE`.
 pub(crate) fn render_wave_spec(
@@ -552,9 +555,10 @@ pub(crate) fn render_wave_spec(
 }
 
 /// The frontmatter key that names WHICH criteria a wave satisfies —
-/// `satisfies: [AC-1, AC-3]`. Written once by [`render_wave_spec`]; read by the
-/// prompt renderer ([`parse_wave_ruler`]); extended by `ac-add --wave N`
-/// ([`route_criterion`]).
+/// `satisfies: [AC-1, AC-3]`. Written once by [`render_wave_spec`], from
+/// `plan.json` and nowhere else; read by the prompt renderer
+/// ([`parse_wave_ruler`]) and named in the `ac-add` WARN as the line only a
+/// re-materialisation may rewrite.
 pub(crate) const SATISFIES_KEY: &str = "satisfies";
 
 /// The frontmatter key a REWAVE wave carries beside `satisfies:` to say the set
@@ -611,58 +615,6 @@ pub(crate) fn parse_wave_ruler(md: &str) -> WaveRuler {
         }
     }
     ruler
-}
-
-/// Append `id` to the `satisfies:` line of a wave `spec.md` — the door
-/// `ac-add --wave N` opens so a criterion born mid-pipeline is judged by a wave
-/// without a hand edit of frozen frontmatter.
-///
-/// A missing `satisfies:` line is created right after `id:` (or as the block's
-/// first line); an id already on the line changes nothing. `None` when the
-/// document opens with no frontmatter at all — there is nowhere to write, and
-/// inventing a block on a file this renderer did not produce would be a guess.
-/// The id is normalised the way [`parse_wave_ruler`] reads it back.
-pub(crate) fn route_criterion(md: &str, id: &str) -> Option<String> {
-    let id = id.trim().to_uppercase();
-    let inner = frontmatter_lines(md)?;
-    let eol = if md.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut block: Vec<String> = inner.iter().map(|l| l.trim_end().to_string()).collect();
-    let at = block.iter().position(|l| {
-        l.split_once(':').is_some_and(|(k, _)| k.trim() == SATISFIES_KEY)
-    });
-    match at {
-        Some(i) => {
-            let mut ids = parse_wave_ruler(md).satisfies;
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
-            block[i] = format!("{SATISFIES_KEY}: [{}]", ids.join(", "));
-        }
-        None => {
-            let after_id = block
-                .iter()
-                .position(|l| l.split_once(':').is_some_and(|(k, _)| k.trim() == "id"))
-                .map_or(0, |i| i + 1);
-            block.insert(after_id, format!("{SATISFIES_KEY}: [{id}]"));
-        }
-    }
-    // Everything after the closing `---`, byte for byte.
-    let body: Vec<&str> = md.lines().skip(inner.len() + 2).collect();
-    let mut out = String::from("---");
-    out.push_str(eol);
-    for line in &block {
-        out.push_str(line);
-        out.push_str(eol);
-    }
-    out.push_str("---");
-    for line in body {
-        out.push_str(eol);
-        out.push_str(line.trim_end_matches('\r'));
-    }
-    if md.ends_with('\n') {
-        out.push_str(eol);
-    }
-    Some(out)
 }
 
 /// The id of the `i`-th (0-based) reality obligation of wave `n` — `RO-{n}.{i+1}`.
@@ -2607,37 +2559,41 @@ mod tests {
 
     /// Cada onda persiste no seu PRÓPRIO `spec.md` só QUAIS critérios declara
     /// satisfazer — uma linha de frontmatter, nunca o texto — e o prompt dela,
-    /// lido do pai por essa linha, carrega os critérios literais, com
-    /// `Command:` / `Expect:` / `Control:`. A união em `wave-plan.md` continua
-    /// intacta, que é de onde o QA lê.
+    /// recortado por essa linha, carrega os critérios literais, com
+    /// `Command:` / `Expect:` / `Control:`.
     ///
     /// Dois lados de propósito: o critério da onda vizinha vazando para esta
     /// devolveria exatamente o ruído que o recorte existe para tirar.
+    ///
+    /// De ONDE sai o texto é a outra metade, e ela tem duas formas de plano:
+    /// quando as ondas declaram linhas de `acceptance`, a união em
+    /// `wave-plan.md` é a régua (e é o arquivo que o `ac-amend` reescreve e que
+    /// o QA executa depois de um rewave arquivar o pai); quando o plano só
+    /// NOMEIA ids do pai, `wave-plan.md` não tem seção nenhuma e o pai continua
+    /// sendo a fonte. As duas formas são materializadas aqui, porque a que
+    /// ninguém mede é a que quebra.
     #[test]
     fn a_wave_materialises_only_the_criteria_it_satisfies() {
         use crate::commands::agent::render::sections::read_wave_acceptance;
+        const AC1: &str = "**AC-1** — o handler responde 200.\n  Command: `cargo test alpha`\n  \
+                           Expect: `1 passed`\n  Control: `cargo test --list`";
+        const AC2: &str = "**AC-2** — o cli imprime a tabela.\n  Command: `cargo test beta`";
+        let parent_md = format!("# Epic\n\n## Acceptance Criteria\n\n- {AC1}\n- {AC2}\n");
+
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-ruler");
         std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(
-            spec_dir.join("spec.md"),
-            "# Epic\n\n## Acceptance Criteria\n\n\
-             - **AC-1** — o handler responde 200.\n  Command: `cargo test alpha`\n  \
-             Expect: `1 passed`\n  Control: `cargo test --list`\n\
-             - **AC-2** — o cli imprime a tabela.\n  Command: `cargo test beta`\n",
-        )
-        .unwrap();
+        std::fs::write(spec_dir.join("spec.md"), &parent_md).unwrap();
         let plan_path = write_plan(
             dir.path(),
             json!([
-                // Onda 1 nomeia o id e deixa o texto no pai; onda 2 traz a
-                // linha inteira e nenhum `satisfies` — os dois caminhos que
+                // Onda 1 nomeia o id explicitamente; onda 2 deixa o
+                // `satisfies` sair da própria linha — os dois caminhos que
                 // [`satisfied_ids`] cobre, num plano só.
                 { "n": 1, "role": "rt", "summary": "s", "tasks": ["do alpha"],
-                  "files": ["src/alpha.rs"], "satisfies": ["AC-1"] },
+                  "files": ["src/alpha.rs"], "satisfies": ["AC-1"], "acceptance": [AC1] },
                 { "n": 2, "role": "cli", "summary": "s", "tasks": ["do beta"],
-                  "files": ["src/beta.rs"],
-                  "acceptance": ["**AC-2** — o cli imprime a tabela.\n  Command: `cargo test beta`"] }
+                  "files": ["src/beta.rs"], "acceptance": [AC2] }
             ]),
         );
 
@@ -2653,7 +2609,7 @@ mod tests {
         assert!(!w1.contains("cargo test alpha"), "o texto do critério não mora na onda: {w1}");
         assert_eq!(parse_wave_ruler(&w1).satisfies, ["AC-1"], "{w1}");
 
-        // O prompt, lido do pai por aquela linha: os três marcadores chegam
+        // O prompt, recortado por aquela linha: os três marcadores chegam
         // LITERAIS — é o comando que julga, não uma paráfrase dele.
         let ruler = read_wave_acceptance(&parent, Some(&w1_path));
         assert!(ruler.contains("**AC-1**"), "a onda não recebeu régua: {ruler}");
@@ -2663,21 +2619,46 @@ mod tests {
         assert!(!ruler.contains("**AC-2**"), "critério da onda vizinha vazou: {ruler}");
 
         // A onda 2 nomeou o id pela linha `acceptance` inteira, sem
-        // `satisfies` — o mesmo [`satisfied_ids`] a resolve, e o TEXTO vem do
-        // pai, que é onde o `ac-amend` escreve.
+        // `satisfies` — o mesmo [`satisfied_ids`] a resolve.
         let w2_path = spec_dir.join("wave-2-cli").join("spec.md");
         assert_eq!(parse_wave_ruler(&std::fs::read_to_string(&w2_path).unwrap()).satisfies, ["AC-2"]);
         let ruler2 = read_wave_acceptance(&parent, Some(&w2_path));
         assert!(ruler2.contains("**AC-2**") && !ruler2.contains("**AC-1**"), "espelho: {ruler2}");
 
-        // A união segue no wave-plan.md, intocada — é de lá que o QA lê o que o
-        // plano declarou.
+        // A união está no wave-plan.md — é dela que a régua acima foi cortada, e
+        // é o arquivo que o QA executa quando o pai já foi arquivado. O teste
+        // prova que é ela mesmo: com o pai APAGADO, a régua não muda.
         let plan_md = std::fs::read_to_string(spec_dir.join("wave-plan.md")).unwrap();
         assert!(plan_md.contains("## Acceptance Criteria"), "{plan_md}");
         assert!(
             plan_md.contains("**AC-2**") && plan_md.contains("Command: `cargo test beta`"),
             "a união do QA não pode encolher: {plan_md}"
         );
+        std::fs::remove_file(&parent).unwrap();
+        assert_eq!(read_wave_acceptance(&parent, Some(&w1_path)), ruler, "a fonte era a união");
+
+        // A OUTRA forma de plano: só ids, nenhuma linha de `acceptance`. Aí
+        // `wave-plan.md` não declara seção nenhuma e o pai volta a ser a fonte —
+        // que é também o arquivo que o QA lê enquanto ele existe.
+        let ids_dir = dir.path().join("epic-ids");
+        std::fs::create_dir_all(&ids_dir).unwrap();
+        std::fs::write(ids_dir.join("spec.md"), &parent_md).unwrap();
+        let ids_plan = write_plan(
+            &ids_dir,
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do alpha"],
+                  "files": ["src/alpha.rs"], "satisfies": ["AC-1"] }
+            ]),
+        );
+        let _ = scaffold(&ids_dir, &ids_plan);
+        let ids_plan_md = std::fs::read_to_string(ids_dir.join("wave-plan.md")).unwrap();
+        assert!(!ids_plan_md.contains("## Acceptance Criteria"), "{ids_plan_md}");
+        let ids_ruler = read_wave_acceptance(
+            &ids_dir.join("spec.md"),
+            Some(&ids_dir.join("wave-1-rt").join("spec.md")),
+        );
+        assert!(ids_ruler.contains("Command: `cargo test alpha`"), "o pai é a fonte: {ids_ruler}");
+        assert!(!ids_ruler.contains("**AC-2**"), "e o recorte por onda vale igual: {ids_ruler}");
     }
 
     /// Uma onda que declara tarefas e não traça a critério nenhum é um AVISO —
@@ -3075,11 +3056,11 @@ mod tests {
         );
     }
 
-    /// O frontmatter da onda é escrito e lido pelo MESMO par, e a porta do
-    /// `ac-add --wave N` o estende sem tocar no corpo — inclusive quando a onda
-    /// nasceu sem `satisfies:` e quando o documento é CRLF.
+    /// O frontmatter da onda é escrito e lido pelo MESMO par — a linha
+    /// `satisfies:` que o renderizador escreve do `plan.json` é exatamente a
+    /// que o prompt lê de volta, inclusive na marca de união do rewave.
     #[test]
-    fn satisfies_frontmatter_round_trips_and_routes_a_new_id() {
+    fn satisfies_frontmatter_round_trips() {
         let w = WavePlanEntry {
             n: 2,
             role: "cli".to_string(),
@@ -3102,24 +3083,12 @@ mod tests {
         assert!(whole.contains("\nsatisfies-scope: unit\n"), "{whole}");
         assert!(parse_wave_ruler(&whole).carried_whole);
 
-        // `ac-add --wave 2`: o id novo entra na linha, o corpo fica byte-idêntico.
-        let routed = route_criterion(&spec, "ac-9").expect("frontmatter present");
-        assert_eq!(parse_wave_ruler(&routed).satisfies, ["AC-2", "AC-5", "AC-9"]);
-        let body_of = |s: &str| s.split_once("---\n\n").map(|(_, b)| b.to_string());
-        assert_eq!(body_of(&routed), body_of(&spec), "o corpo não é tocado: {routed}");
-        // Idempotente, e uma onda que nunca declarou nada ganha a linha.
-        assert_eq!(route_criterion(&routed, "AC-9").as_deref(), Some(routed.as_str()));
+        // Uma onda sem a linha não tem régua nenhuma, e um documento sem
+        // frontmatter também não — as duas silêncios que o prompt lê como
+        // "nenhum critério", nunca como "todos".
         let bare = "---\nid: wave.epic.3-x\n---\n\n# W\n";
-        assert_eq!(
-            route_criterion(bare, "AC-1").as_deref(),
-            Some("---\nid: wave.epic.3-x\nsatisfies: [AC-1]\n---\n\n# W\n")
-        );
-        // CRLF sobrevive, e um documento sem frontmatter não tem onde receber.
-        let crlf = "---\r\nid: wave.epic.3-x\r\n---\r\n\r\n# W\r\n";
-        let routed = route_criterion(crlf, "AC-1").expect("frontmatter present");
-        assert!(!routed.split('\n').any(|l| !l.is_empty() && !l.ends_with('\r')), "{routed:?}");
-        assert_eq!(parse_wave_ruler(&routed).satisfies, ["AC-1"]);
-        assert!(route_criterion("# W\n\n## Tasks\n", "AC-1").is_none());
+        assert_eq!(parse_wave_ruler(bare), WaveRuler::default());
+        assert_eq!(parse_wave_ruler("# W\n\n## Tasks\n"), WaveRuler::default());
     }
 
     /// A onda que NÃO declara trabalho nenhum ainda tem o id fantasma NOMEADO
