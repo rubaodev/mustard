@@ -496,13 +496,17 @@ impl Check for WorkBranchGate {
         // 3.4 A base é um FATO agora, então o corte vai mesmo acontecer: grava
         //     o censo que sobrou sujo ANTES do `checkout -b` do passo 4, senão
         //     `.claude/scan-map.md` e os moldes gerados viajam para dentro da
-        //     branch desta unidade e entram no diff e no pull request dela. A
-        //     posição protegida e a não-medida ficam de fora — um hook não cria
-        //     commit numa base protegida atrás do operador (ver
-        //     `record_census_before_cut`); a porta explícita do `emit-pipeline`
-        //     continua gravando lá.
+        //     branch desta unidade e entram no diff e no pull request dela.
+        //
+        //     E grava SÓ se a árvore estiver parada na própria `base`: o commit
+        //     do censo pertence à base e a mais nada. Uma posição em OUTRA
+        //     branch de unidade não é protegida nem é o alvo, então passava por
+        //     todas as exclusões e recebia o commit na cabeça dela — a mesma
+        //     mis-atribuição, num lugar pior. A protegida e a não-medida
+        //     continuam de fora (ver `record_census_before_cut`); a porta
+        //     explícita do `emit-pipeline` continua gravando lá.
         if !in_submodule {
-            record_census_before_cut(Path::new(&local), current.as_deref(), &config);
+            record_census_before_cut(Path::new(&local), current.as_deref(), &base, &config);
         }
 
         // 3. Refresh the bases this cut may start from FIRST so the branch is

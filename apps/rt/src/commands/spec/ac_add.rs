@@ -88,6 +88,17 @@ pub struct AcAddOpts {
     pub expect: Option<String>,
     /// Why the criterion is being added. Never blank.
     pub reason: String,
+    /// The criterion's `Control:` — a command that must come back GREEN against
+    /// the tree as it is, proving this criterion's red came from the missing
+    /// behaviour rather than from a filter that selects nothing.
+    ///
+    /// The same door `ac-amend` carries, for the same reason. Optional for every
+    /// command shape but one: a FILTERED TEST RUNNER exits 0 when its filter
+    /// matches nothing, so [`ac_negative_check::prove_one`] REFUSES one that
+    /// declares no control — and this door passed `None` unconditionally, which
+    /// left no input at all able to clear the requirement for exactly the
+    /// criterion shape the rule targets.
+    pub control: Option<String>,
     /// Take the negative proof against ANOTHER checkout instead of this tree.
     ///
     /// The same door `ac-amend` carries, for the same reason and one step
@@ -130,8 +141,12 @@ pub(crate) struct AcAddReport {
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
     /// Refusal / failure code: `blank_reason`, `blank_statement`,
-    /// `unknown_spec`, `duplicate_criterion`, `criterion_not_proven`,
-    /// `write_failed`, `ledger_write_failed`.
+    /// `unknown_spec`, `duplicate_criterion`, `control_required`,
+    /// `criterion_not_proven`, `write_failed`, `ledger_write_failed`.
+    ///
+    /// `control_required` is split out of `criterion_not_proven` on purpose: it
+    /// is the ONE refusal here that a flag clears, so a generic "not proven"
+    /// would leave the caller with no action to take.
     pub(crate) error: Option<String>,
     /// The one action that clears the refusal. Absent when nothing is wrong.
     pub(crate) remedy: Option<String>,
@@ -387,11 +402,17 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     // THE gate — the same engine, at the same strictness. The criterion is
     // inserted ABOVE the trailing one, so it is never the exempt position: it
     // owes a red proof like any criterion the plan declared.
-    // No `Control:` is declared here — this door mints a criterion carrying a
-    // command and an optional expect, and nothing else. The record therefore
-    // says the control was not declared, which is the truth; the next
+    // The `Control:` the CALLER declared, if any — blank is the same as absent,
+    // so a shell that expanded an empty variable cannot smuggle a control past
+    // the requirement. Omitted, the record says the control was not declared,
+    // which stays true for every non-runner command; the next
     // `ac-negative-check` pass sees the markdown's control (if the author adds
     // one) differ from the record and takes it then.
+    let control = opts
+        .control
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
     // WHERE the command runs, which is not always where the spec lives — see
     // `AcAddOpts::proof_tree`. Everything else (reading the spec, rewriting the
     // artefacts, appending to the ledger) stays in THIS tree.
@@ -415,20 +436,42 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     }
     let proof_tree_record =
         crate::commands::spec::ac_amend::proof_tree_record(opts.proof_tree.as_deref(), root);
-    let mut proof =
-        ac_negative_check::prove_one(proof_root, &id, &opts.command, expect.as_deref(), None, false);
+    let mut proof = ac_negative_check::prove_one(
+        proof_root,
+        &id,
+        &opts.command,
+        expect.as_deref(),
+        control,
+        false,
+    );
     proof.proof_tree.clone_from(&proof_tree_record);
     if proof.proof != ac_negative_check::Proof::Red {
         let why = proof.reason.clone().unwrap_or_default();
-        let mut report = AcAddReport::refused(
-            opts,
-            &id,
-            "criterion_not_proven",
-            &format!(
-                "the criterion being ADDED does not clear the negative test, so it would join the \
-                 spec verifying exactly nothing — {why}"
-            ),
-        );
+        // The ONE refusal here a FLAG clears, said as itself — see the sibling
+        // in `ac_amend`. The predicate is the engine's own
+        // ([`ac_negative_check::control_required`]), never a second reading of
+        // "is this a filtered runner".
+        let (error, remedy) = if ac_negative_check::control_required(&opts.command, control) {
+            (
+                "control_required",
+                format!(
+                    "the new criterion's command is a FILTERED TEST RUNNER, which exits 0 when its \
+                     filter selects nothing — so its red can be an empty selection rather than the \
+                     missing behaviour. Re-run this addition with `--control '<command>'`, naming a \
+                     command that comes back GREEN against the tree as it is (the suite without the \
+                     new filter, or a command naming the file the new test lands in) — {why}"
+                ),
+            )
+        } else {
+            (
+                "criterion_not_proven",
+                format!(
+                    "the criterion being ADDED does not clear the negative test, so it would join \
+                     the spec verifying exactly nothing — {why}"
+                ),
+            )
+        };
+        let mut report = AcAddReport::refused(opts, &id, error, &remedy);
         report.proof = Some(proof);
         return report;
     }
@@ -576,6 +619,9 @@ mod tests {
             command: command.to_string(),
             expect: None,
             reason: "the review found a defect no criterion names".to_string(),
+            // No control by default: the fixtures' commands are not test
+            // runners, so nothing is owed. `--control` has its own test below.
+            control: None,
             // The default door: the proof is taken in the tree the spec lives
             // in. `--proof-tree` is exercised by its own test below.
             proof_tree: None,
@@ -628,6 +674,63 @@ mod tests {
             "the spec must be rewritten in the current tree: {:?}",
             report.written
         );
+    }
+
+    /// A REGRESSÃO que este teste tranca: esta porta chamava `prove_one` com
+    /// `control: None` SEMPRE, e nem a struct de opções nem a CLI carregavam um
+    /// `Control:` — a mesma morte que a porta irmã (`ac-amend`) tinha.
+    ///
+    /// Desde que a prova negativa passou a RECUSAR um executor de teste
+    /// FILTRADO sem controle, um critério NOVO dessa forma — que é a forma
+    /// típica de um critério que nomeia o teste que a correção vai criar — não
+    /// tinha entrada nenhuma capaz de limpar a exigência.
+    #[test]
+    fn a_filtered_runner_criterion_owes_a_control_and_the_flag_clears_it() {
+        // Um executor de teste FILTRADO: `my_new_case` é seleção por nome.
+        const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
+
+        // (a) Sem `--control`: recusa PRÓPRIA, nomeando a flag que a limpa, e
+        // nenhum artefato tocado — a exigência dispara antes do comando.
+        let a = tempdir().unwrap();
+        seed(a.path(), "added");
+        let refused = add(a.path(), &opts("added", "AC-3", FILTERED));
+        assert!(!refused.ok, "um executor filtrado sem controle não pode entrar: {refused:?}");
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("control_required"),
+            "a recusa é a da exigência de controle, não a genérica: {refused:?}",
+        );
+        assert!(
+            refused.remedy.as_deref().unwrap_or_default().contains("--control"),
+            "e ela NOMEIA a ação que a limpa: {:?}",
+            refused.remedy,
+        );
+        assert!(refused.written.is_empty(), "uma recusa não escreve nada");
+
+        // (b) Com `--control`: a exigência está limpa, e o controle declarado
+        // chega ao registro da prova.
+        let b = tempdir().unwrap();
+        seed(b.path(), "added");
+        let mut with_control = opts("added", "AC-3", FILTERED);
+        with_control.control = Some(GREEN_COMMAND.to_string());
+        let taken = add(b.path(), &with_control);
+        assert_ne!(
+            taken.error.as_deref(),
+            Some("control_required"),
+            "declarar o controle tem de limpar a exigência: {taken:?}",
+        );
+        assert_eq!(
+            taken.proof.as_ref().and_then(|p| p.control_command.as_deref()),
+            Some(GREEN_COMMAND),
+            "e o controle declarado chega ao registro da prova: {taken:?}",
+        );
+
+        // (c) A outra metade: um comando que NÃO é executor de teste continua
+        // sem dever controle nenhum.
+        let c = tempdir().unwrap();
+        seed(c.path(), "added");
+        let plain = add(c.path(), &opts("added", "AC-3", RED_COMMAND));
+        assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
     }
 
     /// A `--proof-tree` that is not a directory is refused by CODE, before any

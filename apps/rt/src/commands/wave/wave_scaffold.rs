@@ -887,19 +887,24 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         }
     }
 
-    // O PLANO PRÉ-CRITÉRIOS, dito uma vez e lido pelas DUAS recusas abaixo.
+    // O PLANO SEM CRITÉRIO NENHUM — nem no pai, nem em onda alguma. Ele isenta
+    // UMA das duas recusas abaixo, e a assimetria é deliberada: as duas fazem
+    // perguntas diferentes, e só uma delas fica sem resposta com o conjunto
+    // vazio.
     //
-    // Sem um único critério declarado — nem no pai, nem em onda nenhuma — não há
-    // conjunto contra o qual medir onda alguma: todo `satisfies` seria fantasma,
-    // e toda onda com tarefa seria "onda sem régua". As duas recusas então
-    // disparariam juntas num plano que está sendo REDIGIDO, que é o estado
-    // legítimo de quem ainda não escreveu os critérios — a recusa bloquearia a
-    // redação em vez de um erro. O silêncio ali já é dito pela lacuna de
-    // cobertura, que também não tem o que dizer.
+    // * A checagem de ID FANTASMA pergunta "este id nomeia um critério que
+    //   EXISTE?". Sem nada definido não há contra o que comparar, então a
+    //   pergunta não tem resposta e pular é o correto — ela FICA com a isenção.
+    // * A recusa por ONDA SEM RÉGUA pergunta "esta onda tem régua ALGUMA?". Sem
+    //   nada definido a resposta é enfaticamente NÃO — ela NÃO tem isenção e
+    //   dispara sempre.
     //
-    // A exceção mora numa variável só de propósito: ela nasceu na checagem de id
-    // fantasma e a outra recusa não a recebeu, e a divergência custou um plano
-    // legítimo recusado com `ERR_UNTRACED_WAVES`. Uma condição, dois leitores.
+    // A isenção já foi dada às duas, e estava errada: não existe plano legítimo
+    // de escopo completo com ZERO critérios. Um plano cujo pai não declara
+    // nenhum e cujas ondas também não materializa em silêncio e despacha cada
+    // onda com o `## ACCEPTANCE` colapsado — que é exatamente o despacho sem
+    // régua que esta unidade existe para recusar. Isentar ali era isentar o PIOR
+    // caso.
     let pre_criteria_plan = defined.is_empty();
 
     for w in &plan.waves {
@@ -923,7 +928,9 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         // continua sendo uma linha, e a mensagem nomeia o id e os ids que
         // existem.
         //
-        // O conjunto VAZIO é exceção — ver [`pre_criteria_plan`], acima.
+        // O conjunto VAZIO é exceção AQUI, e só aqui — ver
+        // [`pre_criteria_plan`], acima: sem nada definido não há contra o que
+        // comparar, e "este id existe?" fica sem resposta.
         let phantom: Vec<String> = if pre_criteria_plan {
             Vec::new()
         } else {
@@ -942,10 +949,13 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
                 known = defined.iter().cloned().collect::<Vec<_>>().join(", "),
             ));
         }
-        // A MESMA exceção do fantasma, pela MESMA razão — ver
-        // [`pre_criteria_plan`]. Ela nasceu só na checagem acima, e a assimetria
-        // recusava exatamente a população que a outra metade isentava.
-        if !pre_criteria_plan && !w.tasks.is_empty() && satisfied.is_empty() {
+        // SEM a exceção do fantasma, e é o ponto: a pergunta aqui é "esta onda
+        // tem régua alguma?", e com nada definido a resposta é NÃO — ver
+        // [`pre_criteria_plan`]. Uma onda que declara tarefas e não traça a
+        // critério nenhum é despachada sem régua e julgada por uma assim mesmo,
+        // e isso não fica menos verdade porque o plano inteiro está sem
+        // critérios: fica MAIS.
+        if !w.tasks.is_empty() && satisfied.is_empty() {
             untraced_waves.push(format!(
                 "wave-{n}-{role} has tasks but satisfies no AC — add `satisfies` ids or an \
                  `acceptance` line so its work traces to a criterion. Its `## Acceptance \
@@ -2680,20 +2690,99 @@ mod tests {
         assert_eq!(report["sharedFiles"]["ok"], json!(true), "{report}");
     }
 
-    /// A REGRESSÃO que este teste tranca: um plano PRÉ-CRITÉRIOS — o pai ainda
-    /// não escreveu `## Acceptance Criteria` — não pode ser recusado por "onda
-    /// sem régua".
+    /// A metade que a recusa por onda sem régua NÃO pode apertar junto: um plano
+    /// cujas ondas TRAÇAM a critérios materializa igualzinho, sem
+    /// `ERR_UNTRACED_WAVES` e sem reter a transição PLAN.
     ///
-    /// A isenção nasceu na checagem de id fantasma e não foi dada à recusa
-    /// irmã, então a segunda passou a recusar exatamente a população que a
-    /// primeira isentava: um plano legítimo em redação virava
-    /// `ERR_UNTRACED_WAVES`, exit 2, e a transição PLAN era retida.
+    /// Esta fixture já mediu o contrário — um plano sem critério NENHUM passando
+    /// por "onda sem régua" — e estava errada: não existe plano legítimo de
+    /// escopo completo com zero critérios; um assim despacha toda onda com o
+    /// `## ACCEPTANCE` colapsado. O que um plano real carrega é o que ela
+    /// carrega agora: `## Acceptance Criteria` no pai e um `satisfies` por onda.
     #[test]
-    fn a_plan_written_before_any_criterion_is_not_refused() {
+    fn a_plan_whose_waves_trace_to_their_criteria_is_not_refused() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join("epic-pre-criterios");
+        let spec_dir = dir.path().join("epic-rastreado");
         std::fs::create_dir_all(&spec_dir).unwrap();
-        // O pai tem prosa e arquivos, e nenhum critério ainda.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Epic\n\n## Contexto\n\na história\n\n## Files\n- `src/a.rs` (create)\n\n\
+             ## Acceptance Criteria\n\n\
+             - **AC-1** — a. Command: `true`\n\
+             - **AC-2** — b. Command: `true`\n",
+        )
+        .unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"], "satisfies": ["AC-1"] },
+                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
+                  "files": ["src/b.rs"], "satisfies": ["AC-2"] }
+            ]),
+        );
+
+        let ScaffoldOutcome::Created { untraced_waves, uncovered_acs, .. } =
+            scaffold(&spec_dir, &plan_path)
+        else {
+            panic!("expected ScaffoldOutcome::Created");
+        };
+        assert!(
+            untraced_waves.is_empty(),
+            "toda onda traça a um critério que existe: {untraced_waves:?}",
+        );
+        assert!(uncovered_acs.is_empty(), "e todo critério é reivindicado: {uncovered_acs:?}");
+
+        // …e a mesma resposta no COMPOSTO: nada de `ERR_UNTRACED_WAVES`, e a
+        // transição PLAN não é retida.
+        use crate::commands::pipeline::plan_materialize::{materialize, ERR_UNTRACED_WAVES};
+        let comp = tempdir().unwrap();
+        let project = comp.path();
+        let comp_spec_dir = project.join(".claude").join("spec").join("epic-rastreado");
+        std::fs::create_dir_all(&comp_spec_dir).unwrap();
+        std::fs::write(
+            comp_spec_dir.join("spec.md"),
+            "# Epic\n\n## Contexto\n\na história\n\n## Files\n\
+             - `src/a.rs` (create)\n- `src/b.rs` (create)\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
+        )
+        .unwrap();
+        let comp_plan = write_plan(
+            project,
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"], "satisfies": ["AC-1"] },
+                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
+                  "files": ["src/b.rs"], "satisfies": ["AC-2"] }
+            ]),
+        );
+        let report = materialize(project, &comp_spec_dir, &comp_plan);
+        assert_ne!(
+            report["scaffold"]["error"],
+            json!(ERR_UNTRACED_WAVES),
+            "um plano rastreado não é recusado por falta de régua: {report}",
+        );
+    }
+
+    /// A REGRESSÃO que este teste tranca: um plano com ZERO critérios declarados
+    /// — nem no pai, nem em onda alguma — era ISENTADO da recusa por onda sem
+    /// régua, e materializava em silêncio.
+    ///
+    /// A isenção nasceu na checagem de id fantasma e foi estendida a esta
+    /// recusa, e a extensão estava errada: as duas fazem perguntas diferentes.
+    /// "Este id nomeia um critério que existe?" fica sem resposta com o conjunto
+    /// vazio; "esta onda tem régua alguma?" tem a resposta MAIS enfática de
+    /// todas. Isentar aqui era isentar o pior caso — todas as ondas despachadas
+    /// com o `## ACCEPTANCE` colapsado, que é o despacho sem régua que esta
+    /// unidade inteira existe para recusar.
+    #[test]
+    fn a_plan_with_no_criterion_at_all_is_refused() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-sem-regua");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // O pai tem prosa e arquivos, e critério NENHUM.
         std::fs::write(
             spec_dir.join("spec.md"),
             "# Epic\n\n## Contexto\n\na história\n\n## Files\n- `src/a.rs` (create)\n",
@@ -2709,45 +2798,34 @@ mod tests {
             ]),
         );
 
-        let ScaffoldOutcome::Created { untraced_waves, uncovered_acs, .. } =
-            scaffold(&spec_dir, &plan_path)
+        let ScaffoldOutcome::Created { untraced_waves, .. } = scaffold(&spec_dir, &plan_path) else {
+            panic!("expected ScaffoldOutcome::Created");
+        };
+        for wave in ["wave-1-rt", "wave-2-cli"] {
+            assert!(
+                untraced_waves.iter().any(|g| g.contains(wave) && g.contains("satisfies no AC")),
+                "toda onda que trabalha sem régua tem de ser nomeada ({wave}): {untraced_waves:?}",
+            );
+        }
+
+        // E a metade que NÃO muda: a checagem de ID FANTASMA continua pulando
+        // quando nada está definido — ali a pergunta ("este id nomeia um
+        // critério que existe?") não tem contra o que ser respondida.
+        let phantom_plan = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"], "satisfies": ["AC-99"] }
+            ]),
+        );
+        let ScaffoldOutcome::Created { untraced_waves: phantom, .. } =
+            scaffold(&spec_dir, &phantom_plan)
         else {
             panic!("expected ScaffoldOutcome::Created");
         };
         assert!(
-            untraced_waves.is_empty(),
-            "sem critério NENHUM não há conjunto contra o qual medir onda alguma — recusar aqui \
-             bloqueia a redação: {untraced_waves:?}",
-        );
-        assert!(uncovered_acs.is_empty(), "e não há critério descoberto a nomear: {uncovered_acs:?}");
-
-        // …e a mesma resposta no COMPOSTO: nada de `ERR_UNTRACED_WAVES`, e a
-        // transição PLAN não é retida.
-        use crate::commands::pipeline::plan_materialize::{materialize, ERR_UNTRACED_WAVES};
-        let comp = tempdir().unwrap();
-        let project = comp.path();
-        let comp_spec_dir = project.join(".claude").join("spec").join("epic-pre-criterios");
-        std::fs::create_dir_all(&comp_spec_dir).unwrap();
-        std::fs::write(
-            comp_spec_dir.join("spec.md"),
-            "# Epic\n\n## Contexto\n\na história\n\n## Files\n\
-             - `src/a.rs` (create)\n- `src/b.rs` (create)\n",
-        )
-        .unwrap();
-        let comp_plan = write_plan(
-            project,
-            json!([
-                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
-                  "files": ["src/a.rs"] },
-                { "n": 2, "role": "cli", "summary": "s", "tasks": ["do more"],
-                  "files": ["src/b.rs"] }
-            ]),
-        );
-        let report = materialize(project, &comp_spec_dir, &comp_plan);
-        assert_ne!(
-            report["scaffold"]["error"],
-            json!(ERR_UNTRACED_WAVES),
-            "o plano pré-critérios não é recusado por falta de régua: {report}",
+            !phantom.iter().any(|g| g.contains("name no criterion")),
+            "sem conjunto definido não há id fantasma a nomear: {phantom:?}",
         );
     }
 
@@ -3182,17 +3260,20 @@ mod tests {
             "e o critério que nenhuma onda reivindica é órfão: {:?}",
             gaps.uncovered_acs,
         );
-        // (a') …e a MESMA onda, num plano que ainda não escreveu critério
-        // NENHUM, não é gap: sem conjunto contra o qual medir, a recusa
-        // bloquearia a redação em vez de um erro — a mesma isenção que o id
-        // fantasma tem (ver `pre_criteria_plan`).
-        let drafting = traceability_gaps(&plan(wave(vec!["do the thing"], vec![], vec![])), None);
+        // (a') …e a MESMA onda com um `satisfies`, que é o que um plano real
+        // carrega: ela sai da lista. A fixture já mediu o contrário — a mesma
+        // onda SEM `satisfies` num plano sem critério nenhum, isentada — e a
+        // isenção estava errada: "esta onda tem régua alguma?" tem resposta com
+        // o conjunto vazio, e a resposta é NÃO (ver `pre_criteria_plan`).
+        let mut traced = wave(vec!["do the thing"], vec![], vec!["AC-1"]);
+        traced.files = vec!["src/lib.rs".to_string()];
+        let drafting = traceability_gaps(&plan(traced), Some(parent_ac));
         assert!(
             drafting.untraced_waves.is_empty(),
-            "um plano pré-critérios não tem régua a cobrar: {:?}",
+            "uma onda que traça ao critério do pai não é gap: {:?}",
             drafting.untraced_waves,
         );
-        assert!(drafting.uncovered_acs.is_empty(), "no defined ACs → no uncovered gap");
+        assert!(drafting.uncovered_acs.is_empty(), "e AC-1 está reivindicado");
         // (b) declares AND satisfies its own AC → clean on both axes. It also
         // declares a file: a wave that does work and claims a criterion while
         // declaring nowhere to do it is Gap 3, so the fixture has to be a

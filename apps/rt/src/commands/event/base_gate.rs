@@ -1079,7 +1079,12 @@ mod tests {
             crate::commands::event::work_branch::is_protected(root, "dev", &config),
             "a fixture precisa de uma posição realmente protegida",
         );
-        crate::commands::event::work_branch::record_census_before_cut(root, Some("dev"), &config);
+        crate::commands::event::work_branch::record_census_before_cut(
+            root,
+            Some("dev"),
+            "dev",
+            &config,
+        );
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
@@ -1087,12 +1092,91 @@ mod tests {
         );
 
         // E a posição NÃO MEDIDA (`HEAD` destacado, ou ilegível) idem.
-        crate::commands::event::work_branch::record_census_before_cut(root, Some("HEAD"), &config);
-        crate::commands::event::work_branch::record_census_before_cut(root, None, &config);
+        crate::commands::event::work_branch::record_census_before_cut(
+            root,
+            Some("HEAD"),
+            "dev",
+            &config,
+        );
+        crate::commands::event::work_branch::record_census_before_cut(root, None, "dev", &config);
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
             "uma posição que não foi medida não autoriza commit nenhum",
+        );
+    }
+
+    /// A REGRESSÃO que este teste tranca, e a terceira iteração da MESMA
+    /// família: o commit do censo pertence à BASE e a mais nada.
+    ///
+    /// As exclusões anteriores — protegida, `HEAD`, não medida — não nomeiam a
+    /// posição que faltava: uma OUTRA branch de unidade. Ela não é protegida,
+    /// não é a base e não é o alvo, então passava por todas as checagens, e com
+    /// só o censo sujo o `git commit` caía na cabeça dela — o censo entrava no
+    /// diff e no pull request daquela unidade, que é exatamente a
+    /// mis-atribuição que `CENSUS_COMMIT_SUBJECT` existe para evitar.
+    #[test]
+    fn the_census_is_not_committed_onto_another_units_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+        // A posição do defeito: a branch de OUTRA unidade. Não é protegida, não
+        // é a base do corte, e não é o alvo.
+        git(root, &["checkout", "-b", "feature/outra-unidade"]);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        let dirty_before = porcelain(root);
+
+        let config = ProjectConfig::load(root);
+        assert!(
+            !crate::commands::event::work_branch::is_protected(
+                root,
+                "feature/outra-unidade",
+                &config
+            ),
+            "a fixture precisa de uma posição NÃO protegida, senão mede a exclusão antiga",
+        );
+        crate::commands::event::work_branch::record_census_before_cut(
+            root,
+            Some("feature/outra-unidade"),
+            "dev",
+            &config,
+        );
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "o censo não é commitado dentro da branch de outra unidade",
+        );
+        assert_eq!(
+            porcelain(root),
+            dirty_before,
+            "e a árvore fica como estava, para o corte que sair mesmo da base",
+        );
+
+        // …e a outra metade, que não pode ser apertada junto: PARADO NA BASE, o
+        // corte ordinário continua gravando e deixando a árvore limpa (AC-7).
+        git(root, &["checkout", "dev"]);
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a fixture precisa da árvore suja de novo");
+        crate::commands::event::work_branch::record_census_before_cut(
+            root,
+            Some("dev"),
+            "dev",
+            &config,
+        );
+        assert_eq!(
+            porcelain(root),
+            "",
+            "parado na base, o portão grava o que ele mesmo escreveu",
         );
     }
 

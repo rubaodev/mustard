@@ -392,6 +392,17 @@ pub enum SpecCmd {
         /// Why the criterion is being changed. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// The replacement's `Control:` — a command that must come back GREEN
+        /// against the tree as it is.
+        ///
+        /// REQUIRED when the replacement command is a FILTERED TEST RUNNER
+        /// (`cargo test -p x my_new_case`, `pytest -k novo`, …): a runner exits
+        /// 0 when its filter selects nothing, so without a control the
+        /// replacement's red can be an empty selection rather than the missing
+        /// behaviour, and `ac-negative-check` refuses it. Every other command
+        /// shape ignores this flag exactly as before.
+        #[arg(long)]
+        control: Option<String>,
         /// Take the proof against ANOTHER checkout — one that does not carry
         /// the work yet — instead of this tree.
         ///
@@ -440,6 +451,17 @@ pub enum SpecCmd {
         /// Why the criterion is being added. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// The criterion's `Control:` — a command that must come back GREEN
+        /// against the tree as it is.
+        ///
+        /// REQUIRED when the criterion's command is a FILTERED TEST RUNNER
+        /// (`cargo test -p x my_new_case`, `pytest -k novo`, …): a runner exits
+        /// 0 when its filter selects nothing, so without a control the
+        /// criterion's red can be an empty selection rather than the missing
+        /// behaviour, and `ac-negative-check` refuses it. Every other command
+        /// shape ignores this flag exactly as before.
+        #[arg(long)]
+        control: Option<String>,
         /// Take the proof against ANOTHER checkout — one that does not carry
         /// the work yet — instead of this tree.
         ///
@@ -592,6 +614,7 @@ pub fn dispatch(cmd: SpecCmd) {
             expect,
             statement,
             reason,
+            control,
             proof_tree,
         } => {
             spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
@@ -601,6 +624,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 expect,
                 statement,
                 reason,
+                control,
                 proof_tree,
             });
         }
@@ -611,6 +635,7 @@ pub fn dispatch(cmd: SpecCmd) {
             command,
             expect,
             reason,
+            control,
             proof_tree,
         } => {
             spec::ac_add::run(spec::ac_add::AcAddOpts {
@@ -620,6 +645,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 command,
                 expect,
                 reason,
+                control,
                 proof_tree,
             });
         }

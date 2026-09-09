@@ -1007,39 +1007,54 @@ pub(crate) fn busy_checkout(
 /// unidade, onde entram no diff e no pull request dela — a atribuição que o
 /// assunto de commit do censo existe para evitar.
 ///
-/// ## "Liberado para cortar" NÃO é "não havia o que medir"
+/// ## A INVARIANTE, dita uma vez: o commit do censo pertence à BASE e a mais
+/// nada
 ///
-/// A versão anterior gravava sempre que [`busy_checkout`] devolvia `None`, e
-/// esse `None` mistura dois estados. [`holds_other_work`] devolve `false` — sem
-/// medir nada — assim que a posição é PROTEGIDA, ou é `None`/`HEAD`. Nesses
-/// casos o `None` diz "não há decisão a tomar", não "a árvore foi medida e só
-/// tem censo": um Edit com a árvore parada em `main` disparava um commit da
-/// ferramenta na própria branch protegida, atrás do operador.
+/// O censo é saída da ferramenta sobre o projeto INTEIRO, não trabalho de
+/// unidade nenhuma. Gravá-lo em qualquer outro lugar é a mis-atribuição que
+/// [`crate::commands::event::base_gate::CENSUS_COMMIT_SUBJECT`] existe para
+/// evitar: dentro da branch de uma unidade ele entra no diff dela e no pull
+/// request dela, como se aquela unidade tivesse reescrito o mapa do repositório.
 ///
-/// Então as duas condições são explícitas aqui, e as duas são necessárias:
+/// Por isso a condição é POSICIONAL e não uma lista de exclusões: só grava
+/// quando o checkout ESTÁ na base resolvida deste corte. Duas iterações
+/// anteriores tentaram a lista — "não protegida", "não `HEAD`", "medida" — e as
+/// duas deixaram passar a posição que nenhuma delas nomeia: uma OUTRA branch de
+/// unidade (`feature/outra`), que não é protegida, não é a base e não é o alvo.
+/// Com só o censo sujo ela passava por todas as checagens e o `git commit` caía
+/// na cabeça dela.
+///
+/// As condições, então, e todas necessárias:
 ///
 /// 1. a posição foi MEDIDA (`current` é um nome de branch, não `None` nem
-///    `HEAD`) e NÃO é protegida — um hook não cria commit numa base protegida
-///    sem o operador ter pedido; a porta explícita do portão base continua
-///    gravando lá, onde o operador digitou o comando;
-/// 2. a árvore, medida de novo por
+///    `HEAD`) — uma posição que não foi medida não autoriza commit nenhum;
+/// 2. a posição É `base`, a base que este corte acabou de resolver;
+/// 3. `base` NÃO é protegida — um hook não cria commit numa base protegida sem
+///    o operador ter pedido; a porta explícita do portão base continua gravando
+///    lá, onde o operador digitou o comando;
+/// 4. a árvore, medida de novo por
 ///    [`crate::commands::event::base_gate::record_leftover_census`], responde
 ///    `CensusOnly` — sobrando qualquer linha do operador, nada é gravado.
 ///
 /// E o MOMENTO importa tanto quanto a condição: a chamada mora depois da
 /// resolução da base, porque um corte recusado ali (`workbranch.base.unknown`)
-/// deixava para trás um commit do censo de um corte que nunca aconteceu.
+/// deixava para trás um commit do censo de um corte que nunca aconteceu — e
+/// porque antes dela a base, que é a condição 2, ainda não é um fato.
 ///
 /// Fail-open de ponta a ponta: censo invisível para o git, ou um git que recusa,
 /// deixa a escrita onde caiu e o corte segue como antes.
 pub(crate) fn record_census_before_cut(
     root: &Path,
     current: Option<&str>,
+    base: &str,
     config: &mustard_core::ProjectConfig,
 ) {
     let Some(branch) = current.filter(|b| *b != "HEAD") else {
         return;
     };
+    if branch != base {
+        return;
+    }
     if is_protected(root, branch, config) {
         return;
     }
@@ -1159,8 +1174,10 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
     // censo que sobrou sujo é gravado, antes do checkout — senão ele viaja para
     // dentro da branch desta unidade. Nem antes (um corte recusado por base
     // desconhecida deixaria um commit do censo para trás), nem por qualquer
-    // `None` da decisão — ver [`record_census_before_cut`].
-    record_census_before_cut(project, current.as_deref(), &config);
+    // `None` da decisão, e SÓ se a árvore estiver parada na própria `base`: o
+    // commit do censo pertence à base e a mais nada — ver
+    // [`record_census_before_cut`].
+    record_census_before_cut(project, current.as_deref(), &base, &config);
 
     // Refresh from origin FIRST so the unit is cut from the latest base — the
     // base this cut will really use included, declared or not.

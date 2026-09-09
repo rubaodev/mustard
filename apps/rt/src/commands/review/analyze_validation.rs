@@ -584,9 +584,7 @@ fn is_weak_command_part(part: &str) -> bool {
             // O MESMO leitor que [`test_runner_has_selector`] usa para o cargo:
             // "tem filtro" e "estreita por nome" são a mesma pergunta, e duas
             // varreduras é como as duas portas passariam a responder diferente.
-            Some("test" | "t" | "nextest") => {
-                !narrows_by_name(&tokens, 2, &[], true, CARGO_SCOPE_VALUE_FLAGS)
-            }
+            Some("test" | "t" | "nextest") => !cargo_narrows_by_name(&tokens),
             _ => false,
         },
         "npm" | "pnpm" | "yarn" | "bun" => match tokens.get(1).copied() {
@@ -787,13 +785,13 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
     };
     match first {
         // O cargo passa pela MESMA varredura que todas as outras famílias — ver
-        // [`narrows_by_name`]. Ele tinha um scanner próprio
-        // (`cargo_test_has_filter`), idêntico a esta chamada e com 13 das 15
-        // flags dele repetidas literalmente na lista compartilhada: uma flag
-        // acrescentada a uma das duas e não à outra fazia o cargo e o resto
+        // [`cargo_narrows_by_name`] e [`narrows_by_name`]. Ele tinha um scanner
+        // próprio (`cargo_test_has_filter`), idêntico a esta chamada e com 13
+        // das 15 flags dele repetidas literalmente na lista compartilhada: uma
+        // flag acrescentada a uma das duas e não à outra fazia o cargo e o resto
         // discordarem sobre o que é um seletor — que é exatamente a deriva de
         // que a lista única por família era um caso.
-        "cargo" => narrows_by_name(&tokens, 2, &[], true, CARGO_SCOPE_VALUE_FLAGS),
+        "cargo" => cargo_narrows_by_name(&tokens),
         "go" => narrows_by_name(&tokens, 2, &["-run", "-bench"], false, GO_SCOPE_VALUE_FLAGS),
         "dotnet" => narrows_by_name(&tokens, 2, &["--filter"], false, DOTNET_SCOPE_VALUE_FLAGS),
         "pytest" | "py.test" => {
@@ -817,6 +815,32 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// A varredura do CARGO, com o subcomando pulado — uma função só, lida pelas
+/// duas portas que perguntam "este comando estreita por nome?"
+/// ([`test_runner_has_selector`] e [`is_weak_command_part`]).
+///
+/// `cargo nextest run` é a invocação da SUÍTE INTEIRA: `nextest` é o subcomando
+/// do cargo e `run` é o subcomando DELE, não um nome de teste. Lendo a partir do
+/// índice 2 fixo, o `run` caía como posicional e a suíte inteira passava a
+/// dever um `Control:` — e como a prova negativa RE-JULGA o ledger arquivado
+/// ([`super::ac_negative_check::run_pass`]), todo critério dessa forma virava
+/// `Unproven` sem o comando sequer ser executado: a recusa do acervo inteiro que
+/// o gatilho por NOMEAÇÃO existe para não causar. É a mesma isenção de
+/// subcomando que `vitest run` / `jest run` já tinham.
+///
+/// A isenção alcança SÓ a palavra `run`: `cargo nextest run my_case` e
+/// `cargo nextest run -E 'test(my_case)'` continuam estreitando por nome, e
+/// `cargo test -p x my_case` nunca passou por aqui. Pura, total.
+fn cargo_narrows_by_name(tokens: &[&str]) -> bool {
+    let start =
+        if tokens.get(1).copied() == Some("nextest") && tokens.get(2).copied() == Some("run") {
+            3
+        } else {
+            2
+        };
+    narrows_by_name(tokens, start, &[], true, CARGO_SCOPE_VALUE_FLAGS)
 }
 
 /// A varredura compartilhada de [`test_runner_has_selector`] e de
@@ -1516,11 +1540,51 @@ mod tests {
             "cargo test --features a,b --target-dir /tmp/x my_case",
             "cargo test -- --exact my::case",
             "cargo nextest run my_case",
+            "cargo nextest run",
+            "cargo nextest run --workspace",
         ] {
             assert_eq!(
                 is_weak_command_part(cmd),
                 !test_runner_has_selector(cmd),
                 "as duas portas têm de dar a MESMA resposta para `{cmd}`",
+            );
+        }
+    }
+
+    /// A REGRESSÃO que este teste tranca: `cargo nextest run` era lido como
+    /// comando FILTRADO, porque o `run` — subcomando do `nextest` — caía como
+    /// posicional na varredura que começa no índice 2.
+    ///
+    /// O custo não era um aviso a mais: um critério de SUÍTE INTEIRA passava a
+    /// dever um `Control:`, ganhava `test-ac-no-control` no rascunho e, como a
+    /// prova negativa RE-JULGA o ledger arquivado, virava `Unproven` sem o
+    /// comando ser executado — a recusa do acervo inteiro que o gatilho por
+    /// NOMEAÇÃO existe justamente para não causar. `vitest`/`jest` já tinham a
+    /// isenção de subcomando; o cargo e o nextest não.
+    #[test]
+    fn a_runner_subcommand_is_not_read_as_a_filter() {
+        // A SUÍTE INTEIRA, nas duas grafias do cargo: nada aqui pode vir vazio.
+        for cmd in [
+            "cargo nextest run",
+            "cargo nextest run --workspace",
+            "cargo nextest run -p mustard-rt",
+            "cargo test -p mustard-rt",
+        ] {
+            assert!(
+                !test_runner_has_selector(cmd),
+                "`{cmd}` roda a suíte inteira — cobrar `Control:` dele recusaria o acervo",
+            );
+        }
+        // …e a outra metade, que NÃO pode ser afrouxada junto: um comando que
+        // estreita por nome continua devendo o controle.
+        for cmd in [
+            "cargo test -p mustard-rt my_case",
+            "cargo nextest run -E 'test(my_case)'",
+            "cargo nextest run my_case",
+        ] {
+            assert!(
+                test_runner_has_selector(cmd),
+                "`{cmd}` seleciona por nome e o filtro dele pode vir vazio",
             );
         }
     }

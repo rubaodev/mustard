@@ -120,6 +120,19 @@ pub struct AcAmendOpts {
     pub statement: Option<String>,
     /// Why the criterion is being changed. Never blank.
     pub reason: String,
+    /// The replacement's `Control:` — a command that must come back GREEN
+    /// against the tree as it is, proving the replacement's red came from the
+    /// missing behaviour rather than from a filter that selects nothing.
+    ///
+    /// Optional for every command shape but one. A FILTERED TEST RUNNER exits 0
+    /// when its filter matches nothing, so
+    /// [`ac_negative_check::prove_one`] REFUSES one that declares no control —
+    /// and this door passed `None` unconditionally, which made it dead for
+    /// exactly the criterion shape the rule targets: the module doc's own
+    /// motivating case is `cargo test <unknown>` answering `0 passed` with
+    /// exit 0. A non-runner replacement, or an unfiltered one, still needs
+    /// nothing here and behaves exactly as before.
+    pub control: Option<String>,
     /// Take the proof against ANOTHER tree — a checkout that does not yet carry
     /// the work — instead of the one being amended.
     ///
@@ -197,8 +210,12 @@ pub(crate) struct AcAmendReport {
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
     /// Refusal / failure code: `blank_reason`, `unknown_spec`,
-    /// `unknown_criterion`, `replacement_not_proven`, `rewrite_failed`,
-    /// `ledger_write_failed`.
+    /// `unknown_criterion`, `control_required`, `replacement_not_proven`,
+    /// `rewrite_failed`, `ledger_write_failed`.
+    ///
+    /// `control_required` is split out of `replacement_not_proven` on purpose:
+    /// it is the ONE refusal here that a flag clears, so a generic "not proven"
+    /// would leave the caller with no action to take.
     pub(crate) error: Option<String>,
     /// The one action that clears the refusal. Absent when nothing is wrong.
     pub(crate) remedy: Option<String>,
@@ -812,11 +829,18 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // exempt from the negative test itself — it is the build-green safety net,
     // green before the work by design.
     let exempt = ac_negative_check::is_exempt(index, items.len());
-    // No `Control:` is declared through this door: the amendment replaces the
-    // command and (optionally) the expect regex, so the record says the control
-    // was not declared. When the markdown still carries one, the next
-    // `ac-negative-check` pass sees it differ from the record and takes it — the
-    // safe direction, since it can only cause a run, never a stale reuse.
+    // The `Control:` the CALLER declared, if any — blank is the same as absent,
+    // so a shell that expanded an empty variable cannot smuggle a control past
+    // the requirement. Omitted, the record says the control was not declared,
+    // which stays true for every non-runner replacement; when the markdown still
+    // carries one, the next `ac-negative-check` pass sees it differ from the
+    // record and takes it — the safe direction, since it can only cause a run,
+    // never a stale reuse.
+    let control = opts
+        .control
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
     // WHERE the command runs, which is not always where the spec lives. A
     // criterion corrected after the work landed cannot come back red in this
     // tree — the behaviour exists — so `--proof-tree` points at a checkout that
@@ -851,7 +875,7 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         &id,
         &opts.command,
         expect.as_deref(),
-        None,
+        control,
         exempt,
     );
 
@@ -899,15 +923,34 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
 
     if proof.verdict == Verdict::Unproven {
         let reason = proof.reason.clone().unwrap_or_default();
-        let mut report = AcAmendReport::refused(
-            opts,
-            &id,
-            "replacement_not_proven",
-            &format!(
-                "the REPLACEMENT does not clear the negative test, so it proves exactly as \
-                 little as the criterion it would replace — {reason}"
-            ),
-        );
+        // The ONE refusal here a FLAG clears, said as itself. A filtered test
+        // runner with no `Control:` is unproven for a reason that has nothing to
+        // do with the replacement's quality, and answering it with the generic
+        // "does not clear the negative test" pointed the caller at the command —
+        // the one thing that is not the problem. The predicate is the engine's
+        // own ([`ac_negative_check::control_required`]), never a second reading
+        // of "is this a filtered runner".
+        let (error, remedy) = if ac_negative_check::control_required(&opts.command, control) {
+            (
+                "control_required",
+                format!(
+                    "the replacement's command is a FILTERED TEST RUNNER, which exits 0 when its \
+                     filter selects nothing — so its red can be an empty selection rather than the \
+                     missing behaviour. Re-run this amendment with `--control '<command>'`, naming \
+                     a command that comes back GREEN against the tree as it is (the suite without \
+                     the new filter, or a command naming the file the new test lands in) — {reason}"
+                ),
+            )
+        } else {
+            (
+                "replacement_not_proven",
+                format!(
+                    "the REPLACEMENT does not clear the negative test, so it proves exactly as \
+                     little as the criterion it would replace — {reason}"
+                ),
+            )
+        };
+        let mut report = AcAmendReport::refused(opts, &id, error, &remedy);
         report.proof = Some(proof);
         return report;
     }
@@ -1124,8 +1167,78 @@ mod tests {
             expect: None,
             statement: None,
             reason: reason.to_string(),
+            control: None,
             proof_tree: None,
         }
+    }
+
+    /// A REGRESSÃO que este teste tranca: esta porta chamava `prove_one` com
+    /// `control: None` SEMPRE, e nem a struct de opções nem a CLI carregavam um
+    /// `Control:`.
+    ///
+    /// Desde que a prova negativa passou a RECUSAR um executor de teste
+    /// FILTRADO que não declara controle, isso deixava a porta MORTA para
+    /// exatamente a forma de critério que a regra mira — a mesma que o doc deste
+    /// módulo dá como caso motivador (`cargo test <desconhecido>` respondendo
+    /// `0 passed` com exit 0). Não havia entrada nenhuma que limpasse a
+    /// exigência, e a recusa saía como o genérico `replacement_not_proven`, que
+    /// aponta o chamador para o comando — a única coisa que não era o problema.
+    #[test]
+    fn a_filtered_runner_replacement_owes_a_control_and_the_flag_clears_it() {
+        // Um executor de teste FILTRADO: o `my_new_case` é seleção por nome, e
+        // um filtro que não casa nada sai 0 — que é toda a razão da exigência.
+        const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
+
+        // (a) Sem `--control`: recusa PRÓPRIA, nomeando a flag que a limpa.
+        // Nada é executado — a exigência dispara antes do comando.
+        let a = tempdir().unwrap();
+        seed(a.path(), "runner");
+        let refused = amend(
+            a.path(),
+            &opts("runner", "AC-1", FILTERED, "o critério passa a nomear o teste novo"),
+        );
+        assert!(!refused.ok, "um executor filtrado sem controle não pode passar: {refused:?}");
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("control_required"),
+            "a recusa é a da exigência de controle, não a genérica: {refused:?}",
+        );
+        assert!(
+            refused.remedy.as_deref().unwrap_or_default().contains("--control"),
+            "e ela NOMEIA a ação que a limpa: {:?}",
+            refused.remedy,
+        );
+
+        // (b) Com `--control`: a exigência está limpa. O veredito volta a ser
+        // sobre o comando (aqui, o que o executor devolver), e o controle
+        // declarado entra no registro da prova — a evidência de que ele foi
+        // mesmo levado ao motor, e não engolido pela porta.
+        let b = tempdir().unwrap();
+        seed(b.path(), "runner");
+        let mut with_control =
+            opts("runner", "AC-1", FILTERED, "idem, agora com o controle declarado");
+        with_control.control = Some(GREEN_COMMAND.to_string());
+        let taken = amend(b.path(), &with_control);
+        assert_ne!(
+            taken.error.as_deref(),
+            Some("control_required"),
+            "declarar o controle tem de limpar a exigência: {taken:?}",
+        );
+        assert_eq!(
+            taken.proof.as_ref().and_then(|p| p.control_command.as_deref()),
+            Some(GREEN_COMMAND),
+            "e o controle declarado chega ao registro da prova: {taken:?}",
+        );
+
+        // (c) A outra metade, que não pode ser afrouxada junto: um comando que
+        // NÃO é executor de teste continua sem dever controle nenhum.
+        let c = tempdir().unwrap();
+        seed(c.path(), "runner");
+        let plain = amend(
+            c.path(),
+            &opts("runner", "AC-1", OTHER_RED_COMMAND, "sem executor, sem controle"),
+        );
+        assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
     }
 
     /// A criterion corrected AFTER the work landed takes its red somewhere the

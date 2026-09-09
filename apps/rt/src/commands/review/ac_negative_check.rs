@@ -803,7 +803,13 @@ pub(crate) fn is_exempt(index: usize, total: usize) -> bool {
 /// ([`super::analyze_validation::test_runner_has_selector`]), que é também o que
 /// o lint `test-ac-no-control` pergunta na hora do rascunho — o critério que
 /// este portão recusa é exatamente o que o aviso nomeou. Pura, total.
-fn control_required(command: &str, control: Option<&str>) -> bool {
+///
+/// `pub(crate)` porque as DUAS portas tardias ([`crate::commands::spec::ac_amend`]
+/// e [`crate::commands::spec::ac_add`]) precisam separar ESTA recusa da recusa
+/// genérica de "não provado": ela é a única ali que uma flag (`--control`)
+/// limpa, e uma segunda leitura de "isto é um executor filtrado?" é como as
+/// portas passariam a nomear critérios diferentes do que este portão recusa.
+pub(crate) fn control_required(command: &str, control: Option<&str>) -> bool {
     let declared = control.map(str::trim).is_some_and(|c| !c.is_empty());
     !declared && super::analyze_validation::test_runner_has_selector(command)
 }

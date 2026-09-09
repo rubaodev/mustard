@@ -123,8 +123,10 @@ It lands in the shape `read_change_log` filters for, so the next rendered prompt
 **Then carry anything that changes BEHAVIOUR into `## Acceptance Criteria` — with `ac-amend`, never by hand**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25).
 
 ```bash
-mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that asserts the NEW behaviour>" [--expect "<evidence regex>"] [--statement "<the EARS line>"] --reason "<why the criterion is changing>" [--proof-tree <dir>]
+mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that asserts the NEW behaviour>" [--expect "<evidence regex>"] [--statement "<the EARS line>"] --reason "<why the criterion is changing>" [--control "<a command that is GREEN today>"] [--proof-tree <dir>]
 ```
+
+**`--control` is REQUIRED when the replacement command is a filtered test runner** — `cargo test -p x my_new_case`, `pytest -k novo`, `dotnet test --filter …`. Such a runner exits 0 when its filter selects nothing, so the replacement's red can be an empty selection (a mistyped test name, a path that is not there) rather than the missing behaviour. Name a command that comes back GREEN against the tree as it is — the suite without the new filter, or a command naming the file the new test lands in — and the door takes both in the same step. Without it the refusal is `control_required`, and it names this flag. Every other command shape ignores the flag exactly as before; a whole-suite runner (`cargo test -p x --lib`, `cargo nextest run`, `pytest`) has no filter that can come back empty and owes nothing.
 
 **`--proof-tree` is for a criterion corrected AFTER its work already landed.** The negative test asks whether the command can FAIL, and that is only answerable where the behaviour is absent — in the current tree the replacement comes back green, and the door refuses it, correctly. Point the flag at a checkout that predates the work and the red is taken there:
 
@@ -145,8 +147,10 @@ Two things the hand cannot do, and this is why the hand does not do it:
 **When the change is named by NO criterion at all, ADD one — with `ac-add`, never by hand.** `ac-amend` REPLACES an id that exists and refuses one it does not know, because a replacement proves itself against the criterion it supersedes and an added id has no predecessor. So a finding nobody wrote a criterion for has its own door:
 
 ```bash
-mustard-rt run ac-add --spec {spec} --ac AC-9 --statement "when <trigger>, then <outcome>" --command "<the command that asserts it>" [--expect "<evidence regex>"] --reason "<why this criterion is being added>"
+mustard-rt run ac-add --spec {spec} --ac AC-9 --statement "when <trigger>, then <outcome>" --command "<the command that asserts it>" [--expect "<evidence regex>"] --reason "<why this criterion is being added>" [--control "<a command that is GREEN today>"]
 ```
+
+`--control` carries the same rule it carries on `ac-amend`, and this is the door that meets it most: a criterion added for a finding usually names the test the fix will create, which is a filtered runner. Declare it, or the addition is refused as `control_required`.
 
 It takes the SAME negative proof a planned criterion takes: the command is run against the tree as it is and **must come back RED**, or the addition is refused and nothing is written — along with a blank reason, a blank statement, an unknown spec, and an id the spec already carries (that one points you back at `ac-amend`). It lands in every plan artefact — the root, `wave-plan.md` and each `wave-*/spec.md` — directly ABOVE the trailing build-green criterion, so the positional exemption stays where it belongs. The record goes to the ledger's `additions`, kept apart from `amendments` because nothing was superseded.
 
