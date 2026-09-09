@@ -558,10 +558,21 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     proof.proof_tree.clone_from(&proof_tree_record);
     if proof.proof != ac_negative_check::Proof::Red {
         let why = proof.reason.clone().unwrap_or_default();
-        let remedy = format!(
+        let mut remedy = format!(
             "the criterion being ADDED does not clear the negative test, so it would join the \
              spec verifying exactly nothing — {why}"
         );
+        // GREEN in the current tree is the refusal with a way out the reader
+        // cannot see from the reason alone — a criterion added to cover work
+        // that ALREADY landed passes here by construction. Same paragraph as
+        // the amendment door, from the same function.
+        if proof.proof == ac_negative_check::Proof::Green {
+            remedy.push_str("\n\n");
+            remedy.push_str(&crate::commands::spec::ac_amend::green_in_this_tree_way_out(
+                "ac-add",
+                opts.proof_tree.as_deref(),
+            ));
+        }
         let mut report = AcAddReport::refused(opts, &id, "criterion_not_proven", &remedy);
         report.proof = Some(proof);
         return report;
@@ -1068,6 +1079,15 @@ mod tests {
         let remedy = report.remedy.clone().unwrap_or_default();
         assert!(remedy.contains("verifying exactly nothing"), "{remedy}");
         assert!(remedy.contains("rewrite the command"), "the engine's own remedy: {remedy}");
+        // And the WAY OUT: a criterion added to cover work that already landed
+        // is green here by construction, and the refusal must say where the
+        // red can still be taken — naming THIS door, not the amendment's.
+        assert!(
+            remedy.contains("git worktree add --detach <dir> <commit-before-the-work>")
+                && remedy.contains("mustard-rt run ac-add … --proof-tree <dir>")
+                && remedy.contains("git worktree remove <dir>"),
+            "the refusal gives the --proof-tree recipe verbatim: {remedy}"
+        );
         assert_eq!(exit_code(&report), 1, "a refusal exits non-zero");
         assert!(report.written.is_empty(), "{:?}", report.written);
         assert_eq!(

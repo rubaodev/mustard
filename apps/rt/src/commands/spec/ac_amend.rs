@@ -351,6 +351,47 @@ pub(crate) fn proof_tree_record(tree: Option<&Path>, amending: &Path) -> Option<
     proof_tree_commit(tree?, amending)
 }
 
+/// The WAY OUT of a refusal whose replacement (or addition) came back GREEN in
+/// the current tree, spelled out — the paragraph a refusal must carry, because
+/// the door it names has existed the whole time and nobody found it.
+///
+/// Measured in the field: after the work lands, every GOOD criterion passes,
+/// so a criterion corrected AFTER its work cannot come back red here, and the
+/// only replacement the proof would accept is one that fails for some other
+/// reason. The operator read that as a dead end. It is not: `--proof-tree`
+/// takes the red where the work is absent, and the recipe is three commands.
+/// A refusal that sends the reader looking without saying what to look for
+/// teaches them to route around the gate — the same reason every other reason
+/// in this family names its one action.
+///
+/// `door` is the subcommand to repeat (`ac-amend` / `ac-add`); `proof_tree` is
+/// the tree the proof was JUST taken in, when one was named — the recipe would
+/// be a loop then, so the paragraph says the tree given still carries the work
+/// instead.
+///
+/// `pub(crate)` so `ac_add` says the same thing in the same words: two
+/// spellings of the way out is how one of the doors would drift back to silent.
+pub(crate) fn green_in_this_tree_way_out(door: &str, proof_tree: Option<&Path>) -> String {
+    match proof_tree {
+        Some(tree) => format!(
+            "The proof was taken in `--proof-tree {}` and the command passes THERE too, so that \
+             checkout still carries the work (or the criterion is satisfied by something the work \
+             never did) — point `--proof-tree` at a commit from BEFORE the work landed, or rewrite \
+             the command so it asserts the behaviour.",
+            tree.display()
+        ),
+        None => format!(
+            "A criterion corrected AFTER its work landed cannot come back red here: the behaviour \
+             already exists in this tree, so every good command passes. Take the proof where the \
+             work is absent instead — `--proof-tree` runs the command in another checkout while \
+             every write still lands in this one:\n\
+             git worktree add --detach <dir> <commit-before-the-work>\n\
+             mustard-rt run {door} … --proof-tree <dir>\n\
+             git worktree remove <dir>"
+        ),
+    }
+}
+
 /// What a rewrite must apply to one criterion.
 #[derive(Debug, Clone)]
 struct Rewrite {
@@ -986,10 +1027,21 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
 
     if proof.verdict == Verdict::Unproven {
         let reason = proof.reason.clone().unwrap_or_default();
-        let remedy = format!(
+        let mut remedy = format!(
             "the REPLACEMENT does not clear the negative test, so it proves exactly as little as \
              the criterion it would replace — {reason}"
         );
+        // GREEN in the current tree is the one refusal with a way out the
+        // reader cannot see from the reason alone — see
+        // `green_in_this_tree_way_out`. The other colours keep the engine's
+        // own remedy: it already names their one action.
+        if proof.proof == Proof::Green {
+            remedy.push_str("\n\n");
+            remedy.push_str(&green_in_this_tree_way_out(
+                "ac-amend",
+                opts.proof_tree.as_deref(),
+            ));
+        }
         let mut report = AcAmendReport::refused(opts, &id, "replacement_not_proven", &remedy);
         report.proof = Some(proof);
         return report;
@@ -1776,6 +1828,19 @@ mod tests {
         assert!(
             remedy.contains("rewrite the command"),
             "and carries the engine's own remedy: {remedy}"
+        );
+        // And the WAY OUT — the field read this refusal as a dead end because
+        // `--proof-tree` existed and nothing that refused them said so. The
+        // recipe is verbatim, three lines, and names THIS door.
+        assert!(
+            remedy.contains("cannot come back red here"),
+            "the refusal says why green is expected after the work: {remedy}"
+        );
+        assert!(
+            remedy.contains("git worktree add --detach <dir> <commit-before-the-work>")
+                && remedy.contains("mustard-rt run ac-amend … --proof-tree <dir>")
+                && remedy.contains("git worktree remove <dir>"),
+            "and gives the recipe verbatim: {remedy}"
         );
         assert_eq!(exit_code(&report), 1, "a refusal exits non-zero");
 

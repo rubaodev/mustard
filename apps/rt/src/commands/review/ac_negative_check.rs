@@ -46,6 +46,32 @@
 //! is the whole reason it pays: one edit at authoring, rather than a finding
 //! at close about a command nobody could ever run.
 //!
+//! # The red is taken twice
+//!
+//! One red run proves the command CAN fail. It does not prove the command
+//! fails for a reason: a criterion whose answer depends on thread order, on the
+//! clock, or on an unsorted listing comes back red on some runs and green on
+//! others with the code identical in all of them — a coin, which the proof
+//! accepted whenever the toss landed red. Measured in the field: `rg -l` with
+//! an `Expect:` that fixed the order of three files, 4 MATCH / 6 NO-MATCH over
+//! ten runs of the same tree.
+//!
+//! So a criterion whose first run is RED is run a SECOND time, and the two
+//! runs must agree on what the verdict is read from — the colour, and the
+//! cause of the red (exit code across zero, `Expect:` matched or missed). Two
+//! agreeing reds prove exactly what one proved before, and the ledger records
+//! both exits ([`AcProof::second_exit`]). Two runs that disagree make the
+//! criterion [`Proof::Unstable`] — UNPROVEN, with a reason naming what
+//! differed. The second run happens ONLY after a red first run: a green,
+//! timed-out or unattempted first run is already unproven, and repeating it
+//! buys nothing for a whole command's cost.
+//!
+//! The CONTROL is still taken ONCE. It must be green, and a control that is
+//! red on the pass it was asked is its own finding ([`Control::Red`]) — a
+//! control that flips would surface there, on whichever pass it lands red.
+//! The confirmation and the removal passes are untouched: they answer their
+//! own questions, one run each.
+//!
 //! # The second half: the confirmation
 //!
 //! Failing before the work is only half an answer. A command that is BROKEN and
@@ -195,6 +221,13 @@ pub(crate) enum Proof {
     /// NEVER TAKEN — the command was not run at all (an unfilled placeholder, or
     /// a command the executor could not attempt).
     NotAttempted,
+    /// TAKEN TWICE — the first run came back RED and the second DISAGREED with
+    /// it (a different exit code, or the `Expect:` matching where it had just
+    /// missed). The criterion is a coin: its red was not a fact about the
+    /// behaviour, so it is no colour at all here — never [`Proof::Red`], which
+    /// the approval gate reads as evidence, and never [`Proof::Green`], which
+    /// asks for a rewrite the criterion may not need.
+    Unstable,
 }
 
 /// POR QUE o vermelho foi vermelho — a leitura do código de saída que separa as
@@ -388,6 +421,19 @@ pub(crate) struct AcProof {
     /// committed, and a diff full of `null`s is a diff nobody reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) red_reason: Option<RedReason>,
+    /// The exit code of the SECOND run in the RED pass — the one taken to check
+    /// that the first red was not a coin (see the module doc, "The red is taken
+    /// twice"). Present whenever a second run happened, whether it agreed
+    /// ([`Proof::Red`] stands, both exits on record) or not
+    /// ([`Proof::Unstable`]). Absent when there was no second run: a green,
+    /// timed-out or unattempted first run is already unproven, and running it
+    /// again proves nothing.
+    ///
+    /// `skip_serializing_if` for the reason [`AcProof::red_reason`] has it: a
+    /// ledger with nothing to say here stays byte-identical to the one written
+    /// before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) second_exit: Option<i64>,
     /// The command's own exit code in the CONFIRMATION pass. Kept apart from
     /// [`AcProof::exit`] so confirming a criterion never overwrites the record
     /// of what it did before its work existed.
@@ -620,6 +666,25 @@ const REASON_NOT_FOUND: &str = "the proof was NEVER TAKEN: the shell could not f
      command (exit 127), so its red says nothing about the behaviour — fix the program name \
      or install the tool, then take the proof";
 
+/// The reason a criterion whose two runs DISAGREED is unproven, naming what
+/// differed between them — the exit codes, the `Expect:` match, or both.
+///
+/// It is deliberately neither [`REASON_GREEN`] nor a red: the criterion did
+/// not come back the wrong colour, it came back TWO colours, and the action
+/// that clears it is neither "rewrite the assertion" nor "run it again" — it is
+/// to make the command's answer stable. Measured in the field: a criterion
+/// reading `rg -l` output in an order the tool never promised passed 4 of 10
+/// runs with the code correct in all ten, and the proof accepted it because at
+/// that one instant it came back red.
+fn reason_unstable(what_differed: &str) -> String {
+    format!(
+        "the proof was TAKEN TWICE and the two runs DISAGREED ({what_differed}), so this \
+         criterion is non-deterministic: its red is a coin, not a fact about the behaviour — \
+         make the command's answer stable (sort what it lists, pin what it seeds, drop what \
+         depends on time or thread order), then take the proof again"
+    )
+}
+
 /// Why the trailing criterion is not tested.
 const REASON_EXEMPT: &str = "exempt by position: the trailing criterion is the build-green \
      safety net, green before the work by design";
@@ -772,6 +837,48 @@ fn classify_red_reason(proof: Proof, exit: Option<i64>) -> Option<RedReason> {
         (Proof::Red, Some(_)) => Some(RedReason::NonzeroExit),
         _ => None,
     }
+}
+
+/// Name what DIFFERED between two runs of the same criterion, for
+/// [`reason_unstable`] — `None` when the two runs agree on everything the
+/// verdict is read from.
+///
+/// "Agree" is about the VERDICT, not the bytes: exit `1` then exit `2` are the
+/// same red for the same reason (the command failed), and a criterion is not a
+/// coin for reporting a different failure code. What makes it one is the
+/// colour changing, or the CAUSE of the red changing — `(proof, red_reason)`,
+/// the exact pair the record carries — and each of those shows up as one of
+/// two observable facts: the exit code crossed zero, or the `Expect:` regex
+/// matched on one run and missed on the other. Pure, total.
+fn runs_disagree(
+    expect: Option<&str>,
+    first: (Proof, Option<RedReason>, Option<i64>),
+    second: (Proof, Option<RedReason>, Option<i64>),
+) -> Option<String> {
+    let (proof_a, reason_a, exit_a) = first;
+    let (proof_b, reason_b, exit_b) = second;
+    if (proof_a, reason_a) == (proof_b, reason_b) {
+        return None;
+    }
+    let show = |exit: Option<i64>| exit.map_or_else(|| "none".to_string(), |e| e.to_string());
+    let mut parts: Vec<String> = Vec::new();
+    if exit_a != exit_b {
+        parts.push(format!("exit `{}` then `{}`", show(exit_a), show(exit_b)));
+    }
+    if expect.is_some() {
+        // The regex matched exactly when the run was GREEN: a red with exit 0
+        // is the miss, and any other red never reached the regex.
+        let matched = |proof: Proof| proof == Proof::Green;
+        let (a, b) = (matched(proof_a), matched(proof_b));
+        if a != b {
+            let word = |m: bool| if m { "matched" } else { "missed" };
+            parts.push(format!("the `Expect:` {} then {}", word(a), word(b)));
+        }
+    }
+    if parts.is_empty() {
+        parts.push("the verdict changed between the two runs".to_string());
+    }
+    Some(parts.join(" and "))
 }
 
 /// Classify ONE control run from the executor's status.
@@ -951,7 +1058,8 @@ pub(crate) fn recorded_proof<'a>(
 /// The whole per-criterion rule, in one place: an `exempt` criterion is recorded
 /// without being run; a SKELETON command is recorded as NEVER TAKEN; anything
 /// else is executed through the shared `qa_run` executor and classified by
-/// [`classify`].
+/// [`classify`] — and a RED is executed a SECOND time, which must agree with
+/// the first or the criterion is [`Proof::Unstable`] (see the module doc).
 ///
 /// `pub(crate)` because the amendment door
 /// ([`crate::commands::spec::ac_amend`]) must ask THIS engine whether a
@@ -979,6 +1087,7 @@ pub(crate) fn prove_one(
         confirmation: Confirmation::NotTaken,
         exit: None,
         red_reason: None,
+        second_exit: None,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -1021,6 +1130,30 @@ pub(crate) fn prove_one(
     }
     let (verdict, proof, reason) = classify(result.status());
     let red_reason = classify_red_reason(proof, result.exit());
+    // A RED is taken TWICE — see the module doc. Only a red: a green, a
+    // timeout and an unattempted run are already unproven, and the second run
+    // would cost a whole command to prove nothing. Two reds that agree prove
+    // exactly what one proved before, with both exits on record; two runs that
+    // disagree prove the criterion is a coin, which is not a red.
+    let second = (proof == Proof::Red).then(|| qa_run::execute_ac(command, expect, root));
+    let second_exit = second.as_ref().and_then(qa_run::AcResult::exit);
+    if let Some(again) = &second {
+        let (_, proof_again, _) = classify(again.status());
+        let reason_again = classify_red_reason(proof_again, again.exit());
+        if let Some(what) = runs_disagree(
+            expect,
+            (proof, red_reason, result.exit()),
+            (proof_again, reason_again, again.exit()),
+        ) {
+            let mut record = base(Verdict::Unproven, Proof::Unstable, &reason_unstable(&what));
+            record.control = control_column;
+            record.control_exit = control_exit;
+            record.exit = result.exit();
+            record.second_exit = second_exit;
+            record.stderr_excerpt = again.stderr_excerpt().to_string();
+            return record;
+        }
+    }
     AcProof {
         id: id.to_string(),
         command: command.to_string(),
@@ -1033,6 +1166,7 @@ pub(crate) fn prove_one(
         confirmation: Confirmation::NotTaken,
         exit: result.exit(),
         red_reason,
+        second_exit,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -1150,6 +1284,7 @@ pub(crate) fn confirm_one(
         confirmation: Confirmation::NotTaken,
         exit: None,
         red_reason: None,
+        second_exit: None,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -1255,6 +1390,7 @@ pub(crate) fn remove_one(
         confirmation: Confirmation::NotTaken,
         exit: None,
         red_reason: None,
+        second_exit: None,
         confirmation_exit: None,
         removal: Removal::NotTaken,
         removal_exit: None,
@@ -1441,7 +1577,8 @@ fn run_pass(
         // conserta o que quebrou, re-roda, e o registro responde com a mesma
         // coisa de antes — no primeiro caso um controle verde ao lado do motivo
         // do controle vermelho. Medido neste repositório em 07/09/2026. Sem cor,
-        // o critério volta pela prova inteira.
+        // o critério volta pela prova inteira — e `unstable` também é sem cor:
+        // as duas rodadas discordaram, então não há vermelho a proteger.
         //
         // A ÚNICA pergunta feita a um registro com cor é "o texto do controle
         // mudou?". Um controle ausente dos dois lados é igual, e o registro
@@ -1803,6 +1940,7 @@ mod tests {
                 confirmation: Confirmation::NotTaken,
                 exit: Some(1),
                 red_reason: Some(RedReason::NonzeroExit),
+                second_exit: None,
                 confirmation_exit: None,
                 removal: Removal::NotTaken,
                 removal_exit: None,
@@ -2123,6 +2261,7 @@ mod tests {
                 confirmation: Confirmation::NotTaken,
                 exit: Some(1),
                 red_reason: Some(RedReason::NonzeroExit),
+                second_exit: None,
                 confirmation_exit: None,
                 removal: Removal::NotTaken,
                 removal_exit: None,
@@ -2185,6 +2324,7 @@ mod tests {
                 confirmation: Confirmation::NotTaken,
                 exit: Some(1),
                 red_reason: Some(RedReason::NonzeroExit),
+                second_exit: None,
                 confirmation_exit: None,
                 removal: Removal::NotTaken,
                 removal_exit: None,
@@ -2280,6 +2420,108 @@ mod tests {
             ledger["criteria"][2].get("red_reason").is_none(),
             "sem vermelho, sem campo: {body}"
         );
+    }
+
+    /// The red is taken TWICE, and a criterion that disagrees with itself is
+    /// UNPROVEN — never `proven: red`, which is what one red run stamped it.
+    ///
+    /// Measured in the field: a criterion reading `rg -l` output in an order
+    /// the tool never promised was 4 MATCH / 6 NO-MATCH over ten runs of the
+    /// same, correct tree, and the proof accepted it because at that one
+    /// instant it came back red. The flip here is deterministic on purpose — a
+    /// flag file is the counter — so the test measures the engine, not luck.
+    ///
+    /// Four-sided in one spec, so no half can pass vacuously:
+    ///
+    /// 1. **exit flips** (red, then green) — `Unstable`, the reason names the
+    ///    exits, both are on record, and there is no `red_reason` (there was no
+    ///    red anyone trusts).
+    /// 2. **`Expect:` flips** (exit 0 both times; missed, then matched) — the
+    ///    same verdict, and the reason names the regex rather than the exit.
+    /// 3. **a stable red** is still `proven: red`, with BOTH exits recorded —
+    ///    the second run cost nothing it did not pay for.
+    /// 4. **a stable green** is unproven for the ORDINARY reason and was NOT
+    ///    run again: a green first run already settles it.
+    ///
+    /// `sh` syntax, so the fixture runs where the AC shell is POSIX.
+    #[cfg(unix)]
+    #[test]
+    fn a_criterion_that_disagrees_with_itself_is_unproven_not_red() {
+        let dir = tempdir().unwrap();
+        // Red on the first run (the flag is planted and the command exits 1),
+        // green on the second (the flag is found and removed, exit 0).
+        let flip_exit = "if [ -e flip-exit ]; then rm flip-exit; else touch flip-exit; exit 1; fi";
+        // Exit 0 both times; the marker is printed only on the second run.
+        let flip_expect =
+            "if [ -e flip-expect ]; then rm flip-expect; echo flip-marker-9f3c; else touch flip-expect; fi";
+        let body = format!(
+            "# S\n\n## Acceptance Criteria\n\
+             - **AC-1** — the exit flips.\n  Command: `{flip_exit}`\n\
+             - **AC-2** — the evidence flips.\n  Command: `{flip_expect}`\n  Expect: `flip-marker-9f3c`\n\
+             - **AC-3** — a stable red.\n  Command: `{RED_COMMAND}`\n\
+             - **AC-4** — a stable green.\n  Command: `{GREEN_COMMAND}`\n\
+             - **AC-5** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+        );
+        let spec_dir = seed(dir.path(), "coin", &body);
+        let report = check(dir.path(), "coin");
+
+        // --- 1. exit flips --------------------------------------------------
+        let coin = entry(&report, "AC-1");
+        assert_eq!(coin.verdict, Verdict::Unproven, "a coin proves nothing: {coin:?}");
+        assert_eq!(coin.proof, Proof::Unstable, "and is no colour at all: {coin:?}");
+        assert_eq!(coin.exit, Some(1), "the first run was red");
+        assert_eq!(coin.second_exit, Some(0), "the second run was green — both on record");
+        assert_eq!(coin.red_reason, None, "no red anyone trusts, so no cause for one");
+        let reason = coin.reason.clone().unwrap_or_default();
+        assert!(reason.contains("TAKEN TWICE"), "the reason says it ran twice: {reason}");
+        assert!(reason.contains("exit `1` then `0`"), "and names what differed: {reason}");
+        assert!(!coin.evidenced(), "the approval gate must not read a coin as evidence");
+
+        // --- 2. Expect flips ------------------------------------------------
+        let coin = entry(&report, "AC-2");
+        assert_eq!(coin.proof, Proof::Unstable, "{coin:?}");
+        assert_eq!((coin.exit, coin.second_exit), (Some(0), Some(0)), "exit 0 both times");
+        let reason = coin.reason.clone().unwrap_or_default();
+        assert!(
+            reason.contains("the `Expect:` missed then matched"),
+            "the regex is what differed, and the reason says so: {reason}"
+        );
+        assert!(!reason.contains("exit `0` then `0`"), "an equal exit is not named: {reason}");
+
+        // --- 3. a stable red is still proven, both exits recorded -----------
+        let stable = entry(&report, "AC-3");
+        assert_eq!(stable.verdict, Verdict::Proven, "{:?}", stable.reason);
+        assert_eq!(stable.proof, Proof::Red);
+        assert!(stable.exit.is_some_and(|e| e != 0), "red: {stable:?}");
+        assert_eq!(stable.second_exit, stable.exit, "the second run agreed and is on record");
+        assert_eq!(stable.red_reason, Some(RedReason::NonzeroExit), "red_reason still records");
+
+        // --- 4. a stable green was NOT run again ----------------------------
+        let green = entry(&report, "AC-4");
+        assert_eq!(green.proof, Proof::Green);
+        assert_eq!(green.second_exit, None, "a green first run is not repeated: {green:?}");
+        assert!(
+            green.reason.clone().unwrap_or_default().contains("came back green"),
+            "and is unproven for the ordinary reason: {:?}",
+            green.reason
+        );
+
+        assert_eq!(entry(&report, "AC-5").verdict, Verdict::Exempt, "the trailing criterion is not run");
+        assert!(!report.ok, "a coin withholds the plan");
+
+        // On disk: the coin reads as `unstable`, and the green record carries no
+        // `second_exit` key — a ledger with nothing to say stays as it was.
+        let ledger_body = std::fs::read_to_string(spec_dir.join(AC_PROOF_JSON)).unwrap();
+        assert!(ledger_body.contains("\"unstable\""), "{ledger_body}");
+        let ledger: serde_json::Value = serde_json::from_str(&ledger_body).unwrap();
+        assert!(ledger["criteria"][3].get("second_exit").is_none(), "AC-4: {ledger_body}");
+        assert_eq!(ledger["criteria"][2]["second_exit"], ledger["criteria"][2]["exit"], "AC-3");
+
+        // And a coin is asked AGAIN on the next pass — it earned no colour, so
+        // there is nothing to protect from re-running. The flags were left
+        // even (each flipped twice), so the next pass flips the same way.
+        let again = check(dir.path(), "coin");
+        assert_eq!(entry(&again, "AC-1").proof, Proof::Unstable, "re-asked, still a coin");
     }
 
     /// AC-1 — the second half of the proof. A criterion that cleared the red

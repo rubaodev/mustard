@@ -1670,6 +1670,20 @@ fn build_input(
 /// the single tautology `analyze-validation`'s weak-AC linter tolerates). The
 /// old lone "Pipeline build green" AC passed whether or not the feature existed;
 /// it survives only as the LAST safety net here, never as the only criterion.
+///
+/// The behaviour criteria are SEEDED with a `Control:` — the same build
+/// command the trailing safety criterion runs. It is the one command known to
+/// be GREEN on a fresh tree by construction (that is the whole reason the
+/// safety criterion is exempt from the negative proof: green before the work
+/// by design), so the control never refuses a criterion for a reason that has
+/// nothing to do with the criterion. Seeding it, rather than offering an
+/// unfilled marker, is what makes the channel exist: a field measured across
+/// the archive turned out to appear ONLY when a human typed it, in either
+/// scope, and the specs that declared none paid for it at close. The author
+/// is free to narrow it to a control that proves more (a filtered runner
+/// selecting a sibling test); what they can no longer do is leave it blank by
+/// omission. The trailing criterion carries none: it is exempt from the proof,
+/// so a control on it would answer a question nobody asks.
 fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<AcceptanceCriterion> {
     use mustard_core::domain::capability::scenario_statement;
     let skeleton_command = translate("ac.skeleton.command", lang).to_string();
@@ -1681,6 +1695,7 @@ fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<Acceptance
                 translate("ac.skeleton.then_primary", lang),
             ),
             command: skeleton_command.clone(),
+            control: Some(build_command.to_string()),
         },
         AcceptanceCriterion {
             id: "AC-2".to_string(),
@@ -1689,11 +1704,13 @@ fn seed_acceptance_criteria(lang: Locale, build_command: &str) -> Vec<Acceptance
                 translate("ac.skeleton.then_secondary", lang),
             ),
             command: skeleton_command,
+            control: Some(build_command.to_string()),
         },
         AcceptanceCriterion {
             id: "AC-3".to_string(),
             statement: translate("ac.safety.build_green", lang).to_string(),
             command: build_command.to_string(),
+            control: None,
         },
     ]
 }
@@ -2411,6 +2428,13 @@ mod tests {
         assert!(acs[0].statement.contains("then <"), "AC-1 carries a then-clause: {}", acs[0].statement);
         assert_ne!(acs[0].command, "pnpm build", "skeleton AC command is not the build");
         assert!(acs[0].command.contains('<'), "skeleton AC command is a fill-me placeholder: {}", acs[0].command);
+        // The behaviour ACs are SEEDED with a control — the build command, the
+        // one command green on a fresh tree by construction — while the
+        // trailing safety AC carries none (exempt from the proof anyway).
+        // Measured before this: the field appeared only when a human typed it.
+        assert_eq!(acs[0].control.as_deref(), Some("pnpm build"), "AC-1 is seeded a green control");
+        assert_eq!(acs[1].control.as_deref(), Some("pnpm build"), "AC-2 too");
+        assert_eq!(acs.last().unwrap().control, None, "the trailing safety AC has nothing to control for");
         // Neutral fallback flows through verbatim when no buildCommand is set.
         let input2 = build_input(
             "demo",
@@ -3019,6 +3043,57 @@ mod tests {
             !body.contains("<runnable command that verifies this criterion>"),
             "the skeleton placeholder must be superseded:\n{body}",
         );
+    }
+
+    /// A `Control:` the PLAN wrote into an acceptance line reaches `spec.md`
+    /// verbatim, exactly as `Command:` and `Expect:` do — the adoption carries
+    /// the line, it does not re-derive it. And a plan that declares NO control
+    /// still adopts: the field is optional on read, and the negative proof
+    /// names its absence as a WARN, never this door.
+    ///
+    /// Two-sided in one plan: AC-1 declares a control, AC-2 does not, and the
+    /// parsed items say which is which.
+    #[test]
+    fn adopt_plan_keeps_a_plan_written_control_verbatim() {
+        use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
+        let dir = tempdir().unwrap();
+        let output = dir.path().join("adopted");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(
+            output.join("spec.md"),
+            "# S\n\n## Acceptance Criteria\n\n- **AC-1** — placeholder.\n  Command: `<x>`\n\n<!-- PLAN -->\n\n## Files\n\n- f\n",
+        )
+        .unwrap();
+        let plan = dir.path().join("plan.json");
+        std::fs::write(
+            &plan,
+            serde_json::to_string(&json!({
+                "waves": [{
+                    "n": 1, "role": "rt", "summary": "s", "tasks": ["t"], "files": ["f"],
+                    "acceptance": [
+                        format!("**AC-1** — when x, then y.\n  Command: `{RED_COMMAND}`\n  Expect: `nope`\n  Control: `{GREEN_COMMAND}`"),
+                        format!("**AC-2** — build green.\n  Command: `{GREEN_COMMAND}`"),
+                    ],
+                    "satisfies": ["AC-1", "AC-2"],
+                }],
+                "total_waves": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(adopt_plan_acceptance_criteria(&output, &plan), Ok(true));
+        let body = std::fs::read_to_string(output.join("spec.md")).unwrap();
+        assert!(
+            body.contains(&format!("Control: `{GREEN_COMMAND}`")),
+            "the plan's control reaches spec.md untouched:\n{body}"
+        );
+        let items = parse_ac_items(&extract_ac_section(&body).expect("AC section"));
+        assert_eq!(items.len(), 2, "{body}");
+        assert_eq!(items[0].control.as_deref(), Some(GREEN_COMMAND), "AC-1 keeps its control");
+        assert_eq!(items[0].expect.as_deref(), Some("nope"), "and its expect");
+        assert_eq!(items[1].control, None, "AC-2 declared none and still adopted");
+        assert!(body.contains("<!-- PLAN -->"), "the structural marker survives:\n{body}");
     }
 
     /// The other half, and the obligation that comes with fusing: a criterion
