@@ -205,11 +205,19 @@ struct Addition {
 
 /// The criterion block, in the drafter's canonical shape, with `eol` appended to
 /// every line so a CRLF document survives the insertion. Pure, total.
+///
+/// `control` is emitted exactly the way `expect` is, and for a reason the
+/// ledger cannot cover: `--control` reaches [`ac_negative_check::prove_one`] and
+/// lands in `control_command`, but the NEXT pass of that gate re-reads the
+/// MARKDOWN. A criterion admitted with a control whose line carried none was
+/// refused all over again at the approval gate — the door opened onto a closed
+/// one.
 fn criterion_block(
     id: &str,
     statement: &str,
     command: &str,
     expect: Option<&str>,
+    control: Option<&str>,
     eol: &str,
 ) -> Vec<String> {
     let mut block = vec![
@@ -218,6 +226,9 @@ fn criterion_block(
     ];
     if let Some(expect) = expect {
         block.push(format!("  Expect: `{expect}`{eol}"));
+    }
+    if let Some(control) = control {
+        block.push(format!("  Control: `{control}`{eol}"));
     }
     block
 }
@@ -236,6 +247,7 @@ fn insert_criterion(
     statement: &str,
     command: &str,
     expect: Option<&str>,
+    control: Option<&str>,
 ) -> Option<String> {
     let lines: Vec<&str> = body.split('\n').collect();
     let mut carrying: Option<(usize, usize)> = None;
@@ -277,7 +289,7 @@ fn insert_criterion(
     // lines end `\r\n` must not gain three lone-LF lines in the middle.
     let eol = if body.contains("\r\n") { "\r" } else { "" };
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
-    let block = criterion_block(id, statement, command, expect, eol);
+    let block = criterion_block(id, statement, command, expect, control, eol);
     out.splice(at..at, block);
     Some(out.join("\n"))
 }
@@ -483,7 +495,7 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
             continue;
         };
         let Some(updated) =
-            insert_criterion(&body, &id, &statement, &opts.command, expect.as_deref())
+            insert_criterion(&body, &id, &statement, &opts.command, expect.as_deref(), control)
         else {
             continue;
         };
@@ -733,6 +745,78 @@ mod tests {
         assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
     }
 
+    /// O ROUND TRIP que faltava ao `--control` desta porta: o controle declarado
+    /// tem de chegar à LINHA do critério novo, porque é o MARKDOWN que a passada
+    /// seguinte do `ac-negative-check` lê.
+    ///
+    /// A regressão que isto tranca: a flag chegava ao motor e ao
+    /// `control_command` do ledger, e o bloco escrito na spec só tinha
+    /// `Command:` e `Expect:`. O critério entrava com controle no registro e sem
+    /// controle na spec, e o portão de aprovação o recusava outra vez.
+    ///
+    /// Dois lados, e o veredito de cada um vem do predicado do próprio portão
+    /// ([`ac_negative_check::control_required`]) alimentado pela releitura.
+    #[test]
+    fn an_added_control_lands_on_the_line_the_next_gate_reads() {
+        // Um executor de teste FILTRADO — a forma que o portão recusa quando não
+        // acha `Control:` na linha.
+        const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
+        let md = "## Acceptance Criteria\n- **AC-1** — build green.\n  Command: `cd a`\n";
+
+        // COM controle: a releitura acha o marcador e o portão nada cobra.
+        let with = insert_criterion(md, "AC-9", "when x, then y", FILTERED, None, Some(GREEN_COMMAND))
+            .expect("the criterion was inserted");
+        let added = criteria_of(&with)
+            .into_iter()
+            .find(|i| i.id == "AC-9")
+            .unwrap_or_else(|| panic!("AC-9 unreadable after insertion: {with:?}"));
+        assert_eq!(
+            added.control.as_deref(),
+            Some(GREEN_COMMAND),
+            "o `Control:` tem de estar NA LINHA, não só no registro da prova: {with:?}",
+        );
+        assert!(
+            !ac_negative_check::control_required(&added.command, added.control.as_deref()),
+            "a passada seguinte tem de aceitar o critério admitido pela porta: {with:?}",
+        );
+
+        // SEM ele: o portão volta a cobrar — a recusa que o critério encontrava
+        // logo depois de entrar.
+        let without = insert_criterion(md, "AC-9", "when x, then y", FILTERED, None, None)
+            .expect("the criterion was inserted");
+        let bare = criteria_of(&without)
+            .into_iter()
+            .find(|i| i.id == "AC-9")
+            .unwrap_or_else(|| panic!("AC-9 unreadable after insertion: {without:?}"));
+        assert_eq!(bare.control, None, "{without:?}");
+        assert!(
+            ac_negative_check::control_required(&bare.command, bare.control.as_deref()),
+            "sem controle o portão TEM de cobrar — senão este teste não mede nada: {without:?}",
+        );
+
+        // Fim a fim, no disco: em TODO artefato de plano, que é o que o agente
+        // despachado e o portão leem.
+        let dir = tempdir().unwrap();
+        let spec_dir = seed(dir.path(), "added");
+        let mut o = opts("added", "AC-3", RED_COMMAND);
+        o.control = Some(GREEN_COMMAND.to_string());
+        let report = add(dir.path(), &o);
+        assert!(report.ok, "unexpected refusal: {:?} / {:?}", report.error, report.remedy);
+        for name in ["spec.md", "wave-plan.md", "wave-1-rt/spec.md"] {
+            let body = std::fs::read_to_string(spec_dir.join(name)).unwrap();
+            let item = criteria_of(&body)
+                .into_iter()
+                .find(|i| i.id == "AC-3")
+                .unwrap_or_else(|| panic!("{name}: AC-3 unreadable"));
+            assert_eq!(item.command, RED_COMMAND, "{name}");
+            assert_eq!(
+                item.control.as_deref(),
+                Some(GREEN_COMMAND),
+                "{name}: o `Control:` tem de estar na linha",
+            );
+        }
+    }
+
     /// A `--proof-tree` that is not a directory is refused by CODE, before any
     /// artefact is touched.
     #[test]
@@ -948,8 +1032,15 @@ mod tests {
             // A section with no criterion at all: the block is the whole list.
             ("## Acceptance Criteria\n\nnone yet.\n\n## Files\n\n- `a.rs`\n", None),
         ] {
-            let updated = insert_criterion(original, "AC-9", "when x, then y", "cd new", expect)
-                .unwrap_or_else(|| panic!("nothing inserted into {original:?}"));
+            let updated = insert_criterion(
+                original,
+                "AC-9",
+                "when x, then y",
+                "cd new",
+                expect,
+                Some(GREEN_COMMAND),
+            )
+            .unwrap_or_else(|| panic!("nothing inserted into {original:?}"));
             let items = criteria_of(&updated);
             let added = items
                 .iter()
@@ -957,6 +1048,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("AC-9 unreadable after insertion: {updated:?}"));
             assert_eq!(added.command, "cd new", "{updated:?}");
             assert_eq!(added.expect.as_deref(), expect, "{updated:?}");
+            assert_eq!(added.control.as_deref(), Some(GREEN_COMMAND), "{updated:?}");
             assert_eq!(added.statement, "when x, then y", "{updated:?}");
             if original.contains("\r\n") {
                 // `split('\n')` and not `lines()`: the latter strips the `\r`
@@ -964,7 +1056,8 @@ mod tests {
                 assert!(
                     !updated
                         .split('\n')
-                        .any(|l| l.contains("AC-9") && !l.ends_with('\r')),
+                        .any(|l| (l.contains("AC-9") || l.contains("Control:"))
+                            && !l.ends_with('\r')),
                     "a CRLF document must not gain lone-LF lines: {updated:?}"
                 );
             }
@@ -975,7 +1068,10 @@ mod tests {
         }
         // A document with no acceptance-criteria section is left alone entirely
         // — that is how a wave artefact carrying no criteria is skipped.
-        assert!(insert_criterion("# Wave\n\n## Tasks\n\n- do it\n", "AC-9", "s", "c", None).is_none());
+        assert!(
+            insert_criterion("# Wave\n\n## Tasks\n\n- do it\n", "AC-9", "s", "c", None, None)
+                .is_none()
+        );
     }
 
     /// The new criterion never takes the trailing slot, because the trailing
@@ -987,7 +1083,7 @@ mod tests {
         let md = "## Acceptance Criteria\n\
                   - **AC-1** — first.\n  Command: `cd a`\n\
                   - **AC-2** — build green.\n  Command: `cargo build`\n";
-        let updated = insert_criterion(md, "AC-3", "when x, then y", "cd new", None)
+        let updated = insert_criterion(md, "AC-3", "when x, then y", "cd new", None, None)
             .expect("the criterion was inserted");
         let items = criteria_of(&updated);
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();

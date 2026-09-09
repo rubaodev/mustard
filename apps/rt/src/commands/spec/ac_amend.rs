@@ -367,6 +367,19 @@ struct Rewrite {
     expect: Option<String>,
     /// The replacement statement, applied only when `--statement` was given.
     statement: Option<String>,
+    /// The replacement `Control:` command, applied ONLY when `--control` was
+    /// given. `None` means "leave whatever control is there", not "remove it" —
+    /// the same semantics as [`Self::expect`], and load-bearing for the same
+    /// reason: a command-only amendment must not silently strip the one marker
+    /// that separates a behaviour red from an empty-selection red.
+    ///
+    /// **Why the flag has to reach the LINE and not only the ledger.** The
+    /// proof engine takes `--control` and records it in `control_command`, but
+    /// the next [`ac_negative_check`] pass re-reads the MARKDOWN. A criterion
+    /// admitted through `--control` whose line carried no `Control:` was
+    /// refused again at the approval gate — the door opened and the gate behind
+    /// it closed, which is worse than no flag at all.
+    control: Option<String>,
 }
 
 /// Normalise a criterion id to the spelling the parser yields: uppercase, and
@@ -429,19 +442,40 @@ fn replace_marker_value(line: &str, marker: &str, value: &str) -> Option<String>
     Some(format!("{head}{ws}`{value}`{after}"))
 }
 
-/// Give `line` an `Expect:` marker carrying `value` — rewriting the one it has,
-/// or appending one when it has none.
+/// Give `line` a `marker` carrying `value` — rewriting the one it has, or
+/// appending `` <label>: `<value>` `` when it has none.
 ///
 /// The append lands on the COMMAND's own line on purpose: that is the one place
-/// both AC shapes read `Expect:` from. The one-line historical form
-/// (`- [ ] AC-1: … Command: \`c\``) never looks at following lines at all, so an
-/// `Expect:` appended below it would be silently ignored.
-fn ensure_expect(line: &str, value: &str) -> String {
-    if let Some(rewritten) = replace_marker_value(line, "expect:", value) {
+/// both AC shapes read the optional markers from. The one-line historical form
+/// (`- [ ] AC-1: … Command: \`c\``) never looks at following lines at all, so a
+/// marker appended below it would be silently ignored.
+///
+/// `marker` is the lowercase `"label:"` the READER matches; `label` is the
+/// cased spelling written out. One body for both markers, because "rewrite it
+/// or append it" is one rule — two copies is how `Expect:` and `Control:` would
+/// drift into landing in different places.
+fn ensure_marker(line: &str, marker: &str, label: &str, value: &str) -> String {
+    if let Some(rewritten) = replace_marker_value(line, marker, value) {
         return rewritten;
     }
     let (body, cr) = split_cr(line);
-    format!("{body} Expect: `{value}`{cr}")
+    format!("{body} {label}: `{value}`{cr}")
+}
+
+/// Give `line` an `Expect:` marker carrying `value` — see [`ensure_marker`].
+fn ensure_expect(line: &str, value: &str) -> String {
+    ensure_marker(line, "expect:", "Expect", value)
+}
+
+/// Give `line` a `Control:` marker carrying `value` — see [`ensure_marker`].
+///
+/// The twin of [`ensure_expect`], and it exists for the reason
+/// [`Rewrite::control`] states: without it a criterion admitted through
+/// `--control` reached the ledger with a control and the spec line without one,
+/// so the next `ac-negative-check` pass — which reads the MARKDOWN — refused it
+/// all over again.
+fn ensure_control(line: &str, value: &str) -> String {
+    ensure_marker(line, "control:", "Control", value)
 }
 
 /// Rewrite the criterion's statement on its header line, keeping the bullet, the
@@ -467,6 +501,33 @@ fn replace_statement(line: &str, after_sep_off: usize, statement: &str) -> Strin
     let stmt_end = trimmed.trim_end_matches(['—', '-', ' ']).len();
     let separator = &trimmed[stmt_end..];
     format!("{head} {}{separator}{trailing_ws}{tail}", statement.trim())
+}
+
+/// WHICH line of a criterion's block an optional marker (`expect:`,
+/// `control:`) must be written on.
+///
+/// The command's own line when it already carries the marker, or when the
+/// criterion is in the one-line historical form — that form never looks at
+/// following lines. Otherwise the block's standalone marker line, if there is
+/// one; failing that the command line, where [`ensure_marker`] appends.
+///
+/// `command_line` is read from the OUTPUT (the command may already have been
+/// rewritten there), while the search for a standalone line reads the pristine
+/// `lines` — markers never move, so the two agree.
+fn marker_line(
+    command_line: &str,
+    lines: &[&str],
+    k: usize,
+    block_end: usize,
+    inline: bool,
+    marker: &str,
+) -> usize {
+    if inline || marker_end(command_line, marker).is_some() {
+        return k;
+    }
+    (k + 1..block_end)
+        .find(|m| marker_end(lines[*m], marker).is_some())
+        .unwrap_or(k)
 }
 
 /// `true` when the block of lines starting after an AC header ends at `line` —
@@ -588,20 +649,18 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
                 out[k] = rewritten;
                 changed = true;
             }
-            let Some(expect) = plan.expect.as_deref() else {
-                continue;
-            };
-            // A standalone `Expect:` line is only ever read for the drafter
-            // form, so only that form looks for one.
-            let expect_line = if marker_end(&out[k], "expect:").is_some() || inline {
-                k
-            } else {
-                (k + 1..block_end)
-                    .find(|m| marker_end(lines[*m], "expect:").is_some())
-                    .unwrap_or(k)
-            };
-            out[expect_line] = ensure_expect(&out[expect_line], expect);
-            changed = true;
+            // The two OPTIONAL markers, each applied only when its own flag was
+            // given: an omitted flag leaves whatever the line already carries.
+            if let Some(expect) = plan.expect.as_deref() {
+                let at = marker_line(&out[k], &lines, k, block_end, inline, "expect:");
+                out[at] = ensure_expect(&out[at], expect);
+                changed = true;
+            }
+            if let Some(control) = plan.control.as_deref() {
+                let at = marker_line(&out[k], &lines, k, block_end, inline, "control:");
+                out[at] = ensure_control(&out[at], control);
+                changed = true;
+            }
         }
         i = end;
     }
@@ -963,6 +1022,10 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
             .statement
             .clone()
             .filter(|s| !s.trim().is_empty()),
+        // The SAME value the proof was taken with (already trimmed, blank
+        // treated as absent), so the line and the ledger cannot disagree about
+        // what the control is.
+        control: control.map(str::to_string),
     };
     let mut rewritten: Vec<String> = Vec::new();
     for path in artefacts(&spec_dir) {
@@ -1172,6 +1235,18 @@ mod tests {
         }
     }
 
+    /// O critério `id` como o MESMO par de leitores que o `ac-negative-check`
+    /// usa (`extract_ac_section` + `parse_ac_items`) o lê de volta do markdown.
+    ///
+    /// Releitura, nunca inspeção de bytes: o que importa não é que a linha tenha
+    /// sido escrita, e sim que o portão seguinte consiga LER o que ela diz.
+    fn read_back(markdown: &str, id: &str) -> qa_run::AcItem {
+        criteria_of(markdown)
+            .into_iter()
+            .find(|i| i.id == id)
+            .unwrap_or_else(|| panic!("{id} unreadable: {markdown:?}"))
+    }
+
     /// A REGRESSÃO que este teste tranca: esta porta chamava `prove_one` com
     /// `control: None` SEMPRE, e nem a struct de opções nem a CLI carregavam um
     /// `Control:`.
@@ -1239,6 +1314,148 @@ mod tests {
             &opts("runner", "AC-1", OTHER_RED_COMMAND, "sem executor, sem controle"),
         );
         assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
+    }
+
+    /// O ROUND TRIP que faltava ao `--control`: o controle declarado tem de
+    /// chegar à LINHA do critério, porque é o MARKDOWN que a passada seguinte do
+    /// `ac-negative-check` lê.
+    ///
+    /// A regressão que isto tranca: a flag chegava ao motor e ao
+    /// `control_command` do ledger, e a reescrita não escrevia marcador nenhum
+    /// na linha. O critério admitido por esta porta era recusado OUTRA VEZ no
+    /// portão de aprovação — que é onde o operador o encontra. Uma flag que
+    /// parece funcionar e não funciona é pior que uma que não existe.
+    ///
+    /// Dois lados, e o veredito de cada um vem do predicado do próprio portão
+    /// ([`ac_negative_check::control_required`]) alimentado pela RELEITURA, não
+    /// de uma segunda leitura de "isto é um executor filtrado?".
+    #[test]
+    fn an_amended_control_lands_on_the_line_the_next_gate_reads() {
+        // Um executor de teste FILTRADO — a forma que o portão recusa quando
+        // não acha `Control:` na linha.
+        const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
+        let md = "## Acceptance Criteria\n- **AC-2** — old statement.\n  Command: `cd old`\n";
+        let plan = |control: Option<&str>| Rewrite {
+            command: FILTERED.to_string(),
+            expect: None,
+            statement: None,
+            control: control.map(str::to_string),
+        };
+
+        // COM `--control`: a releitura acha o controle, e o portão seguinte já
+        // não tem o que cobrar.
+        let with =
+            rewrite_markdown(md, "AC-2", &plan(Some(GREEN_COMMAND))).expect("the criterion changed");
+        let item = read_back(&with, "AC-2");
+        assert_eq!(item.command, FILTERED, "{with:?}");
+        assert_eq!(
+            item.control.as_deref(),
+            Some(GREEN_COMMAND),
+            "o `Control:` tem de estar NA LINHA, não só no registro da prova: {with:?}",
+        );
+        assert!(
+            !ac_negative_check::control_required(&item.command, item.control.as_deref()),
+            "a passada seguinte tem de aceitar o critério admitido pela porta: {with:?}",
+        );
+
+        // SEM ela: o critério fica sem controle e o portão volta a cobrar — que
+        // é exatamente a recusa que o critério encontrava logo adiante.
+        let without = rewrite_markdown(md, "AC-2", &plan(None)).expect("the command changed");
+        let item = read_back(&without, "AC-2");
+        assert_eq!(item.control, None, "{without:?}");
+        assert!(
+            ac_negative_check::control_required(&item.command, item.control.as_deref()),
+            "sem controle nenhum o portão TEM de cobrar — senão este teste não mede nada: \
+             {without:?}",
+        );
+    }
+
+    /// `--control` omitido MANTÉM o controle que a linha já carrega — a mesma
+    /// semântica que o `--expect` documenta, e a metade que não pode quebrar
+    /// junto: toda emenda de comando passaria a apagar em silêncio o controle de
+    /// quem já declarou um.
+    ///
+    /// Em todas as formas que o leitor aceita, porque é em uma delas que a
+    /// perda passaria despercebida: marcador em linha própria, marcador na linha
+    /// do comando, forma histórica de uma linha só, e documento CRLF.
+    #[test]
+    fn an_omitted_control_flag_keeps_the_control_the_line_carries() {
+        let plan = |control: Option<&str>| Rewrite {
+            command: "cd new".to_string(),
+            expect: None,
+            statement: None,
+            control: control.map(str::to_string),
+        };
+        for original in [
+            "## Acceptance Criteria\n- **AC-2** — s.\n  Command: `cd old`\n  Control: `cd .`\n",
+            "## Acceptance Criteria\n- **AC-2** — s.\n  Command: `cd old` Control: `cd .`\n",
+            "## Acceptance Criteria\n- [ ] AC-2: s — Command: `cd old` Control: `cd .`\n",
+            "## Acceptance Criteria\r\n- **AC-2** — s.\r\n  Command: `cd old`\r\n  Control: `cd .`\r\n",
+        ] {
+            let kept = rewrite_markdown(original, "AC-2", &plan(None)).expect("the command changed");
+            let item = read_back(&kept, "AC-2");
+            assert_eq!(item.command, "cd new", "{kept:?}");
+            assert_eq!(
+                item.control.as_deref(),
+                Some("cd ."),
+                "uma emenda que não nomeia controle não pode apagar o que existe: {kept:?}",
+            );
+
+            // E o controle NOVO substitui o antigo, sem duplicar o marcador —
+            // duas respostas na mesma linha é um critério ambíguo.
+            let swapped =
+                rewrite_markdown(original, "AC-2", &plan(Some("cd .."))).expect("the criterion changed");
+            let item = read_back(&swapped, "AC-2");
+            assert_eq!(item.control.as_deref(), Some("cd .."), "{swapped:?}");
+            assert_eq!(swapped.matches("Control:").count(), 1, "marcador duplicado: {swapped:?}");
+            if original.contains("\r\n") {
+                assert!(
+                    !swapped.split('\n').any(|l| l.contains("Control:") && !l.ends_with('\r')),
+                    "um documento CRLF não pode ganhar linha com LF sozinho: {swapped:?}",
+                );
+            }
+        }
+
+        // A outra metade: um critério que NUNCA teve controle continua sem — a
+        // reescrita não inventa marcador que ninguém pediu.
+        let bare = rewrite_markdown(
+            "## Acceptance Criteria\n- **AC-2** — s.\n  Command: `cd old`\n",
+            "AC-2",
+            &plan(None),
+        )
+        .expect("the command changed");
+        assert!(!bare.contains("Control:"), "{bare:?}");
+    }
+
+    /// Fim a fim, no disco: o controle declarado na chamada chega à linha do
+    /// critério em TODO artefato — o `spec.md` do pai E a cópia da onda, que é a
+    /// que o agente despachado lê.
+    #[test]
+    fn the_declared_control_reaches_every_artefact_on_disk() {
+        let dir = tempdir().unwrap();
+        let spec_dir = seed(dir.path(), "controlled");
+        let mut o = opts("controlled", "AC-2", OTHER_RED_COMMAND, "o critério ganha um controle");
+        o.control = Some(GREEN_COMMAND.to_string());
+        let report = amend(dir.path(), &o);
+        assert!(report.ok, "unexpected refusal: {:?} / {:?}", report.error, report.remedy);
+        // O ledger já carregava isto antes da correção; o que faltava era a
+        // LINHA, e é ela que o portão seguinte lê.
+        assert_eq!(
+            report.proof.as_ref().and_then(|p| p.control_command.as_deref()),
+            Some(GREEN_COMMAND),
+            "{report:?}",
+        );
+        for path in [spec_dir.join("spec.md"), spec_dir.join("wave-2-rt").join("spec.md")] {
+            let body = std::fs::read_to_string(&path).unwrap();
+            let item = read_back(&body, "AC-2");
+            assert_eq!(item.command, OTHER_RED_COMMAND, "{}", path.display());
+            assert_eq!(
+                item.control.as_deref(),
+                Some(GREEN_COMMAND),
+                "o `Control:` tem de estar na linha de {}",
+                path.display(),
+            );
+        }
     }
 
     /// A criterion corrected AFTER the work landed takes its red somewhere the
@@ -1796,6 +2013,7 @@ mod tests {
             command: "cargo test -p mustard-rt new_name".to_string(),
             expect: Some("2 passed".to_string()),
             statement: Some("when amended, then the door reads the new command".to_string()),
+            control: None,
         };
         for original in [
             // Drafter multi-line form, with and without an Expect line.
@@ -1829,6 +2047,7 @@ mod tests {
             command: "cd new".to_string(),
             expect: None,
             statement: None,
+            control: None,
         };
         let md = "## Tasks\n\n- AC-2: mentioned in prose — Command: `cd old`\n\n\
                   ## Acceptance Criteria\n\n- **AC-2** — real.\n  Command: `cd old`\n";
@@ -1876,6 +2095,7 @@ mod tests {
             expect: None,
             statement: Some("when a spec is closed, then the pipeline takes the confirmation"
                 .to_string()),
+            control: None,
         };
         let updated = rewrite_markdown(wrapped, "AC-1", &plan).expect("the criterion changed");
         let item = criteria_of(&updated)
@@ -1904,6 +2124,7 @@ mod tests {
             command: "cd new".to_string(),
             expect: None,
             statement: None,
+            control: None,
         };
         let untouched =
             rewrite_markdown(wrapped, "AC-1", &command_only).expect("the command changed");
@@ -1945,6 +2166,7 @@ mod tests {
             command: "cd new".to_string(),
             expect: None,
             statement: Some("when the plan is read, then the duty is stated once".to_string()),
+            control: None,
         };
         let updated = rewrite_markdown(commandless, "AC-1", &plan)
             .expect("the command-less criterion changed");
