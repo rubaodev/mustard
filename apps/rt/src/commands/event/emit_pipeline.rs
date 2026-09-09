@@ -550,12 +550,26 @@ pub(super) fn enforce_base_gate_at(
             // insumo obrigatório: sem ela um `emit-pipeline --kind
             // pipeline.kind` disparado de `feature/outra-unidade` commitava o
             // censo na cabeça DAQUELA unidade.
-            let _ = super::census_settlement::settle(
+            //
+            // E OBEDECE: a única recusa que esta porta pode receber é a da BASE
+            // que não pôde ser avançada até o `origin` (nada é checado out
+            // aqui, então nada viaja). Cortar uma unidade de uma base velha é
+            // exatamente o que este portão existe para recusar — a mesma
+            // sentença que `BaseVerdict::Refuse` já diz, vinda de outra
+            // medição.
+            match super::census_settlement::settle(
                 root,
                 super::census_settlement::CheckoutPosition::at(Some(&current), None, kind_base),
                 &config,
                 super::census_settlement::CensusDoor::ExplicitOpen,
-            );
+            ) {
+                super::census_settlement::CensusSettlement::Refuse(busy) => {
+                    eprintln!("BLOCKED: {}", busy.reason(config.i18n().lang));
+                    std::process::exit(2);
+                }
+                super::census_settlement::CensusSettlement::Recorded(_)
+                | super::census_settlement::CensusSettlement::Proceed => {}
+            }
             // The census refresh only re-mines the DETERMINISTIC half. The
             // agent-written half — Guards prose, `{role}-pattern` molds — is
             // measured here and reported on stderr, unconditionally: a gap born

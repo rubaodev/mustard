@@ -1219,9 +1219,16 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
         ("the write hook", &gate),
     ] {
         assert!(src.contains("settle("), "{door} no longer asks the shared question");
-        // The steps the answer performs. `refresh_integration_bases(&vcs` is the
-        // CALL shape — `work_branch.rs` still defines the function.
-        for step in ["refresh_integration_bases(&vcs", "commit_census(", "mine_census_if_stale("] {
+        // The steps the answer performs. `fetch_origin(&vcs` and its siblings
+        // are the CALL shapes — `work_branch.rs` still defines the functions.
+        for step in [
+            "fetch_origin(&vcs",
+            "paths_the_advance_overwrites(&vcs",
+            "discard_paths(&vcs",
+            "fast_forward_base(&vcs",
+            "commit_census(",
+            "mine_census_if_stale(",
+        ] {
             assert!(
                 !src.contains(step),
                 "{door} performs `{step}` itself again — the step a door performs is the \

@@ -352,22 +352,29 @@ pub(crate) fn mined_census_paths(project: &Path) -> Vec<String> {
 /// commit varrer junto, que é exatamente o fato que `record_written_path` pede.
 ///
 /// `true` quando o commit foi mesmo escrito. Ignorado, invisível para o git ou
-/// recusado por ele: `false`, a escrita fica onde caiu e nada é dito ao
-/// operador — fail-open, como o mine determinístico já degrada.
+/// recusado por ele: `false`, e a escrita fica onde caiu — fail-open, como o
+/// mine determinístico já degrada. Mas NUNCA em silêncio: cada
+/// [`RecordOutcome`] imprime a sua linha no stderr, do catálogo, no idioma do
+/// projeto. Uma gravação que falhava calada deixava o censo sujo, e o corte
+/// seguinte o recusava nomeando `grain.model.json` como trabalho não commitado
+/// do operador — sem aviso prévio de que fora a ferramenta que o deixou ali.
+/// "Prosseguir depois de uma gravação que falhou" e "prosseguir sem dever
+/// nada" são fatos diferentes, e é esta linha que diz qual dos dois foi.
 pub(crate) fn commit_census(project: &Path, paths: &[String]) -> bool {
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    if record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, Some(true))
-        != RecordOutcome::Recorded
-    {
-        return false;
-    }
+    let outcome = record_written_path(project, &refs, CENSUS_COMMIT_SUBJECT, Some(true));
+    let key = match outcome {
+        RecordOutcome::Recorded => "basegate.census.recorded",
+        RecordOutcome::Nothing => "basegate.census.nothing",
+        RecordOutcome::TreeNotClean => "basegate.census.not_clean",
+        RecordOutcome::Unavailable => "basegate.census.unavailable",
+    };
     let lang = ProjectConfig::load(project).i18n().lang;
     eprintln!(
         "{}",
-        mustard_core::translate("basegate.census.recorded", lang)
-            .replace("{paths}", &paths.join(", "))
+        mustard_core::translate(key, lang).replace("{paths}", &paths.join(", "))
     );
-    true
+    outcome == RecordOutcome::Recorded
 }
 
 /// Quantos tokens significativos duas unidades precisam compartilhar para uma
@@ -994,15 +1001,20 @@ mod tests {
     /// `origin` ANTES de o commit do censo cair nela, e o censo é gravado assim
     /// mesmo. As duas metades, na mesma corrida.
     ///
-    /// A regressão que isto tranca: a gravação do censo vinha primeiro e
-    /// `refresh_integration_bases` logo depois, com o resultado descartado. Um
-    /// commit do censo na base local a faz divergir de `origin/{base}` — o passo
-    /// é `merge --ff-only` —, o avanço é recusado, ninguém é avisado, e a
+    /// A regressão que isto tranca: a gravação do censo vinha primeiro e o
+    /// avanço da base logo depois, com o resultado descartado. Um commit do
+    /// censo na base local a faz divergir de `origin/{base}` — o passo é
+    /// `merge --ff-only` —, o avanço é recusado, ninguém é avisado, e a
     /// unidade sai de uma base velha. É também a invariante que o Guard do
     /// `CLAUDE.md` da raiz enuncia: `--ff-only` só passa quando a base de
     /// integração não tem commit próprio; depois disso o
     /// `git pull --ff-only origin {base}` que a recusa deste portão prescreve
     /// falha também para o operador.
+    ///
+    /// O commit do `origin` é VAZIO de propósito: o avanço não depende da
+    /// árvore suja, e o único motivo para ele falhar seria a ordem errada. O
+    /// caso em que o commit do `origin` TOCA o censo sujo é medido à parte, em
+    /// `a_census_in_the_way_of_the_advance_is_set_aside_not_committed_stale`.
     #[test]
     fn the_base_is_refreshed_before_the_census_commit_lands_on_it() {
         use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
@@ -1286,20 +1298,344 @@ mod tests {
             crate::commands::event::work_branch::is_protected(root, "dev", &config),
             "a fixture precisa de uma posição realmente protegida",
         );
-        settle_cut(root, Some("dev"), "dev_second", Some("dev"), &config);
+        let dirty_before = porcelain(root);
+        let settled = settle_cut(root, Some("dev"), "dev_second", Some("dev"), &config);
+        assert!(
+            matches!(settled, CensusSettlement::Refuse(_)),
+            "não grava E não libera: o censo não tem como aterrissar aqui por esta porta: {settled:?}",
+        );
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
             "nada é commitado numa base protegida pelo caminho do corte",
         );
+        assert_eq!(porcelain(root), dirty_before, "e a árvore fica exatamente como estava");
 
-        // E a posição NÃO MEDIDA (`HEAD` destacado, ou ilegível) idem.
-        settle_cut(root, Some("HEAD"), "dev_second", Some("dev"), &config);
-        settle_cut(root, None, "dev_second", Some("dev"), &config);
+        // E a posição NÃO MEDIDA (`HEAD` destacado, ou ilegível) idem — e
+        // também recusa, pelo mesmo motivo: o censo não pode viajar de onde
+        // não pode ser gravado.
+        for current in [Some("HEAD"), None] {
+            let settled = settle_cut(root, current, "dev_second", Some("dev"), &config);
+            assert!(
+                matches!(settled, CensusSettlement::Refuse(_)),
+                "posição {current:?}: o censo não viaja de uma posição não medida: {settled:?}",
+            );
+        }
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
             "uma posição que não foi medida não autoriza commit nenhum",
+        );
+    }
+
+    /// A LINHA que faltava na tabela: base PROTEGIDA, árvore suja só com o
+    /// censo, e uma porta que não pode gravar ali (o corte, o hook).
+    ///
+    /// Era o buraco entre duas linhas certas. `holds_other_work` isenta a
+    /// posição protegida (o trabalho do operador viajar da base para a primeira
+    /// unidade é de propósito), e `may_record_on_a_protected_base` nega a
+    /// gravação ao hook — então o censo não era recusado E não era gravado, e o
+    /// `git checkout -b` o levava para dentro da branch da unidade nova. Num
+    /// projeto de branch única (`flow *: main`) é o caso ORDINÁRIO, não a
+    /// exceção: `main` é protegida, e toda passagem de enriquecimento deixava
+    /// o censo pronto para viajar.
+    ///
+    /// As três metades na mesma corrida: a porta de corte RECUSA nomeando os
+    /// caminhos e a porta que consegue; a árvore fica como estava; e a porta
+    /// explícita, na mesma árvore, GRAVA — que é o que a recusa manda fazer.
+    #[test]
+    fn a_census_on_a_protected_base_is_refused_at_the_cut_and_recorded_at_the_open() {
+        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome, RefusalCause};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        // Branch única: `main` é a base de tudo E é protegida.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"main"},"protected":["main"]}}"#,
+        )
+        .unwrap();
+        init_repo_on(root, "main");
+        let model = default_model_path(root);
+        std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
+        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[]}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "track the census"]);
+        let config = ProjectConfig::load(root);
+        assert!(
+            crate::commands::event::work_branch::is_protected(root, "main", &config),
+            "a fixture precisa de uma base realmente protegida",
+        );
+
+        // O censo sujo DEPOIS da abertura explícita: a passagem de enriquecimento.
+        remine(&model);
+        leftover_enrichment(root);
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "precondição: só o censo está sujo",
+        );
+
+        // 1. A porta REAL de corte recusa — e diz por quê e o que fazer.
+        let sid = "sess-census-protected-base";
+        crate::shared::context::set_pending_branch(&root_s, sid, "feature/segunda", None);
+        // Amostrado DEPOIS do marcador, que também escreve na árvore.
+        let dirty_before = porcelain(root);
+        let outcome = cut_pending_work_branch(root, sid);
+        let CutOutcome::Refused(busy) = outcome else {
+            panic!("o censo não pode viajar para dentro da unidade nova: {outcome:?}");
+        };
+        assert_eq!(busy.cause, RefusalCause::CensusOnProtectedBase);
+        let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
+        assert!(
+            reason.contains("scan-map.md") && reason.contains("grain.model.json"),
+            "a recusa NOMEIA os caminhos do censo: {reason}",
+        );
+        assert!(
+            reason.contains("emit-pipeline"),
+            "e nomeia a porta que consegue gravá-los ali: {reason}",
+        );
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "feature/segunda"]).is_none(),
+            "nenhuma branch foi criada — é dentro dela que o censo entraria",
+        );
+        assert_eq!(git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"), head_before);
+        assert_eq!(porcelain(root), dirty_before, "a árvore fica exatamente como estava");
+
+        // 2. E a porta EXPLÍCITA, na mesma árvore, grava: é a saída que a
+        //    recusa apontou.
+        assert!(
+            matches!(
+                settle_open(root, Some("main"), Some("main"), &config),
+                CensusSettlement::Recorded(_)
+            ),
+            "a porta explícita grava numa base protegida",
+        );
+        // Lido pela classificação do PRÓPRIO produto: o marcador pendente
+        // (`.claude/.session/`) é rascunho do harness, e não entra em commit.
+        assert_eq!(
+            checkout_work(root),
+            CheckoutWork::ProvenClean,
+            "e nada do censo sobra sujo",
+        );
+        assert_eq!(
+            git_out(root, &["log", "-1", "--format=%s"]).unwrap_or_default().trim(),
+            CENSUS_COMMIT_SUBJECT,
+        );
+        // …depois do que o corte passa.
+        let outcome = cut_pending_work_branch(root, sid);
+        assert_eq!(outcome, CutOutcome::Cut("feature/segunda".to_string()));
+    }
+
+    /// Monta a árvore e um `origin` LADO A LADO, com a `dev` local UM commit
+    /// atrás do `origin` — e o commit do `origin` TOCANDO o modelo do censo,
+    /// que é o caso que o commit vazio da fixture irmã contorna. Devolve o
+    /// commit à frente e o conteúdo que o `origin` tem para o modelo.
+    fn origin_ahead_touching_the_census(root: &Path) -> (String, &'static str) {
+        let origin = root.parent().expect("tmp").join("origin.git");
+        let origin_s = origin.to_string_lossy().to_string();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+        git(root, &["init", "--bare", "-q", &origin_s]);
+        git(root, &["remote", "add", "origin", &origin_s]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        // A máquina A re-minerou e publicou.
+        const ORIGINS_CENSUS: &str = "{\"projects\":[{\"dir\":\"apps/rt\"},{\"dir\":\"apps/cli\"}]}\n";
+        std::fs::write(&model, ORIGINS_CENSUS).unwrap();
+        git(root, &["commit", "-q", "-am", "chore: refresh the deterministic project census"]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        // A máquina B ainda não puxou.
+        git(root, &["reset", "-q", "--hard", "HEAD~1"]);
+        assert!(
+            !git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a fixture tem de começar com a base ATRÁS do origin",
+        );
+        (ahead, ORIGINS_CENSUS)
+    }
+
+    /// A REGRESSÃO que este teste tranca: o `merge --ff-only` corria com o
+    /// censo sujo, falhava em "local changes would be overwritten", ninguém
+    /// lia o resultado, e a gravação commitava o censo na `dev` local VELHA —
+    /// que passava a ter commit próprio E a estar atrás. A unidade saía de uma
+    /// base velha e o `git pull --ff-only origin dev` que o portão prescreve em
+    /// seguida não tinha mais como passar.
+    ///
+    /// O censo é saída regenerável da ferramenta: o que está no caminho do
+    /// avanço é posto de lado, a base avança, e o que sobrou do censo é gravado
+    /// em cima da base NOVA. As metades, na mesma corrida: a base avançou; o
+    /// modelo é o do `origin`, não o local velho; e nada sobrou sujo.
+    #[test]
+    fn a_census_in_the_way_of_the_advance_is_set_aside_not_committed_stale() {
+        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let root_s = root.to_string_lossy().to_string();
+        let (ahead, origins_census) = origin_ahead_touching_the_census(root);
+
+        // A máquina B com o censo sujo — o modelo INCLUSIVE, que é o arquivo
+        // que o avanço sobrescreve.
+        remine(&model_of(root));
+        leftover_enrichment(root);
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "precondição: só o censo está sujo",
+        );
+
+        let sid = "sess-census-in-the-way";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        let outcome = cut_pending_work_branch(root, sid);
+        assert_eq!(outcome, CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
+
+        assert!(
+            git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base avançou até o origin: o censo no caminho não a prendeu",
+        );
+        assert_eq!(
+            std::fs::read_to_string(model_of(root)).unwrap(),
+            origins_census,
+            "o modelo é o do origin — o local velho foi posto de lado, não gravado por cima",
+        );
+        assert_eq!(porcelain(root), "", "e o resto do censo foi gravado, nada sobrou sujo");
+        // A `dev` não divergiu: o origin é ancestral dela, então o próximo
+        // `git pull --ff-only origin dev` continua passando.
+        assert!(
+            git_out(root, &["merge-base", "--is-ancestor", "origin/dev", "dev"]).is_some(),
+            "a base local contém o origin — nenhum commit foi escrito numa base velha",
+        );
+    }
+
+    /// …e quando o avanço NÃO tem como passar — a base local divergiu —, a
+    /// resposta é RECUSAR, alto, com as palavras do git: nunca engolir e nunca
+    /// gravar numa base velha. E a recusa vem ANTES de qualquer ação: nada
+    /// posto de lado, nada commitado, a árvore como estava.
+    #[test]
+    fn a_base_that_cannot_advance_refuses_loudly_instead_of_cutting_stale() {
+        use crate::commands::event::work_branch::RefusalCause;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let (ahead, _) = origin_ahead_touching_the_census(root);
+        // A `dev` local com um commit PRÓPRIO: divergiu do origin.
+        git(root, &["commit", "-q", "--allow-empty", "-m", "a commit of its own"]);
+
+        remine(&model_of(root));
+        leftover_enrichment(root);
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        let dirty_before = porcelain(root);
+
+        let settled = settle_cut(root, Some("dev"), "dev_second", Some("dev"), &flow_config());
+        let CensusSettlement::Refuse(busy) = settled else {
+            panic!("uma base que não avança não recebe corte nem commit: {settled:?}");
+        };
+        let RefusalCause::BaseStale { base, error } = &busy.cause else {
+            panic!("a causa é a base, não a árvore: {:?}", busy.cause);
+        };
+        assert_eq!(base, "dev");
+        assert!(!error.is_empty(), "as palavras do git viajam na recusa");
+        let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
+        assert!(reason.contains("origin/dev"), "a frase nomeia o remoto: {reason}");
+
+        assert_eq!(git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"), head_before);
+        assert!(
+            !git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base não foi rebobinada nem mesclada",
+        );
+        assert_eq!(porcelain(root), dirty_before, "nada foi posto de lado antes de recusar");
+    }
+
+    /// Uma gravação que o git RECUSA (aqui, um `pre-commit` que nega) responde
+    /// `Proceed`, não `Recorded`, e deixa o censo onde caiu — e diz isso no
+    /// stderr, do catálogo (`basegate.census.unavailable`), em vez de calar:
+    /// rode com `--nocapture` para ver a linha. O corte seguinte vai nomear
+    /// esses caminhos, e sem a linha o operador não teria aviso prévio de que
+    /// foi a ferramenta que os deixou ali.
+    #[test]
+    fn a_declined_recording_proceeds_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = repo_tracking_the_census(root);
+        remine(&model);
+        let hooks = root.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        assert_eq!(
+            settle_open(root, Some("dev"), Some("dev"), &flow_config()),
+            CensusSettlement::Proceed,
+            "o git recusou o commit: a resposta é seguir, não fingir que gravou",
+        );
+        assert_eq!(git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"), head_before);
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "o censo fica onde caiu, e o índice volta ao que era",
+        );
+    }
+
+    /// A porta EXPLÍCITA só move a base sobre a qual abre — e nenhuma outra.
+    ///
+    /// Antes do colapso, `BaseVerdict::Open` refrescava o censo e não movia ref
+    /// nenhuma. Depois, o passo 3 avançava TODA base pré-selecionada do fluxo
+    /// (`fetch origin main:main`, `release/*`…), atrás do operador. Mover outras
+    /// refs locais nunca foi trabalho desta decisão.
+    #[test]
+    fn the_explicit_open_advances_the_base_it_opens_on_and_no_other_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let origin = tmp.path().join("origin.git");
+        let origin_s = origin.to_string_lossy().to_string();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        repo_tracking_the_census(root);
+        // `main` local, parada no commit inicial.
+        git(root, &["branch", "main"]);
+        let main_before = git_out(root, &["rev-parse", "main"]).expect("main");
+        git(root, &["init", "--bare", "-q", &origin_s]);
+        git(root, &["remote", "add", "origin", &origin_s]);
+        git(root, &["push", "-q", "origin", "dev", "main"]);
+        // O origin avança AS DUAS; a local só a `dev` vai puxar.
+        git(root, &["commit", "-q", "--allow-empty", "-m", "moved"]);
+        git(root, &["push", "-q", "origin", "dev", "dev:main"]);
+        let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        git(root, &["reset", "-q", "--hard", "HEAD~1"]);
+
+        let config = ProjectConfig::load(root);
+        assert!(
+            config.git.preselected_bases().contains("main"),
+            "a fixture precisa de uma base pré-selecionada que NÃO é a desta abertura",
+        );
+        let _ = settle_open(root, Some("dev"), Some("dev"), &config);
+        assert!(
+            git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base desta abertura avançou",
+        );
+        assert_eq!(
+            git_out(root, &["rev-parse", "main"]).expect("main"),
+            main_before,
+            "e a `main` local, que o operador não mencionou, não se mexeu",
         );
     }
 

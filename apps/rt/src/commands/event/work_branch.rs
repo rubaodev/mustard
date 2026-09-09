@@ -283,10 +283,11 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
 ///    because it is the base the operator is actually standing in: a base
 ///    carrying commits that were never pushed is still that operator's base,
 ///    and starting from the remote instead would silently drop them out of the
-///    unit's history. Staleness is not the reason to skip it — the caller has
-///    just handed this very base to [`refresh_integration_bases`], which
-///    fast-forwards it toward `origin` where git would allow it, and refuses
-///    (keeping it) exactly where those unpushed commits are.
+///    unit's history. Staleness is not the reason to skip it — the settlement
+///    the caller just obeyed handed this very base to [`fast_forward_base`],
+///    which fast-forwards it toward `origin` where git would allow it, keeps it
+///    exactly where those unpushed commits are, and REFUSES the cut where it
+///    still trails the remote.
 /// 2. the REMOTE-TRACKING ref `refs/remotes/origin/{base}` — the clone shape,
 ///    and the reason this step had to exist. The base is now the operator's
 ///    pick out of the REAL catalogue ([`resolve_kind_base`]), which offers
@@ -323,72 +324,153 @@ pub(crate) fn checkout_work_branch(
     run_git(vcs, root, &["checkout", "-b", target])
 }
 
-/// Refresh the bases this cut may start from to their `origin` remotes BEFORE
-/// a work branch is cut, so the branch is always based on the latest of them.
-/// Fire-and-forget: it returns nothing the caller must act on, and every git
-/// failure is swallowed. Offline, no remote, or a diverged base never blocks
-/// the cut and never panics.
+/// `git fetch origin`, so the remote-tracking refs describe what `origin` has
+/// NOW. `false` when the fetch failed — offline, no remote — and nothing about
+/// the remote could be measured; the caller then cuts from the local base as it
+/// always did, since refusing there would ground every offline session on a
+/// fact nobody measured.
 ///
-/// 1. `git fetch origin` — on failure (offline / no remote) RETURN early and
-///    do nothing else; the branch is still cut from the local base.
-/// 2. For each base `B`:
-///    - when `B` is the checked-out branch (`Some(B) == current`) →
-///      `git merge --ff-only origin/B` fast-forwards it in place;
-///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
-///      make non-ff, so it safely fast-forwards the local ref without a
-///      checkout.
-///      Every per-base error (no matching origin ref, a diverged base, a base
-///      checked out in another worktree, …) is ignored — best-effort, keep going.
+/// The fetch changes which branches `origin` is known to have, and that answer
+/// is memoised per process. Leaving the stale picture in place means a branch
+/// that only MATERIALISED here reads as absent for the rest of this dispatch —
+/// and the reader that consults it then drops the operator's recorded base for
+/// a branch that does exist.
 ///
-/// **`cut_from` is why the set is no longer the declared flow alone.** The
-/// pre-selected list used to BE the set of bases a cut could start from — the
-/// pick was filtered down to it before it ever reached here — so refreshing the
-/// declared names refreshed every possible starting point. The pick now comes
-/// out of the REAL catalogue, so a base the flow never declared is an ordinary
-/// answer, and leaving it out of this step would cut the unit from whatever
-/// stale local head happened to carry that name. Passing the base the cut is
-/// about to use keeps the guarantee this function exists for — cut from the
-/// latest — pointed at the branch the operator actually chose. A ff-only step,
-/// so a local base carrying unpushed commits is refused and kept, never
-/// rewritten.
+/// Called from ONE place — [`crate::commands::event::census_settlement::settle`]
+/// — never from a door: the refresh is a step of the settlement, in the order
+/// that function's body states.
+pub(crate) fn fetch_origin(vcs: &str, root: &str) -> bool {
+    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
+        return false;
+    }
+    crate::shared::work_kind::forget_remote_names(Path::new(root));
+    true
+}
+
+/// `true` when `ancestor` is reachable from `descendant` — `git merge-base
+/// --is-ancestor`. `false` on any failure, including a ref that does not
+/// exist: a relation git could not establish is not a fact.
+fn is_ancestor(vcs: &str, root: &str, ancestor: &str, descendant: &str) -> bool {
+    run_git(vcs, root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+}
+
+/// Which of `candidates` the advance of the checked-out `base` to
+/// `origin/{base}` would OVERWRITE — the paths a `merge --ff-only` refuses on
+/// when they are dirty. Measured with `git diff --name-only HEAD origin/{base}`
+/// and intersected with what the caller hands in; never a whole-tree probe.
 ///
-/// Which is also why NO door calls this any more. It runs from inside
-/// [`crate::commands::event::census_settlement::settle`], immediately before the
-/// census commit and never after: that commit lands on the base itself, and a
-/// base carrying a commit `origin` does not have is exactly the "commit próprio"
-/// case the ff refuses — silently, since every per-base result is dropped here.
-/// Refreshing second turned a stale base into the normal outcome of any cut that
-/// followed a census refresh, and it was fixed door by door twice before the
-/// order was moved somewhere no door can reach it.
-pub(crate) fn refresh_integration_bases(
+/// Empty when the advance is not a fast-forward at all (HEAD is not an
+/// ancestor of `origin/{base}`): there the merge refuses on its own for a
+/// reason no discard could fix, so nothing must be set aside ahead of a refusal
+/// — a refused move leaves the tree as it found it.
+///
+/// Read only after [`fetch_origin`] answered `true`: the remote-tracking ref it
+/// compares against is the one that fetch just wrote.
+pub(crate) fn paths_the_advance_overwrites(
     vcs: &str,
     root: &str,
-    config: &mustard_core::ProjectConfig,
+    base: &str,
+    candidates: &[String],
+) -> Vec<String> {
+    let remote = format!("origin/{base}");
+    if candidates.is_empty() || !is_ancestor(vcs, root, "HEAD", &remote) {
+        return Vec::new();
+    }
+    let Some(changed) = crate::commands::git_settle::git_out(
+        Path::new(root),
+        &["diff", "--name-only", "HEAD", &remote],
+    ) else {
+        return Vec::new();
+    };
+    let changed: std::collections::BTreeSet<&str> = changed.lines().map(str::trim).collect();
+    candidates.iter().filter(|p| changed.contains(p.as_str())).cloned().collect()
+}
+
+/// Discard `paths` from the working tree: a tracked path goes back to HEAD
+/// (`git checkout -- p`), an untracked one is removed (`git clean -f -- p`).
+/// Best-effort per path — a path that could not be discarded is still in the
+/// way, and the fast-forward that follows says so, loudly, by refusing.
+///
+/// The caller decides WHAT may be discarded; this function only knows how.
+/// It exists for exactly one caller and one kind of path: the tool's own
+/// regenerable output ([`DirtyPathKind::Census`]) standing in the way of the
+/// base's advance ([`crate::commands::event::census_settlement::settle`]).
+/// The operator's work never reaches here — it is refused before any action.
+pub(crate) fn discard_paths(vcs: &str, root: &str, paths: &[String]) {
+    for path in paths {
+        if run_git(vcs, root, &["checkout", "--", path]).is_err() {
+            let _ = run_git(vcs, root, &["clean", "-f", "--", path]);
+        }
+    }
+}
+
+/// What [`fast_forward_base`] established about ONE base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BaseRefresh {
+    /// The base is at — or ahead of — `origin/{base}`, or there was nothing to
+    /// measure it against: no `origin/{base}`, or no local head at all (the cut
+    /// then starts from the remote-tracking ref, which is current by
+    /// definition). The cut may start from it.
+    Current,
+    /// `origin/{base}` carries commits the local base does not, and the
+    /// fast-forward could not be made. Carries git's own words, so the operator
+    /// reads the reason git gave and not a paraphrase of it.
+    Stale { base: String, error: String },
+}
+
+/// Fast-forward ONE base — the one a settlement is about — to `origin/{base}`,
+/// and say whether it is current afterwards.
+///
+/// - when `base` is the checked-out branch (`current == Some(base)`) →
+///   `git merge --ff-only origin/{base}` advances it in place;
+/// - otherwise → `git fetch origin {base}:{base}`, a refspec fetch git refuses
+///   to make non-ff, so it safely advances the local ref without a checkout.
+///
+/// **Scope is the point.** This used to walk every preselected base of the
+/// declared flow and advance each one, and it ran from the explicit open too —
+/// so `emit-pipeline` moved local `main` and `release/*` refs the operator never
+/// asked about. Moving other refs was never this decision's job: a settlement
+/// is about the base the unit is cut from or opened on, and it refreshes that
+/// one.
+///
+/// **The result is read, never dropped.** A base carrying an unpushed commit of
+/// its own is kept, never rewritten, and is `Current` — the operator's base is
+/// the one they are standing in. A base that still TRAILS its remote after the
+/// attempt is `Stale`, with git's words: a unit cut from it re-does merged work,
+/// and the `git pull --ff-only origin {base}` the gate prescribes afterwards
+/// cannot succeed on a branch that has meanwhile diverged. Dropping this result
+/// is how the census commit came to land on a stale base in silence.
+///
+/// Read only after [`fetch_origin`] answered `true`: offline there is no
+/// evidence the base is behind, and the cut takes the local base as before.
+pub(crate) fn fast_forward_base(
+    vcs: &str,
+    root: &str,
     current: Option<&str>,
-    cut_from: Option<&str>,
-) {
-    // Offline / no remote → nothing to refresh; the branch is cut from the
-    // local base as before. Do NOT propagate the error.
-    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
-        return;
+    base: &str,
+) -> BaseRefresh {
+    if !remote_branch_exists(vcs, root, base) {
+        return BaseRefresh::Current;
     }
-    // The fetch just changed which branches `origin` is known to have, and the
-    // answer to that question is memoised per process. Leaving the stale picture
-    // in place means a branch that only MATERIALISED in the line above reads as
-    // absent for the rest of this dispatch — and the reader that consults it
-    // then drops the operator's recorded base for a branch that does exist.
-    crate::shared::work_kind::forget_remote_names(Path::new(root));
-    let mut bases = config.git.preselected_bases();
-    if let Some(base) = cut_from.map(str::trim).filter(|b| !b.is_empty()) {
-        bases.insert(base.to_string());
-    }
-    for base in bases {
-        // Best-effort per base — drop the result either way.
-        let _ = if current == Some(base.as_str()) {
-            run_git(vcs, root, &["merge", "--ff-only", &format!("origin/{base}")])
-        } else {
-            run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
-        };
+    let remote = format!("origin/{base}");
+    let attempt = if current == Some(base) {
+        run_git(vcs, root, &["merge", "--ff-only", &remote])
+    } else if local_branch_exists(vcs, root, base) {
+        run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+    } else {
+        // No local head to advance: the cut starts from `origin/{base}` itself
+        // ([`checkout_work_branch`], step 2), and that ref was just fetched.
+        return BaseRefresh::Current;
+    };
+    match attempt {
+        Ok(()) => BaseRefresh::Current,
+        // Ahead of (or level with) the remote: nothing to advance, and an
+        // unpushed commit of the operator's is kept, not a defect.
+        Err(_) if is_ancestor(vcs, root, &remote, base) => BaseRefresh::Current,
+        Err(error) => BaseRefresh::Stale {
+            base: base.to_string(),
+            error,
+        },
     }
 }
 
@@ -954,50 +1036,89 @@ pub(crate) fn name_dirty_paths(dirty: &[String]) -> (String, String) {
 /// gate and the draft REPORT the same refusal in their own shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BusyCheckout {
-    /// The branch the checkout is on — another unit's.
+    /// The branch the checkout is on — another unit's, a protected base, or
+    /// the stale base itself, depending on [`Self::cause`].
     pub(crate) current: String,
-    /// The branch that was going to be cut here.
+    /// The branch that was going to be cut here. Empty at the explicit open,
+    /// which cuts nothing and can only be refused for a stale base.
     pub(crate) target: String,
-    /// WHAT was established about the work that would have ridden along: the
-    /// paths positively observed ([`CheckoutWork::Holds`]), or the fact that the
-    /// probe could not answer ([`CheckoutWork::Unproven`]).
+    /// WHAT was established about the tree: the paths positively observed
+    /// ([`CheckoutWork::Holds`], [`CheckoutWork::CensusOnly`]), or the fact
+    /// that the probe could not answer ([`CheckoutWork::Unproven`]).
     ///
-    /// [`CheckoutWork::ProvenClean`] never appears here — that is not busy.
-    /// [`CheckoutWork::CensusOnly`] DOES appear, and only in one position: fora
-    /// da base, onde o censo não tem onde ser gravado e por isso não pode
-    /// viajar — parado NA base ele passa, e aí nunca chega aqui. Quem responde
-    /// isso é [`crate::commands::event::census_settlement::settle`], que é o
-    /// único construtor desta struct.
+    /// [`CheckoutWork::ProvenClean`] appears only under
+    /// [`RefusalCause::BaseStale`] — a clean tree on a base that trails its
+    /// remote is refused for the base, not for the tree. Quem constrói isto é
+    /// [`crate::commands::event::census_settlement::settle`], o único construtor
+    /// desta struct.
     pub(crate) work: CheckoutWork,
+    /// WHY the move was refused — the row of the settlement's table that
+    /// answered, so the sentence can say what unblocks it. See
+    /// [`RefusalCause`].
+    pub(crate) cause: RefusalCause,
+}
+
+/// The reasons a settlement refuses — one per ROW of the decision table in
+/// [`crate::commands::event::census_settlement::settle`], because each row
+/// needs a different sentence: what is in the way differs, and so does what
+/// the operator has to do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefusalCause {
+    /// The checkout is another unit's branch and holds work that is not this
+    /// unit's (or a tree that could not be measured); a plain checkout would
+    /// carry it onto the new branch.
+    WorkWouldTravel,
+    /// The tree is dirty ONLY with the census, and the checkout is not the
+    /// base it is recorded on — another unit's branch, a protected branch that
+    /// is not the base, a detached HEAD. The census cannot land here, so it
+    /// must not travel either; the base it belongs to is named.
+    CensusOffBase { base: String },
+    /// The tree is dirty ONLY with the census and the checkout IS the base —
+    /// but the base is protected, and this door (a cut, a hook) may not commit
+    /// there behind the operator's back. The explicit open can, and is named.
+    CensusOnProtectedBase,
+    /// The base this move is about trails `origin/{base}` and could not be
+    /// fast-forwarded ([`BaseRefresh::Stale`]). Carries git's own words.
+    BaseStale { base: String, error: String },
 }
 
 impl BusyCheckout {
-    /// The one sentence both doors say: WHERE the checkout is, WHAT is
-    /// uncommitted there, and WHAT to do about it. Catalogue-rendered in the
-    /// project's configured language.
+    /// The one sentence every door says: WHERE the checkout is, WHAT is in the
+    /// way, and WHAT to do about it. Catalogue-rendered in the project's
+    /// configured language, one sentence per [`RefusalCause`].
     ///
-    /// Two sentences, one per measurement. An unmeasured checkout says exactly
-    /// that: rendering the named-paths sentence with an empty list would print
-    /// "uncommitted work in: ." and teach the operator that the refusal is
-    /// noise.
-    ///
-    /// A escolha da frase é pelo que foi MEDIDO, não pela variante: um censo que
-    /// sobrou fora da base tem caminhos observados exatamente como o trabalho do
-    /// operador tem, e a ação que desbloqueia é a mesma (commitar ou guardar,
-    /// aqui). Dizer "não pude medir" para um conjunto de caminhos que temos em
-    /// mãos seria esconder do operador o que está no caminho do corte.
+    /// Under [`RefusalCause::WorkWouldTravel`] the sentence follows what was
+    /// MEASURED: an unmeasured checkout says exactly that, because rendering
+    /// the named-paths sentence with an empty list would print "uncommitted
+    /// work in: ." and teach the operator that the refusal is noise.
     pub(crate) fn reason(&self, lang: mustard_core::platform::i18n::Locale) -> String {
-        let (CheckoutWork::Holds(dirty) | CheckoutWork::CensusOnly(dirty)) = &self.work else {
-            return mustard_core::platform::i18n::translate("workbranch.busy.unmeasured", lang)
-                .replace("{current}", &self.current)
-                .replace("{target}", &self.target);
+        use mustard_core::platform::i18n::translate;
+        let named = match &self.work {
+            CheckoutWork::Holds(dirty) | CheckoutWork::CensusOnly(dirty) => {
+                Some(name_dirty_paths(dirty))
+            }
+            CheckoutWork::ProvenClean | CheckoutWork::Unproven => None,
         };
-        let (paths, more) = name_dirty_paths(dirty);
-        mustard_core::platform::i18n::translate("workbranch.busy.refusal", lang)
+        let (paths, more) = named.clone().unwrap_or_default();
+        let key = match &self.cause {
+            RefusalCause::WorkWouldTravel if named.is_none() => "workbranch.busy.unmeasured",
+            RefusalCause::WorkWouldTravel => "workbranch.busy.refusal",
+            RefusalCause::CensusOffBase { .. } => "workbranch.busy.census_off_base",
+            RefusalCause::CensusOnProtectedBase => "workbranch.busy.census_protected",
+            RefusalCause::BaseStale { .. } => "workbranch.busy.base_stale",
+        };
+        let (base, error) = match &self.cause {
+            RefusalCause::CensusOffBase { base } => (base.as_str(), ""),
+            RefusalCause::BaseStale { base, error } => (base.as_str(), error.as_str()),
+            RefusalCause::WorkWouldTravel | RefusalCause::CensusOnProtectedBase => ("", ""),
+        };
+        translate(key, lang)
             .replace("{current}", &self.current)
             .replace("{target}", &self.target)
             .replace("{paths}", &paths)
             .replace("{more}", &more)
+            .replace("{base}", base)
+            .replace("{error}", error)
     }
 }
 
@@ -1694,11 +1815,11 @@ mod tests {
         // ── and now a REAL clone, with a remote that ANSWERS ─────────────────
         //
         // Everything above runs against a repository with no remote at all, so
-        // `refresh_integration_bases` fetches, fails, and returns having done
-        // nothing — which is one road through the cut, not the ordinary one. A
-        // machine that is online takes the other: the fetch succeeds, and the
-        // refresh is what has to reach the picked base, because that step used
-        // to iterate the DECLARED flow alone. Both roads have to land on the
+        // `fetch_origin` fails and the settlement refreshes nothing — which is
+        // one road through the cut, not the ordinary one. A machine that is
+        // online takes the other: the fetch succeeds, and `fast_forward_base`
+        // is what has to reach the picked base, because that step used to
+        // iterate the DECLARED flow alone. Both roads have to land on the
         // commit the operator chose, and only a real remote drives this one.
         let dir = tempfile::tempdir().expect("tempdir");
         let bare = seed_real_origin(dir.path());

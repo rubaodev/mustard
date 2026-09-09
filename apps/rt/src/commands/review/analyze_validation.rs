@@ -789,10 +789,14 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
         // discordarem sobre o que é um seletor — que é exatamente a deriva de
         // que a lista única por família era um caso.
         "cargo" => cargo_narrows_by_name(&tokens),
-        "go" => narrows_by_name(&tokens, 2, &["-run", "-bench"], false, GO_SCOPE_VALUE_FLAGS),
-        "dotnet" => narrows_by_name(&tokens, 2, &["--filter"], false, DOTNET_SCOPE_VALUE_FLAGS),
+        "go" => {
+            narrows_by_name(&tokens, 2, &["-run", "-bench"], false, GO_SCOPE_VALUE_FLAGS, &[])
+        }
+        "dotnet" => {
+            narrows_by_name(&tokens, 2, &["--filter"], false, DOTNET_SCOPE_VALUE_FLAGS, &[])
+        }
         "pytest" | "py.test" => {
-            narrows_by_name(&tokens, 1, &["-k", "-m"], true, PYTEST_SCOPE_VALUE_FLAGS)
+            narrows_by_name(&tokens, 1, &["-k", "-m"], true, PYTEST_SCOPE_VALUE_FLAGS, &[])
         }
         // `vitest run` é a invocação da suíte inteira fora do modo watch — o
         // `run` é subcomando, não padrão de arquivo.
@@ -802,13 +806,14 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
             &["-t", "--testNamePattern", "--testPathPattern", "--testPathPatterns"],
             true,
             JS_SCOPE_VALUE_FLAGS,
+            &[],
         ),
         // `npm test x` / `npm run test x`: o posicional vem depois da palavra do
         // script, que está no índice 1 ou 2. Tudo depois dela é do script, não
         // do gerenciador, então nenhuma flag de escopo é conhecida aqui.
         "npm" | "pnpm" | "yarn" | "bun" => {
             let start = if tokens.get(1).copied() == Some("run") { 3 } else { 2 };
-            narrows_by_name(&tokens, start, &[], true, &[])
+            narrows_by_name(&tokens, start, &[], true, &[], &[])
         }
         _ => false,
     }
@@ -835,14 +840,50 @@ fn cargo_narrows_by_name(tokens: &[&str]) -> bool {
         } else {
             2
         };
-    narrows_by_name(tokens, start, &[], true, CARGO_SCOPE_VALUE_FLAGS)
+    narrows_by_name(tokens, start, &[], true, CARGO_SCOPE_VALUE_FLAGS, CARGO_HARNESS_VALUE_FLAGS)
+}
+
+/// Flags do HARNESS de teste do Rust (libtest) que TOMAM valor — o que o cargo
+/// encaminha depois do `--`. `--test-threads 1` era lido como o nome `1`, e
+/// `cargo test -p x --lib -- --test-threads 1` — a suíte inteira — escapava do
+/// lint de comando fraco como se fosse filtrado. `--skip` também toma valor, e
+/// EXCLUI em vez de selecionar: o que sobra ainda é a suíte, então não é
+/// seletor. `--exact`, `--nocapture`, `--ignored`, `--include-ignored`,
+/// `--report-time` e `--ensure-time` são booleanas.
+const CARGO_HARNESS_VALUE_FLAGS: &[&str] = &[
+    "--test-threads", "--skip", "--logfile", "--format", "--color", "-Z", "--shuffle-seed",
+];
+
+/// `true` para um token DEPOIS do `--` que é `chave=valor` e não nome de teste:
+/// `dotnet test -- RunConfiguration.MaxCpuCount=1` passa um runsettings, e
+/// lê-lo como seleção fazia `test-ac-no-control` avisar num comando que não
+/// tem filtro nenhum para vir vazio.
+///
+/// A chave tem a forma de chave — letras, dígitos, `.`, `_`, `-` — e nada
+/// mais: um node id do pytest (`tests/x.py::test_y[a=1]`) carrega `/`, `::` e
+/// `[` antes do `=`, e continua sendo posicional.
+fn is_key_value_token(token: &str) -> bool {
+    token.split_once('=').is_some_and(|(key, _)| {
+        !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    })
 }
 
 /// A varredura compartilhada de [`test_runner_has_selector`] e de
 /// [`is_weak_command_part`]: a partir de `start`, procura uma das `name_flags`
 /// COM valor — e, quando `positional_narrows`, também um posicional.
 ///
-/// `--` encaminha o resto ao executor, onde um não-flag é sempre nome de teste.
+/// `--` encaminha o resto ao executor, onde um não-flag é nome de teste — em
+/// TODA família, porque é o executor quem o lê, não o gerenciador. Mas a
+/// varredura NÃO para de ler flags ali: o mesmo conhecimento de flag-com-valor
+/// que vale antes do `--` vale depois (`scope_flags`, e `harness_flags` para o
+/// que só existe do lado do executor), e um `chave=valor` solto depois do `--`
+/// é valor de configuração, não nome ([`is_key_value_token`]). Ler qualquer
+/// não-flag depois do `--` como nome fazia `--test-threads 1` virar o nome `1`
+/// e `RunConfiguration.MaxCpuCount=1` virar seleção.
+///
 /// Um `--flag=valor` é auto-contido; uma flag de escopo conhecida (`scope_flags`,
 /// a lista DESTA família) consome o token seguinte; toda outra flag é booleana.
 ///
@@ -859,12 +900,16 @@ fn narrows_by_name(
     name_flags: &[&str],
     positional_narrows: bool,
     scope_flags: &[&str],
+    harness_flags: &[&str],
 ) -> bool {
     let mut i = start;
+    let mut after_dashes = false;
     while i < tokens.len() {
         let t = tokens[i];
-        if t == "--" {
-            return tokens[i + 1..].iter().any(|a| !a.starts_with('-'));
+        if !after_dashes && t == "--" {
+            after_dashes = true;
+            i += 1;
+            continue;
         }
         if t.starts_with('-') {
             if let Some((flag, value)) = t.split_once('=') {
@@ -877,14 +922,18 @@ fn narrows_by_name(
             if name_flags.contains(&t) {
                 return tokens.get(i + 1).is_some_and(|v| !v.starts_with('-'));
             }
-            if scope_flags.contains(&t) {
+            if scope_flags.contains(&t) || (after_dashes && harness_flags.contains(&t)) {
                 i += 2;
                 continue;
             }
             i += 1; // booleana
             continue;
         }
-        if positional_narrows {
+        if after_dashes && is_key_value_token(t) {
+            i += 1; // valor de configuração do executor, não nome
+            continue;
+        }
+        if after_dashes || positional_narrows {
             return true;
         }
         // Um posicional que NÃO seleciona por nome (o pacote do `go`, o
@@ -1517,6 +1566,43 @@ mod tests {
             test_runner_has_selector("pytest tests/x.py::test_y[a=1]"),
             "um node id parametrizado é seleção por nome",
         );
+    }
+
+    /// A REGRESSÃO que este teste tranca: depois do `--`, todo token sem `-`
+    /// contava como nome de teste, sem pular valor nenhum. `--test-threads 1`
+    /// virava o nome `1`, e a suíte inteira escapava do lint de comando fraco;
+    /// `RunConfiguration.MaxCpuCount=1` virava seleção, e o `test-ac-no-control`
+    /// avisava num comando que não tem filtro para vir vazio.
+    #[test]
+    fn harness_values_after_the_dashes_are_not_test_names() {
+        for cmd in [
+            "cargo test -p mustard-rt --lib -- --test-threads 1",
+            "cargo test -p mustard-rt --lib -- --test-threads=1 --nocapture",
+            "cargo test -- --skip slow",
+            "dotnet test -- RunConfiguration.MaxCpuCount=1",
+            "dotnet test x.csproj -- RunConfiguration.MaxCpuCount=1 MSTest.Parallelize.Workers=4",
+        ] {
+            assert!(
+                !test_runner_has_selector(cmd),
+                "um valor depois do `--` não é nome de teste: `{cmd}`",
+            );
+        }
+        assert!(
+            is_weak_command_part("cargo test -p mustard-rt --lib -- --test-threads 1"),
+            "a suíte inteira com `--test-threads 1` continua sendo a tautologia que V6 pega",
+        );
+        // …e a outra metade, que NÃO pode ser afrouxada junto: um NOME depois
+        // do `--`, e um seletor ANTES dele seguido de runsettings.
+        for cmd in [
+            "cargo test -- --exact my::case",
+            "cargo test -- --test-threads 1 my_case",
+            "dotnet test --filter Name~Novo -- RunConfiguration.MaxCpuCount=1",
+        ] {
+            assert!(
+                test_runner_has_selector(cmd),
+                "o seletor tem de ser visto em `{cmd}`",
+            );
+        }
     }
 
     /// O cargo e o resto respondem pela MESMA varredura — a porta que julga o

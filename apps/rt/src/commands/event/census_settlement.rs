@@ -17,9 +17,32 @@
 //!
 //! One answer, of three shapes ([`CensusSettlement`]):
 //!
-//! - **Refuse**, naming the paths that are in the way.
+//! - **Refuse**, naming what is in the way and why this door cannot settle it
+//!   here ([`RefusalCause`]).
 //! - **Refresh the base from origin, record the census on it, then proceed.**
-//! - **Proceed**, nothing owed.
+//! - **Proceed**, nothing owed — or nothing that COULD be recorded, which the
+//!   recording says on stderr.
+//!
+//! ## The table
+//!
+//! Every combination of (what is dirty × where the checkout stands × which
+//! door) has a row; a hole in the table is a defect of the table, never a
+//! condition to add at a door. The rows, in the order the body takes them:
+//!
+//! | dirty         | position                              | door        | row |
+//! |---------------|---------------------------------------|-------------|-----|
+//! | any           | (vcs opted out)                       | any         | Proceed, nothing measured |
+//! | `Holds`/`Unproven` | another unit's branch, cutting   | cut / hook  | **Refuse** — work would travel |
+//! | `Holds`/`Unproven` | the base, protected, cutting     | cut / hook  | fall through: their work rides into the unit, by design (the first unit cuts off the base in place) |
+//! | `Holds`/`Unproven` | any, not cutting                 | explicit    | fall through: nothing moves |
+//! | `CensusOnly`  | off the base (any branch, `HEAD`), cutting, base known | cut / hook | **Refuse** — the census cannot land here, so it must not travel |
+//! | `CensusOnly`  | the base, protected, cutting          | cut / hook  | **Refuse** — this door may not commit on a protected base; the explicit open can |
+//! | `CensusOnly`  | any, base unknown                     | cut / hook  | fall through: nothing moves (`BaseUnknown` follows at the door) |
+//! | any (fell through) | base known, `origin` answers, base cannot be advanced | any | **Refuse** — stale base, git's words |
+//! | `CensusOnly`  | the base, the advance overwrites census paths | any | set those paths aside (tool output), advance, continue |
+//! | `ProvenClean`/`CensusOnly` | the base (protected only at the explicit door) | any | **Record** what is dirty plus what the re-mine wrote |
+//! | `Holds`/`Unproven` | the base                         | explicit    | Proceed — theirs to commit, beside ours |
+//! | any           | not the base                          | any         | Proceed — nowhere to record |
 //!
 //! ## Why this is ONE function and not a condition at each door
 //!
@@ -54,11 +77,14 @@
 //! does not re-mine — it happens moments after that open, and re-mining inside a
 //! `PreToolUse` hook would put the grain sidecar in front of every first edit.
 //!
-//! ## Fail-open throughout
+//! ## Fail-open where nothing was measured, loud where something was
 //!
 //! A census git cannot see, a git that declines the commit, an unreachable
 //! remote: every one of them leaves the write where it fell and answers
-//! `Proceed`. Only a POSITIVE observation of somebody's work ever refuses.
+//! `Proceed` — and the declined commit says so on stderr. Only a POSITIVE
+//! observation refuses: somebody's work that would travel, a census that
+//! cannot land where the move would carry it, a base that `origin` proved
+//! stale and git could not advance.
 
 use std::path::Path;
 
@@ -66,8 +92,9 @@ use mustard_core::ProjectConfig;
 
 use super::base_gate;
 use super::work_branch::{
-    checkout_work, holds_other_work, is_protected, refresh_integration_bases, BusyCheckout,
-    CheckoutWork,
+    checkout_work, discard_paths, fast_forward_base, fetch_origin, holds_other_work,
+    is_protected, paths_the_advance_overwrites, BaseRefresh, BusyCheckout, CheckoutWork,
+    RefusalCause,
 };
 
 /// WHAT IS ABOUT TO HAPPEN — the third input, and the only thing the doors
@@ -76,8 +103,10 @@ use super::work_branch::{
 pub(crate) enum CensusDoor {
     /// `emit-pipeline --kind pipeline.kind` — the operator typed the command
     /// that opens the unit. Nothing is checked out here, so nothing can ride
-    /// along and nothing is ever refused; the tree is on the base by the
-    /// premise of the command, and a PROTECTED base records like any other.
+    /// along and the tree is never refused; the one refusal it can receive is
+    /// for the BASE, when `origin` proved it stale and git could not advance
+    /// it. The tree is on the base by the premise of the command, and a
+    /// PROTECTED base records like any other.
     ExplicitOpen,
     /// `spec-draft`'s cut of the pending work branch
     /// ([`super::work_branch::cut_pending_work_branch`]).
@@ -116,7 +145,7 @@ pub(crate) struct CheckoutPosition<'a> {
     current: Option<&'a str>,
     /// The branch about to be cut, when one is. `None` at a door that cuts
     /// nothing — the explicit open — where no work can ride anywhere and so
-    /// nothing is ever refused.
+    /// nothing in the TREE is ever refused.
     target: Option<&'a str>,
     /// The base this open or cut resolved to. `None` when the door could not
     /// establish it: a base nobody knows authorises no commit, and nothing is
@@ -196,25 +225,53 @@ impl<'a> CheckoutPosition<'a> {
                 .target
                 .is_some_and(|target| holds_other_work(root, self.current, target, config))
     }
+
+    /// `true` when this move is going to CHECK SOMETHING OUT from a known base
+    /// — the only situation in which anything dirty can travel at all.
+    ///
+    /// The question the census row asks, and deliberately NOT
+    /// [`Self::would_carry_work_off`]: that one exempts a protected position
+    /// and an unmeasured one because the operator's work riding off the base
+    /// into the first unit is by design, and an unmeasured HEAD must not
+    /// trigger a refusal nobody asked for. Neither exemption transfers to the
+    /// census — it is nobody's work and belongs to no unit, so ANY position
+    /// where it cannot be recorded is one it must not travel from.
+    ///
+    /// A base that is not a fact (`None`) is excluded: nothing is going to move
+    /// at all — the cut answers `BaseUnknown` and the hook refuses or warns,
+    /// both before any `git checkout -b` — so the sentence the operator needs is
+    /// about the base, not about the census.
+    fn moves_from_a_known_base(&self) -> bool {
+        self.attributable
+            && self.target.is_some()
+            && self.base.map(str::trim).is_some_and(|b| !b.is_empty())
+    }
 }
 
 /// THE ANSWER — three shapes and no more. Everything the answer describes has
 /// ALREADY HAPPENED when it is returned; the caller only obeys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CensusSettlement {
-    /// Do NOT proceed. The tree holds work this move would carry off, and the
-    /// refusal carries the measured paths so each door can say the same
+    /// Do NOT proceed. Something is in the way of this move, and the refusal
+    /// carries the measured paths and the cause so each door can say the same
     /// sentence in its own shape ([`BusyCheckout::reason`]).
     ///
-    /// Nothing was fetched, mined or committed before this answer: a refused
-    /// move must leave the tree exactly as it found it.
+    /// A refusal for the TREE (work or census that would travel) happens before
+    /// any fetch, mine or commit: the tree is left exactly as it was found. A
+    /// refusal for the BASE ([`RefusalCause::BaseStale`]) necessarily comes
+    /// after the fetch that proved it stale, and after nothing else: a base
+    /// that cannot fast-forward is refused before any path is set aside, and
+    /// still nothing was mined or committed.
     Refuse(BusyCheckout),
     /// The base was refreshed from `origin`, the census was re-mined where that
     /// door does so, and the artefacts named here were recorded on the base —
     /// in that order. Proceed.
     Recorded(Vec<String>),
-    /// Nothing owed. The base was refreshed when there was a base to refresh;
-    /// there was nothing of the tool's to record here, or nowhere for it to go.
+    /// Proceed. Either nothing was owed — the base was refreshed when there was
+    /// a base to refresh, and there was nothing of the tool's to record here or
+    /// nowhere for it to go — or the recording was attempted and git declined
+    /// it, in which case the recording said so on stderr and the census stays
+    /// where it fell.
     Proceed,
 }
 
@@ -225,19 +282,33 @@ pub(crate) enum CensusSettlement {
 ///
 /// 1. **Measure the tree, once** ([`checkout_work`]). Every later question
 ///    reads this one value; nothing measures again.
-/// 2. **Refuse** when work that is not this unit's would ride along.
-///    Refusing FIRST is what keeps a refused move from leaving a fetch, a
-///    re-mine or a commit behind it.
-/// 3. **Refresh the base from `origin`.** Before the census commit, never
-///    after: the advance is a `merge --ff-only`, and a census commit written on
-///    the base ahead of it makes the base diverge, so the advance is refused —
-///    silently, since the result is best-effort per base — and the unit is cut
-///    from a stale base. It is also the invariant the root `CLAUDE.md` states in
-///    its own words: `--ff-only` only passes while the integration base carries
-///    no commit of its own.
-/// 4. **Re-mine**, at the door that does.
-/// 5. **Record** what the tool wrote — what was already dirty plus what the
-///    re-mine just produced — as ONE commit on the base.
+/// 2. **Refuse for the tree**: work that is not this unit's would ride along,
+///    or a census that cannot be recorded where the tree stands would. Refusing
+///    FIRST is what keeps a refused move from leaving a fetch, a re-mine or a
+///    commit behind it.
+/// 3. **Fetch `origin`** — the measurement the next two steps read. Offline,
+///    nothing below happens and the cut takes the local base, as it always did.
+/// 4. **Set the census aside where it stands in the way of the advance.** The
+///    census is the tool's own regenerable output: standing on the base with
+///    census paths that `origin`'s advance overwrites, the fast-forward would
+///    refuse on them ("local changes would be overwritten"), and the old
+///    answer to that was to swallow the refusal and commit the census onto the
+///    STALE base — which then carried a commit of its own AND trailed its
+///    remote, so the `git pull --ff-only origin {base}` the gate prescribes
+///    could never succeed again. Those paths, and only those (never scratch,
+///    never work — `DirtyPathKind` tells them apart, and the operator's work
+///    was refused at step 2 or is not on the base), are discarded; `origin`'s
+///    version of them arrives with the advance.
+/// 5. **Fast-forward the base** — THE base this settlement is about, and no
+///    other ref ([`fast_forward_base`]). If it still trails `origin` afterwards,
+///    **refuse, loudly**, with git's words: never swallowed, never a commit on a
+///    stale base. It is the invariant the root `CLAUDE.md` states in its own
+///    words: `--ff-only` only passes while the integration base carries no
+///    commit of its own.
+/// 6. **Re-mine**, at the door that does, from the fresh base.
+/// 7. **Record** what the tool wrote — what was already dirty (minus what step
+///    4 set aside) plus what the re-mine just produced — as ONE commit on the
+///    base. The recording says on stderr what it did, on every outcome.
 ///
 /// The caller does none of those steps and cannot reorder them.
 pub(crate) fn settle(
@@ -251,58 +322,105 @@ pub(crate) fn settle(
     let Some(vcs) = config.vcs() else {
         return CensusSettlement::Proceed;
     };
+    let root_s = root.to_string_lossy().into_owned();
+    let base = position.base.map(str::trim).filter(|b| !b.is_empty());
 
     // 1. WHAT IS DIRTY — measured here and NOWHERE else in this settlement.
     let work = checkout_work(root);
     let on_the_base = position.is_the_base(root, config, door);
 
-    // 2. REFUSE. `CensusOnly` is nobody's work, but it can only be waved
-    //    through where it has somewhere to land: standing off the base it
-    //    would ride into the new branch exactly as the operator's work would,
-    //    and there it is named and refused like any other dirty path.
+    // 2. REFUSE FOR THE TREE. Two rows, one per kind of dirt, because the two
+    //    kinds are exempt from different things:
     //
-    //    A base that is not a fact (`None`) is the third reading, and not the
-    //    same question: nothing is going to move at all — the cut answers
-    //    `BaseUnknown` and the hook refuses or warns, both before any
-    //    `git checkout -b` — so the census cannot travel, and the sentence the
-    //    operator needs is about the base, not about the census.
-    if position.would_carry_work_off(root, config) {
-        let travels = match &work {
-            CheckoutWork::ProvenClean => false,
-            CheckoutWork::CensusOnly(_) => !(on_the_base || position.base.is_none()),
-            // Somebody's work, or a tree that could not be measured. An
-            // unmeasured tree is not an empty one: reading it as empty is how
-            // another unit's work rides off in silence.
-            CheckoutWork::Holds(_) | CheckoutWork::Unproven => true,
-        };
-        if travels {
-            return CensusSettlement::Refuse(BusyCheckout {
-                current: position.current.unwrap_or_default().to_string(),
-                target: position.target.unwrap_or_default().to_string(),
-                work,
-            });
+    //    - the OPERATOR's work (or a tree that could not be measured — an
+    //      unmeasured tree is not an empty one, and reading it as empty is how
+    //      another unit's work rides off in silence) refuses only when it is
+    //      another unit's, i.e. where `holds_other_work` says so. Riding off a
+    //      protected base into the first unit is by design.
+    //    - the CENSUS is nobody's work and has exactly one place to land, the
+    //      base. Anywhere else it would ride into the new branch exactly as
+    //      work would, and there is no design that wants it there: another
+    //      unit's branch, a detached HEAD, a protected branch that is not the
+    //      base — and the base itself when it is protected and this door may
+    //      not commit on it. Each of those is a refusal, and the last one names
+    //      the door that can.
+    let refusal = match &work {
+        CheckoutWork::ProvenClean => None,
+        CheckoutWork::Holds(_) | CheckoutWork::Unproven => position
+            .would_carry_work_off(root, config)
+            .then_some(RefusalCause::WorkWouldTravel),
+        CheckoutWork::CensusOnly(_) if !position.moves_from_a_known_base() || on_the_base => {
+            None
+        }
+        CheckoutWork::CensusOnly(_) => {
+            let standing_on_a_protected_base = position
+                .current
+                .zip(base)
+                .is_some_and(|(current, base)| current == base && is_protected(root, base, config));
+            Some(if standing_on_a_protected_base {
+                RefusalCause::CensusOnProtectedBase
+            } else {
+                RefusalCause::CensusOffBase {
+                    base: base.unwrap_or_default().to_string(),
+                }
+            })
+        }
+    };
+    if let Some(cause) = refusal {
+        return CensusSettlement::Refuse(BusyCheckout {
+            current: position.current.unwrap_or("HEAD").to_string(),
+            target: position.target.unwrap_or_default().to_string(),
+            work,
+            cause,
+        });
+    }
+
+    // 3–5. THE BASE — fetched, cleared of the tool's own output where that
+    //      output stands in the way, and fast-forwarded. A base nobody
+    //      established cannot be refreshed; offline, nothing can be measured
+    //      and the local base is taken as before.
+    let mut set_aside: Vec<String> = Vec::new();
+    if let Some(base) = base {
+        if fetch_origin(&vcs, &root_s) {
+            // 4. SET ASIDE — only census paths, only on the base, only the ones
+            //    the advance overwrites, and only when the advance IS a
+            //    fast-forward (a diverged base refuses below without a single
+            //    path touched, so the refusal leaves the tree as it found it).
+            if position.current == Some(base) {
+                if let CheckoutWork::CensusOnly(dirty) = &work {
+                    set_aside = paths_the_advance_overwrites(&vcs, &root_s, base, dirty);
+                    if !set_aside.is_empty() {
+                        discard_paths(&vcs, &root_s, &set_aside);
+                        eprintln!(
+                            "base-gate: census output set aside so '{base}' can advance to \
+                             origin/{base} — {} (the tool's own regenerable output; origin's \
+                             version arrives with the advance)",
+                            set_aside.join(", ")
+                        );
+                    }
+                }
+            }
+            // 5. FAST-FORWARD, and READ the answer.
+            if let BaseRefresh::Stale { base, error } =
+                fast_forward_base(&vcs, &root_s, position.current, base)
+            {
+                return CensusSettlement::Refuse(BusyCheckout {
+                    current: position.current.unwrap_or("HEAD").to_string(),
+                    target: position.target.unwrap_or_default().to_string(),
+                    work,
+                    cause: RefusalCause::BaseStale { base, error },
+                });
+            }
         }
     }
 
-    // 3. REFRESH THE BASE — before anything can be committed onto it. A base
-    //    nobody established cannot be refreshed, and nothing that follows it
-    //    will happen either.
-    if let Some(base) = position.base.map(str::trim).filter(|b| !b.is_empty()) {
-        refresh_integration_bases(
-            &vcs,
-            &root.to_string_lossy(),
-            config,
-            position.current,
-            Some(base),
-        );
-    }
+    // 6. RE-MINE, at the door that owns it, reading the tree measured at step 1.
+    //    Whether the miner RAN is read: it decides below whether the recorder
+    //    is owed a visit at all.
+    let mined = door.remines_the_census()
+        && base_gate::mine_census_if_stale(root, &work, on_the_base);
 
-    // 4. RE-MINE, at the door that owns it, reading the tree measured at step 1.
-    if door.remines_the_census() {
-        let _ = base_gate::mine_census_if_stale(root, &work, on_the_base);
-    }
-
-    // 5. RECORD. Only on the base, and only when nothing of the operator's is
+    // 7. RECORD. Only on the base, and only when nothing of the operator's is
     //    in the tree — `ProvenClean` and `CensusOnly` are the two readings that
     //    say the index holds nothing of theirs for a commit to sweep up, which
     //    is exactly the fact `record_written_path` needs to be told.
@@ -310,17 +428,24 @@ pub(crate) fn settle(
         return CensusSettlement::Proceed;
     }
     let mut paths: Vec<String> = match &work {
-        CheckoutWork::CensusOnly(dirty) => dirty.clone(),
+        // What step 4 set aside is origin's now, not dirt of ours.
+        CheckoutWork::CensusOnly(dirty) => {
+            dirty.iter().filter(|p| !set_aside.contains(p)).cloned().collect()
+        }
         CheckoutWork::ProvenClean => Vec::new(),
         // Their work is in the tree: it is theirs to commit, beside ours.
         CheckoutWork::Holds(_) | CheckoutWork::Unproven => return CensusSettlement::Proceed,
     };
     // What the re-mine writes is DERIVED, not measured again: the model and its
     // sidecar are written at a known path, and a pathspec for a file that did
-    // not change is a no-op for the recorder.
-    for mined in base_gate::mined_census_paths(root) {
-        if !paths.contains(&mined) {
-            paths.push(mined);
+    // not change is a no-op for the recorder. Only when the miner ran, though:
+    // a clean tree where nothing was mined owes nothing, and the recorder
+    // would only announce that it found nothing — noise at every open.
+    if mined {
+        for path in base_gate::mined_census_paths(root) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
         }
     }
     if paths.is_empty() {
@@ -331,7 +456,7 @@ pub(crate) fn settle(
     } else {
         // Ignored by git, invisible to it, or a commit git refused: the write
         // stays where it fell, exactly as the deterministic mine already
-        // degrades.
+        // degrades — and `commit_census` has just said which on stderr.
         CensusSettlement::Proceed
     }
 }
