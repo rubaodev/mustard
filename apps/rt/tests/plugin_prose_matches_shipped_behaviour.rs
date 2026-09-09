@@ -3636,3 +3636,89 @@ fn exemption_paths_are_matched_without_a_platform_separator() {
         "the exemption table is written with `/` and the lookup must reach it from either platform",
     );
 }
+
+/// An untraced wave is ADVISORY, and the wave's ruler is READ, never copied.
+///
+/// Two sentences drifted from the shipped behaviour in one unit. The prompt ref
+/// said a plan is REFUSED when a wave with tasks traces to no criterion — it
+/// is a WARN (`untraced_waves`), and refusing was tried and reverted. And every
+/// surface described the wave's `## ACCEPTANCE` as a COPY materialised into
+/// the wave file — a snapshot the frozen layout never brought forward, so an
+/// `ac-amend` or `ac-add` written to the parent reached no wave's prompt. Both
+/// halves are read together: the prose a reader arrives at, and the code that
+/// warns rather than refuses, writes a `satisfies:` line rather than a copy,
+/// and reads the parent at render time.
+#[test]
+fn untraced_is_advisory_and_the_wave_ruler_is_read_not_copied() {
+    // --- 1. The prompt ref teaches the read, and no refusal ------------------
+    let prompt_ref = read("plugin/refs/agent-prompt/agent-prompt.md");
+    let row = line_with(&prompt_ref, "`{acceptance_block}`")
+        .expect("agent-prompt.md no longer documents the acceptance block");
+    assert!(
+        !row.contains("REFUSED"),
+        "the acceptance row still says an untraced wave refuses the plan: {row}",
+    );
+    assert!(
+        row.contains("WARN") && row.contains("untraced_waves"),
+        "the row must name the advisory signal the scaffold really emits: {row}",
+    );
+    assert!(
+        row.contains("satisfies:") && row.contains("CURRENT"),
+        "the row must say the ruler is the parent's CURRENT section cut by the wave's \
+         `satisfies:` line — a copy is what shipped and drifted: {row}",
+    );
+
+    // --- 2. The loop ref teaches `--wave` and drops the re-materialise dance --
+    let loop_ref = read("plugin/refs/spec/resume-loop.md");
+    let add_call = line_with(&loop_ref, "mustard-rt run ac-add --spec")
+        .expect("the loop ref no longer shows the ac-add call");
+    assert!(add_call.contains("--wave N"), "the ac-add call omits `--wave N`: {add_call}");
+    for gone in ["wavesStale", "staleWaves"] {
+        assert!(
+            !loop_ref.contains(gone),
+            "the loop ref still teaches `{gone}` — the staleness channel of a copy that no \
+             longer exists",
+        );
+    }
+
+    // --- 3. The CLI help says OPTIONAL, not REQUIRED -------------------------
+    let cli = read("apps/rt/src/commands/spec/cli.rs");
+    assert!(
+        !cli.contains("REQUIRED when the replacement command is a FILTERED")
+            && !cli.contains("REQUIRED when the criterion's command is a FILTERED"),
+        "`--control` help still calls the control REQUIRED; nothing refuses without it",
+    );
+
+    // --- 4. The code really warns, writes a line, and reads the parent -------
+    let scaffold = production_half("apps/rt/src/commands/wave/wave_scaffold.rs");
+    assert!(
+        scaffold.contains("for gap in &gaps.untraced_waves {")
+            && scaffold.contains("\"[wave-scaffold] WARN: {gap}\""),
+        "the scaffold no longer emits the untraced wave as a stderr WARN",
+    );
+    assert!(
+        !scaffold.contains("recusa com exit 2"),
+        "the scaffold's own prose still describes the reverted refusal",
+    );
+    assert!(
+        scaffold.contains("pub(crate) const SATISFIES_KEY: &str = \"satisfies\""),
+        "the wave no longer persists WHICH criteria it satisfies as frontmatter",
+    );
+    assert!(
+        !scaffold.contains("fn collect_ac_blocks") && !scaffold.contains("type AcPool"),
+        "the scaffold builds the criterion copy again — the snapshot the frozen layout \
+         never brings forward",
+    );
+    let sections = production_half("apps/rt/src/commands/agent/render/sections.rs");
+    assert!(
+        sections.contains("pub(crate) fn read_wave_acceptance(parent_spec: &Path, wave_spec: Option<&Path>)")
+            && sections.contains("parse_wave_ruler("),
+        "the prompt renderer stopped reading the PARENT's section through the wave's \
+         `satisfies:` line",
+    );
+    let add = production_half("apps/rt/src/commands/spec/ac_add.rs");
+    assert!(
+        add.contains("pub wave: Option<u32>") && add.contains("route_criterion("),
+        "`ac-add --wave N` no longer routes the new id onto the wave's line",
+    );
+}

@@ -49,9 +49,12 @@
 //!   into `wave-plan.md` under `## Acceptance Criteria`/`## Critérios de
 //!   Aceitação`, where the QA gate reads it via
 //!   `spec_sections::section_block(_, "acceptanceCriteria")` — that union is the
-//!   judge and stays intact. Each wave's `spec.md` ALSO carries the subset it
-//!   satisfies (see [`satisfied_ids`]), verbatim, so the dispatched agent is
-//!   told by which ruler it will be measured instead of guessing.
+//!   judge and stays intact. The wave's `spec.md` carries NO copy of the text:
+//!   only WHICH ids it satisfies, as `satisfies:` frontmatter (see
+//!   [`satisfied_ids`]), and the dispatch prompt reads the criteria themselves
+//!   from the parent's CURRENT section at render time. A copy would be a
+//!   snapshot, and the layout is frozen after approval — an `ac-amend` or
+//!   `ac-add` would never reach it.
 //! - `reality_obligations` — duties to check the world OUTSIDE the repository
 //!   before writing the code they govern. Materialised as
 //!   `## Reality Obligations` with `- **RO-{n}.{i}** — {duty}` items; the
@@ -129,9 +132,10 @@ pub(crate) struct WavePlanEntry {
     #[serde(default)]
     pub(crate) files: Vec<String>,
     /// Acceptance Criteria lines for this wave. NOT written into the per-wave
-    /// `spec.md` (the renderer never reads AC from a wave spec); the union of
-    /// every wave's `acceptance` is carried into `wave-plan.md` so the QA gate
-    /// finds it. `#[serde(default)]` for the same retrocompat reason as `tasks`.
+    /// `spec.md` (the wave carries only the ids it satisfies, as frontmatter —
+    /// the prompt reads the text from the parent); the union of every wave's
+    /// `acceptance` is carried into `wave-plan.md` so the QA gate finds it.
+    /// `#[serde(default)]` for the same retrocompat reason as `tasks`.
     #[serde(default)]
     pub(crate) acceptance: Vec<String>,
     /// Reality obligations for this wave — duties to verify something OUTSIDE
@@ -172,9 +176,10 @@ pub(crate) struct Plan {
 
 /// Heading strings for the wave layout.
 ///
-/// These render MACHINE artefacts — the operational `wave-plan.md` index and the
-/// per-wave `spec.md` skeletons (with their materialised `## Tasks` / `## Files`
-/// / `## Acceptance Criteria` bodies). They are ENGLISH-FIXED regardless of the
+/// These render MACHINE artefacts — the operational `wave-plan.md` index (with
+/// the `## Acceptance Criteria` union) and the per-wave `spec.md` skeletons
+/// (with their materialised `## Tasks` / `## Files` bodies and a `satisfies:`
+/// frontmatter line). They are ENGLISH-FIXED regardless of the
 /// project's configured language (only the user-facing spec narrative follows
 /// config-lang). The struct is retained (rather than inlining the literals) so
 /// the re-wave path renders through the same canonical renderers (F4-d item 2).
@@ -207,21 +212,22 @@ pub(crate) struct Headings<'a> {
     /// `## Material` heading for the parent spec's decisions and traps, cut to
     /// this wave. See [`render_wave_spec`].
     material: &'a str,
-    /// Uma linha escrita LOGO ABAIXO do `## Acceptance Criteria` da onda,
-    /// quando o conjunto ali NÃO é um recorte por onda.
+    /// `true` quando o `satisfies` da onda NÃO é um recorte por onda, e sim a
+    /// régua do pai inteira — o frontmatter da onda então carrega
+    /// `satisfies-scope: unit` ([`SATISFIES_SCOPE_KEY`]).
     ///
-    /// O prompt renderiza aquela seção sob "estes critérios são o JUIZ desta
-    /// onda" ([`crate::commands::agent::render::sections::read_wave_acceptance`]),
-    /// e essa frase é falsa quando a régua foi carregada inteira por não haver
-    /// como atribuí-la — ver [`headings_for_rewave`]. `None` na porta do PLAN,
+    /// O prompt renderiza a seção sob "estes critérios são o JUIZ desta onda"
+    /// ([`crate::commands::agent::render::sections::read_wave_acceptance`]), e
+    /// essa frase é falsa quando a régua foi carregada inteira por não haver
+    /// como atribuí-la — ver [`headings_for_rewave`]. `false` na porta do PLAN,
     /// onde o autor declara `satisfies` e o recorte é real: o arquivo sai
     /// byte-idêntico ao de antes deste campo existir.
-    acceptance_note: Option<&'a str>,
+    carried_whole: bool,
 }
 
 /// Build the heading set. These render MACHINE artefacts — the operational
-/// `wave-plan.md` index and the per-wave `spec.md` skeletons (with their
-/// materialised `## Tasks` / `## Files` / `## Acceptance Criteria` bodies) — so
+/// `wave-plan.md` index (with the `## Acceptance Criteria` union) and the
+/// per-wave `spec.md` skeletons (with their `## Tasks` / `## Files` bodies) — so
 /// the headings are ENGLISH-FIXED regardless of the project's configured
 /// language (the reverted "generated artefacts follow config-lang" rule for
 /// machine artefacts; only the user-facing spec narrative still follows
@@ -244,24 +250,26 @@ pub(crate) fn headings() -> Headings<'static> {
         reality_obligations: "## Reality Obligations",
         acceptance: "## Acceptance Criteria",
         material: "## Material",
-        acceptance_note: None,
+        carried_whole: false,
     }
 }
 
-/// A linha que a onda nascida de um REWAVE carrega sob o
-/// `## Acceptance Criteria` dela.
+/// A linha que o prompt de uma onda nascida de um REWAVE carrega no topo do
+/// `## ACCEPTANCE` dela.
 ///
 /// O rewave não tem autor: as ondas nascem de um DAG de ARQUIVOS, que não tem
 /// como dizer qual critério pertence a qual onda. A régua é então carregada
 /// INTEIRA para cada onda ([`super::exec_rewave_check`]), senão toda onda
 /// rewaveada seria despachada com `## ACCEPTANCE` vazio — o estado que a outra
-/// porta recusa com exit 2.
+/// porta AVISA (a onda com tarefas e sem critério é `untraced_waves`, nunca
+/// recusa).
 ///
 /// Carregar a união e deixar o prompt afirmar "estes critérios são o JUIZ desta
 /// onda" seria dizer ao executor uma coisa que o plano não sabe. Então a união
-/// continua, e o arquivo DIZ que é união: é a diferença entre uma resposta
-/// honesta e uma atribuição inventada.
-const REWAVE_ACCEPTANCE_NOTE: &str =
+/// continua, e o prompt DIZ que é união: é a diferença entre uma resposta
+/// honesta e uma atribuição inventada. O arquivo da onda carrega só o marcador
+/// (`satisfies-scope: unit`); o texto vive aqui, e o renderizador o lê.
+pub(crate) const REWAVE_ACCEPTANCE_NOTE: &str =
     "_Carried WHOLE from the parent, not cut per wave: this layout was derived from the file \
      dependency graph, which cannot say which criterion belongs to which wave. The set below is \
      the UNIT's ruler — some of these lines only pass once a sibling wave lands, and that is \
@@ -273,7 +281,7 @@ const REWAVE_ACCEPTANCE_NOTE: &str =
 /// Duas portas, dois construtores nomeados, um renderizador: o campo fica
 /// privado e nenhuma delas pode esquecer qual é a sua.
 pub(crate) fn headings_for_rewave() -> Headings<'static> {
-    Headings { acceptance_note: Some(REWAVE_ACCEPTANCE_NOTE), ..headings() }
+    Headings { carried_whole: true, ..headings() }
 }
 
 /// Render the wave-plan markdown index. Lifecycle metadata (stage / scope /
@@ -403,22 +411,28 @@ fn wave_self_link(parent: &str, w: &WavePlanEntry) -> String {
 /// parent stays the source: `plan-materialize` re-renders these files, so a
 /// decision settled later lands here on the next materialisation.
 ///
-/// ## Why the wave carries its OWN criteria
+/// ## Why the wave carries WHICH criteria, and never their text
 ///
-/// `pool` is the criterion text indexed by id ([`ac_pool`]). The wave used to
-/// materialise none of it: the union lived in `wave-plan.md`, which is where QA
-/// reads from, and the wave file said what to do and where — never by which
-/// ruler it would be measured. The union stays exactly where it is; this is the
-/// SUBSET the wave declares it satisfies ([`satisfied_ids`]), copied verbatim so
-/// the `Command:` / `Expect:` / `Control:` lines the executor will be judged by
-/// are the ones it can read. An id with no text in the pool contributes nothing
-/// (the gap is the traceability gate's business, not this renderer's).
+/// The wave used to materialise none of its criteria: the union lived in
+/// `wave-plan.md`, which is where QA reads from, and the wave file said what to
+/// do and where — never by which ruler it would be measured. The first remedy
+/// COPIED the subset into the wave file, and the copy was the mistake: the
+/// layout is frozen once approved ([`WriteMode::Frozen`]), so a criterion
+/// rewritten by `ac-amend` or added by `ac-add` landed in the parent and never
+/// reached any wave's prompt — the agent re-dispatched for a review finding was
+/// exactly the one that could not see the criterion written for it.
+///
+/// So the wave persists only the ids it satisfies ([`satisfied_ids`]), as one
+/// `satisfies:` frontmatter line ([`SATISFIES_KEY`]), written once and stable
+/// across the unit's life. The prompt is rendered at DISPATCH time from the
+/// parent's CURRENT `## Acceptance Criteria`, filtered by that line
+/// ([`crate::commands::agent::render::sections::read_wave_acceptance`]). A
+/// wave that satisfies nothing gets no line, and renders no `## ACCEPTANCE`.
 pub(crate) fn render_wave_spec(
     parent: &str,
     w: &WavePlanEntry,
     hd: &Headings<'_>,
     parent_material_text: &str,
-    pool: &AcPool,
 ) -> String {
     let name = wave_name(w);
     let mut out = String::new();
@@ -429,7 +443,22 @@ pub(crate) fn render_wave_spec(
     // precedence. Identity is not lifecycle metadata (which stays in
     // `meta.json`). A blank `parent` (defensive) omits the block.
     if !parent.is_empty() {
-        let _ = write!(out, "---\nid: wave.{parent}.{n}-{role}\n---\n\n", n = w.n, role = w.role);
+        let _ = write!(out, "---\nid: wave.{parent}.{n}-{role}\n", n = w.n, role = w.role);
+        // A régua desta onda: QUAIS ids ela satisfaz, uma linha, e nunca o
+        // texto deles — ver o doc da função. Um id repetido não entra duas vezes.
+        let mut ids: Vec<String> = Vec::new();
+        for id in satisfied_ids(w) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if !ids.is_empty() {
+            let _ = writeln!(out, "{SATISFIES_KEY}: [{}]", ids.join(", "));
+            if hd.carried_whole {
+                let _ = writeln!(out, "{SATISFIES_SCOPE_KEY}: {SATISFIES_SCOPE_UNIT}");
+            }
+        }
+        out.push_str("---\n\n");
     }
     let _ = writeln!(out, "# {name}\n");
     // Lifecycle metadata (stage / parent) lives only in the `meta.json` sidecar;
@@ -502,29 +531,6 @@ pub(crate) fn render_wave_spec(
             );
         }
     }
-    // A régua desta onda: só os critérios que ela declara satisfazer, literais.
-    // Fica depois das obrigações e antes do material para o corpo operacional
-    // (tarefas, arquivos, deveres) manter a posição que já tinha.
-    let mut criteria: Vec<&str> = Vec::new();
-    for id in satisfied_ids(w) {
-        // Um id repetido no `satisfies` não duplica o critério no arquivo.
-        if let Some(block) = pool.get(&id) {
-            if !criteria.contains(&block.as_str()) {
-                criteria.push(block.as_str());
-            }
-        }
-    }
-    if !criteria.is_empty() {
-        let _ = write!(out, "\n{}\n\n", hd.acceptance);
-        // A nota, quando existe, vem ANTES dos critérios: ela qualifica o
-        // conjunto inteiro, e o prompt a lê logo abaixo da frase fixa que
-        // chama a seção de juiz desta onda — ver [`headings_for_rewave`].
-        if let Some(note) = hd.acceptance_note {
-            let _ = writeln!(out, "{note}\n");
-        }
-        out.push_str(&criteria.join("\n"));
-        out.push('\n');
-    }
     // What the conversation settled, cut to THIS wave — see the doc comment.
     // Last, so the operational body (tasks, files, duties) keeps its position
     // and a plan carrying no material renders byte-identically to before.
@@ -543,6 +549,120 @@ pub(crate) fn render_wave_spec(
         out.push('\n');
     }
     out
+}
+
+/// The frontmatter key that names WHICH criteria a wave satisfies —
+/// `satisfies: [AC-1, AC-3]`. Written once by [`render_wave_spec`]; read by the
+/// prompt renderer ([`parse_wave_ruler`]); extended by `ac-add --wave N`
+/// ([`route_criterion`]).
+pub(crate) const SATISFIES_KEY: &str = "satisfies";
+
+/// The frontmatter key a REWAVE wave carries beside `satisfies:` to say the set
+/// is the unit's whole ruler, not a per-wave cut — see [`REWAVE_ACCEPTANCE_NOTE`].
+pub(crate) const SATISFIES_SCOPE_KEY: &str = "satisfies-scope";
+
+/// The one value [`SATISFIES_SCOPE_KEY`] takes.
+const SATISFIES_SCOPE_UNIT: &str = "unit";
+
+/// What a wave's frontmatter says about its ruler — the reader twin of the
+/// `satisfies:` line [`render_wave_spec`] writes.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct WaveRuler {
+    /// The ids the wave satisfies, normalised (trim + uppercase) exactly as
+    /// [`satisfied_ids`] normalises them, in file order, de-duplicated.
+    pub(crate) satisfies: Vec<String>,
+    /// `true` when the set is the unit's whole ruler carried by a rewave.
+    pub(crate) carried_whole: bool,
+}
+
+/// The `---` frontmatter block of a markdown document, as its inner lines.
+/// `None` when the document does not open with one.
+fn frontmatter_lines(md: &str) -> Option<Vec<&str>> {
+    let mut lines = md.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    Some(lines.take_while(|l| l.trim_end() != "---").collect())
+}
+
+/// Parse a wave `spec.md`'s frontmatter into its [`WaveRuler`]. Pure, total: no
+/// frontmatter, or one without a `satisfies:` line, yields the empty ruler —
+/// which the renderer turns into no `## ACCEPTANCE` at all.
+///
+/// `[AC-1, AC-2]` and a bare `AC-1, AC-2` both parse: the brackets are the
+/// written form, and a hand edit that drops them must not silently drop the
+/// wave's ruler with them.
+pub(crate) fn parse_wave_ruler(md: &str) -> WaveRuler {
+    let mut ruler = WaveRuler::default();
+    for line in frontmatter_lines(md).unwrap_or_default() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key == SATISFIES_KEY {
+            for id in value.trim().trim_matches(['[', ']']).split(',') {
+                let id = id.trim().to_uppercase();
+                if !id.is_empty() && !ruler.satisfies.contains(&id) {
+                    ruler.satisfies.push(id);
+                }
+            }
+        } else if key == SATISFIES_SCOPE_KEY {
+            ruler.carried_whole = value.trim() == SATISFIES_SCOPE_UNIT;
+        }
+    }
+    ruler
+}
+
+/// Append `id` to the `satisfies:` line of a wave `spec.md` — the door
+/// `ac-add --wave N` opens so a criterion born mid-pipeline is judged by a wave
+/// without a hand edit of frozen frontmatter.
+///
+/// A missing `satisfies:` line is created right after `id:` (or as the block's
+/// first line); an id already on the line changes nothing. `None` when the
+/// document opens with no frontmatter at all — there is nowhere to write, and
+/// inventing a block on a file this renderer did not produce would be a guess.
+/// The id is normalised the way [`parse_wave_ruler`] reads it back.
+pub(crate) fn route_criterion(md: &str, id: &str) -> Option<String> {
+    let id = id.trim().to_uppercase();
+    let inner = frontmatter_lines(md)?;
+    let eol = if md.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut block: Vec<String> = inner.iter().map(|l| l.trim_end().to_string()).collect();
+    let at = block.iter().position(|l| {
+        l.split_once(':').is_some_and(|(k, _)| k.trim() == SATISFIES_KEY)
+    });
+    match at {
+        Some(i) => {
+            let mut ids = parse_wave_ruler(md).satisfies;
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+            block[i] = format!("{SATISFIES_KEY}: [{}]", ids.join(", "));
+        }
+        None => {
+            let after_id = block
+                .iter()
+                .position(|l| l.split_once(':').is_some_and(|(k, _)| k.trim() == "id"))
+                .map_or(0, |i| i + 1);
+            block.insert(after_id, format!("{SATISFIES_KEY}: [{id}]"));
+        }
+    }
+    // Everything after the closing `---`, byte for byte.
+    let body: Vec<&str> = md.lines().skip(inner.len() + 2).collect();
+    let mut out = String::from("---");
+    out.push_str(eol);
+    for line in &block {
+        out.push_str(line);
+        out.push_str(eol);
+    }
+    out.push_str("---");
+    for line in body {
+        out.push_str(eol);
+        out.push_str(line.trim_end_matches('\r'));
+    }
+    if md.ends_with('\n') {
+        out.push_str(eol);
+    }
+    Some(out)
 }
 
 /// The id of the `i`-th (0-based) reality obligation of wave `n` — `RO-{n}.{i+1}`.
@@ -654,10 +774,11 @@ fn wave_ac_text(w: &WavePlanEntry) -> String {
 /// declarado, senão os ids parseados das suas próprias linhas de `acceptance`.
 ///
 /// Uma regra só, de propósito. O portão de rastreabilidade
-/// ([`traceability_gaps`]) e o recorte que materializa `## Acceptance Criteria`
-/// no `spec.md` da onda ([`render_wave_spec`]) precisam responder EXATAMENTE o
-/// mesmo conjunto: se divergirem, ou a onda é recusada por um critério que o
-/// prompt nunca carrega, ou é medida por um que ninguém contou como coberto.
+/// ([`traceability_gaps`]) e a linha `satisfies:` que [`render_wave_spec`]
+/// escreve no frontmatter da onda — pela qual o prompt recorta o `## ACCEPTANCE`
+/// — precisam responder EXATAMENTE o mesmo conjunto: se divergirem, ou a onda é
+/// avisada por um critério que o prompt nunca carrega, ou é medida por um que
+/// ninguém contou como coberto.
 ///
 /// Os ids saem normalizados (trim + maiúsculas) pelo MESMO parser que o `qa-run`
 /// executa, então o pareamento com o texto do critério não depende de como o
@@ -665,9 +786,10 @@ fn wave_ac_text(w: &WavePlanEntry) -> String {
 ///
 /// O que esta função NÃO responde é se cada id nomeia um critério que EXISTE:
 /// ela devolve os ids COMO ESCRITOS. Quem julga cruza este conjunto com o
-/// `defined` de [`traceability_gaps`], e quem materializa cruza com o
-/// [`ac_pool`] — os dois cruzamentos dão o mesmo resultado, que é o ponto: um id
-/// sem texto não materializa critério nenhum e por isso não conta como régua.
+/// `defined` de [`traceability_gaps`], e quem renderiza cruza com o
+/// `## Acceptance Criteria` atual do pai — os dois cruzamentos dão o mesmo
+/// resultado, que é o ponto: um id sem texto não renderiza critério nenhum e por
+/// isso não conta como régua.
 pub(crate) fn satisfied_ids(w: &WavePlanEntry) -> Vec<String> {
     use crate::commands::review::qa_run::parse_ac_items;
     let norm = |s: &str| s.trim().to_uppercase();
@@ -685,72 +807,6 @@ pub(crate) fn satisfied_ids(w: &WavePlanEntry) -> Vec<String> {
         .collect()
 }
 
-/// O texto literal de cada critério, indexado pelo id — a fonte de onde
-/// [`render_wave_spec`] recorta a seção `## Acceptance Criteria` de cada onda.
-pub(crate) type AcPool = std::collections::BTreeMap<String, String>;
-
-/// Monta o pool a partir das duas fontes que já existem, nesta precedência:
-///
-/// 1. as linhas `acceptance` das ondas do plano — é o texto que vai para o
-///    `wave-plan.md` (ver [`build_ac_block`]) e, portanto, o que o `qa-run`
-///    executa;
-/// 2. o `## Acceptance Criteria` do `spec.md` do PAI, que preenche os ids que
-///    uma onda declara em `satisfies` mas cujo texto o plano não soletra.
-///
-/// A ordem importa: a onda tem de carregar o comando que vai julgá-la, e o juiz
-/// é o do `wave-plan.md` sempre que ele existe. Total: um plano sem `acceptance`
-/// e sem pai devolve um pool vazio, e nenhuma onda materializa a seção.
-pub(crate) fn ac_pool(plan: &Plan, parent_ac_md: Option<&str>) -> AcPool {
-    use crate::commands::review::qa_run::extract_ac_section;
-    let mut pool = AcPool::new();
-    for w in &plan.waves {
-        collect_ac_blocks(&wave_ac_text(w), &mut pool);
-    }
-    if let Some(section) = parent_ac_md.and_then(extract_ac_section) {
-        collect_ac_blocks(&section, &mut pool);
-    }
-    pool
-}
-
-/// Fatia um corpo de `## Acceptance Criteria` em UM bloco literal por critério —
-/// a linha de cabeçalho mais as suas linhas de continuação (`Command:`,
-/// `Expect:`, `Control:`).
-///
-/// A fronteira é a MESMA que o lookahead do `parse_ac_items` varre (próximo
-/// cabeçalho de AC, linha em branco ou `## `), e o cabeçalho é reconhecido pelo
-/// MESMO `parse_ac_header` que o `qa-run` usa — um segundo leitor de linha de
-/// critério é um segundo jeito de errar qual comando julga a onda.
-///
-/// Quem chega primeiro fica (`or_insert`): a precedência do pool é decidida pela
-/// ordem em que [`ac_pool`] chama esta função.
-///
-/// A chave é o id NORMALIZADO (trim + maiúsculas), a mesma normalização que
-/// [`satisfied_ids`] aplica: é ela que consulta este mapa, e um `ac-1` escrito
-/// em minúsculas em qualquer das duas pontas casaria com nada.
-fn collect_ac_blocks(section: &str, out: &mut AcPool) {
-    use crate::commands::review::qa_run::parse_ac_header;
-    let lines: Vec<&str> = section.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let Some((id, _)) = parse_ac_header(lines[i]) else {
-            i += 1;
-            continue;
-        };
-        let mut block: Vec<String> = vec![lines[i].trim_end().to_string()];
-        let mut j = i + 1;
-        while j < lines.len() {
-            let line = lines[j];
-            if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ") {
-                break;
-            }
-            block.push(line.trim_end().to_string());
-            j += 1;
-        }
-        out.entry(id.trim().to_uppercase()).or_insert_with(|| block.join("\n"));
-        i = j;
-    }
-}
-
 /// The two AC↔wave traceability gap kinds, kept apart so [`scaffold`] can
 /// surface the uncovered-criterion gap (the coverage gate `plan-materialize`
 /// enforces) while the untraced-wave signal stays a non-blocking WARN.
@@ -759,14 +815,14 @@ struct TraceGaps {
     /// criterion that exists. ADVISORY: a WARN on stderr and an `untraced_waves`
     /// list in the report, never a refusal — a wave can legitimately be plumbing
     /// no single criterion pins down, and whoever approves the plan decides.
-    /// What the WARN says is real, though: the wave's `## Acceptance Criteria`
-    /// — and therefore the `## ACCEPTANCE` block of its dispatched prompt — is
-    /// CUT by exactly this set ([`satisfied_ids`]), so such a wave is dispatched
-    /// with no ruler and still judged by one at QA.
+    /// What the WARN says is real, though: the wave's `satisfies:` line — and
+    /// therefore the `## ACCEPTANCE` block of its dispatched prompt — is CUT by
+    /// exactly this set ([`satisfied_ids`]), so such a wave is dispatched with
+    /// no ruler and still judged by one at QA.
     ///
     /// The PHANTOM `satisfies` id (`AC-01` where the plan defines `AC-1`) lands
     /// here too, as its own sentence naming the id and the ids that do exist:
-    /// nothing materialises for it. Both sentences derive from ONE per-wave
+    /// nothing renders for it. Both sentences derive from ONE per-wave
     /// set — the ids that actually judge the wave — so neither can assert
     /// something false about what materialised. When NOTHING defines a
     /// criterion, the list says that once, as the reason both checks are
@@ -919,8 +975,8 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
     }
 
     for w in &plan.waves {
-        // Conjunto satisfeito: a MESMA regra que o renderizador usa para recortar
-        // o `## Acceptance Criteria` da onda — ver [`satisfied_ids`].
+        // Conjunto satisfeito: a MESMA regra que escreve o `satisfies:` da onda,
+        // pelo qual o prompt recorta o `## ACCEPTANCE` — ver [`satisfied_ids`].
         let satisfied: Vec<String> = satisfied_ids(w);
         for id in &satisfied {
             covered.insert(id.clone());
@@ -943,15 +999,14 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         let known = || defined.iter().cloned().collect::<Vec<_>>().join(", ");
         if !no_criterion_anywhere {
             // Um id que não nomeia critério NENHUM é um `satisfies` fantasma —
-            // `AC-01` onde o pai define `AC-1`. O `ac_pool` não tem essa chave,
-            // então nada materializa por ele. Nomeado com o id e os que existem,
-            // com ou sem tarefas: um erro de digitação é um erro de digitação, e
-            // um aviso sobre ele não recusa nada.
+            // `AC-01` onde o pai define `AC-1`. O pai não tem esse id, então o
+            // prompt não renderiza nada por ele. Nomeado com o id e os que
+            // existem, com ou sem tarefas: um erro de digitação é um erro de
+            // digitação, e um aviso sobre ele não recusa nada.
             for id in &phantom {
                 untraced_waves.push(format!(
-                    "wave-{n}-{role} names {id}, which no criterion defines — nothing materialises \
-                     into the wave's `## Acceptance Criteria` for it. The ones that do exist: \
-                     {known}",
+                    "wave-{n}-{role} names {id}, which no criterion defines — the wave's prompt \
+                     renders nothing for it. The ones that do exist: {known}",
                     n = w.n,
                     role = w.role,
                     known = known(),
@@ -967,9 +1022,9 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
                 untraced_waves.push(format!(
                     "wave-{n}-{role} has tasks but traces to no criterion that exists — add \
                      `satisfies` ids naming criteria this plan declares, or an `acceptance` line \
-                     spelling one out. Its `## Acceptance Criteria` (and the dispatched prompt's \
-                     `## ACCEPTANCE` block) is cut by that set, so as written the wave is \
-                     dispatched with no ruler. The criteria this plan declares: {known}",
+                     spelling one out. The dispatched prompt's `## ACCEPTANCE` block is cut by \
+                     that set, so as written the wave is dispatched with no ruler. The criteria \
+                     this plan declares: {known}",
                     n = w.n,
                     role = w.role,
                     known = known(),
@@ -1581,18 +1636,15 @@ pub(crate) fn scaffold_warning_to(
     // no tempo do PLAN, ou `spec.original.md` depois que um rewave arquivou o
     // original, e o fallback só é tentado quando a primeira leitura falhou.
     //
-    // TRÊS consumidores saem daqui: o recorte de `## Material` por onda, o pool
-    // de texto dos critérios (para o recorte de `## Acceptance Criteria` por
-    // onda) e o portão de rastreabilidade. Pai ausente (um re-wave antes de o
-    // arquivo aterrissar) devolve `None`: o material não renderiza e o portão
-    // não recebe id nenhum do pai.
+    // DOIS consumidores saem daqui: o recorte de `## Material` por onda e o
+    // portão de rastreabilidade. Os critérios NÃO: a onda leva só os ids que
+    // satisfaz, e o prompt lê o texto do pai na hora do despacho. Pai ausente
+    // (um re-wave antes de o arquivo aterrissar) devolve `None`: o material não
+    // renderiza e o portão não recebe id nenhum do pai.
     let parent_ac_md = fs::read_to_string(spec_dir.join("spec.md"))
         .or_else(|_| fs::read_to_string(spec_dir.join("spec.original.md")))
         .ok();
     let parent_material_text: &str = parent_ac_md.as_deref().unwrap_or_default();
-    // O texto literal de cada critério, indexado pelo id — cada onda leva daqui
-    // só o subconjunto que declara satisfazer.
-    let pool = ac_pool(&plan, parent_ac_md.as_deref());
 
     // Per-wave spec. A wave the Plan agent left with no `tasks` is a visible
     // signal — emit a stderr WARN so the operator notices the gap instead of it
@@ -1610,7 +1662,7 @@ pub(crate) fn scaffold_warning_to(
         let dir = spec_dir.join(wave_name(w));
         ledger.emit(
             &dir.join("spec.md"),
-            &render_wave_spec(&parent_name, w, &hd, parent_material_text, &pool),
+            &render_wave_spec(&parent_name, w, &hd, parent_material_text),
         );
     }
 
@@ -1643,9 +1695,9 @@ pub(crate) fn scaffold_warning_to(
     let uncovered_acs = gaps.uncovered_acs;
     let unsupportable_claims = gaps.unsupportable_claims;
     // A quarta lista, e a única ADVISORY: uma onda com tarefas e sem critério é
-    // despachada sem régua (o prompt recorta o `## ACCEPTANCE` por este mesmo
-    // conjunto), e o relatório diz isso sem reter o plano — como
-    // `validation.issues`.
+    // despachada sem régua (o prompt recorta o `## ACCEPTANCE` pelo `satisfies:`
+    // que este mesmo conjunto escreveu), e o relatório diz isso sem reter o
+    // plano — como `validation.issues`.
     let untraced_waves = gaps.untraced_waves;
     // The THIRD escalatable list, and the one that used to stop at the stderr
     // loop above: it was computed and then dropped, so no machine consumer of
@@ -1907,7 +1959,7 @@ mod tests {
         // Machine artefact → ENGLISH-FIXED headings (sample_plan declares `lang: "pt"`).
         let hd = headings();
         let plan = sample_plan();
-        let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd, "", &AcPool::new());
+        let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd, "");
         // Identity (allowed) IS present as leading `id:` frontmatter, while
         // lifecycle metadata is NOT — no `### Stage:`/`### Parent:` header lines.
         // The two are distinct: `id:` is a rename-proof handle, lifecycle lives
@@ -1923,7 +1975,7 @@ mod tests {
         // English-fixed summary heading, never the PT form.
         assert!(s1.contains("## Summary"));
         assert!(!s1.contains("## Resumo"));
-        let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd, "", &AcPool::new());
+        let s2 = render_wave_spec("epic-x", &plan.waves[1], &hd, "");
         assert!(s2.starts_with("---\nid: wave.epic-x.2-frontend\n---\n\n"), "{s2}");
         assert!(!s2.contains("### Stage:"));
         assert!(s2.contains("[[wave.epic-x.1-general]]"));
@@ -2224,7 +2276,7 @@ mod tests {
         assert!(plan.waves[0].files.is_empty());
         assert!(plan.waves[0].acceptance.is_empty());
         let hd = headings();
-        let spec = render_wave_spec("epic", &plan.waves[0], &hd, "", &AcPool::new());
+        let spec = render_wave_spec("epic", &plan.waves[0], &hd, "");
         assert!(spec.contains("## Summary"));
         assert!(spec.contains("## Network"));
         // No materialised body → no Tasks / Files heading.
@@ -2261,7 +2313,7 @@ mod tests {
                       ## Evidence\n\n- [E-1] the handler parses twice\n  \
                       Evidence: `src/api/handler.rs:12`\n\
                       - [E-2] the widget leaks\n  Evidence: `src/ui/widget.tsx:3`\n";
-        let spec = render_wave_spec("epic", &w, &headings(), parent, &AcPool::new());
+        let spec = render_wave_spec("epic", &w, &headings(), parent);
 
         assert!(spec.contains("## Material"), "material heading missing: {spec}");
         assert!(spec.contains("**wave** — one agent, one pass"), "definition: {spec}");
@@ -2273,7 +2325,7 @@ mod tests {
 
         // A parent with no material renders byte-identically to before: no
         // heading, no empty section.
-        let bare = render_wave_spec("epic", &w, &headings(), "# Epic\n\n## Tasks\n\n- [ ] x\n", &AcPool::new());
+        let bare = render_wave_spec("epic", &w, &headings(), "# Epic\n\n## Tasks\n\n- [ ] x\n");
         assert!(!bare.contains("## Material"), "empty channel emits no heading: {bare}");
     }
 
@@ -2296,7 +2348,7 @@ mod tests {
             reality_obligations: Vec::new(),
         };
         let hd = headings();
-        let spec = render_wave_spec("epic", &w, &hd, "", &AcPool::new());
+        let spec = render_wave_spec("epic", &w, &hd, "");
         assert!(spec.contains("## Tasks"), "{spec}");
         assert!(spec.contains("- [ ] wire the handler"), "{spec}");
         assert!(spec.contains("- [ ] add the route"), "{spec}");
@@ -2394,7 +2446,6 @@ mod tests {
             &entry(vec!["fazer X".to_string()]),
             &headings(),
             "",
-            &AcPool::new(),
         );
         assert!(spec.contains("## Tasks"), "machine artefact → ## Tasks: {spec}");
         assert!(!spec.contains("## Tarefas"), "no PT heading even for a pt plan: {spec}");
@@ -2423,7 +2474,7 @@ mod tests {
             satisfies: Vec::new(),
             reality_obligations: Vec::new(),
         };
-        let spec = render_wave_spec("epic", &w, &headings(), "", &AcPool::new());
+        let spec = render_wave_spec("epic", &w, &headings(), "");
         assert!(!spec.contains("- [ ] - [ ]"), "doubled checkbox: {spec}");
         assert!(!spec.contains("- [ ] - [x]"), "doubled checkbox: {spec}");
         assert!(!spec.contains("- [ ] - plain"), "doubled bullet: {spec}");
@@ -2548,20 +2599,23 @@ mod tests {
             satisfies: Vec::new(),
             reality_obligations: Vec::new(),
         };
-        let spec = render_wave_spec("epic", &w, &headings(), "", &AcPool::new());
+        let spec = render_wave_spec("epic", &w, &headings(), "");
         assert!(!spec.contains("## Tasks"), "bare empty Tasks heading is noise: {spec}");
         // Nem uma seção de critérios: a onda não declara nenhum.
         assert!(!spec.contains("## Acceptance Criteria"), "bare AC heading is noise too: {spec}");
     }
 
-    /// Cada onda materializa no seu PRÓPRIO `spec.md` só os critérios que
-    /// declara satisfazer — literais, com `Command:` / `Expect:` / `Control:` —
-    /// e a união em `wave-plan.md` continua intacta, que é de onde o QA lê.
+    /// Cada onda persiste no seu PRÓPRIO `spec.md` só QUAIS critérios declara
+    /// satisfazer — uma linha de frontmatter, nunca o texto — e o prompt dela,
+    /// lido do pai por essa linha, carrega os critérios literais, com
+    /// `Command:` / `Expect:` / `Control:`. A união em `wave-plan.md` continua
+    /// intacta, que é de onde o QA lê.
     ///
     /// Dois lados de propósito: o critério da onda vizinha vazando para esta
     /// devolveria exatamente o ruído que o recorte existe para tirar.
     #[test]
     fn a_wave_materialises_only_the_criteria_it_satisfies() {
+        use crate::commands::agent::render::sections::read_wave_acceptance;
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-ruler");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -2589,18 +2643,32 @@ mod tests {
 
         let _ = scaffold(&spec_dir, &plan_path);
 
-        let w1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
-        assert!(w1.contains("## Acceptance Criteria"), "a onda não recebeu régua: {w1}");
-        assert!(w1.contains("**AC-1**"), "{w1}");
-        // Os três marcadores chegam LITERAIS — é o comando que julga, não uma
-        // paráfrase dele.
-        assert!(w1.contains("Command: `cargo test alpha`"), "comando perdido: {w1}");
-        assert!(w1.contains("Expect: `1 passed`"), "Expect perdido: {w1}");
-        assert!(w1.contains("Control: `cargo test --list`"), "Control perdido: {w1}");
-        assert!(!w1.contains("**AC-2**"), "critério da onda vizinha vazou: {w1}");
+        let parent = spec_dir.join("spec.md");
+        let w1_path = spec_dir.join("wave-1-rt").join("spec.md");
+        let w1 = std::fs::read_to_string(&w1_path).unwrap();
+        // O arquivo da onda diz QUAL critério a julga, e nunca copia o texto: a
+        // cópia seria um retrato, e o layout congela na aprovação.
+        assert!(w1.starts_with("---\nid: wave.epic-ruler.1-rt\nsatisfies: [AC-1]\n---\n"), "{w1}");
+        assert!(!w1.contains("## Acceptance Criteria"), "a cópia voltou: {w1}");
+        assert!(!w1.contains("cargo test alpha"), "o texto do critério não mora na onda: {w1}");
+        assert_eq!(parse_wave_ruler(&w1).satisfies, ["AC-1"], "{w1}");
 
-        let w2 = std::fs::read_to_string(spec_dir.join("wave-2-cli").join("spec.md")).unwrap();
-        assert!(w2.contains("**AC-2**") && !w2.contains("**AC-1**"), "espelho: {w2}");
+        // O prompt, lido do pai por aquela linha: os três marcadores chegam
+        // LITERAIS — é o comando que julga, não uma paráfrase dele.
+        let ruler = read_wave_acceptance(&parent, Some(&w1_path));
+        assert!(ruler.contains("**AC-1**"), "a onda não recebeu régua: {ruler}");
+        assert!(ruler.contains("Command: `cargo test alpha`"), "comando perdido: {ruler}");
+        assert!(ruler.contains("Expect: `1 passed`"), "Expect perdido: {ruler}");
+        assert!(ruler.contains("Control: `cargo test --list`"), "Control perdido: {ruler}");
+        assert!(!ruler.contains("**AC-2**"), "critério da onda vizinha vazou: {ruler}");
+
+        // A onda 2 nomeou o id pela linha `acceptance` inteira, sem
+        // `satisfies` — o mesmo [`satisfied_ids`] a resolve, e o TEXTO vem do
+        // pai, que é onde o `ac-amend` escreve.
+        let w2_path = spec_dir.join("wave-2-cli").join("spec.md");
+        assert_eq!(parse_wave_ruler(&std::fs::read_to_string(&w2_path).unwrap()).satisfies, ["AC-2"]);
+        let ruler2 = read_wave_acceptance(&parent, Some(&w2_path));
+        assert!(ruler2.contains("**AC-2**") && !ruler2.contains("**AC-1**"), "espelho: {ruler2}");
 
         // A união segue no wave-plan.md, intocada — é de lá que o QA lê o que o
         // plano declarou.
@@ -2903,13 +2971,15 @@ mod tests {
             advisory[0].as_str().unwrap_or_default().contains("no acceptance criterion is defined anywhere"),
             "e nomeia a causa: {report}"
         );
-        // O que a frase avisa é verdade: a onda materializou SEM régua.
-        let w1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
-        assert!(!w1.contains("## Acceptance Criteria"), "{w1}");
+        // O que a frase avisa é verdade: a onda é despachada SEM régua — o pai
+        // não define o id, então o prompt não renderiza nada por ele.
+        let w1_path = spec_dir.join("wave-1-rt").join("spec.md");
+        let ruler = read_wave_acceptance(&spec_dir.join("spec.md"), Some(&w1_path));
+        assert!(ruler.is_empty(), "um id que nada define não rende régua: {ruler}");
 
         // A metade que NÃO pode ser apertada junto: um plano cujas ondas traçam a
         // critérios que EXISTEM materializa com a lista vazia, e a régua chega ao
-        // arquivo da onda — que é de onde o `## ACCEPTANCE` do prompt é recortado.
+        // prompt da onda — lida do pai pelo `satisfies:` que a onda carrega.
         let ok_dir = tempdir().unwrap();
         let ok_spec = ok_dir.path().join("epic-com-regua");
         std::fs::create_dir_all(&ok_spec).unwrap();
@@ -2930,7 +3000,8 @@ mod tests {
             panic!("expected ScaffoldOutcome::Created");
         };
         assert!(untraced_waves.is_empty(), "a onda traça a um critério real: {untraced_waves:?}");
-        let ruler = read_wave_acceptance(&ok_spec.join("wave-1-rt").join("spec.md"));
+        let ruler =
+            read_wave_acceptance(&ok_spec.join("spec.md"), Some(&ok_spec.join("wave-1-rt").join("spec.md")));
         assert!(ruler.contains("**AC-1**"), "a régua não chegou à onda: {ruler}");
         assert!(
             ruler.contains("Command: `cargo test alpha`"),
@@ -2943,12 +3014,13 @@ mod tests {
     ///
     /// Substitui `a_satisfies_id_naming_no_criterion_is_refused`. O buraco que
     /// fechava continua fechado: `AC-01` onde o pai define `AC-1` devolve um
-    /// conjunto satisfeito NÃO-vazio, o `ac_pool` não tem essa chave, a onda
-    /// materializa SEM `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt
-    /// colapsa. O que muda é a forma do sinal: uma frase honesta, derivada do
-    /// mesmo conjunto que o renderizador recorta, em vez de uma recusa.
+    /// conjunto satisfeito NÃO-vazio, o pai não tem esse id, e o
+    /// `## ACCEPTANCE` do prompt colapsa. O que muda é a forma do sinal: uma
+    /// frase honesta, derivada do mesmo conjunto que o renderizador recorta, em
+    /// vez de uma recusa.
     #[test]
     fn a_satisfies_id_naming_no_criterion_is_named_by_the_warn() {
+        use crate::commands::agent::render::sections::read_wave_acceptance;
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-fantasma");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -2991,13 +3063,63 @@ mod tests {
             "a onda que declara ids reais não entra na lista: {untraced_waves:?}"
         );
 
-        // E o outro lado: a onda 1 realmente materializou SEM régua — que é o
-        // que as duas frases dizem.
-        let w1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        // E o outro lado: a onda 1 realmente despacha SEM régua — que é o que
+        // as duas frases dizem. A linha está lá (o plano a escreveu), e o pai
+        // não tem o id.
+        let w1_path = spec_dir.join("wave-1-rt").join("spec.md");
+        let w1 = std::fs::read_to_string(&w1_path).unwrap();
+        assert_eq!(parse_wave_ruler(&w1).satisfies, ["AC-01"], "{w1}");
         assert!(
-            !w1.contains("## Acceptance Criteria"),
-            "um id que não existe não materializa critério nenhum: {w1}"
+            read_wave_acceptance(&spec_dir.join("spec.md"), Some(&w1_path)).is_empty(),
+            "um id que não existe não renderiza critério nenhum"
         );
+    }
+
+    /// O frontmatter da onda é escrito e lido pelo MESMO par, e a porta do
+    /// `ac-add --wave N` o estende sem tocar no corpo — inclusive quando a onda
+    /// nasceu sem `satisfies:` e quando o documento é CRLF.
+    #[test]
+    fn satisfies_frontmatter_round_trips_and_routes_a_new_id() {
+        let w = WavePlanEntry {
+            n: 2,
+            role: "cli".to_string(),
+            summary: "s".to_string(),
+            depends_on: vec![],
+            tasks: vec!["do it".to_string()],
+            files: vec!["src/b.rs".to_string()],
+            acceptance: vec![],
+            satisfies: vec!["ac-2".to_string(), "AC-2".to_string(), " AC-5 ".to_string()],
+            reality_obligations: Vec::new(),
+        };
+        let spec = render_wave_spec("epic", &w, &headings(), "");
+        assert!(spec.starts_with("---\nid: wave.epic.2-cli\nsatisfies: [AC-2, AC-5]\n---\n\n"), "{spec}");
+        let ruler = parse_wave_ruler(&spec);
+        assert_eq!(ruler.satisfies, ["AC-2", "AC-5"]);
+        assert!(!ruler.carried_whole);
+
+        // O rewave marca a união como união, e o leitor a reconhece.
+        let whole = render_wave_spec("epic", &w, &headings_for_rewave(), "");
+        assert!(whole.contains("\nsatisfies-scope: unit\n"), "{whole}");
+        assert!(parse_wave_ruler(&whole).carried_whole);
+
+        // `ac-add --wave 2`: o id novo entra na linha, o corpo fica byte-idêntico.
+        let routed = route_criterion(&spec, "ac-9").expect("frontmatter present");
+        assert_eq!(parse_wave_ruler(&routed).satisfies, ["AC-2", "AC-5", "AC-9"]);
+        let body_of = |s: &str| s.split_once("---\n\n").map(|(_, b)| b.to_string());
+        assert_eq!(body_of(&routed), body_of(&spec), "o corpo não é tocado: {routed}");
+        // Idempotente, e uma onda que nunca declarou nada ganha a linha.
+        assert_eq!(route_criterion(&routed, "AC-9").as_deref(), Some(routed.as_str()));
+        let bare = "---\nid: wave.epic.3-x\n---\n\n# W\n";
+        assert_eq!(
+            route_criterion(bare, "AC-1").as_deref(),
+            Some("---\nid: wave.epic.3-x\nsatisfies: [AC-1]\n---\n\n# W\n")
+        );
+        // CRLF sobrevive, e um documento sem frontmatter não tem onde receber.
+        let crlf = "---\r\nid: wave.epic.3-x\r\n---\r\n\r\n# W\r\n";
+        let routed = route_criterion(crlf, "AC-1").expect("frontmatter present");
+        assert!(!routed.split('\n').any(|l| !l.is_empty() && !l.ends_with('\r')), "{routed:?}");
+        assert_eq!(parse_wave_ruler(&routed).satisfies, ["AC-1"]);
+        assert!(route_criterion("# W\n\n## Tasks\n", "AC-1").is_none());
     }
 
     /// A onda que NÃO declara trabalho nenhum ainda tem o id fantasma NOMEADO

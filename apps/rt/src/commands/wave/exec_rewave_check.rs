@@ -170,17 +170,16 @@ fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
 /// As duas portas que criam onda passam a valer a MESMA invariante — toda onda
 /// que trabalha carrega o critério que a julga — por caminhos diferentes, porque
 /// as ondas delas são diferentes. No PLAN o autor declara `satisfies` e a
-/// materialização RECUSA quem não declara. Aqui as ondas nascem de um DAG de
-/// arquivos: não têm autor, não têm como declarar `satisfies`, e recusá-las
-/// desligaria a decomposição automática inteira, toda vez. Então a régua é
-/// CARREGADA em vez de cobrada.
+/// materialização AVISA quem não declara (`untraced_waves`, nunca recusa). Aqui
+/// as ondas nascem de um DAG de arquivos: não têm autor e não têm como declarar
+/// `satisfies`. Então a régua é CARREGADA em vez de cobrada.
 ///
 /// A união, e não um recorte: o DAG separa por arquivo e não tem como dizer qual
 /// critério pertence a qual onda, e inventar esse mapeamento seria pior que a
-/// união honesta — que ao menos é declarada no `spec.md` da própria onda, e não
-/// um fallback silencioso. Sem isto toda onda rewaveada era despachada com
-/// `## ACCEPTANCE` vazio, que é exatamente o estado que a outra porta agora
-/// recusa com exit 2.
+/// união honesta — que ao menos é declarada no frontmatter da própria onda, e
+/// não um fallback silencioso. Sem isto toda onda rewaveada era despachada com
+/// `## ACCEPTANCE` vazio, que é exatamente o estado sobre o qual a outra porta
+/// avisa.
 ///
 /// E a união é DECLARADA como união. O prompt renderiza aquela seção sob "estes
 /// critérios são o JUIZ desta onda", e com a régua carregada inteira essa frase
@@ -188,14 +187,14 @@ fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
 /// onda existe para tirar, reentrando pelo arquivo que o renderizador lê. Das
 /// duas saídas possíveis (recortar por onda, ou dizer que não dá), esta porta
 /// escolhe a segunda, porque o DAG realmente não tem a informação: o
-/// `spec.md` de cada onda rewaveada carrega a nota de
-/// [`crate::commands::wave::wave_scaffold::headings_for_rewave`] logo acima dos
-/// critérios, e ela viaja para o prompt junto com eles.
+/// frontmatter de cada onda rewaveada carrega `satisfies-scope: unit`
+/// ([`crate::commands::wave::wave_scaffold::headings_for_rewave`]), e o
+/// renderizador põe a nota que o explica no topo do `## ACCEPTANCE`.
 ///
 /// Os ids saem normalizados pelo MESMO parser que o `qa-run` executa, e no mesmo
 /// formato que [`crate::commands::wave::wave_scaffold::satisfied_ids`] espera —
-/// senão a chave não acha o bloco no pool. Um pai sem critério nenhum deixa o
-/// plano como estava. Pura.
+/// senão a linha não casa com o id do pai na hora do render. Um pai sem
+/// critério nenhum deixa o plano como estava. Pura.
 fn carry_parent_criteria(plan: &mut Plan, parent_spec_text: &str) {
     use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
     let ids: Vec<String> = extract_ac_section(parent_spec_text)
@@ -354,18 +353,16 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         // materialisation would.
         let parent_material_text =
             fs::read_to_string(spec_dir.join("spec.md")).unwrap_or_default();
-        // O pool de texto dos critérios, montado do MESMO jeito que a
-        // materialização monta. Ele é consultado de verdade: o `satisfies`
-        // carregado acima é a chave de cada bloco, então cada onda do rewave
-        // materializa `## Acceptance Criteria` em vez de nascer sem régua.
-        let pool = crate::commands::wave::wave_scaffold::ac_pool(&plan, Some(&spec_text));
 
         let mut waves_meta: Vec<Value> = Vec::new();
         for (entry, dag_wave) in plan.waves.iter().zip(waves.iter()) {
             let wave_dir = spec_dir.join(wave_name(entry));
             let _ = fs::create_dir_all(&wave_dir);
+            // O `satisfies` carregado acima vira a linha de frontmatter da onda;
+            // o texto dos critérios continua no pai (arquivado como
+            // `spec.original.md` no passo 9), de onde o prompt o lê.
             let wave_spec_content =
-                render_wave_spec(&spec_name, entry, &hd, &parent_material_text, &pool);
+                render_wave_spec(&spec_name, entry, &hd, &parent_material_text);
             let _ = fs::write_atomic(wave_dir.join("spec.md"), wave_spec_content.as_bytes());
             // Preserve the action-JSON contract: `files` is the file *count*.
             let file_count = dag_wave
@@ -479,17 +476,18 @@ mod tests {
         assert!(plan.waves[0].summary.contains("user.rs"), "{:?}", plan.waves[0].summary);
     }
 
-    /// A onda nascida de um REWAVE carrega a régua do pai — e a carrega até o
-    /// `spec.md` dela, que é de onde o `## ACCEPTANCE` do prompt é lido.
+    /// A onda nascida de um REWAVE carrega a régua do pai — no frontmatter dela,
+    /// que é o filtro pelo qual o `## ACCEPTANCE` do prompt é lido do pai,
+    /// mesmo depois de o pai ser arquivado como `spec.original.md`.
     ///
     /// Sem isto o caminho do rewave desviava inteiro da invariante nova: as
-    /// ondas do DAG não declaram `acceptance` nem `satisfies`, o `ac_pool`
-    /// montado ali era trabalho morto (nenhuma consulta podia acertá-lo) e cada
-    /// onda era despachada com o `## ACCEPTANCE` vazio — exatamente o estado que
-    /// a outra porta de criação passou a recusar com exit 2.
+    /// ondas do DAG não declaram `acceptance` nem `satisfies`, e cada onda era
+    /// despachada com o `## ACCEPTANCE` vazio — exatamente o estado sobre o
+    /// qual a outra porta de criação avisa.
     #[test]
     fn a_rewaved_wave_carries_the_parents_ruler() {
-        use crate::commands::wave::wave_scaffold::{ac_pool, headings, render_wave_spec};
+        use crate::commands::agent::render::sections::read_wave_acceptance;
+        use crate::commands::wave::wave_scaffold::{headings, parse_wave_ruler, render_wave_spec};
 
         let waves = vec![
             json!({ "wave": 1, "files": ["src/a.rs"], "roles": ["domain"], "dependsOn": [] }),
@@ -505,36 +503,43 @@ mod tests {
         assert_eq!(plan.waves[0].satisfies, vec!["AC-1".to_string(), "AC-2".to_string()]);
         assert_eq!(plan.waves[1].satisfies, plan.waves[0].satisfies);
 
-        // …e a régua chega ao arquivo que o renderizador do prompt lê.
+        // …e a régua chega ao frontmatter que o renderizador do prompt lê,
+        // marcada como união.
         let hd = headings_for_rewave();
-        let pool = ac_pool(&plan, Some(parent));
-        let spec = render_wave_spec("epic-x", &plan.waves[0], &hd, "", &pool);
-        assert!(spec.contains("## Acceptance Criteria"), "a onda nasceu sem régua: {spec}");
-        assert!(spec.contains("Command: `cargo test alpha`"), "{spec}");
+        let spec = render_wave_spec("epic-x", &plan.waves[0], &hd, "");
+        let ruler = parse_wave_ruler(&spec);
+        assert_eq!(ruler.satisfies, ["AC-1", "AC-2"], "a onda nasceu sem régua: {spec}");
+        assert!(ruler.carried_whole, "a união tem de se declarar união: {spec}");
+        assert!(!spec.contains("cargo test alpha"), "o texto não é copiado: {spec}");
 
-        // …e o arquivo DIZ que a régua é a união do pai. Sem isto o prompt
-        // afirma "estes critérios são o JUIZ desta onda" sobre um conjunto que
-        // o DAG nunca atribuiu — a atribuição inventada que o recorte por onda
-        // existe para tirar, reentrando pelo arquivo que o renderizador lê.
-        assert!(
-            spec.contains("Carried WHOLE from the parent"),
-            "a união tem de se declarar união: {spec}",
-        );
-        assert!(
-            spec.contains("dependency graph"),
-            "e dizer POR QUE não foi recortada: {spec}",
-        );
-        // A nota vem ANTES dos critérios, então ela qualifica o conjunto todo.
-        let note_at = spec.find("Carried WHOLE").expect("nota");
-        let first_ac = spec.find("**AC-1**").expect("AC-1");
-        assert!(note_at < first_ac, "a nota qualifica o conjunto, não segue nele: {spec}");
+        // O prompt, lido do pai ARQUIVADO (o passo 9 renomeia o `spec.md`):
+        // os critérios vêm literais, e a nota que declara a união vem ANTES
+        // deles, qualificando o conjunto todo. Sem ela o prompt afirma "estes
+        // critérios são o JUIZ desta onda" sobre um conjunto que o DAG nunca
+        // atribuiu.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wave-1-domain")).unwrap();
+        std::fs::write(dir.path().join("spec.original.md"), parent).unwrap();
+        let wave_path = dir.path().join("wave-1-domain").join("spec.md");
+        std::fs::write(&wave_path, &spec).unwrap();
+        let rendered = read_wave_acceptance(&dir.path().join("spec.md"), Some(&wave_path));
+        assert!(rendered.contains("Command: `cargo test alpha`"), "{rendered}");
+        assert!(rendered.contains("Command: `cargo test beta`"), "{rendered}");
+        assert!(rendered.contains("Carried WHOLE from the parent"), "{rendered}");
+        assert!(rendered.contains("dependency graph"), "e dizer POR QUE não foi recortada: {rendered}");
+        let note_at = rendered.find("Carried WHOLE").expect("nota");
+        let first_ac = rendered.find("**AC-1**").expect("AC-1");
+        assert!(note_at < first_ac, "a nota qualifica o conjunto, não segue nele: {rendered}");
 
-        // A porta do PLAN não carrega nota nenhuma: lá o `satisfies` é do autor
-        // e o recorte é real, então o arquivo sai como sempre saiu.
-        let plan_side = render_wave_spec("epic-x", &plan.waves[0], &headings(), "", &pool);
+        // A porta do PLAN não carrega marca nenhuma: lá o `satisfies` é do
+        // autor e o recorte é real, então o prompt sai sem a nota.
+        let plan_side = render_wave_spec("epic-x", &plan.waves[0], &headings(), "");
+        assert!(!parse_wave_ruler(&plan_side).carried_whole, "{plan_side}");
+        std::fs::write(&wave_path, &plan_side).unwrap();
+        let rendered = read_wave_acceptance(&dir.path().join("spec.md"), Some(&wave_path));
         assert!(
-            !plan_side.contains("Carried WHOLE from the parent"),
-            "o recorte declarado pelo autor não é união: {plan_side}",
+            !rendered.contains("Carried WHOLE from the parent"),
+            "o recorte declarado pelo autor não é união: {rendered}",
         );
 
         // Um pai sem critério nenhum deixa o plano exatamente como estava.

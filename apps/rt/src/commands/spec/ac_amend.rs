@@ -44,10 +44,13 @@
 //! unlocked by a fact about the SUPERSEDED criterion — one recorded by the
 //! engine, one read off the criterion's own command and regex — which is why
 //! they cannot be used to smuggle a vacuous criterion past the door.
-//! 2. **Only the root is edited.** `wave-plan.md` and each `wave-*/spec.md`
-//!    carry the criterion lines too, and the scaffold is frozen after approval
-//!    (`wave_scaffold.rs`). A criterion amended only at the root leaves the
-//!    dispatched agent reading the superseded command.
+//! 2. **Only the root is edited.** `wave-plan.md` carries the criterion lines
+//!    too — the union QA executes — and a root-only edit leaves QA running the
+//!    superseded command. The wave specs carry NO copy: each names only WHICH
+//!    ids it satisfies (`satisfies:` frontmatter), and the dispatch prompt is
+//!    rendered from the parent's CURRENT section at dispatch time — so an
+//!    amendment written to the parent reaches every wave's prompt without
+//!    touching a frozen layout.
 //!
 //! ## What this door does NOT do: ADD
 //!
@@ -175,36 +178,6 @@ pub(crate) struct AcAmendReport {
     /// Every artefact whose criterion line was rewritten AND confirmed on
     /// re-read, as repo paths with forward slashes.
     pub(crate) rewritten: Vec<String>,
-    /// `true` when some materialised wave still carries the SUPERSEDED text of
-    /// this criterion — the flag, with [`Self::stale_waves`] as its evidence.
-    ///
-    /// The wave's `## Acceptance Criteria` is a verbatim COPY of the parent's,
-    /// and the prompt renders it under "each `Command:` below is run VERBATIM by
-    /// the QA gate". A copy the amendment did not reach makes that sentence
-    /// false — QA reads the union from `wave-plan.md`, so the wave is judged by
-    /// the NEW command while its own prompt shows the old one. The rewrite walks
-    /// the wave artefacts and normally lands there too; this names the ones
-    /// where it did not, instead of leaving the operator to find out at QA.
-    ///
-    /// The same shape `spec-draft --material-only` reports for the material
-    /// channel (`wavesStale`/`staleWaves`) — one signal, said the same way.
-    ///
-    /// The rename is what makes that sentence true. This struct carries no
-    /// `rename_all`, so the field emitted `waves_stale` while its twin emits
-    /// `wavesStale`: a caller reading the documented key off an ac-amend report
-    /// got `null` and silently never re-materialised. Only these two fields are
-    /// renamed — `rename_all` here would rewrite every OTHER key of a report
-    /// callers already read.
-    ///
-    /// `skip_serializing_if` for the other half of the same promise: both keys
-    /// used to be serialized unconditionally, so adding them changed the bytes
-    /// of every existing ac-amend call. Absent when nothing is stale, which is
-    /// the ordinary case and the one that must stay byte-identical.
-    #[serde(rename = "wavesStale", skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) waves_stale: bool,
-    /// The wave directories whose copy of this criterion is stale, sorted.
-    #[serde(rename = "staleWaves", skip_serializing_if = "Vec::is_empty")]
-    pub(crate) stale_waves: Vec<String>,
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
     /// Refusal / failure code: `blank_reason`, `unknown_spec`,
@@ -228,8 +201,6 @@ impl AcAmendReport {
             superseded_expect: None,
             proof: None,
             rewritten: Vec::new(),
-            waves_stale: false,
-            stale_waves: Vec::new(),
             ledger: None,
             error: Some(error.to_string()),
             remedy: Some(remedy.to_string()),
@@ -712,67 +683,20 @@ fn rewrite_markdown(body: &str, id: &str, plan: &Rewrite) -> Option<String> {
 // Artefacts
 // ---------------------------------------------------------------------------
 
-/// Every markdown artefact under a spec directory that can carry criterion
-/// lines: the root `spec.md` / `wave-plan.md` and each `wave-*/spec.md`.
+/// The artefacts a criterion edit writes: the root `spec.md` — the list every
+/// reader derives from — and `wave-plan.md`, the union QA executes. Nothing
+/// else: a wave spec carries no criterion text (the prompt reads the parent at
+/// dispatch time), and `qa/` / `review/` transcripts are records of a run into
+/// which a rewritten criterion would be forged evidence.
 ///
-/// Sorted, so the report and the ledger are byte-stable. Depth 2 by
-/// construction — the scaffold puts wave artefacts exactly one level down, and
-/// an unbounded walk would reach `review/` transcripts nobody dispatches from.
-fn artefacts(spec_dir: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir(spec_dir) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let Ok(inner) = std::fs::read_dir(&path) else {
-                continue;
-            };
-            found.extend(
-                inner
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "md")),
-            );
-        } else if path.extension().is_some_and(|e| e == "md") {
-            found.push(path);
-        }
-    }
-    found.sort();
-    found
-}
-
-/// As ondas materializadas sob `spec_dir` que ainda carregam a versão SUPERADA
-/// de `id` — declaram o critério e, relidas, não confirmam `command`.
-///
-/// Não é uma suspeita: é a mesma releitura que [`landed`] faz sobre o `spec.md`
-/// do pai, aplicada ao `spec.md` de cada onda. Uma onda que não declara o id não
-/// tem cópia para ficar velha e não entra; uma que declara e já foi reescrita
-/// também não. Sobra exatamente o resíduo, e é dele que o operador precisa saber.
-///
-/// Ordenada e determinística: a lista viaja num relatório comparado byte a byte.
-/// Diretório ilegível devolve lista vazia — isto é um aviso, e recusar a emenda
-/// por causa de uma listagem que não abriu custaria mais do que ele vale.
-fn stale_wave_copies(spec_dir: &Path, id: &str, command: &str) -> Vec<String> {
-    let Ok(entries) = mfs::read_dir(spec_dir) else {
-        return Vec::new();
-    };
-    let mut stale: Vec<String> = entries
+/// `pub(super)` — the ADD door writes to exactly the same two files. Sorted, so
+/// the report and the ledger are byte-stable.
+pub(super) fn artefacts(spec_dir: &Path) -> Vec<PathBuf> {
+    ["spec.md", "wave-plan.md"]
         .into_iter()
-        .filter(|e| e.is_dir && e.file_name.starts_with("wave-"))
-        .filter(|e| {
-            let wave_spec = e.path.join("spec.md");
-            let Ok(body) = mfs::read_to_string(&wave_spec) else {
-                return false; // sem spec de onda não há cópia para envelhecer
-            };
-            criteria_of(&body).iter().any(|item| item.id == id)
-                && !landed(&wave_spec, id, command)
-        })
-        .map(|e| e.file_name)
-        .collect();
-    stale.sort();
-    stale
+        .map(|name| spec_dir.join(name))
+        .filter(|p| p.is_file())
+        .collect()
 }
 
 /// The criteria a markdown document declares, through the shared parser.
@@ -938,13 +862,16 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // COMMAND of a criterion whose line already declares `Control:` handed
     // `None` to the proof engine, and the control the line carries was never
     // taken for the replacement.
-    let control = declared_control.or_else(|| {
-        superseded
-            .control
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-    });
+    //
+    // A SKELETON is not a declared control: the drafter seeds the placeholder
+    // on every non-exempt line, and inheriting it would refuse the amendment
+    // (`take_control` never runs a `<…>` marker) for a control nobody wrote.
+    let inherited_control = superseded
+        .control
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && !qa_run::is_skeleton(c));
+    let control = declared_control.or(inherited_control);
     // WHERE the command runs, which is not always where the spec lives. A
     // criterion corrected after the work landed cannot come back red in this
     // tree — the behaviour exists — so `--proof-tree` points at a checkout that
@@ -982,6 +909,34 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         control,
         exempt,
     );
+    // An INHERITED control that does not come back green today is a finding
+    // about the control, never a refusal of the amendment: the caller did not
+    // declare it for this replacement, and the engine stops BEFORE the red
+    // pass when a control fails — so the replacement would be refused over a
+    // line the caller never touched. Say so once, and take the replacement's
+    // own proof without it; the line keeps the control it carries, and the
+    // next `ac-negative-check` pass re-asks it there.
+    if declared_control.is_none()
+        && proof.proof == Proof::NotAttempted
+        && proof.control != ac_negative_check::Control::NotDeclared
+    {
+        eprintln!(
+            "ac-amend: WARN: the `Control:` {id} carries (`{c}`) did not come back green \
+             against this tree ({why}) — it was NOT taken for the replacement. Repair the \
+             control, or name another with `--control`; the replacement is proven on its own \
+             command below.",
+            c = control.unwrap_or_default(),
+            why = proof.reason.as_deref().unwrap_or("no verdict"),
+        );
+        proof = ac_negative_check::prove_one(
+            proof_root,
+            &id,
+            &opts.command,
+            expect.as_deref(),
+            None,
+            exempt,
+        );
+    }
 
     // The ONE recorded state the red rule cannot repair (see the module doc).
     // Looked up through the producer's own rule, against the command AND regex
@@ -1079,17 +1034,6 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     }
     rewritten.sort();
 
-    // As ondas cuja CÓPIA do critério ficou para trás.
-    //
-    // O `## Acceptance Criteria` de uma onda é cópia literal do texto do pai, e o
-    // prompt a renderiza sob "cada `Command:` abaixo é rodado LITERALMENTE pelo
-    // portão de QA". Uma cópia que a reescrita não alcançou torna essa frase
-    // falsa: o QA lê a união do `wave-plan.md`, então a onda é julgada pelo
-    // comando NOVO enquanto o prompt dela mostra o antigo. A varredura de
-    // artefatos acima normalmente alcança a onda; o que fica aqui é o resíduo —
-    // uma onda que declara o id e cuja releitura não confirmou o comando novo.
-    let stale_waves = stale_wave_copies(&spec_dir, &id, &opts.command);
-
     // WHERE the red came from travels on the CRITERION's record, not only in
     // the amendment history — the approval gate reads `criteria`, and a gate
     // that cannot tell an imported proof from one taken in place cannot audit
@@ -1110,27 +1054,10 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         superseded_expect: superseded.expect.clone(),
         proof: Some(proof.clone()),
         rewritten: rewritten.clone(),
-        waves_stale: !stale_waves.is_empty(),
-        stale_waves: stale_waves.clone(),
         ledger: None,
         error: None,
         remedy: None,
     };
-    if !stale_waves.is_empty() {
-        // Alto na stderr, nunca no stdout — a linha JSON é comparada byte a
-        // byte. O aviso nomeia as ondas E o comando que reconcilia as cópias,
-        // pelo mesmo motivo que o do `--material-only`: quem fica sabendo do
-        // problema sem o remédio fica com o problema.
-        eprintln!(
-            "ac-amend: WARN: {id} was amended, but {n} materialised wave(s) still carry the \
-             superseded text ({waves}) — their dispatched `## ACCEPTANCE` shows a command QA no \
-             longer runs. Re-run `mustard-rt run plan-materialize --spec-dir {spec} --plan \
-             <plan.json>` to bring the copies forward.",
-            n = stale_waves.len(),
-            waves = stale_waves.join(", "),
-            spec = opts.spec,
-        );
-    }
 
     // The ROOT spec is the one artefact that must have changed: the criterion
     // was found there. Nothing confirmed there is a lost write, reported.
@@ -1239,19 +1166,18 @@ mod tests {
         )
     }
 
-    /// Seed `<root>/.claude/spec/<spec>/` with a root `spec.md` and a planted
-    /// wave artefact carrying the SAME criterion line — the frozen scaffold the
-    /// dispatched agent actually reads.
+    /// Seed `<root>/.claude/spec/<spec>/` with a root `spec.md`, the frozen
+    /// `wave-plan.md` carrying the SAME criterion lines (the union QA executes),
+    /// and a wave that satisfies AC-2 — naming the id in its frontmatter, never
+    /// copying the text.
     fn seed(root: &Path, spec: &str) -> PathBuf {
         let dir = root.join(".claude").join("spec").join(spec);
         std::fs::create_dir_all(dir.join("wave-2-rt")).unwrap();
         std::fs::write(dir.join("spec.md"), spec_body()).unwrap();
+        std::fs::write(dir.join("wave-plan.md"), spec_body().replace("# S", "# Plan")).unwrap();
         std::fs::write(
             dir.join("wave-2-rt").join("spec.md"),
-            format!(
-                "# Wave 2\n\n## Acceptance Criteria\n\
-                 - **AC-2** — when the work lands, then the other thing holds.\n  Command: `{GREEN_COMMAND}`\n"
-            ),
+            format!("---\nid: wave.{spec}.2-rt\nsatisfies: [AC-2]\n---\n\n# Wave 2\n"),
         )
         .unwrap();
         dir
@@ -1552,8 +1478,8 @@ mod tests {
     }
 
     /// Fim a fim, no disco: o controle declarado na chamada chega à linha do
-    /// critério em TODO artefato — o `spec.md` do pai E a cópia da onda, que é a
-    /// que o agente despachado lê.
+    /// critério em TODO artefato — o `spec.md` do pai, de onde o prompt da onda
+    /// é lido, E a união do `wave-plan.md`, que o QA executa.
     #[test]
     fn the_declared_control_reaches_every_artefact_on_disk() {
         let dir = tempdir().unwrap();
@@ -1569,7 +1495,7 @@ mod tests {
             Some(GREEN_COMMAND),
             "{report:?}",
         );
-        for path in [spec_dir.join("spec.md"), spec_dir.join("wave-2-rt").join("spec.md")] {
+        for path in [spec_dir.join("spec.md"), spec_dir.join("wave-plan.md")] {
             let body = std::fs::read_to_string(&path).unwrap();
             let item = read_back(&body, "AC-2");
             assert_eq!(item.command, OTHER_RED_COMMAND, "{}", path.display());
@@ -1580,6 +1506,63 @@ mod tests {
                 path.display(),
             );
         }
+    }
+
+    /// Um controle HERDADO da linha que não vem verde hoje é um AVISO sobre o
+    /// controle, nunca uma recusa da emenda — e o placeholder do rascunho nem
+    /// chega a ser herdado: um `<…>` não é um controle declarado.
+    ///
+    /// A regressão que isto tranca: o fallback herdava o esqueleto do drafter e
+    /// o motor recusava a substituta ANTES de rodá-la ("the CONTROL was NEVER
+    /// TAKEN"), por um controle que ninguém escreveu; e um controle escrito de
+    /// verdade que ficou vermelho recusava do mesmo jeito, por uma linha que a
+    /// chamada nunca tocou.
+    #[test]
+    fn an_inherited_control_that_is_not_green_warns_instead_of_refusing() {
+        const SKELETON: &str = "<a command that must be GREEN against the tree as it is today>";
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("inherited");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# S\n\n## Acceptance Criteria\n\
+                 - **AC-1** — when the work lands, then the behaviour holds.\n  \
+                 Command: `{GREEN_COMMAND}`\n  Control: `{SKELETON}`\n\
+                 - **AC-2** — when the work lands, then the other thing holds.\n  \
+                 Command: `{GREEN_COMMAND}`\n  Control: `{RED_COMMAND}`\n\
+                 - **AC-3** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+            ),
+        )
+        .unwrap();
+
+        // (a) O esqueleto não é herdado: a prova sai `not-declared`, e a linha
+        // fica como estava — a emenda não inventa controle.
+        let skel = amend(dir.path(), &opts("inherited", "AC-1", OTHER_RED_COMMAND, "r"));
+        assert!(skel.ok, "um placeholder não pode recusar a emenda: {skel:?}");
+        let proof = skel.proof.as_ref().expect("a prova é registrada");
+        assert_eq!(proof.control, ac_negative_check::Control::NotDeclared, "{skel:?}");
+        assert_eq!(proof.control_command, None, "{skel:?}");
+        assert_eq!(proof.proof, Proof::Red, "{skel:?}");
+
+        // (b) Um controle real que está VERMELHO hoje avisa e a substituta é
+        // provada pelo comando dela; a linha continua carregando o controle.
+        let red = amend(dir.path(), &opts("inherited", "AC-2", OTHER_RED_COMMAND, "r"));
+        assert!(red.ok, "um controle vermelho é achado sobre o controle, não recusa: {red:?}");
+        let proof = red.proof.as_ref().expect("a prova é registrada");
+        assert_eq!(proof.proof, Proof::Red, "a substituta foi provada mesmo: {red:?}");
+        assert_eq!(proof.verdict, Verdict::Proven, "{red:?}");
+        let md = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        assert_eq!(read_back(&md, "AC-2").control.as_deref(), Some(RED_COMMAND), "{md:?}");
+
+        // (c) A metade que não pode afrouxar junto: um controle DECLARADO na
+        // chamada que vem vermelho continua recusando — o chamador o nomeou
+        // para esta substituta, e o motor tem razão em não ler o vermelho dela.
+        let mut declared = opts("inherited", "AC-1", OTHER_RED_COMMAND, "r");
+        declared.control = Some(RED_COMMAND.to_string());
+        let refused = amend(dir.path(), &declared);
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.error.as_deref(), Some("replacement_not_proven"), "{refused:?}");
     }
 
     /// A criterion corrected AFTER the work landed takes its red somewhere the
@@ -1863,10 +1846,13 @@ mod tests {
     }
 
     /// The accepted direction: a replacement that comes back RED is written into
-    /// EVERY artefact carrying the id — the root AND the frozen wave scaffold —
+    /// EVERY artefact carrying the id — the root AND the frozen `wave-plan.md` —
     /// and the ledger records the superseded version with the stated reason.
+    /// The wave spec is NOT one of them: it carries no copy, and its prompt
+    /// reads the new command off the root.
     #[test]
     fn amend_records_the_previous_version_and_rewrites_every_artifact() {
+        use crate::commands::agent::render::sections::read_wave_acceptance;
         let dir = tempdir().unwrap();
         let spec_dir = seed(dir.path(), "amended");
 
@@ -1889,14 +1875,14 @@ mod tests {
             report.rewritten,
             vec![
                 ".claude/spec/amended/spec.md".to_string(),
-                ".claude/spec/amended/wave-2-rt/spec.md".to_string(),
+                ".claude/spec/amended/wave-plan.md".to_string(),
             ],
-            "the root AND the frozen wave artefact"
+            "the root AND the frozen union"
         );
 
-        // The dispatched agent reads the NEW command out of the wave scaffold —
-        // this is the whole reason a root-only amendment is not enough.
-        for path in [spec_dir.join("spec.md"), spec_dir.join("wave-2-rt").join("spec.md")] {
+        // QA executes the union, so the NEW command must be there too — this
+        // is the whole reason a root-only amendment is not enough.
+        for path in [spec_dir.join("spec.md"), spec_dir.join("wave-plan.md")] {
             let body = std::fs::read_to_string(&path).unwrap();
             let item = criteria_of(&body)
                 .into_iter()
@@ -1905,68 +1891,20 @@ mod tests {
             assert_eq!(item.command, OTHER_RED_COMMAND, "{}", path.display());
             assert_eq!(item.expect.as_deref(), Some("1 passed"), "{}", path.display());
         }
-        // The wave artefact carries AC-2 alone, so the superseded command must
-        // be gone from it entirely — nothing else could be holding it there.
+        // The wave spec is untouched — it carries no copy to bring forward —
+        // and the dispatched agent reads the NEW command anyway, because its
+        // prompt is cut from the root at render time.
+        let wave_path = spec_dir.join("wave-2-rt").join("spec.md");
         assert!(
-            !std::fs::read_to_string(spec_dir.join("wave-2-rt").join("spec.md"))
-                .unwrap()
-                .contains(GREEN_COMMAND),
-            "the superseded command must be gone from the wave artefact"
+            !std::fs::read_to_string(&wave_path).unwrap().contains("Command:"),
+            "the wave file must not have grown a copy"
         );
-        // …and the staleness signal SAYS so, instead of leaving the operator to
-        // find out at QA which copy of the criterion the prompt is showing.
-        assert!(!report.waves_stale, "the wave copy was reached, so nothing is stale");
-        assert!(report.stale_waves.is_empty(), "{:?}", report.stale_waves);
-
-        // The other side of the same measurement, on a hand-built layout: a wave
-        // still carrying the SUPERSEDED command is named, and one already
-        // carrying the new one is not. Without this the flag could be a constant
-        // `false` and every assertion above would still pass.
-        let measured = tempdir().unwrap();
-        let hand = measured.path();
-        for (wave, command) in
-            [("wave-1-old", GREEN_COMMAND), ("wave-2-new", OTHER_RED_COMMAND)]
-        {
-            std::fs::create_dir_all(hand.join(wave)).unwrap();
-            std::fs::write(
-                hand.join(wave).join("spec.md"),
-                format!(
-                    "# W\n\n## Acceptance Criteria\n\
-                     - **AC-2** — when the work lands, then the other thing holds.\n  \
-                     Command: `{command}`\n"
-                ),
-            )
-            .unwrap();
-        }
-        // A wave that never carried the criterion has no copy to age.
-        std::fs::create_dir_all(hand.join("wave-3-none")).unwrap();
-        std::fs::write(hand.join("wave-3-none").join("spec.md"), "# W\n").unwrap();
-        assert_eq!(
-            stale_wave_copies(hand, "AC-2", OTHER_RED_COMMAND),
-            vec!["wave-1-old".to_string()],
-            "só a onda cuja cópia ficou para trás é nomeada",
-        );
-
-        // …e o sinal sai com o NOME que a documentação dele promete. Sem o
-        // rename o campo saía `waves_stale` enquanto o gêmeo do
-        // `spec-draft --material-only` sai `wavesStale`: quem lesse a chave
-        // documentada recebia `null` e nunca re-materializava.
+        let ruler = read_wave_acceptance(&spec_dir.join("spec.md"), Some(&wave_path));
+        assert!(ruler.contains(OTHER_RED_COMMAND), "the prompt reads the amendment: {ruler}");
+        assert!(!ruler.contains(GREEN_COMMAND), "and not the superseded command: {ruler}");
+        // No staleness channel is emitted: nothing can go stale.
         let json = serde_json::to_value(&report).expect("report serialises");
-        assert!(json.get("waves_stale").is_none(), "a grafia antiga não pode sobrar: {json}");
-        assert!(json.get("stale_waves").is_none(), "idem para a evidência: {json}");
-        // Nada desatualizado: as duas chaves ficam AUSENTES, então um relatório
-        // que não tem o que dizer continua com os bytes que sempre teve.
-        assert!(json.get("wavesStale").is_none(), "nada stale, nada emitido: {json}");
-        assert!(json.get("staleWaves").is_none(), "{json}");
-        // E quando há: as chaves aparecem, em camelCase.
-        let stale = AcAmendReport {
-            waves_stale: true,
-            stale_waves: vec!["wave-1-old".to_string()],
-            ..AcAmendReport::refused(&o, "AC-2", "e", "r")
-        };
-        let json = serde_json::to_value(&stale).expect("report serialises");
-        assert_eq!(json["wavesStale"], serde_json::json!(true), "{json}");
-        assert_eq!(json["staleWaves"], serde_json::json!(["wave-1-old"]), "{json}");
+        assert!(json.get("wavesStale").is_none() && json.get("staleWaves").is_none(), "{json}");
 
         // The sibling criteria are untouched — the rewrite is surgical, which is
         // also why the root spec legitimately still contains the green command

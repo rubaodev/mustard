@@ -479,20 +479,21 @@ pub(crate) fn render_prompt_with_census(
             .to_string(),
     };
     let role_block = build_role_block(role, &project, &subproject_str, &spec_lang);
-    // The RULER this wave is measured by — the criteria its own `spec.md`
-    // declares, verbatim, `Command:` and all. The wave scaffold materialises the
-    // subset each wave satisfies; this reads that section back, exactly as
-    // `{task_steps}` reads back `## Tasks`. Empty for a spec that declares none
-    // (heading collapses), which is the same silence the prompt had before.
+    // The RULER this wave is measured by — the PARENT's current criteria,
+    // verbatim, `Command:` and all, cut by the `satisfies:` line the wave's own
+    // `spec.md` carries. Read at render time, never from a copy: the layout is
+    // frozen after approval, so a copy would never see an `ac-amend`. Empty for
+    // a wave whose line names none (heading collapses), which is the same
+    // silence the prompt had before.
     //
-    // A WAVE render reads the WAVE's own spec, never `op_spec_path`: that path
-    // falls back to the PARENT `spec.md` whenever the wave directory cannot be
-    // found (unmaterialised, a number past `total_waves`, a renamed folder), and
-    // the fallback would render the union of EVERY wave's criteria under "these
-    // are the JUDGE of this wave" — the exact noise the per-wave cut exists to
-    // remove. No wave directory means no ruler was materialised, and the honest
-    // answer is the empty section. A spec-level render (no `--wave`) is the unit
-    // itself, so there the parent's criteria ARE its ruler.
+    // A WAVE render filters by the WAVE's own spec, never `op_spec_path`: that
+    // path falls back to the PARENT `spec.md` whenever the wave directory cannot
+    // be found (unmaterialised, a number past `total_waves`, a renamed folder),
+    // and the fallback would render the union of EVERY wave's criteria under
+    // "these are the JUDGE of this wave" — the exact noise the per-wave cut
+    // exists to remove. No wave directory means no `satisfies:` line, and the
+    // honest answer is the empty section. A spec-level render (no `--wave`) is
+    // the unit itself, so there the parent's whole section IS its ruler.
     //
     // A SPEC-LESS render carries none: with no `--spec`, `spec_dir` is the
     // PROJECT ROOT and `op_spec_path` a root `spec.md`. A repository that
@@ -502,24 +503,24 @@ pub(crate) fn render_prompt_with_census(
     // judged by no criterion at all.
     //
     // So "is there a spec directory at all" is resolved ONCE, as an Option,
-    // before either block, and the two files derive from it: the PARENT
-    // `spec.md` (where `## WHY` is cut from — `build_why_block` owns the
-    // `spec.md` / `spec.original.md` fallback a rewave's archiving needs, so
-    // the path is handed over unfiltered) and the RULER spec (the wave's own,
-    // found by `find_wave_spec_path` and `None` when unmaterialised, or the
-    // parent's for a spec-level render). Both blocks read these; neither arm
-    // carries its own guard. The `--wave N` arm used to check nothing and
-    // scanned the project root for `wave-N-*` on a spec-less render.
+    // before either block, and both blocks derive from it. The PARENT `spec.md`
+    // is where BOTH are cut from (`read_parent_spec` owns the `spec.md` /
+    // `spec.original.md` fallback a rewave's archiving needs, so the path is
+    // handed over unfiltered): `## WHY` whole, `## ACCEPTANCE` filtered by the
+    // wave's own `satisfies:` frontmatter (the wave's spec, found by
+    // `find_wave_spec_path` — `None` when unmaterialised, which renders no
+    // ruler; absent on a spec-level render, which renders the whole section).
+    // Neither arm carries its own guard. The `--wave N` arm used to check
+    // nothing and scanned the project root for `wave-N-*` on a spec-less render.
     let spec_root: Option<&Path> = spec.map(|_| spec_dir.as_path());
     let parent_spec: Option<PathBuf> = spec_root.map(|d| d.join("spec.md"));
-    let ruler_spec: Option<PathBuf> = spec_root.and_then(|d| match wave {
-        Some(w) => find_wave_spec_path(d, w),
-        None => Some(d.join("spec.md")),
-    });
-    let acceptance_block = ruler_spec
-        .as_deref()
-        .map(read_wave_acceptance)
-        .unwrap_or_default();
+    let acceptance_block = match (spec_root, wave) {
+        (Some(d), Some(w)) => find_wave_spec_path(d, w)
+            .map(|ws| read_wave_acceptance(&d.join("spec.md"), Some(&ws)))
+            .unwrap_or_default(),
+        (Some(d), None) => read_wave_acceptance(&d.join("spec.md"), None),
+        (None, _) => String::new(),
+    };
     // WHY the work exists, and the ground the unit deliberately does not cover —
     // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
     // (never the wave, which carries neither) through the same path already open
@@ -1141,7 +1142,7 @@ mod tests {
         let task_steps = read_task_steps(
             &path,
             &sections::build_why_block(&path),
-            &sections::read_wave_acceptance(&path),
+            &sections::read_wave_acceptance(&path, None),
         );
         assert!(!task_steps.is_empty(), "task_steps fell back to empty for a lean spec");
         let mut rendered = extract_block(TEMPLATE, "dispatch").expect("dispatch block");
@@ -1256,7 +1257,7 @@ mod tests {
         let task_steps = read_task_steps(
             &spec,
             &sections::build_why_block(&spec),
-            &sections::read_wave_acceptance(&spec),
+            &sections::read_wave_acceptance(&spec, None),
         );
         let reference_files = build_reference_files(dir.path(), "api", &spec);
         assert!(!reference_files.is_empty(), "reference_files empty");
@@ -1556,8 +1557,9 @@ mod tests {
     }
 
     /// The wave's prompt carries the RULER it will be judged by — the criteria
-    /// its own `spec.md` declares, verbatim, `Command:` included — and only
-    /// those: a criterion belonging to another wave must not ride.
+    /// the PARENT declares today, verbatim, `Command:` included, filtered by the
+    /// `satisfies:` line the wave's own `spec.md` carries — and only those: a
+    /// criterion belonging to another wave must not ride.
     ///
     /// This is the whole path the field report named: the prompt had 15 fields
     /// and none of them was a criterion, so the executor was told where and what
@@ -1569,11 +1571,17 @@ mod tests {
         let spec = "ruler-spec";
         let spec_dir = dir.path().join(".claude/spec").join(spec);
         std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] parent task\n").unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Tasks\n\n- [ ] parent task\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n  Expect: `1 passed`\n\
+             - **AC-2** — beta holds.\n  Command: `cargo test beta`\n",
+        )
+        .unwrap();
         std::fs::write(
             spec_dir.join("wave-1-impl").join("spec.md"),
-            "# W\n\n## Tasks\n\n- [ ] do alpha\n\n## Acceptance Criteria\n\n\
-             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n  Expect: `1 passed`\n",
+            "---\nid: wave.ruler-spec.1-impl\nsatisfies: [AC-1]\n---\n\n\
+             # W\n\n## Tasks\n\n- [ ] do alpha\n",
         )
         .unwrap();
 
@@ -1585,9 +1593,11 @@ mod tests {
             "the judging command must ride verbatim: {rendered}"
         );
         assert!(rendered.contains("Expect: `1 passed`"), "{rendered}");
+        // …and ONLY the criteria this wave satisfies: the sibling's stays home.
+        assert!(!rendered.contains("AC-2") && !rendered.contains("cargo test beta"), "{rendered}");
         // The section says what it is: a judge, not a suggestion.
         assert!(rendered.contains("JUDGE of this wave"), "{rendered}");
-        // The wave's own `## Acceptance Criteria` heading is demoted, so it
+        // The parent's `## Acceptance Criteria` heading is demoted, so it
         // nests under `## ACCEPTANCE` instead of terminating it.
         assert!(rendered.contains("### Acceptance Criteria"), "{rendered}");
 
@@ -1596,7 +1606,7 @@ mod tests {
         std::fs::create_dir_all(spec_dir.join("wave-2-impl")).unwrap();
         std::fs::write(
             spec_dir.join("wave-2-impl").join("spec.md"),
-            "# W\n\n## Tasks\n\n- [ ] do beta\n",
+            "---\nid: wave.ruler-spec.2-impl\n---\n\n# W\n\n## Tasks\n\n- [ ] do beta\n",
         )
         .unwrap();
         let bare = render_wave(dir.path(), spec, 2);
@@ -1669,11 +1679,16 @@ mod tests {
         let spec = "ruler-still-rides";
         let spec_dir = dir.path().join(".claude/spec").join(spec);
         std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] parent task\n").unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Tasks\n\n- [ ] parent task\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+        )
+        .unwrap();
         std::fs::write(
             spec_dir.join("wave-1-impl").join("spec.md"),
-            "# W\n\n## Tasks\n\n- [ ] do alpha\n\n## Acceptance Criteria\n\n\
-             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+            "---\nid: wave.ruler-still-rides.1-impl\nsatisfies: [AC-1]\n---\n\n\
+             # W\n\n## Tasks\n\n- [ ] do alpha\n",
         )
         .unwrap();
         let with_spec = render_wave(dir.path(), spec, 1);
@@ -1694,11 +1709,17 @@ mod tests {
     fn a_spec_less_wave_render_does_not_scan_the_project_root_for_a_wave() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
-        // O `wave-1-*` que o repositório por acaso carrega na raiz.
+        // O `wave-1-*` que o repositório por acaso carrega na raiz, e o
+        // `spec.md` de raiz que a linha dele apontaria.
         std::fs::create_dir_all(dir.path().join("wave-1-alheio")).unwrap();
         std::fs::write(
             dir.path().join("wave-1-alheio").join("spec.md"),
-            "# Outra onda\n\n## Acceptance Criteria\n\n\
+            "---\nid: wave.alheio.1-alheio\nsatisfies: [AC-7]\n---\n\n# Outra onda\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("spec.md"),
+            "# Outro projeto\n\n## Acceptance Criteria\n\n\
              - **AC-7** — a régua de outra unidade.\n  Command: `cargo test alheio`\n",
         )
         .unwrap();
@@ -1740,14 +1761,15 @@ mod tests {
             spec_dir.join("spec.md"),
             "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
              ## Não-Objetivos\n\n- não endurecer o portão de resíduo\n\n\
-             ## Tasks\n\n- [ ] parent task\n",
+             ## Tasks\n\n- [ ] parent task\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
         )
         .unwrap();
         // A onda: sem `## Tasks` (o fallback dispara) e sem narrativa própria.
         std::fs::write(
             spec_dir.join("wave-1-impl").join("spec.md"),
-            "# W\n\n## Files\n\n- `src/alpha.rs`\n\n## Acceptance Criteria\n\n\
-             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+            "---\nid: wave.pointer-spec.1-impl\nsatisfies: [AC-1]\n---\n\n\
+             # W\n\n## Files\n\n- `src/alpha.rs`\n",
         )
         .unwrap();
 

@@ -628,9 +628,12 @@ fn material_only_report(
 /// dispara quando nada mudou é o modo de falha que esta unidade cita para o
 /// antigo WARN de rastreio, reproduzido no canal que veio consertá-lo.
 ///
-/// A regra é a de [`super::ac_amend::stale_wave_copies`], aplicada ao material:
-/// a onda é relida e só entra na lista quando a releitura NÃO confirma o texto
-/// novo. O recorte comparado é o MESMO que a materialização faria — os arquivos
+/// A regra é uma releitura: a onda só entra na lista quando o que ela carrega
+/// NÃO confirma o texto novo. O material É copiado por onda, de propósito — é
+/// recortado por relevância, e o pai não tem como dizer o que cabe a cada onda
+/// sem esse recorte —, então este sinal é honesto; os critérios, ao contrário,
+/// não são copiados (o prompt os lê do pai na hora do despacho) e não têm
+/// canal de desatualização nenhum. O recorte comparado é o MESMO que a materialização faria — os arquivos
 /// que a onda declara, pelo mesmo
 /// [`cut_material_for_files`](crate::commands::agent::render::sections::cut_material_for_files)
 /// — senão a comparação e a re-materialização discordariam sobre o que a onda
