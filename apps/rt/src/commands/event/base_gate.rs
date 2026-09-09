@@ -448,7 +448,7 @@ pub(crate) fn overlapping_active_specs(project: &Path, intent: &str) -> Vec<Stri
 ///
 /// Deliberately plain: it describes the file that changed and names no tool.
 /// The commit lands in the OPERATOR's history, next to their own work.
-const CENSUS_COMMIT_SUBJECT: &str = "chore: refresh the deterministic project census";
+pub(crate) const CENSUS_COMMIT_SUBJECT: &str = "chore: refresh the deterministic project census";
 
 /// The scan's second versioned artifact, written beside the model on every run.
 /// Named here because the recording has to cover everything the miner wrote:
@@ -2036,7 +2036,7 @@ mod tests {
         else {
             panic!("a edição à mão do operador recusa o corte");
         };
-        let CheckoutWork::Holds(dirty) = &busy.work else {
+        let CheckoutWork::Holds { theirs: dirty, .. } = &busy.work else {
             panic!("os caminhos foram observados, veio {:?}", busy.work);
         };
         assert_eq!(
@@ -2143,6 +2143,298 @@ mod tests {
             head_before,
             "e nada foi commitado onde a árvore estava parada",
         );
+
+        // A linha NA BASE da mesma promessa: o censo já foi posto de lado para
+        // o avanço, e o avanço falha mesmo assim — aqui, num rascunho do
+        // harness que o `origin` passou a versionar (rascunho não entra na
+        // medição, então nada o pôs de lado). A recusa devolve o censo exatamente
+        // como estava, ÍNDICE incluído, e não deixa entrada nenhuma no stash.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let (ahead, _) = origin_ahead_touching_the_census(root);
+        // O `origin` também passou a versionar um rascunho do harness (em cima
+        // do commit à frente, e a máquina B volta dois)…
+        git(root, &["reset", "-q", "--hard", &ahead]);
+        std::fs::write(root.join(".claude").join("feature-digest.json"), "{}\n").unwrap();
+        git(root, &["add", "-f", ".claude/feature-digest.json"]);
+        git(root, &["commit", "-q", "-m", "a scratch file, versioned by mistake"]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        git(root, &["reset", "-q", "--hard", "HEAD~2"]);
+        // …que nesta máquina existe, não rastreado, e vai barrar o avanço.
+        std::fs::write(root.join(".claude").join("feature-digest.json"), "{\"local\":1}\n")
+            .unwrap();
+        remine(&model_of(root));
+        leftover_enrichment(root);
+        // O modelo ENCENADO no índice: o estado que o descarte antigo não via.
+        git(root, &["add", ".claude/grain.model.json"]);
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "precondição: só o censo (e um rascunho) está sujo",
+        );
+        let ours = std::fs::read_to_string(model_of(root)).unwrap();
+        let dirty_before = porcelain(root);
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let settled = settle_cut(root, Some("dev"), "dev_second", Some("dev"), &flow_config());
+        let CensusSettlement::Refuse(busy) = settled else {
+            panic!("o avanço barrado pelo rascunho recusa: {settled:?}");
+        };
+        assert!(
+            matches!(busy.cause, crate::commands::event::work_branch::RefusalCause::BaseStale { .. }),
+            "a causa é a base: {:?}",
+            busy.cause
+        );
+        assert!(
+            !git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base não avançou",
+        );
+        assert_eq!(git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"), head_before);
+        assert_eq!(
+            porcelain(root),
+            dirty_before,
+            "o censo posto de lado voltou exatamente como estava — o modelo encenado inclusive",
+        );
+        assert_eq!(
+            std::fs::read_to_string(model_of(root)).unwrap(),
+            ours,
+            "e com o conteúdo local, não o do origin",
+        );
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).is_none(),
+            "nenhuma entrada de stash ficou para trás",
+        );
+    }
+
+    /// Um censo ENCENADO no índice (`M `) é posto de lado do mesmo jeito que um
+    /// só modificado (` M`): o avanço passa e o modelo é o do origin.
+    ///
+    /// O descarte antigo restaurava do ÍNDICE, então uma mudança encenada
+    /// continuava na frente do fast-forward — recusa com um remédio que falhava
+    /// do mesmo jeito. O stash guarda os dois estados.
+    #[test]
+    fn a_staged_census_change_is_set_aside_and_the_base_advances() {
+        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let root_s = root.to_string_lossy().to_string();
+        let (ahead, origins_census) = origin_ahead_touching_the_census(root);
+
+        remine(&model_of(root));
+        leftover_enrichment(root);
+        git(root, &["add", ".claude/grain.model.json"]);
+        assert!(
+            porcelain(root).lines().any(|l| l.starts_with("M ")),
+            "precondição: o modelo está ENCENADO: {}",
+            porcelain(root)
+        );
+
+        let sid = "sess-staged-census";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        let outcome = cut_pending_work_branch(root, sid);
+        assert_eq!(outcome, CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
+        assert!(
+            git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base avançou apesar do censo encenado",
+        );
+        assert_eq!(std::fs::read_to_string(model_of(root)).unwrap(), origins_census);
+        assert_eq!(porcelain(root), "", "o resto do censo foi gravado, nada sobrou");
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).is_none(),
+            "a entrada de stash foi consumida",
+        );
+    }
+
+    /// Um molde AUTORADO (`source: scan`, escrito pela passagem de
+    /// enriquecimento e não regenerado pelo mine) que o `origin` também
+    /// reescreveu: os DOIS textos sobrevivem — o do origin no lugar dele, o
+    /// local ao lado — e o stderr diz onde. O descarte antigo apagava o local
+    /// em silêncio.
+    #[test]
+    fn an_authored_mold_rewritten_on_origin_too_is_kept_beside_origins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        repo_tracking_the_census(root);
+        // O molde, rastreado, escrito pela passagem de enriquecimento.
+        let mold = root.join("apps").join("rt").join(".claude").join("skills").join("rt-gate-pattern");
+        std::fs::create_dir_all(&mold).unwrap();
+        let mold_rel = "apps/rt/.claude/skills/rt-gate-pattern/SKILL.md";
+        std::fs::write(mold.join("SKILL.md"), "---\nname: rt-gate-pattern\nsource: scan\n---\n\nA\n")
+            .unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "the mold"]);
+        let origin = tmp.path().join("origin.git");
+        let origin_s = origin.to_string_lossy().to_string();
+        git(root, &["init", "--bare", "-q", &origin_s]);
+        git(root, &["remote", "add", "origin", &origin_s]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        // A máquina A re-autorou o molde e publicou.
+        const THEIRS: &str = "---\nname: rt-gate-pattern\nsource: scan\n---\n\nB (origin)\n";
+        std::fs::write(mold.join("SKILL.md"), THEIRS).unwrap();
+        git(root, &["commit", "-q", "-am", "re-authored on origin"]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        git(root, &["reset", "-q", "--hard", "HEAD~1"]);
+        // A máquina B também, sem ter puxado.
+        const OURS: &str = "---\nname: rt-gate-pattern\nsource: scan\n---\n\nC (local)\n";
+        std::fs::write(mold.join("SKILL.md"), OURS).unwrap();
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "precondição: o molde `source: scan` é censo",
+        );
+
+        let settled = settle_open(root, Some("dev"), Some("dev"), &flow_config());
+        assert!(
+            !matches!(settled, CensusSettlement::Refuse(_)),
+            "o molde no caminho não prende a base: {settled:?}",
+        );
+        assert_eq!(
+            std::fs::read_to_string(mold.join("SKILL.md")).unwrap(),
+            THEIRS,
+            "o texto do origin está no lugar dele",
+        );
+        assert_eq!(
+            std::fs::read_to_string(mold.join("SKILL.set-aside.md")).unwrap(),
+            OURS,
+            "e o texto local foi mantido AO LADO, não apagado",
+        );
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).is_none(),
+            "com os dois textos em casa, a entrada de stash foi consumida",
+        );
+        let CheckoutWork::Holds { theirs, .. } = checkout_work(root) else {
+            panic!("o texto mantido ao lado é do operador reconciliar");
+        };
+        assert_eq!(theirs, vec![mold_rel.replace("SKILL.md", "SKILL.set-aside.md")]);
+    }
+
+    /// Uma base PROTEGIDA com o censo re-minerado E uma edição do operador —
+    /// a primeira unidade cortando no lugar, por desenho — cujo `origin` tocou
+    /// o censo. Devolve o commit à frente e o conteúdo do origin para o modelo.
+    fn protected_main_behind_origin(root: &Path) -> (String, &'static str) {
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"main"},"protected":["main"]}}"#,
+        )
+        .unwrap();
+        init_repo_on(root, "main");
+        let model = default_model_path(root);
+        std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
+        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[]}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "track the census"]);
+        let origin = root.parent().expect("tmp").join("origin.git");
+        let origin_s = origin.to_string_lossy().to_string();
+        git(root, &["init", "--bare", "-q", &origin_s]);
+        git(root, &["remote", "add", "origin", &origin_s]);
+        git(root, &["push", "-q", "origin", "main"]);
+        const ORIGINS_CENSUS: &str = "{\"projects\":[{\"dir\":\"apps/rt\"},{\"dir\":\"apps/cli\"}]}\n";
+        std::fs::write(&model, ORIGINS_CENSUS).unwrap();
+        git(root, &["commit", "-q", "-am", "chore: refresh the deterministic project census"]);
+        git(root, &["push", "-q", "origin", "main"]);
+        let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        git(root, &["reset", "-q", "--hard", "HEAD~1"]);
+        (ahead, ORIGINS_CENSUS)
+    }
+
+    /// `Holds` numa base protegida: o trabalho do operador segue para a
+    /// primeira unidade por desenho, mas o CENSO ao lado dele continua sendo da
+    /// ferramenta — e é posto de lado para a base avançar, exatamente como
+    /// numa árvore só de censo. Antes, a leitura `Holds` descartava os caminhos
+    /// do censo, o fast-forward abortava neles e toda escrita da sessão era
+    /// negada prescrevendo um `git pull` que abortava do mesmo jeito.
+    #[test]
+    fn a_holds_tree_on_a_protected_base_sets_its_census_aside_and_advances() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let (ahead, origins_census) = protected_main_behind_origin(root);
+        let config = ProjectConfig::load(root);
+        remine(&model_of(root));
+        std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
+        let CheckoutWork::Holds { theirs, census } = checkout_work(root) else {
+            panic!("precondição: trabalho do operador E censo");
+        };
+        assert_eq!(theirs, vec!["theirs.txt".to_string()]);
+        assert!(census.iter().any(|p| p.ends_with("grain.model.json")), "{census:?}");
+
+        let settled = settle_cut(root, Some("main"), "feature/first", Some("main"), &config);
+        assert!(
+            !matches!(settled, CensusSettlement::Refuse(_)),
+            "o censo ao lado do trabalho deles não prende a base: {settled:?}",
+        );
+        assert!(
+            git_out(root, &["rev-list", "main"]).expect("rev-list").contains(&ahead),
+            "a base avançou",
+        );
+        assert_eq!(std::fs::read_to_string(model_of(root)).unwrap(), origins_census);
+        assert_eq!(
+            std::fs::read_to_string(root.join("theirs.txt")).unwrap(),
+            "mine, not yours\n",
+            "e o arquivo deles não foi tocado",
+        );
+    }
+
+    /// …e quando é o arquivo DELES que o avanço sobrescreveria, a recusa nomeia
+    /// esse arquivo e prescreve o stash — não um `git pull` que falha nele do
+    /// mesmo jeito — e não toca em nada: nem o censo é posto de lado.
+    #[test]
+    fn their_file_in_the_way_of_the_advance_is_named_and_the_stash_prescribed() {
+        use crate::commands::event::work_branch::RefusalCause;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let (ahead, _) = protected_main_behind_origin(root);
+        // O origin também tocou `f.txt` (em cima do commit à frente; a máquina
+        // B volta dois)…
+        git(root, &["reset", "-q", "--hard", &ahead]);
+        std::fs::write(root.join("f.txt"), "theirs on origin").unwrap();
+        git(root, &["commit", "-q", "-am", "f on origin"]);
+        git(root, &["push", "-q", "origin", "main"]);
+        git(root, &["reset", "-q", "--hard", "HEAD~2"]);
+        // …que o operador editou aqui, sem commitar.
+        std::fs::write(root.join("f.txt"), "edited here").unwrap();
+        remine(&model_of(root));
+        let config = ProjectConfig::load(root);
+        let dirty_before = porcelain(root);
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let settled = settle_cut(root, Some("main"), "feature/first", Some("main"), &config);
+        let CensusSettlement::Refuse(busy) = settled else {
+            panic!("o arquivo deles no caminho recusa: {settled:?}");
+        };
+        let RefusalCause::BaseBlockedByWork { base, paths } = &busy.cause else {
+            panic!("a causa nomeia o trabalho deles: {:?}", busy.cause);
+        };
+        assert_eq!(base, "main");
+        assert_eq!(paths, &vec!["f.txt".to_string()], "só o arquivo no caminho, não todo o sujo");
+        let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
+        assert!(reason.contains("f.txt"), "a frase nomeia o arquivo: {reason}");
+        assert!(reason.contains("stash"), "e prescreve o stash: {reason}");
+        assert!(
+            !git_out(root, &["rev-list", "main"]).expect("rev-list").contains(&ahead),
+            "a base não avançou",
+        );
+        assert_eq!(git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"), head_before);
+        assert_eq!(porcelain(root), dirty_before, "nada foi tocado, nem o censo");
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).is_none(),
+            "e nada foi posto de lado",
+        );
     }
 
     /// O mine não escreve onde a gravação não poderia cair.
@@ -2216,7 +2508,7 @@ mod tests {
         else {
             panic!("o trabalho do operador ainda recusa o corte");
         };
-        let CheckoutWork::Holds(dirty) = &busy.work else {
+        let CheckoutWork::Holds { theirs: dirty, .. } = &busy.work else {
             panic!("os caminhos foram observados, veio {:?}", busy.work);
         };
         assert_eq!(

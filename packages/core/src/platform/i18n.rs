@@ -694,6 +694,28 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              {base}` while on it; if it has diverged, resolve that first) and try again."
         }
 
+        // The base trails its remote, the advance IS a fast-forward, and the
+        // only thing in its way is the OPERATOR's uncommitted work in files
+        // origin also changed. The census beside it is the tool's and is set
+        // aside on its own; their files are named, and the remedy is the stash
+        // that unblocks the advance — a `git pull` would fail on the very same
+        // files. `{base}`/`{paths}`/`{more}` are interpolated by
+        // `work_branch::BusyCheckout::reason`.
+        ("workbranch.busy.base_blocked", Locale::PtBr) => {
+            "A base '{base}' está atrás de origin/{base}, e avançá-la sobrescreveria trabalho \
+             NÃO commitado seu em: {paths}{more}. Nada foi cortado nem gravado, e nada foi \
+             tocado. Guarde esse trabalho (`git stash push -- <caminhos>`), coloque '{base}' em \
+             dia (`git pull --ff-only origin {base}`), traga-o de volta (`git stash pop`) e \
+             tente de novo."
+        }
+        ("workbranch.busy.base_blocked", Locale::EnUs) => {
+            "The base '{base}' is behind origin/{base}, and advancing it would overwrite \
+             UNCOMMITTED work of yours in: {paths}{more}. Nothing was cut, nothing recorded, \
+             and nothing touched. Stash that work (`git stash push -- <paths>`), bring '{base}' \
+             up to date (`git pull --ff-only origin {base}`), take it back (`git stash pop`) \
+             and try again."
+        }
+
         // Work-branch BASE UNKNOWN — an emergency unit whose base nothing ever
         // recorded, in a project declaring several it could have been cut from.
         // Nothing is cut, and the operator is told: the harness used to take the

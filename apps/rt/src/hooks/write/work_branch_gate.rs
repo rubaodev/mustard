@@ -473,6 +473,12 @@ impl Check for WorkBranchGate {
         //     their ORDER in agreement with the two other doors is what failed
         //     five times. The one call below performs them, in the one order,
         //     and answers what this gate should do.
+        //
+        //     The root handed over is the LOCAL tree — the edited file's own
+        //     directory, which may sit several levels below the toplevel. The
+        //     settlement resolves the repository's toplevel from it itself;
+        //     this door does not, because a door choosing the root is how the
+        //     recording once ran with pathspecs that matched nothing.
         let base_hint = resolved_base.as_deref().ok();
         match settle(
             Path::new(&local),
@@ -1062,6 +1068,71 @@ mod tests {
         assert_eq!(
             head_sha, ahead_sha,
             "the work branch is based on the fast-forwarded dev (latest origin commit)",
+        );
+    }
+
+    /// The census settlement lands on the BASE whatever directory the edit is
+    /// in. This door hands the settlement the edited file's directory (the
+    /// local tree), never the toplevel; the settlement resolves the toplevel
+    /// itself. Before it did, an edit three directories deep made every
+    /// pathspec inside the settlement miss (they are CWD-relative, while the
+    /// paths git reported were toplevel-relative): the recording answered
+    /// "nothing to record" and the dirty census rode into the unit's branch.
+    #[test]
+    fn a_deep_edit_still_records_the_census_on_the_base() {
+        use crate::commands::event::base_gate::CENSUS_COMMIT_SUBJECT;
+        use crate::commands::event::work_branch::{checkout_work, CheckoutWork};
+        use crate::commands::scan::default_model_path;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_str().unwrap();
+        // Flow only, nothing protected: a protected base would turn this into
+        // the census-on-protected-base refusal, which is another row.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        init_repo_on(root, "dev");
+        let model = default_model_path(root);
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
+        std::fs::write(model.with_file_name("grain.dictionary.json"), "{\"terms\":[]}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "track the census"]);
+        // The census re-mined since, dirty and the tool's.
+        std::fs::write(&model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "precondition: only the census is dirty",
+        );
+
+        // The first edit of the unit, THREE directories below the toplevel.
+        let deep = root.join("apps").join("rt").join("src");
+        std::fs::create_dir_all(&deep).unwrap();
+        let sid = "sess-deep-edit";
+        context::set_pending_branch(root_s, sid, "dev_deep", None);
+        let (input, ctx) =
+            pre_edit_input_for(root_s, sid, deep.join("lib.rs").to_str().unwrap());
+        let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
+        assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
+        assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_deep"));
+
+        let subject = Command::new("git")
+            .args(["log", "-1", "--format=%s", "dev"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&subject.stdout).trim(),
+            CENSUS_COMMIT_SUBJECT,
+            "the census landed on the base, not in the unit",
+        );
+        assert_eq!(
+            checkout_work(root),
+            CheckoutWork::ProvenClean,
+            "and nothing of it rode into the new branch",
         );
     }
 

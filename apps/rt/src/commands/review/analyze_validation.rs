@@ -1386,12 +1386,18 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
         // existe ali — ver [`test_runner_has_selector`].
         // Excludes the trailing safety AC, `<…>` skeletons, and ids already
         // flagged weak (a tautology's fix is replacement, not a Control line).
+        //
+        // A `Control:` still carrying the scaffold placeholder counts as NOT
+        // declared — the same reading `ac_negative_check::take_control` gives
+        // it (`NotAttempted`) and `ac-amend` gives it (not a declared
+        // control). The lint and the gate promise the same criteria; a lint
+        // silent on exactly the control the gate refuses breaks that promise.
         let no_control: Vec<String> = ac_items
             .iter()
             .enumerate()
             .filter(|(i, item)| {
                 *i != last
-                    && item.control.is_none()
+                    && item.control.as_deref().is_none_or(qa_run::is_skeleton)
                     && !qa_run::is_skeleton(&item.command)
                     && test_runner_has_selector(&item.command)
                     && !weak.contains(&item.id)
@@ -2063,6 +2069,27 @@ mod tests {
             !issues2.iter().any(|i| i["type"] == json!("test-ac-no-control")),
             "um controle declarado limpa o aviso: {issues2:?}"
         );
+    }
+
+    /// V6d e o portão leem o MESMO critério: um `Control:` que ainda carrega o
+    /// marcador do scaffold (`<command>`) não é um controle declarado — a prova
+    /// negativa o recusa como `NotAttempted`, e o lint precisa avisar sobre
+    /// exatamente esse critério, não calar por haver "alguma coisa" na linha.
+    #[test]
+    fn a_skeleton_control_is_no_control_for_the_lint_either() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n\n## Acceptance Criteria\n\
+                    - **AC-1** — the new parser case passes.\n  Command: `cargo test -p mustard-rt my_new_case`\n  Expect: `test result: ok`\n  Control: `<command>`\n\
+                    - **AC-2** — build green.\n  Command: `cargo build`\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(dir.path(), &path, body);
+        let warn = issues
+            .iter()
+            .find(|i| i["type"] == json!("test-ac-no-control"))
+            .unwrap_or_else(|| panic!("expected test-ac-no-control WARN: {issues:?}"));
+        let msg = warn["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("AC-1"), "o controle-esqueleto é nomeado como ausente: {msg}");
     }
 
     /// A mensagem de `missing-file` procura o nome-base sob outros prefixos: o
