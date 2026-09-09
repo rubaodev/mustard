@@ -118,11 +118,20 @@ pub(crate) fn read_spec_lang(spec_path: &Path) -> String {
 /// `## Causa raiz` / `## Plano`. When the structured section is missing or has
 /// no body, fall back to [`build_task_fallback`] so the dispatched agent still
 /// receives a non-empty TASK block (root cause + plan, or — when those are
-/// absent too — the spec's Context + Acceptance Criteria sections under an
-/// origin header, plus a read-the-spec cue) instead of a blank one. Full specs
+/// absent too — a POINTER at the `## WHY` / `## ACCEPTANCE` sections this prompt
+/// already carries, plus a read-the-spec cue) instead of a blank one. Full specs
 /// are unaffected: a present, non-empty `## Tasks` section is always preferred
 /// and returned byte-identical.
-pub(crate) fn read_task_steps(spec_path: &Path) -> String {
+/// `why_block` e `acceptance_block` são os corpos JÁ COMPOSTOS das duas seções
+/// que este prompt vai carregar ([`build_why_block`] e [`read_wave_acceptance`],
+/// vazios quando a seção colapsa). Eles entram porque o tier 2 do fallback é um
+/// PONTEIRO, e um ponteiro só pode ser escrito a partir do que está mesmo no
+/// prompt — ver [`task_fallback_pointer`].
+pub(crate) fn read_task_steps(
+    spec_path: &Path,
+    why_block: &str,
+    acceptance_block: &str,
+) -> String {
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
     if text.is_empty() {
         return String::new();
@@ -131,7 +140,7 @@ pub(crate) fn read_task_steps(spec_path: &Path) -> String {
     if !structured.is_empty() {
         return structured;
     }
-    build_task_fallback(&text, spec_path)
+    build_task_fallback(&text, spec_path, why_block, acceptance_block)
 }
 
 /// Extract the `## Tasks` / `## Tarefas` / `## Checklist` section body (heading
@@ -312,13 +321,22 @@ fn demote_heading(block: &str) -> String {
 ///    Apontar para uma seção que não está no prompt é pior que não apontar: o
 ///    agente vai procurar e não acha.
 ///
-/// A pergunta é feita ao MESMO texto que este fallback já tem em mãos, e é a
-/// mesma que os dois blocos fazem — no render de nível-spec, que é onde este
-/// tier dispara, os três recortes saem do mesmo `spec.md`.
+/// A pergunta NÃO é feita ao texto que este fallback tem em mãos: é feita aos
+/// BLOCOS que o compositor já montou, e é por isso que eles descem até aqui.
+/// Perguntar ao texto local funcionava enquanto os três recortes saíam do mesmo
+/// arquivo — o render de nível-spec —, e mentia no render de ONDA: o `## WHY` é
+/// recortado do spec do PAI e este texto é o da onda, então uma onda sem
+/// `## Contexto` próprio, cujo pai tem um, recebia o `## WHY` renderizado e,
+/// logo abaixo dele, a frase dizendo que o prompt não carrega narrativa nenhuma.
 ///
 /// Vazio só quando não há nem narrativa nem régua para apontar: aí não existe
 /// ponteiro honesto a dar, e o TASK em branco de sempre é a resposta.
-fn build_task_fallback(text: &str, spec_path: &Path) -> String {
+fn build_task_fallback(
+    text: &str,
+    spec_path: &Path,
+    why_block: &str,
+    acceptance_block: &str,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(body) = cut_section_by_display(text, &["Root cause", "Causa raiz"]) {
         parts.push(body);
@@ -328,8 +346,10 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
     }
     if parts.is_empty() {
         // O ponteiro, não a cópia: a narrativa já viaja no `## WHY` e os
-        // critérios no `## ACCEPTANCE`, recortados deste mesmo arquivo.
-        if let Some(pointer) = task_fallback_pointer(text) {
+        // critérios no `## ACCEPTANCE`.
+        if let Some(pointer) =
+            task_fallback_pointer(!why_block.trim().is_empty(), !acceptance_block.trim().is_empty())
+        {
             parts.push(pointer);
         }
     }
@@ -345,35 +365,41 @@ fn build_task_fallback(text: &str, spec_path: &Path) -> String {
 
 /// O ponteiro do tier 2, nomeando SÓ as seções que o prompt vai mesmo carregar.
 ///
-/// As duas perguntas são as MESMAS que os dois blocos fazem do mesmo texto:
-/// `## WHY` existe quando há `## Contexto` OU `## Não-Objetivos`
-/// ([`build_why_block`]); `## ACCEPTANCE` existe quando há
-/// `## Critérios de Aceitação` ([`read_wave_acceptance`]). Sem nenhuma das duas
-/// não há para onde apontar, e o retorno é `None` — o TASK em branco de sempre.
+/// `why` e `ruler` NÃO são medidos aqui, e é a correção inteira: eles são a
+/// presença dos blocos que o compositor montou ([`build_why_block`] e
+/// [`read_wave_acceptance`]), passados por quem os montou. Enquanto esta função
+/// os re-media do texto local, ela media o arquivo ERRADO num render de onda — o
+/// `## WHY` sai do spec do PAI, e a onda cujo `spec.md` não tem `## Contexto`
+/// recebia a seção renderizada com a frase "this prompt does not say why the
+/// work exists" logo abaixo dela. Uma pergunta que se responde do mesmo lugar de
+/// onde o texto é recortado não tem como discordar dele.
+///
+/// Sem nenhuma das duas não há para onde apontar, e o retorno é `None` — o TASK
+/// em branco de sempre.
 ///
 /// Pura, total; EN pela política de prompt de agente, como todo o resto do
 /// bloco.
-fn task_fallback_pointer(text: &str) -> Option<String> {
-    let why = cut_section_by_key(text, "context").is_some()
-        || cut_section_by_key(text, "non-goals").is_some();
-    let ruler = cut_section_by_key(text, "acceptance-criteria").is_some();
+fn task_fallback_pointer(why: bool, ruler: bool) -> Option<String> {
     let head = "> TASK fallback: the spec has no `## Tasks` section.";
     let tail = "Derive the steps from it.";
+    // As frases falam do PROMPT, nunca de "this same spec": num render de onda o
+    // `## WHY` vem do spec do PAI e o `## ACCEPTANCE` do da onda, então a
+    // procedência que a frase antiga afirmava era falsa metade das vezes. O que o
+    // agente precisa saber é onde a seção está — e ela está aqui.
     Some(match (why, ruler) {
         (true, true) => format!(
             "{head} The story of WHY this work exists is in `## WHY` above, and the criteria \
-             this work is judged by are in `## ACCEPTANCE` — both cut from this same spec. \
+             this work is judged by are in `## ACCEPTANCE` — both already in this prompt. \
              Derive the steps from them."
         ),
         (true, false) => format!(
-            "{head} The story of WHY this work exists is in `## WHY` above, cut from this same \
-             spec. The spec declares no acceptance criteria, so nothing in this prompt states \
-             how the work will be judged. {tail}"
+            "{head} The story of WHY this work exists is in `## WHY` above. Nothing in this \
+             prompt states how the work will be judged — no acceptance criteria reached it. \
+             {tail}"
         ),
         (false, true) => format!(
-            "{head} The criteria this work is judged by are in `## ACCEPTANCE` above, cut from \
-             this same spec. The spec carries no narrative section, so this prompt does not say \
-             why the work exists. {tail}"
+            "{head} The criteria this work is judged by are in `## ACCEPTANCE` above. Nothing \
+             in this prompt says why the work exists — no narrative section reached it. {tail}"
         ),
         (false, false) => return None,
     })
@@ -935,6 +961,14 @@ pub(crate) fn collapse_empty_sections(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// O que o COMPOSITOR faz num render de nível-spec: os dois blocos são
+    /// montados primeiro, do mesmo arquivo, e o TASK é lido com eles em mãos —
+    /// o ponteiro do tier 2 nunca se pergunta nada por conta própria. Ver a
+    /// ordem em `render::render_prompt_at`.
+    fn task_steps_of(path: &Path) -> String {
+        read_task_steps(path, &build_why_block(path), &read_wave_acceptance(path))
+    }
+
     use super::*;
     use tempfile::tempdir;
 
@@ -1230,7 +1264,7 @@ mod tests {
             "# Title\n## Resumo\nx\n## Tarefas\n- [ ] do a\n- [ ] do b\n## Deps\nz\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("Tarefas"));
         assert!(steps.contains("do a"));
         assert!(!steps.contains("Deps"));
@@ -1250,7 +1284,7 @@ mod tests {
              - fix the lock ordering\n## Critérios de Aceitação\n- repro exits 0\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(!steps.is_empty(), "TASK block must not be empty for a lean spec");
         assert!(steps.contains("race on shutdown"), "root cause missing: {steps}");
         assert!(steps.contains("fix the lock ordering"), "plan missing: {steps}");
@@ -1279,7 +1313,7 @@ mod tests {
              ## Critérios de Aceitação\n- **AC-1** — repro query returns hits\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(!steps.is_empty(), "TASK must not be empty for a TF spec");
         assert!(steps.contains("TASK fallback"), "origin header missing: {steps}");
         assert!(steps.contains("`## WHY`"), "the pointer must name the story: {steps}");
@@ -1304,7 +1338,7 @@ mod tests {
         // ser vazio — o TASK em branco de sempre, nunca um ponteiro para o nada.
         let bare = dir.path().join("bare.md");
         std::fs::write(&bare, "# TF\n## Limites\nIN: nada\n").unwrap();
-        assert!(read_task_steps(&bare).is_empty(), "{:?}", read_task_steps(&bare));
+        assert!(task_steps_of(&bare).is_empty(), "{:?}", task_steps_of(&bare));
     }
 
     /// A REGRESSÃO que este teste tranca: uma spec que declara critérios sob um
@@ -1325,7 +1359,7 @@ mod tests {
              ## Critérios de Aceitação\n- **AC-1** — repro query returns hits\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(!steps.is_empty(), "a spec ficou indespachável: TASK vazio");
         assert!(steps.contains("`## ACCEPTANCE`"), "a régua tem de ser nomeada: {steps}");
         assert!(
@@ -1347,7 +1381,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("spec.md");
         std::fs::write(&path, "# TF\n## Contexto\na história inteira\n").unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("`## WHY`"), "a história tem de ser nomeada: {steps}");
         assert!(
             !steps.contains("`## ACCEPTANCE`"),
@@ -1359,7 +1393,7 @@ mod tests {
         // que o [`build_why_block`] usa — as duas seções, não só a primeira.
         let ng = dir.path().join("ng.md");
         std::fs::write(&ng, "# TF\n## Não-Objetivos\n- não mexer no portão\n").unwrap();
-        let steps = read_task_steps(&ng);
+        let steps = task_steps_of(&ng);
         assert!(steps.contains("`## WHY`"), "o não-objetivo também é história: {steps}");
         assert!(!build_why_block(&ng).is_empty(), "e o bloco renderiza mesmo");
     }
@@ -1376,7 +1410,7 @@ mod tests {
              ## Acceptance Criteria\n- **AC-1** — cache invalidates on write\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         // O `## Context` em EN resolve pela mesma chave canônica — é ele que
         // arma o tier 2, mesmo agora que o tier 2 aponta em vez de copiar.
         assert!(steps.contains("TASK fallback"), "the EN heading must arm tier 2: {steps}");
@@ -1406,7 +1440,7 @@ mod tests {
              ## Critérios de Aceitação\n- **AC-1** — gate passes\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert_eq!(steps, "## Tasks\n- [ ] do the thing", "structured cut must be byte-identical");
         assert!(!steps.contains("TASK fallback"), "fallback header leaked: {steps}");
     }
@@ -1423,7 +1457,7 @@ mod tests {
              ## Plano\n- fix lock order\n## Critérios de Aceitação\n- repro exits 0\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("race on shutdown"));
         assert!(steps.contains("fix lock order"));
         assert!(!steps.contains("TASK fallback"), "tier-2 header leaked: {steps}");
@@ -1440,7 +1474,7 @@ mod tests {
             "# T\n## Causa raiz\nthe cause\n## Plano\nthe plan\n## Tasks\n- [ ] do the thing\n",
         )
         .unwrap();
-        let steps = read_task_steps(&path);
+        let steps = task_steps_of(&path);
         assert!(steps.contains("do the thing"));
         assert!(!steps.contains("Read the full spec at"), "fallback leaked: {steps}");
         assert!(!steps.contains("the cause"), "root cause leaked: {steps}");

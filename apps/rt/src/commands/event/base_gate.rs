@@ -328,6 +328,14 @@ pub(crate) fn refresh_census_if_stale(project: &Path) {
 /// `record_written_path` usa para saber que o índice não tem nada do operador
 /// para o commit varrer junto.
 ///
+/// A POSIÇÃO, ao contrário, NÃO é precondição desta função — é dos chamadores,
+/// e é obrigatória. Esta função grava na cabeça de qualquer branch em que a
+/// árvore esteja parada; o commit do censo pertence à BASE e a mais nada, e
+/// quem responde isso é
+/// [`crate::commands::event::work_branch::census_commit_belongs_here`], lido
+/// pelas três portas que chamam aqui. Um chamador novo que não o leia commita o
+/// censo dentro da branch de uma unidade.
+///
 /// Fail-open de ponta a ponta, e alto no stderr — nunca no stdout, que carrega
 /// a linha JSON que os portões comparam byte a byte.
 pub(crate) fn record_leftover_census(project: &Path) {
@@ -901,38 +909,133 @@ mod tests {
         .unwrap();
     }
 
-    /// Uma árvore suja SÓ com o censo não recusa o corte da próxima unidade — e
-    /// o portão fecha a conta ele mesmo, em vez de deixá-la para o operador.
+    /// AC-7 — a abertura ORDINÁRIA: o operador parado NA base, a árvore suja só
+    /// com o censo, e o corte da próxima unidade NÃO é recusado — o portão fecha
+    /// a conta ele mesmo, em vez de deixá-la para o operador.
     ///
     /// Era a ferramenta se barrando nas próprias saídas: a passagem de
     /// enriquecimento reescreve arquivos versionados que ninguém pediu ao
     /// operador, o corte seguinte os lia como trabalho dele e recusava,
     /// mandando commitar ou guardar a saída do próprio Mustard.
+    ///
+    /// O par inteiro, pela porta REAL (`cut_pending_work_branch`): a decisão
+    /// libera E a gravação acontece. Medir só a decisão foi como a metade
+    /// anterior desta correção ficou verde enquanto o censo viajava para dentro
+    /// da branch nova — as duas metades têm de ser medidas na mesma corrida.
     #[test]
     fn a_census_only_dirty_tree_does_not_refuse_the_cut() {
-        use crate::commands::event::work_branch::busy_checkout;
+        use crate::commands::event::work_branch::{busy_checkout, cut_pending_work_branch, CutOutcome};
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        // Escrito ANTES do `git init` da fixture, para entrar no commit inicial:
+        // um `mustard.json` solto seria trabalho do operador na árvore.
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        // A árvore fica em `dev`, que é a base de onde `dev_second` sai.
         let model = repo_tracking_the_census(root);
-        git(root, &["checkout", "-b", "dev_first"]);
 
         remine(&model);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
 
         assert_eq!(
-            busy_checkout(root, Some("dev_first"), "dev_second", &flow_config()),
+            busy_checkout(root, Some("dev"), "dev_second", Some("dev"), &flow_config()),
             None,
             "nada disso é trabalho de ninguém — recusar aqui é a ferramenta se \
              barrando na própria saída",
         );
 
-        record_leftover_census(root);
+        // E a porta real: o corte acontece de verdade, e a árvore volta limpa
+        // porque a gravação mora no mesmo caminho que a decisão liberou.
+        let sid = "sess-census-only-open";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        let outcome = cut_pending_work_branch(root, sid);
+        assert_eq!(
+            outcome,
+            CutOutcome::Cut("dev_second".to_string()),
+            "a abertura ordinária não é recusada: {outcome:?}",
+        );
         assert_eq!(
             porcelain(root),
             "",
             "o portão gravou o que ele mesmo escreveu, sem commit manual no meio",
+        );
+    }
+
+    /// A REGRESSÃO que este teste tranca, e o PAR que as quatro rodadas
+    /// anteriores nunca mediram junto: fora da base, uma árvore suja só com o
+    /// censo NÃO libera o corte.
+    ///
+    /// A decisão liberava `CensusOnly` em QUALQUER posição, dizendo no próprio
+    /// comentário que "o portão base já grava esses arquivos antes do corte"; a
+    /// gravação, corrigida à parte, passou a declinar fora da base. As duas
+    /// metades verdes, o par quebrado: parado em `feature/outra-unidade` o corte
+    /// era liberado, nada era gravado, e o `git checkout -b` levava
+    /// `.claude/scan-map.md` e os moldes gerados para dentro da branch da unidade
+    /// nova — pior do que o código que esta unidade substituiu, que ali RECUSAVA.
+    ///
+    /// Medido pela porta REAL, com as duas asserções que a quebra exige: o censo
+    /// não viajou, e o operador foi informado do quê.
+    #[test]
+    fn an_off_base_census_refuses_the_cut_instead_of_riding_into_the_new_branch() {
+        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+        // A posição do defeito: a branch de OUTRA unidade. Não é protegida, não
+        // é a base do corte, e não é o alvo.
+        git(root, &["checkout", "-b", "feature/outra-unidade"]);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+
+        let sid = "sess-census-off-base";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        let dirty_before = porcelain(root);
+        let outcome = cut_pending_work_branch(root, sid);
+
+        let CutOutcome::Refused(busy) = outcome else {
+            panic!("fora da base o censo não tem onde ser gravado, então o corte recusa: {outcome:?}");
+        };
+        assert_eq!(busy.current, "feature/outra-unidade");
+        assert_eq!(busy.target, "dev_second");
+
+        // 1. O censo NÃO viajou: nenhuma branch nova, nenhum commit, nada movido.
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "dev_second"]).is_none(),
+            "um corte recusado não cria branch — e é dentro dela que o censo entraria",
+        );
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "e nada foi commitado na cabeça da outra unidade",
+        );
+        assert_eq!(porcelain(root), dirty_before, "a árvore fica exatamente como estava");
+
+        // 2. E o operador foi informado do QUÊ: a frase nomeia as duas branches e
+        //    os caminhos que estão no caminho do corte.
+        let reason = busy.reason(mustard_core::platform::i18n::Locale::EnUs);
+        assert!(
+            reason.contains("feature/outra-unidade") && reason.contains("dev_second"),
+            "a recusa nomeia de onde e para onde: {reason}",
+        );
+        assert!(
+            reason.contains("scan-map.md"),
+            "e NOMEIA o que precisa sair da frente, em vez de dizer que não pôde medir: {reason}",
         );
     }
 
@@ -1049,6 +1152,11 @@ mod tests {
             porcelain(root),
             dirty_before,
             "a árvore fica exatamente como estava, para o corte que vier de fato",
+        );
+        assert!(
+            git_out(root, &["rev-parse", "--verify", "hotfix/urgente"]).is_none(),
+            "e nenhuma branch foi criada — é esta metade que autoriza `busy_checkout` a \
+             não falar do censo quando a base não é um fato",
         );
     }
 
@@ -1180,6 +1288,66 @@ mod tests {
         );
     }
 
+    /// A REGRESSÃO que este teste tranca, na PORTA AO LADO: o `emit-pipeline`
+    /// gravava o censo em qualquer posição.
+    ///
+    /// `evaluate` devolve `Open(current)` para QUALQUER nome de branch — a
+    /// checagem de pertencimento foi removida de propósito —, então a porta que
+    /// ABRE a unidade commitava `.claude/scan-map.md` e os moldes gerados na
+    /// cabeça de `feature/outra-unidade`, sob o assunto do censo: exatamente a
+    /// mis-atribuição que a porta de CORTE já recusava. Uma condição posicional
+    /// só, lida pelas duas ([`crate::commands::event::work_branch::census_commit_belongs_here`]).
+    ///
+    /// As duas metades na mesma corrida: fora da base a cabeça não se mexe, e
+    /// PARADO na base a gravação continua acontecendo.
+    #[test]
+    fn the_open_door_records_the_census_only_where_it_belongs() {
+        use crate::commands::event::emit_pipeline::enforce_base_gate_at;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+        // A posição do defeito: a branch de OUTRA unidade.
+        git(root, &["checkout", "-b", "feature/outra-unidade"]);
+
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        let dirty_before = porcelain(root);
+
+        // A porta real, com a base que esta abertura cortaria (`dev`).
+        let _ = enforce_base_gate_at(root, None, Some("dev"));
+        assert_eq!(
+            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
+            head_before,
+            "a cabeça da outra unidade não recebe o commit do censo",
+        );
+        assert_eq!(
+            porcelain(root),
+            dirty_before,
+            "e nada foi varrido para dentro de um commit dela",
+        );
+
+        // A outra metade, que não pode ser apertada junto: PARADO na base, a
+        // porta explícita grava e a árvore volta limpa.
+        git(root, &["checkout", "dev"]);
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a fixture precisa da árvore suja de novo");
+        let _ = enforce_base_gate_at(root, None, Some("dev"));
+        assert_eq!(
+            porcelain(root),
+            "",
+            "parado na base, a porta que abre a unidade grava o que a ferramenta escreveu",
+        );
+    }
+
     /// Um molde ADOTADO (`source: manual`) é escrita do OPERADOR, e o caminho
     /// dele é igualzinho ao de um molde gerado — o frontmatter é o que separa.
     ///
@@ -1214,7 +1382,7 @@ mod tests {
         .unwrap();
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
-        let busy = busy_checkout(root, Some("dev_first"), "dev_second", &flow_config())
+        let busy = busy_checkout(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
             .expect("a edição à mão do operador recusa o corte");
         let CheckoutWork::Holds(dirty) = &busy.work else {
             panic!("os caminhos foram observados, veio {:?}", busy.work);
@@ -1289,7 +1457,7 @@ mod tests {
         std::fs::write(root.join("theirs.txt"), "mine, not yours\n").unwrap();
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
-        let busy = busy_checkout(root, Some("dev_first"), "dev_second", &flow_config())
+        let busy = busy_checkout(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
             .expect("o trabalho do operador ainda recusa o corte");
         let CheckoutWork::Holds(dirty) = &busy.work else {
             panic!("os caminhos foram observados, veio {:?}", busy.work);

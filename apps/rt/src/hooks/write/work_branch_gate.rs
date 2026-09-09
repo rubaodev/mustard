@@ -397,10 +397,9 @@ impl Check for WorkBranchGate {
         // below) pair otherwise.
         let nested = nested_work_target_base(&vcs, &project, &local, &target, &config);
         let in_submodule = nested.is_some();
-        // The NAME is resolved here and the BASE is not: the base is only needed
-        // by a cut that actually happens, and asking for it earlier would make a
-        // session ALREADY sitting on its own branch (the fast path below) depend
-        // on an answer that changes nothing for it.
+        // The NAME is resolved here and the BASE is not: it waits for step 2.4,
+        // AFTER the fast path below, so a session ALREADY sitting on its own
+        // branch never depends on an answer that changes nothing for it.
         let (target, nested_base) = match nested {
             Some((target, base)) => (target, Some(base)),
             None => (target.clone(), None),
@@ -411,6 +410,16 @@ impl Check for WorkBranchGate {
             context::clear_pending_branch(&project, &sid);
             return Ok(Verdict::Allow);
         }
+
+        // 2.4 WHERE from, resolved ONCE — read by the refusal at 2.5, by the
+        //     census recording at 3.4 and by the checkout at 4, so the three
+        //     cannot disagree about which base this cut has. It returns nothing
+        //     by itself, so the ORDER of the refusals below is unchanged: a busy
+        //     checkout is still refused before an unknown base is reported.
+        let resolved_base: Result<String, Vec<String>> = match nested_base {
+            Some(base) => Ok(base),
+            None => recorded_or_derived_base(&project, &sid, &target, &config),
+        };
 
         // 2.5 The MAIN checkout is ALREADY HOLDING another unit, and that unit
         //     has not committed. Taking it is the defect this step exists to
@@ -453,18 +462,25 @@ impl Check for WorkBranchGate {
         //     mora no passo 3.4, depois de a base estar resolvida, que é o
         //     primeiro ponto em que o corte vai mesmo acontecer. Ver
         //     `record_census_before_cut`.
+        //
+        //     A base entra na decisão como DICA porque a pergunta sobre o censo
+        //     é posicional: só parado NA base ele tem onde ser gravado, e fora
+        //     dela viajaria para dentro da branch nova. Uma regra só, lida
+        //     aqui e no passo 3.4 — ver `census_commit_belongs_here`.
+        let base_hint = resolved_base.as_deref().ok();
         if !in_submodule {
             if let Some(busy) =
-                busy_checkout(Path::new(&local), current.as_deref(), &target, &config)
+                busy_checkout(Path::new(&local), current.as_deref(), &target, base_hint, &config)
             {
                 return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) });
             }
         }
 
-        // 2.9 WHERE from — asked now, because now a cut is really going to
-        //     happen. The SAME base resolution `spec-draft`'s cut takes: the
-        //     operator's recorded answer when the derivation cannot reproduce
-        //     it, else the base the unit's kind implies. Two doors, one branch.
+        // 2.9 WHERE from — the answer resolved at 2.4 becomes REQUIRED here,
+        //     because now a cut is really going to happen. The SAME base
+        //     resolution `spec-draft`'s cut takes: the operator's recorded
+        //     answer when the derivation cannot reproduce it, else the base the
+        //     unit's kind implies. Two doors, one branch.
         //
         //     When NOTHING says which base this emergency came from and the flow
         //     declares several it could have, there is no honest cut to make.
@@ -475,22 +491,19 @@ impl Check for WorkBranchGate {
         //     Say it where it IS read, and cut nothing. The marker is KEPT: the
         //     unit was never started, so nothing is consumed and the attempt
         //     that follows an explicit `--base` still has its intent.
-        let base = match nested_base {
-            Some(base) => base,
-            None => match recorded_or_derived_base(&project, &sid, &target, &config) {
-                Ok(base) => base,
-                Err(candidates) => {
-                    let message = translate("workbranch.base.unknown", config.i18n().lang)
-                        .replace("{target}", &target)
-                        .replace("{candidates}", &candidates.join(", "));
-                    return Ok(if on_protected {
-                        // Staying here would land the edit on the base itself.
-                        Verdict::Deny { reason: message }
-                    } else {
-                        Verdict::Warn { message }
-                    });
-                }
-            },
+        let base = match resolved_base {
+            Ok(base) => base,
+            Err(candidates) => {
+                let message = translate("workbranch.base.unknown", config.i18n().lang)
+                    .replace("{target}", &target)
+                    .replace("{candidates}", &candidates.join(", "));
+                return Ok(if on_protected {
+                    // Staying here would land the edit on the base itself.
+                    Verdict::Deny { reason: message }
+                } else {
+                    Verdict::Warn { message }
+                });
+            }
         };
 
         // 3.4 A base é um FATO agora, então o corte vai mesmo acontecer: grava

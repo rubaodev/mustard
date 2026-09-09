@@ -587,11 +587,18 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
 
         // Work-branch REFUSAL — the checkout holds another unit's branch with
-        // uncommitted work, so cutting the second unit here would carry that
-        // work off. Said by BOTH doors (the write gate and the `spec-draft`
+        // uncommitted files, so cutting the second unit here would carry them
+        // off. Said by BOTH doors (the write gate and the `spec-draft`
         // cut), so it lives in the catalogue rather than at either surface.
         // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by
         // `work_branch::BusyCheckout::reason`.
+        //
+        // `{paths}` names whatever WOULD ride along, which is the operator's own
+        // work in the ordinary case and, off the integration base, can be the
+        // census the tool itself wrote: there is no census commit to be made
+        // anywhere but the base, so those files are in the way exactly like any
+        // other. The remedy is the same one either way, which is why one
+        // sentence covers both.
         ("workbranch.busy.refusal", Locale::PtBr) => {
             "O checkout está na branch '{current}', de OUTRA unidade de trabalho, com trabalho \
              NÃO commitado em: {paths}{more}. Criar '{target}' aqui levaria essas edições junto, \

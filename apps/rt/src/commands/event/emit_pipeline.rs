@@ -294,7 +294,7 @@ pub fn run(opts: EmitPipelineOpts) {
     let work_kind = resolve_work_kind_or_exit(&opts, &payload);
     let kind_base =
         resolve_kind_base_or_exit(&opts, work_kind.as_ref().map(|(kind, _)| kind));
-    let overlapping = enforce_base_gate_or_exit(&opts);
+    let overlapping = enforce_base_gate_or_exit(&opts, kind_base.as_deref());
     enforce_qa_gate_or_exit(&opts);
 
     // --- EMIT the primary event (+ any legacy→new alias twin) -----------------
@@ -497,12 +497,31 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 /// relatadas em `overlappingSpecs`, nunca bloqueantes (ver
 /// [`super::base_gate::overlapping_active_specs`]). Vazio para todo outro
 /// `--kind`, que não abre unidade nenhuma.
-fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) -> Vec<String> {
+///
+/// `kind_base` é a base que esta abertura vai cortar de
+/// ([`resolve_kind_base_or_exit`]) — `Some` exatamente quando `--kind` é
+/// `pipeline.kind`. Ela entra porque a gravação do censo é POSICIONAL: ver
+/// [`super::work_branch::census_commit_belongs_here`].
+fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts, kind_base: Option<&str>) -> Vec<String> {
     if opts.kind != EVENT_PIPELINE_KIND {
         return Vec::new();
     }
     let project = project_dir();
-    let root = Path::new(&project);
+    enforce_base_gate_at(Path::new(&project), opts.intent.as_deref(), kind_base)
+}
+
+/// [`enforce_base_gate_or_exit`] com a raiz DADA em vez de descoberta no
+/// processo — o corpo inteiro da porta, para que o par "posição × gravação do
+/// censo" possa ser medido numa árvore de teste em vez de na do repositório.
+///
+/// `pub(super)` porque o par é medido de onde moram as fixtures do censo
+/// (`base_gate::tests`), ao lado das duas portas de corte que leem a MESMA
+/// condição posicional.
+pub(super) fn enforce_base_gate_at(
+    root: &Path,
+    intent: Option<&str>,
+    kind_base: Option<&str>,
+) -> Vec<String> {
     let config = mustard_core::ProjectConfig::load(root);
     match super::base_gate::evaluate(root, &config) {
         super::base_gate::BaseVerdict::Refuse(reason) => {
@@ -513,7 +532,7 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) -> Vec<String> {
         // either: a census refresh needs the clean-base premise it just failed
         // to establish.
         super::base_gate::BaseVerdict::Abstain => {}
-        super::base_gate::BaseVerdict::Open(_) => {
+        super::base_gate::BaseVerdict::Open(current) => {
             // A ORDEM: o mine PRIMEIRO, a gravação UMA vez, no fim.
             //
             // Era o contrário, e a árvore que carregasse resto de enriquecimento
@@ -528,7 +547,25 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) -> Vec<String> {
             // enriquecimento e o que o mine acabou de escrever — entra num
             // commit só, aqui.
             super::base_gate::refresh_census_if_stale(root);
-            super::base_gate::record_leftover_census(root);
+            // E a gravação é POSICIONAL, pela MESMA regra que as duas portas de
+            // corte leem — uma condição só, num lugar só.
+            //
+            // `evaluate` devolve `Open(current)` para QUALQUER nome de branch
+            // desde que ela não esteja atrás do remoto (a checagem de
+            // pertencimento foi removida de propósito), então sem esta pergunta
+            // um `emit-pipeline --kind pipeline.kind` disparado de
+            // `feature/outra-unidade` commitava o censo na cabeça DAQUELA
+            // unidade, sob o assunto do censo — a mis-atribuição que a porta de
+            // corte já recusa, aberta na porta ao lado.
+            if super::work_branch::census_commit_belongs_here(
+                root,
+                Some(&current),
+                kind_base,
+                &config,
+                super::work_branch::CensusDoor::Explicit,
+            ) {
+                super::base_gate::record_leftover_census(root);
+            }
             // The census refresh only re-mines the DETERMINISTIC half. The
             // agent-written half — Guards prose, `{role}-pattern` molds — is
             // measured here and reported on stderr, unconditionally: a gap born
@@ -539,8 +576,7 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts) -> Vec<String> {
     }
     // Roda para `Open` e para `Abstain` alike: a suspeita se lê nas specs em
     // disco, não no git, então uma abstenção do portão não tem por que calá-la.
-    opts.intent
-        .as_deref()
+    intent
         .map(|intent| super::base_gate::overlapping_active_specs(root, intent))
         .unwrap_or_default()
 }

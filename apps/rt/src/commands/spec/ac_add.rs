@@ -234,8 +234,14 @@ fn criterion_block(
 }
 
 /// Insert `id`'s criterion block into the `## Acceptance Criteria` section of
-/// one markdown document. `None` when the document declares no such section —
-/// which is how a wave artefact that carries no criteria is left alone.
+/// one markdown document. `None` when the document declares no such section.
+///
+/// Esse `None` NÃO é mais o que mantém um artefato de onda fora da adição — e
+/// enquanto foi, quebrou: desde que o `wave-scaffold` materializa a seção em
+/// toda onda que satisfaz algo, o `None` deixou de acontecer e o critério novo
+/// passou a entrar em todas elas. Quem decide o destino é [`write_targets`],
+/// pelo `satisfies` da onda; esta função só recusa um documento que não tem onde
+/// receber a linha.
 ///
 /// Among HOMONYMOUS sections (legacy drafts duplicated the heading) the one
 /// carrying criteria wins, mirroring [`spec_sections::section_block`]'s own
@@ -294,8 +300,62 @@ fn insert_criterion(
     Some(out.join("\n"))
 }
 
+/// Onde uma ADIÇÃO escreve o critério novo: o `spec.md` do pai e o
+/// `wave-plan.md` — a lista que o QA executa — mais o `spec.md` de cada onda que
+/// SATISFAZ o id, e só dela.
+///
+/// O conjunto era [`plan_artefacts`] inteiro, e isso deixou de ser verdade no
+/// momento em que o `wave-scaffold` passou a materializar `## Acceptance
+/// Criteria` no spec de cada onda. [`insert_criterion`] documenta que devolve
+/// `None` "quando o documento não declara a seção — que é como um artefato de
+/// onda que não carrega critérios fica de fora", e essa era a garantia inteira:
+/// agora TODA onda que satisfaz alguma coisa declara a seção, então o critério
+/// novo entrava nas quatro ondas de uma spec de quatro, sob a frase "estes
+/// critérios são o JUIZ desta onda", em ondas cujo `satisfies` nunca o nomeou —
+/// o ruído por onda que esta unidade existe para tirar, reintroduzido pela porta
+/// ao lado.
+///
+/// De quem é um critério, para uma onda JÁ materializada, está escrito no
+/// `## Acceptance Criteria` dela: é o recorte que o `wave-scaffold` fez pelo
+/// `satisfies` do plano ([`crate::commands::wave::wave_scaffold::satisfied_ids`])
+/// e é o mesmo texto que o prompt da onda lê de volta. Perguntar ao arquivo é
+/// perguntar a esse recorte, sem um segundo leitor de plano que pudesse
+/// discordar dele.
+///
+/// Para uma adição isso é, na prática, sempre vazio — o id é novo, e a recusa
+/// `duplicate_criterion` já barrou todo id que qualquer artefato declare.
+/// Escrito como PERGUNTA mesmo assim, porque é ela que responde por que está
+/// vazio, e porque uma re-materialização depois de o pai ganhar o critério passa
+/// a nomear a onda dona dele — e aí o lugar do critério é lá.
+fn write_targets(spec_dir: &Path, id: &str) -> Vec<PathBuf> {
+    plan_artefacts(spec_dir)
+        .into_iter()
+        .filter(|path| {
+            // Comparação com o diretório da spec, nunca com o prefixo do nome:
+            // uma spec chamada `wave-algo` tem o `spec.md` do PAI num diretório
+            // que começa por `wave-`.
+            let is_wave = path.parent().is_some_and(|p| p != spec_dir);
+            !is_wave || declares_criterion(path, id)
+        })
+        .collect()
+}
+
+/// `true` quando `path` já declara `id` — a leitura que responde tanto "esta
+/// onda satisfaz este critério?" ([`write_targets`]) quanto "este id já existe?"
+/// (a recusa `duplicate_criterion`), pelo mesmo parser, para as duas não
+/// discordarem sobre o que um artefato declara.
+fn declares_criterion(path: &Path, id: &str) -> bool {
+    mfs::read_to_string(path)
+        .map(|body| criteria_of(&body).iter().any(|item| item.id == id))
+        .unwrap_or(false)
+}
+
 /// Every PLAN artefact under a spec directory that can carry criterion lines:
 /// the root `spec.md` / `wave-plan.md` and each `wave-*/spec.md`.
+///
+/// Este é o conjunto que a recusa `duplicate_criterion` PERGUNTA — todo lugar
+/// onde um id poderia já estar. Onde a adição ESCREVE é um subconjunto dele:
+/// ver [`write_targets`].
 ///
 /// Named rather than walked. The amendment door walks every markdown two levels
 /// down because it only ever rewrites a line that is already there; an ADD
@@ -386,15 +446,12 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     // own door with their own rule. Routing it here would let a replacement skip
     // the supersession record entirely.
     //
-    // Every plan artefact is asked, not just the root: the write below lands the
-    // criterion in all of them, so a root-only check would insert a SECOND copy
-    // under an id a wave spec already declares — the duplicate the refusal
-    // exists to stop, in the one place nobody looks.
-    let carries_id = plan_artefacts(&spec_dir).into_iter().any(|path| {
-        mfs::read_to_string(&path)
-            .map(|body| criteria_of(&body).iter().any(|item| item.id == id))
-            .unwrap_or(false)
-    });
+    // Every plan artefact is ASKED, not just the root — a wider set than the one
+    // the write lands in ([`write_targets`]), and deliberately so: an id a wave
+    // already declares is an amendment no matter where it is declared, and a
+    // root-only check would admit a second copy of it under the same id.
+    let carries_id =
+        plan_artefacts(&spec_dir).into_iter().any(|path| declares_criterion(&path, &id));
     if carries_id {
         return AcAddReport::refused(
             opts,
@@ -489,8 +546,10 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     }
 
     // Accepted. From here on the writes happen; every one of them is re-read.
+    // ONDE elas caem é [`write_targets`], não todo artefato de plano: um
+    // critério novo não pertence à onda que não o satisfaz.
     let mut written: Vec<String> = Vec::new();
-    for path in plan_artefacts(&spec_dir) {
+    for path in write_targets(&spec_dir, &id) {
         let Ok(body) = mfs::read_to_string(&path) else {
             continue;
         };
@@ -794,15 +853,16 @@ mod tests {
             "sem controle o portão TEM de cobrar — senão este teste não mede nada: {without:?}",
         );
 
-        // Fim a fim, no disco: em TODO artefato de plano, que é o que o agente
-        // despachado e o portão leem.
+        // Fim a fim, no disco: no `spec.md` do pai e na lista que o QA executa —
+        // os dois artefatos que TODA adição toca. A onda fica de fora porque não
+        // satisfaz o id novo (ver `write_targets`).
         let dir = tempdir().unwrap();
         let spec_dir = seed(dir.path(), "added");
         let mut o = opts("added", "AC-3", RED_COMMAND);
         o.control = Some(GREEN_COMMAND.to_string());
         let report = add(dir.path(), &o);
         assert!(report.ok, "unexpected refusal: {:?} / {:?}", report.error, report.remedy);
-        for name in ["spec.md", "wave-plan.md", "wave-1-rt/spec.md"] {
+        for name in ["spec.md", "wave-plan.md"] {
             let body = std::fs::read_to_string(spec_dir.join(name)).unwrap();
             let item = criteria_of(&body)
                 .into_iter()
@@ -839,9 +899,11 @@ mod tests {
     ///
     /// 1. **The proof came first.** The ledger records the new id with a RED
     ///    proof — the evidence the approval gate reads.
-    /// 2. **Every plan artefact carries it**, not just the root: the frozen
-    ///    `wave-plan.md` and the wave scaffold are what a dispatched agent
-    ///    reads. The `qa/` transcript is left alone — it is a record of a run.
+    /// 2. **It lands where it belongs**: the root `spec.md` and the frozen
+    ///    `wave-plan.md`, the list QA executes. The wave scaffold is NOT one of
+    ///    them — it carries only the criteria that wave satisfies, and a brand
+    ///    new id is satisfied by nobody (see `write_targets`). The `qa/`
+    ///    transcript is left alone too — it is a record of a run.
     /// 3. **The trailing criterion stays trailing**, so the positional exemption
     ///    does not move onto the criterion just added.
     #[test]
@@ -849,6 +911,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let spec_dir = seed(dir.path(), "added");
         let qa_before = std::fs::read_to_string(spec_dir.join("qa").join("report.md")).unwrap();
+        let wave_before =
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
 
         let mut o = opts("added", "AC-3", RED_COMMAND);
         o.expect = Some("1 passed".to_string());
@@ -859,20 +923,24 @@ mod tests {
         let proof = report.proof.clone().expect("the addition records its proof");
         assert_eq!(proof.proof, ac_negative_check::Proof::Red, "{proof:?}");
 
-        // Every PLAN artefact, and only those.
+        // The root and the frozen plan, and ONLY those.
         assert_eq!(
             report.written,
             vec![
                 ".claude/spec/added/spec.md".to_string(),
-                ".claude/spec/added/wave-1-rt/spec.md".to_string(),
                 ".claude/spec/added/wave-plan.md".to_string(),
             ],
-            "the root, the frozen plan AND the wave scaffold"
+            "the root and the frozen plan — the wave satisfies no new id"
         );
         assert_eq!(
             std::fs::read_to_string(spec_dir.join("qa").join("report.md")).unwrap(),
             qa_before,
             "a finished run's transcript is a record, never an artefact to write into"
+        );
+        assert_eq!(
+            std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap(),
+            wave_before,
+            "and the wave scaffold is byte-identical: it never satisfied AC-3"
         );
 
         for name in ["spec.md", "wave-plan.md"] {
@@ -1067,7 +1135,8 @@ mod tests {
             }
         }
         // A document with no acceptance-criteria section is left alone entirely
-        // — that is how a wave artefact carrying no criteria is skipped.
+        // — a linha não tem onde cair. (QUAIS documentos são visitados é outra
+        // pergunta, e ela é de `write_targets`.)
         assert!(
             insert_criterion("# Wave\n\n## Tasks\n\n- do it\n", "AC-9", "s", "c", None, None)
                 .is_none()
@@ -1093,6 +1162,90 @@ mod tests {
             ac_negative_check::is_exempt(last, items.len()) && items[last].id == "AC-2",
             "the build criterion keeps the exemption: {ids:?}"
         );
+    }
+
+    /// O PAR, ponta a ponta: um layout de ondas materializado pelo MATERIALIZADOR
+    /// de verdade, uma adição pela porta de verdade, e a régua de uma onda lida
+    /// de volta pelo RENDERIZADOR de verdade.
+    ///
+    /// A regressão que isto tranca: a adição escrevia em todo artefato de plano
+    /// porque `insert_criterion` "deixa em paz o artefato que não declara a
+    /// seção" — e a onda 1 desta mesma unidade fez o `wave-scaffold` escrever
+    /// `## Acceptance Criteria` em toda onda que satisfaz alguma coisa, então
+    /// esse `None` parou de acontecer. O critério novo entrava nas duas ondas,
+    /// sob a frase "estes critérios são o JUIZ desta onda", numa onda cujo
+    /// `satisfies` nunca o nomeou.
+    ///
+    /// Medido no `## ACCEPTANCE` renderizado, não no arquivo: é lá que o ruído
+    /// chega ao agente despachado.
+    #[test]
+    fn an_addition_does_not_splice_itself_into_a_wave_that_does_not_satisfy_it() {
+        use crate::commands::agent::render::sections::read_wave_acceptance;
+        use crate::commands::wave::wave_scaffold::scaffold;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("multi");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# Multi\n\n## Acceptance Criteria\n\n\
+                 - **AC-1** — a onda 1 entrega alpha.\n  Command: `{RED_COMMAND}`\n\
+                 - **AC-2** — a onda 2 entrega beta.\n  Command: `{RED_COMMAND}`\n"
+            ),
+        )
+        .unwrap();
+        let plan_path = spec_dir.join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&serde_json::json!({
+                "total_waves": 2,
+                "lang": "en-US",
+                "waves": [
+                    { "n": 1, "role": "rt", "summary": "s", "tasks": ["do alpha"],
+                      "files": ["src/alpha.rs"], "satisfies": ["AC-1"] },
+                    { "n": 2, "role": "cli", "summary": "s", "tasks": ["do beta"],
+                      "files": ["src/beta.rs"], "satisfies": ["AC-2"] }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _ = scaffold(&spec_dir, &plan_path);
+
+        // Precondição: as duas ondas materializaram régua, senão o teste mediria
+        // o silêncio de um layout que nem existe.
+        for (wave, mine) in [("wave-1-rt", "**AC-1**"), ("wave-2-cli", "**AC-2**")] {
+            let body = read_wave_acceptance(&spec_dir.join(wave).join("spec.md"));
+            assert!(body.contains(mine), "{wave} não materializou a régua dela: {body}");
+        }
+
+        let report = add(root, &opts("multi", "AC-9", RED_COMMAND));
+        assert!(report.ok, "unexpected refusal: {:?} / {:?}", report.error, report.remedy);
+
+        // O critério novo está onde pertence: no pai, e em NENHUMA onda.
+        assert!(
+            report.written.contains(&".claude/spec/multi/spec.md".to_string()),
+            "o pai é o artefato de onde todo leitor deriva: {:?}",
+            report.written,
+        );
+        assert!(
+            !report.written.iter().any(|w| w.contains("/wave-")),
+            "nenhum spec de onda podia ser escrito: {:?}",
+            report.written,
+        );
+
+        // …e o `## ACCEPTANCE` renderizado de CADA onda continua sendo só o dela.
+        for (wave, mine) in [("wave-1-rt", "**AC-1**"), ("wave-2-cli", "**AC-2**")] {
+            let rendered = read_wave_acceptance(&spec_dir.join(wave).join("spec.md"));
+            assert!(rendered.contains(mine), "{wave} perdeu a régua dela: {rendered}");
+            assert!(
+                !rendered.contains("AC-9"),
+                "{wave} não satisfaz AC-9 e recebeu o critério assim mesmo — o ruído \
+                 por onda de volta, sob \"JUDGE of this wave\": {rendered}",
+            );
+        }
     }
 
     /// Ids are normalised through the amendment door's own rule, so `--ac 3`

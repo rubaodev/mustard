@@ -637,9 +637,16 @@ mod tests {
     fn seed(project: &Path, slug: &str) -> (PathBuf, PathBuf) {
         let spec_dir = project.join(".claude").join("spec").join(slug);
         std::fs::create_dir_all(&spec_dir).unwrap();
+        // O `## Acceptance Criteria` do pai é load-bearing: o `satisfies` de cada
+        // onda só é régua se nomear um critério que EXISTE. Sem esta seção os
+        // dois ids são fantasmas e o plano é recusado — que é o caso que a
+        // fixture NÃO quer medir.
         std::fs::write(
             spec_dir.join("spec.md"),
-            "# Demo\n\n## Files\n- `a.rs` (create)\n\n### Backend Agent\n- [ ] t1\n- [ ] t2\n",
+            "# Demo\n\n## Files\n- `a.rs` (create)\n\n### Backend Agent\n- [ ] t1\n- [ ] t2\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
         )
         .unwrap();
         let plan_path = project.join("plan.json");
@@ -1090,7 +1097,17 @@ mod tests {
         std::fs::write(project.join("mustard.json"), b"{}").unwrap();
         let spec_dir = project.join(".claude").join("spec").join("reality-plan");
         std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# Demo\n\n## Files\n- `a.rs` (create)\n").unwrap();
+        // Os critérios que o `satisfies` das ondas nomeia: um id que não existe
+        // não é régua, e o plano seria recusado por uma razão que não é a desta
+        // fixture.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Demo\n\n## Files\n- `a.rs` (create)\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
+        )
+        .unwrap();
         let plan_path = project.join("plan.json");
         std::fs::write(
             &plan_path,

@@ -479,8 +479,43 @@ pub(crate) fn render_prompt_with_census(
             .to_string(),
     };
     let role_block = build_role_block(role, &project, &subproject_str, &spec_lang);
+    // The RULER this wave is measured by — the criteria its own `spec.md`
+    // declares, verbatim, `Command:` and all. The wave scaffold materialises the
+    // subset each wave satisfies; this reads that section back, exactly as
+    // `{task_steps}` reads back `## Tasks`. Empty for a spec that declares none
+    // (heading collapses), which is the same silence the prompt had before.
+    //
+    // A WAVE render reads the WAVE's own spec, never `op_spec_path`: that path
+    // falls back to the PARENT `spec.md` whenever the wave directory cannot be
+    // found (unmaterialised, a number past `total_waves`, a renamed folder), and
+    // the fallback would render the union of EVERY wave's criteria under "these
+    // are the JUDGE of this wave" — the exact noise the per-wave cut exists to
+    // remove. No wave directory means no ruler was materialised, and the honest
+    // answer is the empty section. A spec-level render (no `--wave`) is the unit
+    // itself, so there the parent's criteria ARE its ruler.
+    let acceptance_block = match wave {
+        Some(w) => find_wave_spec_path(&spec_dir, w)
+            .map(|path| read_wave_acceptance(&path))
+            .unwrap_or_default(),
+        None => read_wave_acceptance(&op_spec_path),
+    };
+    // WHY the work exists, and the ground the unit deliberately does not cover —
+    // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
+    // (never the wave, which carries neither) through the same path already open
+    // for the material cut below, so it costs one more read of a file this
+    // function already resolves. Spec-less renders have no parent and carry none.
+    let why_block = spec
+        .map(|_| build_why_block(&spec_dir.join("spec.md")))
+        .unwrap_or_default();
+    // Both blocks are composed BEFORE the TASK, and that order is load-bearing:
+    // the TASK's tier-2 fallback is a POINTER at these two sections, and it is
+    // written from the blocks themselves rather than from a second reading of
+    // some spec. The second reading was the defect — it asked the WAVE's spec
+    // whether the prompt carries a narrative, while `## WHY` is cut from the
+    // PARENT's, so a wave could be handed the section and told it did not have
+    // it in the same breath.
     let task_steps = {
-        let raw = read_task_steps(&op_spec_path);
+        let raw = read_task_steps(&op_spec_path, &why_block, &acceptance_block);
         let raw = match task_filter {
             Some(pat) => filter_task_lines(&raw, pat),
             None => raw,
@@ -526,34 +561,9 @@ pub(crate) fn render_prompt_with_census(
     // happened to write. Empty for a wave that declares none (heading collapses)
     // and for spec-less renders, which have no wave spec to read.
     let reality_obligations = read_reality_obligations(&op_spec_path);
-    // The RULER this wave is measured by — the criteria its own `spec.md`
-    // declares, verbatim, `Command:` and all. The wave scaffold materialises the
-    // subset each wave satisfies; this reads that section back, exactly as
-    // `{task_steps}` reads back `## Tasks`. Empty for a spec that declares none
-    // (heading collapses), which is the same silence the prompt had before.
+    // `acceptance_block` and `why_block` were composed above, before the TASK
+    // that points at them.
     //
-    // A WAVE render reads the WAVE's own spec, never `op_spec_path`: that path
-    // falls back to the PARENT `spec.md` whenever the wave directory cannot be
-    // found (unmaterialised, a number past `total_waves`, a renamed folder), and
-    // the fallback would render the union of EVERY wave's criteria under "these
-    // are the JUDGE of this wave" — the exact noise the per-wave cut exists to
-    // remove. No wave directory means no ruler was materialised, and the honest
-    // answer is the empty section. A spec-level render (no `--wave`) is the unit
-    // itself, so there the parent's criteria ARE its ruler.
-    let acceptance_block = match wave {
-        Some(w) => find_wave_spec_path(&spec_dir, w)
-            .map(|path| read_wave_acceptance(&path))
-            .unwrap_or_default(),
-        None => read_wave_acceptance(&op_spec_path),
-    };
-    // WHY the work exists, and the ground the unit deliberately does not cover —
-    // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
-    // (never the wave, which carries neither) through the same path already open
-    // for the material cut below, so it costs one more read of a file this
-    // function already resolves. Spec-less renders have no parent and carry none.
-    let why_block = spec
-        .map(|_| build_why_block(&spec_dir.join("spec.md")))
-        .unwrap_or_default();
     // What the CONVERSATION established, carried in by `spec-draft --material`
     // and living ONCE in the PARENT spec (`## Definitions` / `## Decisions` /
     // `## Evidence`). A per-wave copy would drift, so the cut happens HERE:
@@ -1106,7 +1116,11 @@ mod tests {
         let path = dir.path().join("spec.md");
         std::fs::write(&path, spec_body).unwrap();
 
-        let task_steps = read_task_steps(&path);
+        let task_steps = read_task_steps(
+            &path,
+            &sections::build_why_block(&path),
+            &sections::read_wave_acceptance(&path),
+        );
         assert!(!task_steps.is_empty(), "task_steps fell back to empty for a lean spec");
         let mut rendered = extract_block(TEMPLATE, "dispatch").expect("dispatch block");
         rendered = rendered.replace("{task_steps}", &task_steps);
@@ -1217,7 +1231,11 @@ mod tests {
         )
         .unwrap();
 
-        let task_steps = read_task_steps(&spec);
+        let task_steps = read_task_steps(
+            &spec,
+            &sections::build_why_block(&spec),
+            &sections::read_wave_acceptance(&spec),
+        );
         let reference_files = build_reference_files(dir.path(), "api", &spec);
         assert!(!reference_files.is_empty(), "reference_files empty");
 
@@ -1585,6 +1603,68 @@ mod tests {
         assert!(
             retry.contains("Command: `cargo test alpha`"),
             "e o comando que a julga: {retry}"
+        );
+    }
+
+    /// A REGRESSÃO que este teste tranca: o ponteiro do fallback de TASK negava
+    /// uma seção que ESTÁ no prompt.
+    ///
+    /// A configuração é a de campo: a onda não tem `## Tasks` (então o fallback
+    /// dispara), não tem `## Contexto` próprio (o `spec.md` dela nunca tem — o
+    /// `wave-scaffold` não escreve narrativa), e o PAI tem os dois. O ponteiro
+    /// perguntava ao texto da ONDA se o prompt carrega narrativa, e o `## WHY` é
+    /// recortado do PAI: o prompt saía com a seção renderizada e, logo abaixo
+    /// dela, a frase dizendo que ele não diz por que o trabalho existe.
+    ///
+    /// As duas seções são medidas no MESMO prompt renderizado — é o par que a
+    /// contradição exige, e nenhuma metade sozinha a enxerga.
+    #[test]
+    fn the_task_pointer_agrees_with_the_sections_the_prompt_carries() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "pointer-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
+             ## Não-Objetivos\n\n- não endurecer o portão de resíduo\n\n\
+             ## Tasks\n\n- [ ] parent task\n",
+        )
+        .unwrap();
+        // A onda: sem `## Tasks` (o fallback dispara) e sem narrativa própria.
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# W\n\n## Files\n\n- `src/alpha.rs`\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+        )
+        .unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        // As duas seções ESTÃO no prompt…
+        assert!(rendered.contains("## WHY"), "o `## WHY` do pai tem de renderizar: {rendered}");
+        assert!(
+            rendered.contains("o despacho chega sem o porquê"),
+            "com o texto dele: {rendered}"
+        );
+        assert!(rendered.contains("## ACCEPTANCE"), "e a régua da onda: {rendered}");
+        // …e o ponteiro concorda com as duas, em vez de negar uma delas.
+        assert!(
+            rendered.contains("TASK fallback"),
+            "precondição: a onda sem `## Tasks` cai no tier 2: {rendered}",
+        );
+        assert!(
+            !rendered.contains("no narrative section reached it"),
+            "o prompt carrega o `## WHY` e diz ao agente que não carrega — o ponteiro \
+             respondeu do arquivo errado: {rendered}",
+        );
+        assert!(
+            !rendered.contains("no acceptance criteria reached it"),
+            "e o mesmo para a régua, que também está no prompt: {rendered}",
+        );
+        assert!(
+            rendered.contains("`## WHY` above") && rendered.contains("`## ACCEPTANCE`"),
+            "o ponteiro nomeia as duas seções que o prompt carrega: {rendered}",
         );
     }
 
