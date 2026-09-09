@@ -506,10 +506,26 @@ impl Check for WorkBranchGate {
             }
         };
 
-        // 3.4 A base é um FATO agora, então o corte vai mesmo acontecer: grava
-        //     o censo que sobrou sujo ANTES do `checkout -b` do passo 4, senão
-        //     `.claude/scan-map.md` e os moldes gerados viajam para dentro da
-        //     branch desta unidade e entram no diff e no pull request dela.
+        // 3. Refresh the bases this cut may start from FIRST so the branch is
+        //    cut from the latest of them — `base`, the one it will really use,
+        //    included, because the pick now comes out of the catalogue and need
+        //    not be declared. Fail-open: offline / no remote / non-ff never
+        //    blocks the edit (see refresh_integration_bases).
+        //
+        //    FIRST also means before the census commit of 3.4, and that order is
+        //    the one that makes this step work at all: it advances the base with
+        //    `merge --ff-only`, and a census commit written onto the base ahead
+        //    of it makes the base diverge from `origin/{base}` — the advance is
+        //    no longer a fast-forward, it is refused, and the refusal is dropped
+        //    (best-effort, per base). The unit would be cut from a stale base
+        //    with nothing said.
+        refresh_integration_bases(&vcs, &local, &config, current.as_deref(), Some(&base));
+
+        // 3.4 A base é um FATO agora e já está atualizada, então o corte vai
+        //     mesmo acontecer: grava o censo que sobrou sujo ANTES do
+        //     `checkout -b` do passo 4, senão `.claude/scan-map.md` e os moldes
+        //     gerados viajam para dentro da branch desta unidade e entram no
+        //     diff e no pull request dela.
         //
         //     E grava SÓ se a árvore estiver parada na própria `base`: o commit
         //     do censo pertence à base e a mais nada. Uma posição em OUTRA
@@ -521,13 +537,6 @@ impl Check for WorkBranchGate {
         if !in_submodule {
             record_census_before_cut(Path::new(&local), current.as_deref(), &base, &config);
         }
-
-        // 3. Refresh the bases this cut may start from FIRST so the branch is
-        //    cut from the latest of them — `base`, the one it will really use,
-        //    included, because the pick now comes out of the catalogue and need
-        //    not be declared. Fail-open: offline / no remote / non-ff never
-        //    blocks the edit (see refresh_integration_bases).
-        refresh_integration_bases(&vcs, &local, &config, current.as_deref(), Some(&base));
 
         // 3.5 Pre-check the dirty tree with the SAME probe the worktree door
         //     uses, BEFORE the attempt. The cut itself still carries changes

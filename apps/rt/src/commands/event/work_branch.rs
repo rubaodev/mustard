@@ -351,6 +351,13 @@ pub(crate) fn checkout_work_branch(
 /// latest — pointed at the branch the operator actually chose. A ff-only step,
 /// so a local base carrying unpushed commits is refused and kept, never
 /// rewritten.
+///
+/// Which is also why the two cutting doors call this BEFORE
+/// [`record_census_before_cut`] and never after: that step commits onto the base
+/// itself, and a base carrying a commit `origin` does not have is exactly the
+/// "commit próprio" case the ff refuses — silently, since every per-base result
+/// is dropped here. Refreshing second turned a stale base into the normal
+/// outcome of any cut that followed a census refresh.
 pub(crate) fn refresh_integration_bases(
     vcs: &str,
     root: &str,
@@ -1136,6 +1143,11 @@ pub(crate) fn census_commit_belongs_here(
 /// deixava para trás um commit do censo de um corte que nunca aconteceu — e
 /// porque antes dela a base, que é a condição posicional, ainda não é um fato.
 ///
+/// Depois também de [`refresh_integration_bases`], e por isto: escrever este
+/// commit na base ANTES da atualização a faz divergir de `origin/{base}`, o
+/// `merge --ff-only` daquele passo deixa de ser possível, e a unidade sai de uma
+/// base velha em silêncio. As duas portas que cortam chamam nesta ordem.
+///
 /// Fail-open de ponta a ponta: censo invisível para o git, ou um git que recusa,
 /// deixa a escrita onde caiu e o corte segue como antes.
 pub(crate) fn record_census_before_cut(
@@ -1268,18 +1280,26 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         }
     };
 
-    // A base está resolvida, então o corte vai mesmo acontecer: é AQUI que o
-    // censo que sobrou sujo é gravado, antes do checkout — senão ele viaja para
-    // dentro da branch desta unidade. Nem antes (um corte recusado por base
-    // desconhecida deixaria um commit do censo para trás), nem por qualquer
-    // `None` da decisão, e SÓ se a árvore estiver parada na própria `base`: o
-    // commit do censo pertence à base e a mais nada — ver
-    // [`record_census_before_cut`].
-    record_census_before_cut(project, current.as_deref(), &base, &config);
-
     // Refresh from origin FIRST so the unit is cut from the latest base — the
     // base this cut will really use included, declared or not.
+    //
+    // E antes da gravação do censo, que é a ordem que faz a atualização
+    // funcionar: o passo é `merge --ff-only`, e um commit do censo escrito na
+    // base ANTES dele faz a base divergir de `origin/{base}` — o avanço deixa de
+    // ser fast-forward, é recusado, e o resultado é descartado aqui dentro
+    // (best-effort, por base). A unidade sairia de uma base velha sem nada
+    // dizer, e o `git pull --ff-only origin {base}` que a recusa do portão base
+    // prescreve falharia também para o operador.
     refresh_integration_bases(&vcs, &root, &config, current.as_deref(), Some(&base));
+
+    // A base está resolvida e já atualizada, então o corte vai mesmo acontecer:
+    // é AQUI que o censo que sobrou sujo é gravado, antes do checkout — senão
+    // ele viaja para dentro da branch desta unidade. Nem antes da base ser
+    // resolvida (um corte recusado por base desconhecida deixaria um commit do
+    // censo para trás), nem por qualquer `None` da decisão, e SÓ se a árvore
+    // estiver parada na própria `base`: o commit do censo pertence à base e a
+    // mais nada — ver [`record_census_before_cut`].
+    record_census_before_cut(project, current.as_deref(), &base, &config);
     match checkout_work_branch(&vcs, &root, &target, &base) {
         Ok(()) => {
             // The marker that carried the operator's answer is about to be

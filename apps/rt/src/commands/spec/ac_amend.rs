@@ -890,16 +890,27 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     let exempt = ac_negative_check::is_exempt(index, items.len());
     // The `Control:` the CALLER declared, if any — blank is the same as absent,
     // so a shell that expanded an empty variable cannot smuggle a control past
-    // the requirement. Omitted, the record says the control was not declared,
-    // which stays true for every non-runner replacement; when the markdown still
-    // carries one, the next `ac-negative-check` pass sees it differ from the
-    // record and takes it — the safe direction, since it can only cause a run,
-    // never a stale reuse.
-    let control = opts
+    // the requirement. Only this value is WRITTEN back to the line (see
+    // [`Rewrite::control`]), exactly as only `opts.expect` is.
+    let declared_control = opts
         .control
         .as_deref()
         .map(str::trim)
         .filter(|c| !c.is_empty());
+    // `--control` omitted keeps the control the criterion already carries — the
+    // same rule `--expect` follows one statement above, and for the same reason:
+    // each flag changes only what it names. Without this fallback, amending the
+    // COMMAND of a criterion whose line already declares `Control:` handed
+    // `None` to the proof engine, `control_required` fired, and the door refused
+    // by demanding a flag whose value was already written on the line it was
+    // rewriting.
+    let control = declared_control.or_else(|| {
+        superseded
+            .control
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+    });
     // WHERE the command runs, which is not always where the spec lives. A
     // criterion corrected after the work landed cannot come back red in this
     // tree — the behaviour exists — so `--proof-tree` points at a checkout that
@@ -1022,10 +1033,12 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
             .statement
             .clone()
             .filter(|s| !s.trim().is_empty()),
-        // The SAME value the proof was taken with (already trimmed, blank
-        // treated as absent), so the line and the ledger cannot disagree about
-        // what the control is.
-        control: control.map(str::to_string),
+        // ONLY what `--control` named (already trimmed, blank treated as
+        // absent) — the same half `expect` above writes. The line and the ledger
+        // still cannot disagree: when the flag is absent the proof was taken
+        // with the control the LINE already carries, so leaving that line alone
+        // records the value that is on it.
+        control: declared_control.map(str::to_string),
     };
     let mut rewritten: Vec<String> = Vec::new();
     for path in artefacts(&spec_dir) {
@@ -1314,6 +1327,97 @@ mod tests {
             &opts("runner", "AC-1", OTHER_RED_COMMAND, "sem executor, sem controle"),
         );
         assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
+    }
+
+    /// `--control` OMITIDO cai no controle que o CRITÉRIO já declara — a mesma
+    /// queda que o `--expect` faz uma instrução acima, e pela mesma razão: cada
+    /// flag muda só o que ela nomeia.
+    ///
+    /// A regressão que isto tranca: `control` era `opts.control` e nada mais.
+    /// Emendar o COMANDO de um critério cuja linha JÁ carrega `Control:`
+    /// entregava `None` ao motor, o `control_required` disparava, e a porta
+    /// recusava mandando declarar uma flag cujo valor já estava escrito na linha
+    /// que ela ia reescrever. O comentário que descrevia o comportamento
+    /// pretendido ficava inalcançável, porque a porta recusava antes.
+    #[test]
+    fn an_omitted_control_falls_back_to_the_one_the_criterion_declares() {
+        // O executor FILTRADO: sai 0 quando o filtro não casa nada, que é toda a
+        // razão da exigência.
+        const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
+        // Um segundo comando verde, distinguível do `GREEN_COMMAND`.
+        const OTHER_GREEN: &str = "cd ..";
+
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join(".claude").join("spec").join("carried");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# S\n\n## Acceptance Criteria\n\
+                 - **AC-1** — when the work lands, then the behaviour holds.\n  \
+                 Command: `{RED_COMMAND}`\n  Control: `{GREEN_COMMAND}`\n\
+                 - **AC-2** — when the work lands, then the other thing holds.\n  \
+                 Command: `{RED_COMMAND}`\n\
+                 - **AC-3** — build green.\n  Command: `{GREEN_COMMAND}`\n"
+            ),
+        )
+        .unwrap();
+
+        // (a) A linha do AC-1 já carrega o controle; a emenda nomeia só o
+        // comando, e a porta NÃO cobra o que já está escrito.
+        let taken = amend(
+            dir.path(),
+            &opts("carried", "AC-1", FILTERED, "o critério passa a nomear o teste novo"),
+        );
+        assert_ne!(
+            taken.error.as_deref(),
+            Some("control_required"),
+            "a linha já declara o controle que a recusa pediria: {taken:?}",
+        );
+        assert!(taken.ok, "e a emenda é aceita: {taken:?}");
+        assert_eq!(
+            taken.proof.as_ref().and_then(|p| p.control_command.as_deref()),
+            Some(GREEN_COMMAND),
+            "é o controle DA LINHA que chega ao motor da prova: {taken:?}",
+        );
+        let md = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        let item = read_back(&md, "AC-1");
+        assert_eq!(item.command, FILTERED, "{md:?}");
+        assert_eq!(
+            item.control.as_deref(),
+            Some(GREEN_COMMAND),
+            "e o controle continua na linha, intacto: {md:?}",
+        );
+        assert_eq!(md.matches("Control:").count(), 1, "marcador duplicado: {md:?}");
+
+        // (b) A metade que não pode afrouxar junto: o AC-2 nunca teve controle,
+        // e um executor filtrado continua devendo um.
+        let owed = amend(
+            dir.path(),
+            &opts("carried", "AC-2", FILTERED, "idem, num critério sem controle"),
+        );
+        assert_eq!(
+            owed.error.as_deref(),
+            Some("control_required"),
+            "sem controle na linha a exigência continua de pé: {owed:?}",
+        );
+
+        // (c) E o `--control` explícito ainda vence o que a linha carrega.
+        let mut explicit = opts(
+            "carried",
+            "AC-1",
+            "cargo test -p mustard-rt my_other_case",
+            "o controle é trocado por outro",
+        );
+        explicit.control = Some(OTHER_GREEN.to_string());
+        let swapped = amend(dir.path(), &explicit);
+        assert_eq!(
+            swapped.proof.as_ref().and_then(|p| p.control_command.as_deref()),
+            Some(OTHER_GREEN),
+            "a flag explícita vence a linha: {swapped:?}",
+        );
+        let md = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+        assert_eq!(read_back(&md, "AC-1").control.as_deref(), Some(OTHER_GREEN), "{md:?}");
     }
 
     /// O ROUND TRIP que faltava ao `--control`: o controle declarado tem de

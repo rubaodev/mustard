@@ -493,11 +493,20 @@ pub(crate) fn render_prompt_with_census(
     // remove. No wave directory means no ruler was materialised, and the honest
     // answer is the empty section. A spec-level render (no `--wave`) is the unit
     // itself, so there the parent's criteria ARE its ruler.
+    //
+    // A SPEC-LESS render carries none, the same short-circuit `{why_block}` just
+    // below applies and for the same reason: with no `--spec`, `spec_dir` is the
+    // PROJECT ROOT and `op_spec_path` a root `spec.md`. A repository that
+    // happens to keep one at its root would have another project's criteria
+    // rendered under "these are the JUDGE of this wave" — for a `/scan` guards
+    // enrich or a scopeless `/task`, which are judged by no criterion at all.
     let acceptance_block = match wave {
         Some(w) => find_wave_spec_path(&spec_dir, w)
             .map(|path| read_wave_acceptance(&path))
             .unwrap_or_default(),
-        None => read_wave_acceptance(&op_spec_path),
+        None => spec
+            .map(|_| read_wave_acceptance(&op_spec_path))
+            .unwrap_or_default(),
     };
     // WHY the work exists, and the ground the unit deliberately does not cover —
     // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
@@ -1604,6 +1613,59 @@ mod tests {
             retry.contains("Command: `cargo test alpha`"),
             "e o comando que a julga: {retry}"
         );
+    }
+
+    /// Um render SEM spec não tem régua nenhuma, e o bloco de aceitação tem de
+    /// se calar — a MESMA curto-circuitação que o `{why_block}` faz uma
+    /// instrução adiante, com o mesmo `spec.is_some()`.
+    ///
+    /// A regressão que isto tranca: o braço `None` chamava
+    /// `read_wave_acceptance(&op_spec_path)` sempre. Sem `--spec` (o enriquecer
+    /// do `/scan`, o `/task` sem escopo) o `spec_dir` cai para a RAIZ do projeto
+    /// e o caminho operacional para um `spec.md` da raiz — então um repositório
+    /// que por acaso carrega um renderizava os critérios de OUTRO projeto sob
+    /// "estes são o JUIZ desta onda", para um trabalho que critério nenhum
+    /// julga.
+    #[test]
+    fn a_spec_less_render_does_not_borrow_a_root_spec_as_its_ruler() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // O `spec.md` que o repositório por acaso carrega na raiz.
+        std::fs::write(
+            dir.path().join("spec.md"),
+            "# Outro projeto\n\n## Acceptance Criteria\n\n\
+             - **AC-7** — a régua de outra unidade.\n  Command: `cargo test alheio`\n",
+        )
+        .unwrap();
+
+        let spec_less = render_prompt_at(
+            dir.path(), None, None, "guards", Path::new("."),
+            RenderMode::First, None, None, Some("ad-hoc task"),
+        );
+        assert!(
+            !spec_less.contains("## ACCEPTANCE"),
+            "um render sem spec não tem régua: {spec_less}"
+        );
+        assert!(
+            !spec_less.contains("AC-7") && !spec_less.contains("cargo test alheio"),
+            "e nada do `spec.md` da raiz pode viajar nele: {spec_less}"
+        );
+
+        // A metade que não pode quebrar junto: COM spec, a régua continua
+        // chegando exatamente como antes.
+        let spec = "ruler-still-rides";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] parent task\n").unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# W\n\n## Tasks\n\n- [ ] do alpha\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+        )
+        .unwrap();
+        let with_spec = render_wave(dir.path(), spec, 1);
+        assert!(with_spec.contains("## ACCEPTANCE"), "{with_spec}");
+        assert!(with_spec.contains("Command: `cargo test alpha`"), "{with_spec}");
     }
 
     /// A REGRESSÃO que este teste tranca: o ponteiro do fallback de TASK negava

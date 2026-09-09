@@ -967,6 +967,81 @@ mod tests {
         );
     }
 
+    /// O PAR que a ordem inversa quebrava: a base é ATUALIZADA a partir do
+    /// `origin` ANTES de o commit do censo cair nela, e o censo é gravado assim
+    /// mesmo. As duas metades, na mesma corrida.
+    ///
+    /// A regressão que isto tranca: a gravação do censo vinha primeiro e
+    /// `refresh_integration_bases` logo depois, com o resultado descartado. Um
+    /// commit do censo na base local a faz divergir de `origin/{base}` — o passo
+    /// é `merge --ff-only` —, o avanço é recusado, ninguém é avisado, e a
+    /// unidade sai de uma base velha. É também a invariante que o Guard do
+    /// `CLAUDE.md` da raiz enuncia: `--ff-only` só passa quando a base de
+    /// integração não tem commit próprio; depois disso o
+    /// `git pull --ff-only origin {base}` que a recusa deste portão prescreve
+    /// falha também para o operador.
+    #[test]
+    fn the_base_is_refreshed_before_the_census_commit_lands_on_it() {
+        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
+
+        let tmp = tempfile::tempdir().unwrap();
+        // A árvore e o `origin` vivem LADO A LADO: um repositório DENTRO da
+        // árvore seria trabalho não versionado do operador, e o corte seria
+        // recusado por isso em vez de medir o que este teste mede.
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let root_s = root.to_string_lossy().to_string();
+        let origin = tmp.path().join("origin.git");
+        let origin_s = origin.to_string_lossy().to_string();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let model = repo_tracking_the_census(root);
+
+        // Um `origin` cuja `dev` está UM commit à frente da base local. O commit
+        // é VAZIO de propósito: assim o fast-forward não depende da árvore suja,
+        // e o único motivo para ele falhar é a divergência que a ordem errada
+        // cria.
+        git(root, &["init", "--bare", "-q", &origin_s]);
+        git(root, &["remote", "add", "origin", &origin_s]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "origin moved"]);
+        git(root, &["push", "-q", "origin", "dev"]);
+        let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
+        git(root, &["reset", "-q", "--hard", "HEAD~1"]);
+        assert!(
+            !git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a fixture tem de começar com a base ATRÁS do origin",
+        );
+
+        // A abertura ordinária do AC-7: a árvore suja só com o censo.
+        remine(&model);
+        leftover_enrichment(root);
+        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
+
+        let sid = "sess-stale-base";
+        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        let outcome = cut_pending_work_branch(root, sid);
+        assert_eq!(
+            outcome,
+            CutOutcome::Cut("dev_second".to_string()),
+            "o corte tem de acontecer: {outcome:?}",
+        );
+
+        // Metade 1: a base avançou até o `origin`.
+        assert!(
+            git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
+            "a base ficou velha: o commit do censo a fez divergir e o \
+             `merge --ff-only` foi recusado em silêncio",
+        );
+        // Metade 2: e o censo foi gravado assim mesmo — nada sobrou para o
+        // operador. Medir só uma das duas é como esta ordem entrou.
+        assert_eq!(porcelain(root), "", "o censo não foi gravado");
+    }
+
     /// A REGRESSÃO que este teste tranca, e o PAR que as quatro rodadas
     /// anteriores nunca mediram junto: fora da base, uma árvore suja só com o
     /// censo NÃO libera o corte.

@@ -769,7 +769,9 @@ struct TraceGaps {
     /// The PHANTOM `satisfies` id lands here too, because it is the same
     /// sentence: an id naming no declared criterion cuts an EMPTY
     /// `## Acceptance Criteria`, so the wave works with no ruler exactly as if
-    /// it had claimed nothing.
+    /// it had claimed nothing. Under the SAME `tasks` non-empty guard, for the
+    /// same reason — the complaint is about a wave that WORKS, and a wave of
+    /// pure verification declaring no task is not one, whatever its ids say.
     ///
     /// E é por isso que a recusa por onda sem régua conta os ids que EXISTEM em
     /// vez de medir o tamanho da lista: com NADA definido a checagem de fantasma
@@ -950,7 +952,12 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         } else {
             satisfied.iter().filter(|id| !defined.contains(*id)).cloned().collect()
         };
-        if !phantom.is_empty() {
+        // A MESMA guarda da recusa irmã, algumas linhas abaixo: a queixa é "a
+        // onda trabalha e nada a julga", e uma onda que não declara tarefa
+        // nenhuma não trabalha. Sem ela, uma onda de verificação
+        // (`{"tasks": [], "satisfies": ["AC-01"]}`) recusava o PLANO INTEIRO com
+        // uma frase que afirma trabalho onde não há nenhum.
+        if !w.tasks.is_empty() && !phantom.is_empty() {
             untraced_waves.push(format!(
                 "wave-{n}-{role} declares `satisfies` ids that name no criterion: {phantom}. No \
                  criterion carries that id, so nothing materialises into the wave's \
@@ -2999,6 +3006,52 @@ mod tests {
         assert!(
             !w1.contains("## Acceptance Criteria"),
             "um id que não existe não materializa critério nenhum: {w1}"
+        );
+    }
+
+    /// A onda que NÃO declara trabalho nenhum não é recusada pelo id fantasma —
+    /// a MESMA guarda `!tasks.is_empty()` que a recusa irmã (onda sem régua)
+    /// carrega logo abaixo, no mesmo laço.
+    ///
+    /// A regressão que isto tranca: o braço do fantasma perdeu a guarda, e uma
+    /// onda de verificação (`{"tasks": [], "satisfies": ["AC-01"]}`) passou a
+    /// recusar o PLANO INTEIRO com uma frase que afirma que ela "trabalha sem
+    /// régua e é julgada por uma assim mesmo" — sobre uma onda que não declara
+    /// trabalho algum. O contrato da lacuna é "uma onda que FAZ trabalho".
+    #[test]
+    fn a_task_less_wave_with_a_phantom_id_does_not_refuse_the_plan() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("epic-sem-tarefa");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# Epic\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — a. Command: `true`\n\
+             - **AC-2** — b. Command: `true`\n",
+        )
+        .unwrap();
+        let plan_path = write_plan(
+            dir.path(),
+            json!([
+                { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
+                  "files": ["src/a.rs"], "satisfies": ["AC-1", "AC-2"] },
+                // A onda de verificação: nada a fazer, e um id com erro de
+                // digitação. Nenhum trabalho é despachado sem régua aqui.
+                { "n": 2, "role": "qa", "summary": "s", "tasks": [],
+                  "files": [], "satisfies": ["AC-01"] }
+            ]),
+        );
+
+        let ScaffoldOutcome::Created { untraced_waves, .. } = scaffold(&spec_dir, &plan_path) else {
+            panic!("expected ScaffoldOutcome::Created");
+        };
+        assert!(
+            !untraced_waves.iter().any(|g| g.contains("wave-2-qa")),
+            "uma onda sem tarefa nenhuma não trabalha, então nada há a recusar: {untraced_waves:?}"
+        );
+        assert!(
+            untraced_waves.is_empty(),
+            "e o plano inteiro passa: {untraced_waves:?}"
         );
     }
 
