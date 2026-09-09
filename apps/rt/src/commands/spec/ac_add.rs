@@ -36,12 +36,16 @@
 //! a red proof from a build command that is green by design. Position is not
 //! decoration here; it is a rule two mechanisms read.
 //!
-//! It lands in EVERY plan artefact that carries criteria — the root `spec.md`,
-//! `wave-plan.md` and each `wave-*/spec.md` — for the reason amend rewrites all
-//! of them: the scaffold is frozen after approval, and a root-only write leaves
-//! the dispatched agent reading a list the criterion is not on. Transcripts
-//! (`qa/`, `review/`) are NOT artefacts: they are records of a run, and writing
-//! a criterion into a past run's report would forge evidence.
+//! It lands in the root `spec.md` and in `wave-plan.md` — the list every reader
+//! derives from, and the union QA executes. NOT in a `wave-*/spec.md`: which
+//! wave a criterion belongs to is decided by the PLAN (`plan-materialize` cuts
+//! each wave's `## Acceptance Criteria` from the plan's `satisfies`), and the
+//! plan predates a criterion added mid-pipeline. So the report names the
+//! materialised waves that would need re-materialising (`wavesStale` /
+//! `staleWaves`, the shape `ac-amend` already reports) and the stderr WARN
+//! names the command that brings them forward. Transcripts (`qa/`, `review/`)
+//! are NOT artefacts: they are records of a run, and writing a criterion into a
+//! past run's report would forge evidence.
 //!
 //! ## Refusal, not silence
 //!
@@ -93,11 +97,11 @@ pub struct AcAddOpts {
     /// behaviour rather than from a filter that selects nothing.
     ///
     /// The same door `ac-amend` carries, for the same reason. Optional for every
-    /// command shape but one: a FILTERED TEST RUNNER exits 0 when its filter
-    /// matches nothing, so [`ac_negative_check::prove_one`] REFUSES one that
-    /// declares no control — and this door passed `None` unconditionally, which
-    /// left no input at all able to clear the requirement for exactly the
-    /// criterion shape the rule targets.
+    /// command shape: given, it is taken in the same pass as the red proof and
+    /// written onto the new line; omitted, the record says `not-declared`.
+    /// Worth declaring for a FILTERED TEST RUNNER — the usual shape of a
+    /// criterion added for a finding, and the one the drafting lint names as
+    /// `test-ac-no-control` — but its absence never refuses the addition.
     pub control: Option<String>,
     /// Take the negative proof against ANOTHER checkout instead of this tree.
     ///
@@ -138,15 +142,26 @@ pub(crate) struct AcAddReport {
     /// Every artefact the criterion was written into AND confirmed on re-read,
     /// as repo paths with forward slashes.
     pub(crate) written: Vec<String>,
+    /// `true` when materialised waves exist that do NOT carry the new
+    /// criterion — the flag, with [`Self::stale_waves`] as its evidence.
+    ///
+    /// A new id is claimed by no wave: the per-wave `## Acceptance Criteria`
+    /// is the cut `plan-materialize` made from the plan's `satisfies`, and the
+    /// plan predates the criterion. So the addition lands in the root `spec.md`
+    /// and the frozen `wave-plan.md` (where QA reads the union) and names here
+    /// the waves whose dispatched `## ACCEPTANCE` will not show it until the
+    /// plan routes the id and the waves are re-materialised. The same shape
+    /// `ac-amend` and `spec-draft --material-only` report, said the same way.
+    #[serde(rename = "wavesStale", skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) waves_stale: bool,
+    /// The wave directories that would need re-materialising, sorted.
+    #[serde(rename = "staleWaves", skip_serializing_if = "Vec::is_empty")]
+    pub(crate) stale_waves: Vec<String>,
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
     /// Refusal / failure code: `blank_reason`, `blank_statement`,
-    /// `unknown_spec`, `duplicate_criterion`, `control_required`,
-    /// `criterion_not_proven`, `write_failed`, `ledger_write_failed`.
-    ///
-    /// `control_required` is split out of `criterion_not_proven` on purpose: it
-    /// is the ONE refusal here that a flag clears, so a generic "not proven"
-    /// would leave the caller with no action to take.
+    /// `unknown_spec`, `duplicate_criterion`, `criterion_not_proven`,
+    /// `write_failed`, `ledger_write_failed`.
     pub(crate) error: Option<String>,
     /// The one action that clears the refusal. Absent when nothing is wrong.
     pub(crate) remedy: Option<String>,
@@ -164,6 +179,8 @@ impl AcAddReport {
             expect: opts.expect.clone(),
             proof: None,
             written: Vec::new(),
+            waves_stale: false,
+            stale_waves: Vec::new(),
             ledger: None,
             error: Some(error.to_string()),
             remedy: Some(remedy.to_string()),
@@ -236,12 +253,11 @@ fn criterion_block(
 /// Insert `id`'s criterion block into the `## Acceptance Criteria` section of
 /// one markdown document. `None` when the document declares no such section.
 ///
-/// Esse `None` NÃO é mais o que mantém um artefato de onda fora da adição — e
+/// Esse `None` NÃO é o que mantém um artefato de onda fora da adição — e
 /// enquanto foi, quebrou: desde que o `wave-scaffold` materializa a seção em
 /// toda onda que satisfaz algo, o `None` deixou de acontecer e o critério novo
-/// passou a entrar em todas elas. Quem decide o destino é [`write_targets`],
-/// pelo `satisfies` da onda; esta função só recusa um documento que não tem onde
-/// receber a linha.
+/// passou a entrar em todas elas. Quem decide o destino é [`write_targets`];
+/// esta função só recusa um documento que não tem onde receber a linha.
 ///
 /// Among HOMONYMOUS sections (legacy drafts duplicated the heading) the one
 /// carrying criteria wins, mirroring [`spec_sections::section_block`]'s own
@@ -315,33 +331,59 @@ fn insert_criterion(
 /// o ruído por onda que esta unidade existe para tirar, reintroduzido pela porta
 /// ao lado.
 ///
-/// De quem é um critério, para uma onda JÁ materializada, está escrito no
-/// `## Acceptance Criteria` dela: é o recorte que o `wave-scaffold` fez pelo
-/// `satisfies` do plano ([`crate::commands::wave::wave_scaffold::satisfied_ids`])
-/// e é o mesmo texto que o prompt da onda lê de volta. Perguntar ao arquivo é
-/// perguntar a esse recorte, sem um segundo leitor de plano que pudesse
-/// discordar dele.
+/// Onde uma adição ESCREVE: o `spec.md` do pai e o `wave-plan.md` — a lista de
+/// onde todo outro leitor deriva, e a união que o QA executa.
 ///
-/// Para uma adição isso é, na prática, sempre vazio — o id é novo, e a recusa
-/// `duplicate_criterion` já barrou todo id que qualquer artefato declare.
-/// Escrito como PERGUNTA mesmo assim, porque é ela que responde por que está
-/// vazio, e porque uma re-materialização depois de o pai ganhar o critério passa
-/// a nomear a onda dona dele — e aí o lugar do critério é lá.
-fn write_targets(spec_dir: &Path, id: &str) -> Vec<PathBuf> {
+/// Nunca uma onda. De quem é um critério está decidido pelo PLANO: o
+/// `## Acceptance Criteria` de cada `wave-*/spec.md` é o recorte que o
+/// `plan-materialize` fez pelo `satisfies` do plano
+/// ([`crate::commands::wave::wave_scaffold::satisfied_ids`]), e o plano é
+/// anterior ao critério novo — nenhuma onda o reivindica, e a recusa
+/// `duplicate_criterion` já garantiu que nenhum artefato o declara. A versão
+/// anterior desta função filtrava as ondas por "a onda declara o id?", condição
+/// que a recusa acima torna impossível: escrevia em onda nenhuma e não dizia
+/// isso a ninguém, e o agente do `fix-loop` re-despachado pelo achado que
+/// motivou o critério era justamente quem não o via. Agora as ondas que ficam
+/// para trás são NOMEADAS ([`stale_waves`]) com o comando que as atualiza.
+///
+/// Comparação com o diretório da spec, nunca com o prefixo do nome: uma spec
+/// chamada `wave-algo` tem o `spec.md` do PAI num diretório que começa por
+/// `wave-`.
+fn write_targets(spec_dir: &Path) -> Vec<PathBuf> {
     plan_artefacts(spec_dir)
         .into_iter()
-        .filter(|path| {
-            // Comparação com o diretório da spec, nunca com o prefixo do nome:
-            // uma spec chamada `wave-algo` tem o `spec.md` do PAI num diretório
-            // que começa por `wave-`.
-            let is_wave = path.parent().is_some_and(|p| p != spec_dir);
-            !is_wave || declares_criterion(path, id)
-        })
+        .filter(|path| path.parent().is_some_and(|p| p == spec_dir))
         .collect()
 }
 
+/// As ondas materializadas sob `spec_dir` — cada `wave-*/spec.md` — que NÃO
+/// carregam `id`: as que o operador terá de re-materializar depois de rotear o
+/// critério novo no `plan.json`.
+///
+/// Para uma adição é toda onda materializada, e é dito assim porque é assim: o
+/// id é novo e nenhum recorte o contém. A releitura é a mesma de
+/// [`declares_criterion`], então uma onda que por algum caminho já carregue o
+/// id não é nomeada. Ordenada e determinística — a lista viaja num relatório
+/// comparado byte a byte. Diretório ilegível devolve lista vazia: isto é um
+/// aviso, e recusar a adição por uma listagem que não abriu custaria mais do
+/// que ele vale.
+fn stale_waves(spec_dir: &Path, id: &str) -> Vec<String> {
+    let mut stale: Vec<String> = plan_artefacts(spec_dir)
+        .into_iter()
+        .filter(|path| path.parent().is_some_and(|p| p != spec_dir))
+        .filter(|path| !declares_criterion(path, id))
+        .filter_map(|path| {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .collect();
+    stale.sort();
+    stale
+}
+
 /// `true` quando `path` já declara `id` — a leitura que responde tanto "esta
-/// onda satisfaz este critério?" ([`write_targets`]) quanto "este id já existe?"
+/// onda ficou sem o critério?" ([`stale_waves`]) quanto "este id já existe?"
 /// (a recusa `duplicate_criterion`), pelo mesmo parser, para as duas não
 /// discordarem sobre o que um artefato declara.
 fn declares_criterion(path: &Path, id: &str) -> bool {
@@ -472,11 +514,11 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     // inserted ABOVE the trailing one, so it is never the exempt position: it
     // owes a red proof like any criterion the plan declared.
     // The `Control:` the CALLER declared, if any — blank is the same as absent,
-    // so a shell that expanded an empty variable cannot smuggle a control past
-    // the requirement. Omitted, the record says the control was not declared,
-    // which stays true for every non-runner command; the next
-    // `ac-negative-check` pass sees the markdown's control (if the author adds
-    // one) differ from the record and takes it then.
+    // so a shell that expanded an empty variable cannot write an empty control
+    // onto the line. Omitted, the record says the control was not declared —
+    // a WARN, never a refusal; the next `ac-negative-check` pass sees the
+    // markdown's control (if the author adds one) differ from the record and
+    // takes it then.
     let control = opts
         .control
         .as_deref()
@@ -516,40 +558,20 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     proof.proof_tree.clone_from(&proof_tree_record);
     if proof.proof != ac_negative_check::Proof::Red {
         let why = proof.reason.clone().unwrap_or_default();
-        // The ONE refusal here a FLAG clears, said as itself — see the sibling
-        // in `ac_amend`. The predicate is the engine's own
-        // ([`ac_negative_check::control_required`]), never a second reading of
-        // "is this a filtered runner".
-        let (error, remedy) = if ac_negative_check::control_required(&opts.command, control) {
-            (
-                "control_required",
-                format!(
-                    "the new criterion's command is a FILTERED TEST RUNNER, which exits 0 when its \
-                     filter selects nothing — so its red can be an empty selection rather than the \
-                     missing behaviour. Re-run this addition with `--control '<command>'`, naming a \
-                     command that comes back GREEN against the tree as it is (the suite without the \
-                     new filter, or a command naming the file the new test lands in) — {why}"
-                ),
-            )
-        } else {
-            (
-                "criterion_not_proven",
-                format!(
-                    "the criterion being ADDED does not clear the negative test, so it would join \
-                     the spec verifying exactly nothing — {why}"
-                ),
-            )
-        };
-        let mut report = AcAddReport::refused(opts, &id, error, &remedy);
+        let remedy = format!(
+            "the criterion being ADDED does not clear the negative test, so it would join the \
+             spec verifying exactly nothing — {why}"
+        );
+        let mut report = AcAddReport::refused(opts, &id, "criterion_not_proven", &remedy);
         report.proof = Some(proof);
         return report;
     }
 
     // Accepted. From here on the writes happen; every one of them is re-read.
-    // ONDE elas caem é [`write_targets`], não todo artefato de plano: um
-    // critério novo não pertence à onda que não o satisfaz.
+    // ONDE elas caem é [`write_targets`] — o pai e a união do QA, nunca uma
+    // onda: o plano decide de quem é um critério, e o plano é anterior a este.
     let mut written: Vec<String> = Vec::new();
-    for path in write_targets(&spec_dir, &id) {
+    for path in write_targets(&spec_dir) {
         let Ok(body) = mfs::read_to_string(&path) else {
             continue;
         };
@@ -567,6 +589,25 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     }
     written.sort();
 
+    // As ondas que ficaram sem o critério — toda onda materializada, porque o
+    // plano que as recortou é anterior a ele. Nomeadas com o remédio, pelo mesmo
+    // motivo do `ac-amend`: quem fica sabendo do problema sem o remédio fica
+    // com o problema. Alto na stderr, nunca no stdout — a linha JSON é comparada
+    // byte a byte.
+    let stale_waves = stale_waves(&spec_dir, &id);
+    if !stale_waves.is_empty() {
+        eprintln!(
+            "ac-add: WARN: {id} was added to `spec.md` and `wave-plan.md`, but {n} materialised \
+             wave(s) do not carry it ({waves}) — their dispatched `## ACCEPTANCE` will not show \
+             the criterion until the plan routes it. Add {id} to the `satisfies` of the wave that \
+             owns it in `plan.json`, then re-run `mustard-rt run plan-materialize --spec-dir \
+             {spec} --plan <plan.json>`.",
+            n = stale_waves.len(),
+            waves = stale_waves.join(", "),
+            spec = opts.spec,
+        );
+    }
+
     let mut report = AcAddReport {
         ok: false,
         spec: opts.spec.clone(),
@@ -576,6 +617,8 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
         expect: expect.clone(),
         proof: Some(proof.clone()),
         written: written.clone(),
+        waves_stale: !stale_waves.is_empty(),
+        stale_waves,
         ledger: None,
         error: None,
         remedy: None,
@@ -747,61 +790,66 @@ mod tests {
         );
     }
 
-    /// A REGRESSÃO que este teste tranca: esta porta chamava `prove_one` com
-    /// `control: None` SEMPRE, e nem a struct de opções nem a CLI carregavam um
-    /// `Control:` — a mesma morte que a porta irmã (`ac-amend`) tinha.
+    /// Um critério NOVO cujo comando é executor de teste FILTRADO e que não
+    /// declara `--control` é julgado pelo COMANDO, como qualquer outro: a porta
+    /// não o recusa por falta de controle.
     ///
-    /// Desde que a prova negativa passou a RECUSAR um executor de teste
-    /// FILTRADO sem controle, um critério NOVO dessa forma — que é a forma
-    /// típica de um critério que nomeia o teste que a correção vai criar — não
-    /// tinha entrada nenhuma capaz de limpar a exigência.
+    /// Substitui `a_filtered_runner_criterion_owes_a_control_and_the_flag_clears_it`,
+    /// que trancava a tese "opcional deixa de ser opcional" com `!refused.ok`,
+    /// `refused.error == Some("control_required")` e `refused.written.is_empty()`
+    /// para o caso (a) abaixo — asserções que agora falham por desenho. O que
+    /// fica: a flag `--control` continua sendo tomada, registrada e escrita na
+    /// linha quando declarada, e um comando que não é executor continua não
+    /// devendo nada.
     #[test]
-    fn a_filtered_runner_criterion_owes_a_control_and_the_flag_clears_it() {
+    fn a_filtered_runner_criterion_without_a_control_is_judged_by_its_command() {
         // Um executor de teste FILTRADO: `my_new_case` é seleção por nome.
         const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
 
-        // (a) Sem `--control`: recusa PRÓPRIA, nomeando a flag que a limpa, e
-        // nenhum artefato tocado — a exigência dispara antes do comando.
+        // (a) Sem `--control`: o comando é LANÇADO e o veredito é o dele. Que
+        // cor sai depende desta máquina (o cargo sem `Cargo.toml` sai vermelho;
+        // um cargo ausente sai 127), e as duas leituras são honestas — o que
+        // não pode acontecer é a recusa por exigência de controle.
         let a = tempdir().unwrap();
         seed(a.path(), "added");
-        let refused = add(a.path(), &opts("added", "AC-3", FILTERED));
-        assert!(!refused.ok, "um executor filtrado sem controle não pode entrar: {refused:?}");
-        assert_eq!(
-            refused.error.as_deref(),
+        let judged = add(a.path(), &opts("added", "AC-3", FILTERED));
+        assert_ne!(
+            judged.error.as_deref(),
             Some("control_required"),
-            "a recusa é a da exigência de controle, não a genérica: {refused:?}",
+            "não existe mais essa recusa: {judged:?}",
         );
+        let proof = judged.proof.as_ref().expect("a prova é registrada seja qual for o veredito");
+        assert!(proof.exit.is_some(), "o comando foi lançado — nada o recusou antes do shell: {judged:?}");
+        assert_eq!(proof.control, ac_negative_check::Control::NotDeclared, "{judged:?}");
         assert!(
-            refused.remedy.as_deref().unwrap_or_default().contains("--control"),
-            "e ela NOMEIA a ação que a limpa: {:?}",
-            refused.remedy,
+            !judged.remedy.as_deref().unwrap_or_default().contains("--control"),
+            "a recusa, se houver, é sobre o comando: {judged:?}",
         );
-        assert!(refused.written.is_empty(), "uma recusa não escreve nada");
 
-        // (b) Com `--control`: a exigência está limpa, e o controle declarado
-        // chega ao registro da prova.
+        // (b) Com `--control`: o controle declarado chega ao registro da prova
+        // — a flag continua viva, como entrada OPCIONAL.
         let b = tempdir().unwrap();
         seed(b.path(), "added");
         let mut with_control = opts("added", "AC-3", FILTERED);
         with_control.control = Some(GREEN_COMMAND.to_string());
         let taken = add(b.path(), &with_control);
-        assert_ne!(
-            taken.error.as_deref(),
-            Some("control_required"),
-            "declarar o controle tem de limpar a exigência: {taken:?}",
-        );
         assert_eq!(
             taken.proof.as_ref().and_then(|p| p.control_command.as_deref()),
             Some(GREEN_COMMAND),
-            "e o controle declarado chega ao registro da prova: {taken:?}",
+            "o controle declarado chega ao registro da prova: {taken:?}",
+        );
+        assert_eq!(
+            taken.proof.as_ref().map(|p| p.control),
+            Some(ac_negative_check::Control::Green),
+            "e foi tomado no mesmo passo: {taken:?}",
         );
 
         // (c) A outra metade: um comando que NÃO é executor de teste continua
-        // sem dever controle nenhum.
+        // sem dever controle nenhum, e passa.
         let c = tempdir().unwrap();
         seed(c.path(), "added");
         let plain = add(c.path(), &opts("added", "AC-3", RED_COMMAND));
-        assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
+        assert!(plain.ok, "{plain:?}");
     }
 
     /// O ROUND TRIP que faltava ao `--control` desta porta: o controle declarado
@@ -813,12 +861,14 @@ mod tests {
     /// `Command:` e `Expect:`. O critério entrava com controle no registro e sem
     /// controle na spec, e o portão de aprovação o recusava outra vez.
     ///
-    /// Dois lados, e o veredito de cada um vem do predicado do próprio portão
-    /// ([`ac_negative_check::control_required`]) alimentado pela releitura.
+    /// Dois lados, e o veredito de cada um vem do predicado do lint de rascunho
+    /// (`test_runner_has_selector`, o que nomeia `test-ac-no-control`)
+    /// alimentado pela releitura.
     #[test]
     fn an_added_control_lands_on_the_line_the_next_gate_reads() {
-        // Um executor de teste FILTRADO — a forma que o portão recusa quando não
-        // acha `Control:` na linha.
+        use crate::commands::review::analyze_validation::test_runner_has_selector;
+        // Um executor de teste FILTRADO — a forma que o lint de rascunho nomeia
+        // quando não acha `Control:` na linha.
         const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
         let md = "## Acceptance Criteria\n- **AC-1** — build green.\n  Command: `cd a`\n";
 
@@ -835,12 +885,11 @@ mod tests {
             "o `Control:` tem de estar NA LINHA, não só no registro da prova: {with:?}",
         );
         assert!(
-            !ac_negative_check::control_required(&added.command, added.control.as_deref()),
-            "a passada seguinte tem de aceitar o critério admitido pela porta: {with:?}",
+            test_runner_has_selector(&added.command) && added.control.is_some(),
+            "a passada seguinte lê o controle da linha: {with:?}",
         );
 
-        // SEM ele: o portão volta a cobrar — a recusa que o critério encontrava
-        // logo depois de entrar.
+        // SEM ele: o critério fica sem controle e o lint volta a nomeá-lo.
         let without = insert_criterion(md, "AC-9", "when x, then y", FILTERED, None, None)
             .expect("the criterion was inserted");
         let bare = criteria_of(&without)
@@ -849,19 +898,21 @@ mod tests {
             .unwrap_or_else(|| panic!("AC-9 unreadable after insertion: {without:?}"));
         assert_eq!(bare.control, None, "{without:?}");
         assert!(
-            ac_negative_check::control_required(&bare.command, bare.control.as_deref()),
-            "sem controle o portão TEM de cobrar — senão este teste não mede nada: {without:?}",
+            test_runner_has_selector(&bare.command) && bare.control.is_none(),
+            "sem controle o lint TEM de nomear — senão este teste não mede nada: {without:?}",
         );
 
         // Fim a fim, no disco: no `spec.md` do pai e na lista que o QA executa —
-        // os dois artefatos que TODA adição toca. A onda fica de fora porque não
-        // satisfaz o id novo (ver `write_targets`).
+        // os dois artefatos que TODA adição toca. A onda fica de fora porque o
+        // plano não a nomeia dona do id novo (ver `write_targets`), e é NOMEADA
+        // como desatualizada.
         let dir = tempdir().unwrap();
         let spec_dir = seed(dir.path(), "added");
         let mut o = opts("added", "AC-3", RED_COMMAND);
         o.control = Some(GREEN_COMMAND.to_string());
         let report = add(dir.path(), &o);
         assert!(report.ok, "unexpected refusal: {:?} / {:?}", report.error, report.remedy);
+        assert!(report.waves_stale && report.stale_waves == ["wave-1-rt"], "{report:?}");
         for name in ["spec.md", "wave-plan.md"] {
             let body = std::fs::read_to_string(spec_dir.join(name)).unwrap();
             let item = criteria_of(&body)
@@ -901,9 +952,11 @@ mod tests {
     ///    proof — the evidence the approval gate reads.
     /// 2. **It lands where it belongs**: the root `spec.md` and the frozen
     ///    `wave-plan.md`, the list QA executes. The wave scaffold is NOT one of
-    ///    them — it carries only the criteria that wave satisfies, and a brand
-    ///    new id is satisfied by nobody (see `write_targets`). The `qa/`
-    ///    transcript is left alone too — it is a record of a run.
+    ///    them — it carries only the criteria the PLAN routes to that wave, and
+    ///    the plan predates a brand new id (see `write_targets`) — so the
+    ///    report NAMES it as stale, with the flag `ac-amend` uses for the same
+    ///    fact. The `qa/` transcript is left alone too — it is a record of a
+    ///    run.
     /// 3. **The trailing criterion stays trailing**, so the positional exemption
     ///    does not move onto the criterion just added.
     #[test]
@@ -930,7 +983,14 @@ mod tests {
                 ".claude/spec/added/spec.md".to_string(),
                 ".claude/spec/added/wave-plan.md".to_string(),
             ],
-            "the root and the frozen plan — the wave satisfies no new id"
+            "the root and the frozen plan — the plan routes no new id to the wave"
+        );
+        assert!(report.waves_stale, "the wave the plan did not reach is named: {report:?}");
+        assert_eq!(report.stale_waves, ["wave-1-rt"], "{report:?}");
+        let printed = serde_json::to_string(&report).unwrap();
+        assert!(
+            printed.contains("\"wavesStale\":true") && printed.contains("\"staleWaves\":[\"wave-1-rt\"]"),
+            "the same keys `ac-amend` prints, so one reader serves both doors: {printed}"
         );
         assert_eq!(
             std::fs::read_to_string(spec_dir.join("qa").join("report.md")).unwrap(),
@@ -1052,10 +1112,10 @@ mod tests {
         assert!(remedy.contains("ac-amend"), "{remedy}");
         assert!(remedy.contains("AMENDMENT"), "{remedy}");
 
-        // An id only a WAVE artefact carries is a duplicate too. The write lands
-        // in every artefact, so reading the root alone would insert a second
-        // copy under an id the dispatched agent already reads — a duplicate in
-        // the one file nobody opens.
+        // An id only a WAVE artefact carries is a duplicate too. The duplicate
+        // check reads every artefact, so reading the root alone would insert
+        // a second copy under an id the dispatched agent already reads — a
+        // duplicate in the one file nobody opens.
         let wave = spec_dir.join("wave-1-rt").join("spec.md");
         let wave_before = std::fs::read_to_string(&wave).unwrap();
         std::fs::write(

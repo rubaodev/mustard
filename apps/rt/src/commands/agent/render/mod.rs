@@ -494,27 +494,40 @@ pub(crate) fn render_prompt_with_census(
     // answer is the empty section. A spec-level render (no `--wave`) is the unit
     // itself, so there the parent's criteria ARE its ruler.
     //
-    // A SPEC-LESS render carries none, the same short-circuit `{why_block}` just
-    // below applies and for the same reason: with no `--spec`, `spec_dir` is the
+    // A SPEC-LESS render carries none: with no `--spec`, `spec_dir` is the
     // PROJECT ROOT and `op_spec_path` a root `spec.md`. A repository that
-    // happens to keep one at its root would have another project's criteria
-    // rendered under "these are the JUDGE of this wave" — for a `/scan` guards
-    // enrich or a scopeless `/task`, which are judged by no criterion at all.
-    let acceptance_block = match wave {
-        Some(w) => find_wave_spec_path(&spec_dir, w)
-            .map(|path| read_wave_acceptance(&path))
-            .unwrap_or_default(),
-        None => spec
-            .map(|_| read_wave_acceptance(&op_spec_path))
-            .unwrap_or_default(),
-    };
+    // happens to keep one at its root — or a `wave-N-*` directory — would have
+    // another project's criteria rendered under "these are the JUDGE of this
+    // wave", for a `/scan` guards enrich or a scopeless `/task`, which are
+    // judged by no criterion at all.
+    //
+    // So "is there a spec directory at all" is resolved ONCE, as an Option,
+    // before either block, and the two files derive from it: the PARENT
+    // `spec.md` (where `## WHY` is cut from — `build_why_block` owns the
+    // `spec.md` / `spec.original.md` fallback a rewave's archiving needs, so
+    // the path is handed over unfiltered) and the RULER spec (the wave's own,
+    // found by `find_wave_spec_path` and `None` when unmaterialised, or the
+    // parent's for a spec-level render). Both blocks read these; neither arm
+    // carries its own guard. The `--wave N` arm used to check nothing and
+    // scanned the project root for `wave-N-*` on a spec-less render.
+    let spec_root: Option<&Path> = spec.map(|_| spec_dir.as_path());
+    let parent_spec: Option<PathBuf> = spec_root.map(|d| d.join("spec.md"));
+    let ruler_spec: Option<PathBuf> = spec_root.and_then(|d| match wave {
+        Some(w) => find_wave_spec_path(d, w),
+        None => Some(d.join("spec.md")),
+    });
+    let acceptance_block = ruler_spec
+        .as_deref()
+        .map(read_wave_acceptance)
+        .unwrap_or_default();
     // WHY the work exists, and the ground the unit deliberately does not cover —
     // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
     // (never the wave, which carries neither) through the same path already open
     // for the material cut below, so it costs one more read of a file this
     // function already resolves. Spec-less renders have no parent and carry none.
-    let why_block = spec
-        .map(|_| build_why_block(&spec_dir.join("spec.md")))
+    let why_block = parent_spec
+        .as_deref()
+        .map(build_why_block)
         .unwrap_or_default();
     // Both blocks are composed BEFORE the TASK, and that order is load-bearing:
     // the TASK's tier-2 fallback is a POINTER at these two sections, and it is
@@ -1666,6 +1679,42 @@ mod tests {
         let with_spec = render_wave(dir.path(), spec, 1);
         assert!(with_spec.contains("## ACCEPTANCE"), "{with_spec}");
         assert!(with_spec.contains("Command: `cargo test alpha`"), "{with_spec}");
+    }
+
+    /// O IRMÃO do teste acima, no outro braço: `--wave N` SEM `--spec`.
+    ///
+    /// A regressão que isto tranca: o braço `None` do bloco de aceitação
+    /// curto-circuitava sem spec e o braço `Some(wave)` NÃO — ele chamava
+    /// `find_wave_spec_path(&spec_dir, w)` sempre, e sem `--spec` o `spec_dir`
+    /// é a RAIZ do projeto. Um repositório com um diretório `wave-1-*/spec.md`
+    /// na raiz renderizava a régua dele para um trabalho que critério nenhum
+    /// julga. Os dois braços agora derivam do MESMO `Option`, resolvido uma
+    /// vez, e nenhum carrega guarda própria.
+    #[test]
+    fn a_spec_less_wave_render_does_not_scan_the_project_root_for_a_wave() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // O `wave-1-*` que o repositório por acaso carrega na raiz.
+        std::fs::create_dir_all(dir.path().join("wave-1-alheio")).unwrap();
+        std::fs::write(
+            dir.path().join("wave-1-alheio").join("spec.md"),
+            "# Outra onda\n\n## Acceptance Criteria\n\n\
+             - **AC-7** — a régua de outra unidade.\n  Command: `cargo test alheio`\n",
+        )
+        .unwrap();
+
+        let spec_less = render_prompt_at(
+            dir.path(), None, Some(1), "guards", Path::new("."),
+            RenderMode::First, None, None, Some("ad-hoc task"),
+        );
+        assert!(
+            !spec_less.contains("## ACCEPTANCE"),
+            "um render sem spec não tem régua, com ou sem `--wave`: {spec_less}"
+        );
+        assert!(
+            !spec_less.contains("AC-7") && !spec_less.contains("cargo test alheio"),
+            "e nada de um `wave-1-*` da raiz pode viajar nele: {spec_less}"
+        );
     }
 
     /// A REGRESSÃO que este teste tranca: o ponteiro do fallback de TASK negava

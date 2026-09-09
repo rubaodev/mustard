@@ -755,30 +755,26 @@ fn collect_ac_blocks(section: &str, out: &mut AcPool) {
 /// surface the uncovered-criterion gap (the coverage gate `plan-materialize`
 /// enforces) while the untraced-wave signal stays a non-blocking WARN.
 struct TraceGaps {
-    /// Gap 1 — a wave that does work (`tasks` non-empty) but satisfies NO
-    /// criterion. ESCALATABLE, alongside Gaps 2-4.
+    /// Gap 1 — a wave that does work (`tasks` non-empty) but traces to NO
+    /// criterion that exists. ADVISORY: a WARN on stderr and an `untraced_waves`
+    /// list in the report, never a refusal — a wave can legitimately be plumbing
+    /// no single criterion pins down, and whoever approves the plan decides.
+    /// What the WARN says is real, though: the wave's `## Acceptance Criteria`
+    /// — and therefore the `## ACCEPTANCE` block of its dispatched prompt — is
+    /// CUT by exactly this set ([`satisfied_ids`]), so such a wave is dispatched
+    /// with no ruler and still judged by one at QA.
     ///
-    /// It used to be the one advisory of the four, on the reasoning that a wave
-    /// can legitimately be plumbing no single criterion pins down. What changed
-    /// is that the wave's `## Acceptance Criteria` — and therefore the
-    /// `## ACCEPTANCE` block of its dispatched prompt — is now CUT by exactly
-    /// this set ([`satisfied_ids`]). A wave with tasks and no criterion is an
-    /// agent sent to work with no ruler, and it is still judged by one at QA.
-    /// The remedy is the same one line the WARN already named.
+    /// The PHANTOM `satisfies` id (`AC-01` where the plan defines `AC-1`) lands
+    /// here too, as its own sentence naming the id and the ids that do exist:
+    /// nothing materialises for it. Both sentences derive from ONE per-wave
+    /// set — the ids that actually judge the wave — so neither can assert
+    /// something false about what materialised. When NOTHING defines a
+    /// criterion, the list says that once, as the reason both checks are
+    /// silent.
     ///
-    /// The PHANTOM `satisfies` id lands here too, because it is the same
-    /// sentence: an id naming no declared criterion cuts an EMPTY
-    /// `## Acceptance Criteria`, so the wave works with no ruler exactly as if
-    /// it had claimed nothing. Under the SAME `tasks` non-empty guard, for the
-    /// same reason — the complaint is about a wave that WORKS, and a wave of
-    /// pure verification declaring no task is not one, whatever its ids say.
-    ///
-    /// E é por isso que a recusa por onda sem régua conta os ids que EXISTEM em
-    /// vez de medir o tamanho da lista: com NADA definido a checagem de fantasma
-    /// se isenta (não há contra o que comparar), então um `satisfies` inteiramente
-    /// fantasma passava pelas duas — a lista não estava vazia, e o fantasma
-    /// estava isento — e o plano materializava com `## ACCEPTANCE` colapsado em
-    /// toda onda.
+    /// Refusing on this was tried and reverted: it refused legitimate plans and
+    /// flipped the archive; "optional channels stop being optional" is its own
+    /// unit, with the migration modelled first.
     untraced_waves: Vec<String>,
     /// Gap 2 — an acceptance criterion NO wave satisfies. `defined` is the
     /// union of every wave's `acceptance` ids AND the parent spec.md
@@ -903,25 +899,24 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         }
     }
 
-    // O PLANO SEM CRITÉRIO NENHUM — nem no pai, nem em onda alguma. Ele isenta
-    // UMA das duas recusas abaixo, e a assimetria é deliberada: as duas fazem
-    // perguntas diferentes, e só uma delas fica sem resposta com o conjunto
-    // vazio.
-    //
-    // * A checagem de ID FANTASMA pergunta "este id nomeia um critério que
-    //   EXISTE?". Sem nada definido não há contra o que comparar, então a
-    //   pergunta não tem resposta e pular é o correto — ela FICA com a isenção.
-    // * A recusa por ONDA SEM RÉGUA pergunta "esta onda tem régua ALGUMA?". Sem
-    //   nada definido a resposta é enfaticamente NÃO — ela NÃO tem isenção e
-    //   dispara sempre.
-    //
-    // A isenção já foi dada às duas, e estava errada: não existe plano legítimo
-    // de escopo completo com ZERO critérios. Um plano cujo pai não declara
-    // nenhum e cujas ondas também não materializa em silêncio e despacha cada
-    // onda com o `## ACCEPTANCE` colapsado — que é exatamente o despacho sem
-    // régua que esta unidade existe para recusar. Isentar ali era isentar o PIOR
-    // caso.
-    let pre_criteria_plan = defined.is_empty();
+    // O PLANO SEM CRITÉRIO NENHUM — nem no pai, nem em onda alguma — é dito UMA
+    // vez, como o motivo de as duas checagens por onda ficarem caladas: "esta
+    // onda traça a um critério que existe?" e "este id nomeia um critério que
+    // existe?" não têm contra o que ser respondidas com o conjunto vazio. Não é
+    // isenção: é a mesma frase, dita sobre o plano em vez de repetida em cada
+    // onda. Aviso, não recusa — o plano materializa, cada onda despacha com o
+    // `## ACCEPTANCE` colapsado, e quem aprova o plano lê isto.
+    let no_criterion_anywhere = defined.is_empty();
+    if no_criterion_anywhere {
+        untraced_waves.push(
+            "no acceptance criterion is defined anywhere — neither the parent spec's \
+             `## Acceptance Criteria` nor any wave's `acceptance` lines declare one — so no wave \
+             can trace to a criterion and no `satisfies` id can be checked against one. Every \
+             wave is dispatched with its `## ACCEPTANCE` block collapsed until the plan declares \
+             criteria."
+                .to_string(),
+        );
+    }
 
     for w in &plan.waves {
         // Conjunto satisfeito: a MESMA regra que o renderizador usa para recortar
@@ -930,82 +925,56 @@ fn traceability_gaps(plan: &Plan, parent_ac_md: Option<&str>) -> TraceGaps {
         for id in &satisfied {
             covered.insert(id.clone());
         }
-        // Um id que não nomeia critério NENHUM é um `satisfies` fantasma, e ele
-        // conta como onda sem régua. `AC-01` onde o pai define `AC-1` devolve um
-        // conjunto satisfeito NÃO-vazio, então a recusa por onda sem critério
-        // passava batida — e o `ac_pool` não tem essa chave, então a onda
-        // materializa SEM `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt
-        // colapsa. O id fantasma também só alimenta `defined - covered`, então
-        // nem a lacuna de cobertura dispara: um erro de digitação reproduzia em
-        // silêncio o defeito que esta unidade inteira existe para remover.
-        //
-        // Ele entra na lista das ondas sem rastreio (e não num canal próprio)
-        // porque é a mesma frase: a onda trabalha e nada a julga. O remédio
-        // continua sendo uma linha, e a mensagem nomeia o id e os ids que
-        // existem.
-        //
-        // O conjunto VAZIO é exceção AQUI, e só aqui — ver
-        // [`pre_criteria_plan`], acima: sem nada definido não há contra o que
-        // comparar, e "este id existe?" fica sem resposta.
-        let phantom: Vec<String> = if pre_criteria_plan {
-            Vec::new()
-        } else {
-            satisfied.iter().filter(|id| !defined.contains(*id)).cloned().collect()
-        };
-        // A MESMA guarda da recusa irmã, algumas linhas abaixo: a queixa é "a
-        // onda trabalha e nada a julga", e uma onda que não declara tarefa
-        // nenhuma não trabalha. Sem ela, uma onda de verificação
-        // (`{"tasks": [], "satisfies": ["AC-01"]}`) recusava o PLANO INTEIRO com
-        // uma frase que afirma trabalho onde não há nenhum.
-        if !w.tasks.is_empty() && !phantom.is_empty() {
-            untraced_waves.push(format!(
-                "wave-{n}-{role} declares `satisfies` ids that name no criterion: {phantom}. No \
-                 criterion carries that id, so nothing materialises into the wave's \
-                 `## Acceptance Criteria` and the dispatched prompt's `## ACCEPTANCE` block \
-                 collapses — the wave works with no ruler and is judged by one anyway. The ids \
-                 that DO exist: {known}",
-                n = w.n,
-                role = w.role,
-                phantom = phantom.join(", "),
-                known = defined.iter().cloned().collect::<Vec<_>>().join(", "),
-            ));
-        }
-        // SEM a exceção do fantasma, e é o ponto: a pergunta aqui é "esta onda
-        // tem régua alguma?", e com nada definido a resposta é NÃO — ver
-        // [`pre_criteria_plan`]. Uma onda que declara tarefas e não traça a
-        // critério nenhum é despachada sem régua e julgada por uma assim mesmo,
-        // e isso não fica menos verdade porque o plano inteiro está sem
-        // critérios: fica MAIS.
-        //
-        // E a pergunta é sobre um critério que EXISTE, não sobre uma lista não
-        // vazia. `satisfied_ids` devolve os ids COMO ESCRITOS, e uma lista de
-        // ids que não nomeiam nada é o mesmo despacho sem régua que uma lista
-        // vazia: o `ac_pool` não tem a chave, o `spec.md` da onda materializa sem
-        // `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt colapsa. Com
-        // `defined` vazio a checagem de fantasma se isenta (não há contra o que
-        // comparar), então era exatamente essa combinação — pai sem seção
-        // parseável, nenhuma onda com `acceptance`, toda onda com
-        // `satisfies: ["AC-1"]` — que passava pelas DUAS e materializava.
-        let traced = satisfied.iter().filter(|id| defined.contains(*id)).count();
-        // A onda já nomeada pela frase do fantasma não é nomeada duas vezes: lá a
-        // mensagem é mais específica (diz QUAL id não existe e quais existem), e
-        // é a mesma queixa.
-        if !w.tasks.is_empty() && traced == 0 && phantom.is_empty() {
-            untraced_waves.push(format!(
-                "wave-{n}-{role} has tasks but satisfies no criterion that EXISTS — add \
-                 `satisfies` ids naming criteria this plan declares, or an `acceptance` line \
-                 spelling one out. Its `## Acceptance Criteria` (and the dispatched prompt's \
-                 `## ACCEPTANCE` block) is cut by that set, so as written the wave is \
-                 dispatched with no ruler and judged by one anyway. The criteria this plan \
-                 declares: {known}",
-                n = w.n,
-                role = w.role,
-                known = if defined.is_empty() {
-                    "none — neither the parent spec nor any wave declares one".to_string()
-                } else {
-                    defined.iter().cloned().collect::<Vec<_>>().join(", ")
-                },
-            ));
+        // Os ids que REALMENTE julgam esta onda, computados UMA vez: o
+        // `satisfies` cruzado com o que existe, mais os ids das próprias linhas
+        // de `acceptance` (que definem critério por construção). As duas
+        // mensagens abaixo derivam deste conjunto e do seu complemento, então
+        // nenhuma afirma algo falso sobre o que materializou.
+        let own: BTreeSet<String> =
+            parse_ac_items(&wave_ac_text(w)).into_iter().map(|it| norm(&it.id)).collect();
+        let judging: BTreeSet<String> = satisfied
+            .iter()
+            .filter(|id| defined.contains(*id))
+            .cloned()
+            .chain(own.iter().cloned())
+            .collect();
+        let phantom: Vec<String> =
+            satisfied.iter().filter(|id| !defined.contains(*id)).cloned().collect();
+        let known = || defined.iter().cloned().collect::<Vec<_>>().join(", ");
+        if !no_criterion_anywhere {
+            // Um id que não nomeia critério NENHUM é um `satisfies` fantasma —
+            // `AC-01` onde o pai define `AC-1`. O `ac_pool` não tem essa chave,
+            // então nada materializa por ele. Nomeado com o id e os que existem,
+            // com ou sem tarefas: um erro de digitação é um erro de digitação, e
+            // um aviso sobre ele não recusa nada.
+            for id in &phantom {
+                untraced_waves.push(format!(
+                    "wave-{n}-{role} names {id}, which no criterion defines — nothing materialises \
+                     into the wave's `## Acceptance Criteria` for it. The ones that do exist: \
+                     {known}",
+                    n = w.n,
+                    role = w.role,
+                    known = known(),
+                ));
+            }
+            // Uma onda que declara tarefas e não traça a critério que EXISTE é
+            // despachada sem régua e julgada por uma no QA assim mesmo. Aviso,
+            // não recusa: uma onda de encanamento que nenhum critério isolado
+            // mede é legítima, e quem aprova o plano decide. A pergunta é sobre
+            // um critério que existe, não sobre uma lista não vazia — uma lista
+            // só de ids fantasmas recorta a mesma seção vazia que lista nenhuma.
+            if !w.tasks.is_empty() && judging.is_empty() {
+                untraced_waves.push(format!(
+                    "wave-{n}-{role} has tasks but traces to no criterion that exists — add \
+                     `satisfies` ids naming criteria this plan declares, or an `acceptance` line \
+                     spelling one out. Its `## Acceptance Criteria` (and the dispatched prompt's \
+                     `## ACCEPTANCE` block) is cut by that set, so as written the wave is \
+                     dispatched with no ruler. The criteria this plan declares: {known}",
+                    n = w.n,
+                    role = w.role,
+                    known = known(),
+                ));
+            }
         }
         // Gap 3 — a claim the plan's own contents refute. The wave says it
         // covers these criteria and, in the same document, declares nowhere to
@@ -1475,11 +1444,13 @@ pub(crate) enum ScaffoldOutcome {
         /// It reached no consumer at all before: the list was computed, printed
         /// to stderr, and then dropped when this outcome was built.
         criteria_outside_claimants: Vec<String>,
-        /// Ondas que fazem trabalho (`tasks`) e não satisfazem critério nenhum —
-        /// a QUARTA lista escalável, e separada pelo mesmo motivo das outras
-        /// três: quem pergunta "que critério ficou sem onda" (cobertura) não
-        /// pode receber como resposta uma ONDA. Aqui o sujeito é a onda, e a
-        /// linha a editar é a dela.
+        /// Ondas que fazem trabalho (`tasks`) e não traçam a critério que
+        /// existe, e ids de `satisfies` que não nomeiam critério nenhum — a
+        /// QUARTA lista, e a única ADVISORY: `plan-materialize` a publica como
+        /// `untraced_waves` e NÃO retém o plano por ela. Separada das outras
+        /// três pelo mesmo motivo de sempre: quem pergunta "que critério ficou
+        /// sem onda" (cobertura) não pode receber como resposta uma ONDA. Aqui o
+        /// sujeito é a onda, e a linha a editar é a dela.
         untraced_waves: Vec<String>,
     },
     /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
@@ -1643,10 +1614,11 @@ pub(crate) fn scaffold_warning_to(
         );
     }
 
-    // AC↔wave traceability (F6): os QUATRO sinais são escaláveis, ENFORCED pelo
-    // `plan-materialize` (a entrada do pipeline) — sem knob de ambiente. O spec
-    // monolítico do pai já foi lido acima (`parent_ac_md`); um pai ausente não
-    // contribui id nenhum.
+    // AC↔wave traceability (F6): TRÊS sinais são escaláveis, ENFORCED pelo
+    // `plan-materialize` (a entrada do pipeline) — sem knob de ambiente — e o
+    // quarto (onda sem régua) é aviso: sai aqui na stderr e viaja no relatório.
+    // O spec monolítico do pai já foi lido acima (`parent_ac_md`); um pai
+    // ausente não contribui id nenhum.
     let gaps = traceability_gaps(&plan, parent_ac_md.as_deref());
     for gap in &gaps.untraced_waves {
         let _ = writeln!(warn, "[wave-scaffold] WARN: {gap}");
@@ -1670,9 +1642,10 @@ pub(crate) fn scaffold_warning_to(
     // which is the blunt merge this codebase keeps paying for.
     let uncovered_acs = gaps.uncovered_acs;
     let unsupportable_claims = gaps.unsupportable_claims;
-    // A quarta lista, que deixou de ser aviso: uma onda com tarefas e sem
-    // critério é despachada sem régua desde que o prompt passou a recortar o
-    // `## ACCEPTANCE` por este mesmo conjunto.
+    // A quarta lista, e a única ADVISORY: uma onda com tarefas e sem critério é
+    // despachada sem régua (o prompt recorta o `## ACCEPTANCE` por este mesmo
+    // conjunto), e o relatório diz isso sem reter o plano — como
+    // `validation.issues`.
     let untraced_waves = gaps.untraced_waves;
     // The THIRD escalatable list, and the one that used to stop at the stderr
     // loop above: it was computed and then dropped, so no machine consumer of
@@ -2639,16 +2612,18 @@ mod tests {
         );
     }
 
-    /// Uma onda que declara tarefas e não satisfaz critério nenhum RECUSA o
-    /// plano — mesma forma de resultado do portão de cobertura, e não mais um
-    /// aviso que ninguém lê.
+    /// Uma onda que declara tarefas e não traça a critério nenhum é um AVISO —
+    /// na stderr e no relatório — e o plano materializa.
     ///
-    /// O motivo é mecânico: a seção `## Acceptance Criteria` da onda (e daí o
-    /// bloco `## ACCEPTANCE` do prompt) é recortada por esse mesmo conjunto, e
-    /// vazio quer dizer despachar o agente sem régua. Dois lados: a irmã que
-    /// declara `satisfies` sai limpa.
+    /// Substitui `wave_with_tasks_and_no_criterion_is_refused`, que trancava a
+    /// tese "opcional deixa de ser opcional" com três asserções que agora falham
+    /// por desenho: `report["scaffold"]["error"] == json!(ERR_UNTRACED_WAVES)`
+    /// (o marcador não existe mais), `refused(&report)` (a leitura única diz
+    /// "não recusado") e `report["events"] == json!([])` (a transição PLAN
+    /// sai). O que a mensagem diz continua real: a onda é despachada com o
+    /// `## ACCEPTANCE` colapsado, e quem aprova o plano lê isso.
     #[test]
-    fn wave_with_tasks_and_no_criterion_is_refused() {
+    fn wave_with_tasks_and_no_criterion_warns_and_the_plan_materialises() {
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-untraced");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -2667,34 +2642,44 @@ mod tests {
             ]),
         );
 
+        // O aviso sai na STDERR — o destino injetado mede a fiação que decide
+        // emiti-lo, não só o texto.
+        let mut warn: Vec<u8> = Vec::new();
         let ScaffoldOutcome::Created { untraced_waves, uncovered_acs, .. } =
-            scaffold(&spec_dir, &plan_path)
+            scaffold_warning_to(&spec_dir, &plan_path, &mut warn)
         else {
             panic!("expected ScaffoldOutcome::Created");
         };
+        let stderr = String::from_utf8(warn).unwrap();
         assert!(
-            untraced_waves.iter().any(|g| g.contains("wave-2-cli")),
-            "a onda sem critério tem de chegar ao consumidor, não só ao stderr: {untraced_waves:?}"
+            stderr.contains(
+                "[wave-scaffold] WARN: wave-2-cli has tasks but traces to no criterion that exists"
+            ),
+            "o aviso sai na stderr, como WARN: {stderr}"
+        );
+        let named = untraced_waves
+            .iter()
+            .find(|g| g.contains("wave-2-cli"))
+            .unwrap_or_else(|| panic!("a onda sem critério chega ao consumidor: {untraced_waves:?}"));
+        assert!(
+            named.contains("traces to no criterion that exists") && named.contains("AC-1"),
+            "a frase é honesta e nomeia o que existe: {named}"
         );
         assert!(
             !untraced_waves.iter().any(|g| g.contains("wave-1-rt")),
-            "a onda bem rastreada não pode entrar na lista: {untraced_waves:?}"
+            "a onda bem rastreada não entra na lista: {untraced_waves:?}"
         );
         // A lista viaja SEPARADA da cobertura: aqui o sujeito é a onda, e AC-1
         // está coberto.
         assert!(uncovered_acs.is_empty(), "{uncovered_acs:?}");
 
-        // ...e a RECUSA que o critério nomeia, medida no COMPOSTO: o marcador
-        // de erro, o leitor único que o `run` mapeia para exit 2, e a transição
-        // PLAN retida. Sem isto, apagar o termo `ERR_UNTRACED_WAVES` de
-        // `refused()` deixaria a suíte inteira verde.
+        // …e o COMPOSTO: sem marcador de erro, NÃO recusado, transição PLAN
+        // emitida, e a lista viaja como advisory — como `validation.issues`.
         //
-        // Fixture própria porque só ela ISOLA a recusa: o critério do pai
+        // Fixture própria porque só ela ISOLA a pergunta: o critério do pai
         // precisa vir vermelho para a prova negativa aprovar, senão o relatório
-        // recusaria por dois motivos e a asserção passaria pelo outro.
-        use crate::commands::pipeline::plan_materialize::{
-            materialize, refused, ERR_UNTRACED_WAVES,
-        };
+        // recusaria por outro motivo e a asserção não mediria este.
+        use crate::commands::pipeline::plan_materialize::{materialize, refused};
         let comp = tempdir().unwrap();
         let project = comp.path();
         let comp_spec_dir = project.join(".claude").join("spec").join("epic-untraced");
@@ -2718,31 +2703,29 @@ mod tests {
         );
 
         let report = materialize(project, &comp_spec_dir, &comp_plan);
-        assert_eq!(
-            report["scaffold"]["error"],
-            json!(ERR_UNTRACED_WAVES),
-            "a onda sem régua RECUSA o plano, não avisa: {report}",
+        assert!(
+            report["scaffold"]["error"].is_null(),
+            "um aviso não é marcador de erro: {report}"
         );
-        assert!(refused(&report), "e a leitura única do relatório diz recusado: {report}");
-        assert_eq!(
+        assert!(!refused(&report), "a leitura única do relatório diz NÃO recusado: {report}");
+        assert!(
+            report["scaffold"]["untraced_waves"]
+                .as_array()
+                .is_some_and(|l| l.iter().any(|g| g.as_str().unwrap_or_default().contains("wave-2-cli"))),
+            "e a lista viaja no relatório, advisory: {report}"
+        );
+        assert_ne!(
             report["events"],
             json!([]),
-            "nenhuma transição PLAN sai de um plano recusado: {report}",
+            "a transição PLAN sai de um plano avisado: {report}",
         );
-        // O isolamento, dito em asserção: nada MAIS recusou este relatório.
         assert_eq!(report["proof"]["ok"], json!(true), "{report}");
         assert_eq!(report["sharedFiles"]["ok"], json!(true), "{report}");
     }
 
-    /// A metade que a recusa por onda sem régua NÃO pode apertar junto: um plano
-    /// cujas ondas TRAÇAM a critérios materializa igualzinho, sem
-    /// `ERR_UNTRACED_WAVES` e sem reter a transição PLAN.
-    ///
-    /// Esta fixture já mediu o contrário — um plano sem critério NENHUM passando
-    /// por "onda sem régua" — e estava errada: não existe plano legítimo de
-    /// escopo completo com zero critérios; um assim despacha toda onda com o
-    /// `## ACCEPTANCE` colapsado. O que um plano real carrega é o que ela
-    /// carrega agora: `## Acceptance Criteria` no pai e um `satisfies` por onda.
+    /// A metade que o aviso por onda sem régua NÃO pode apertar junto: um plano
+    /// cujas ondas TRAÇAM a critérios materializa com a lista vazia e sem reter
+    /// a transição PLAN.
     #[test]
     fn a_plan_whose_waves_trace_to_their_criteria_is_not_refused() {
         let dir = tempdir().unwrap();
@@ -2777,9 +2760,9 @@ mod tests {
         );
         assert!(uncovered_acs.is_empty(), "e todo critério é reivindicado: {uncovered_acs:?}");
 
-        // …e a mesma resposta no COMPOSTO: nada de `ERR_UNTRACED_WAVES`, e a
-        // transição PLAN não é retida.
-        use crate::commands::pipeline::plan_materialize::{materialize, ERR_UNTRACED_WAVES};
+        // …e a mesma resposta no COMPOSTO: lista vazia, sem marcador, não
+        // recusado.
+        use crate::commands::pipeline::plan_materialize::{materialize, refused};
         let comp = tempdir().unwrap();
         let project = comp.path();
         let comp_spec_dir = project.join(".claude").join("spec").join("epic-rastreado");
@@ -2803,26 +2786,21 @@ mod tests {
             ]),
         );
         let report = materialize(project, &comp_spec_dir, &comp_plan);
-        assert_ne!(
-            report["scaffold"]["error"],
-            json!(ERR_UNTRACED_WAVES),
-            "um plano rastreado não é recusado por falta de régua: {report}",
-        );
+        assert_eq!(report["scaffold"]["untraced_waves"], json!([]), "{report}");
+        assert!(report["scaffold"]["error"].is_null(), "{report}");
+        assert!(!refused(&report), "{report}");
     }
 
-    /// A REGRESSÃO que este teste tranca: um plano com ZERO critérios declarados
-    /// — nem no pai, nem em onda alguma — era ISENTADO da recusa por onda sem
-    /// régua, e materializava em silêncio.
+    /// Um plano com ZERO critérios declarados — nem no pai, nem em onda alguma
+    /// — diz isso UMA vez, como o motivo de as duas checagens por onda ficarem
+    /// caladas. Não é isenção nem recusa: é a mesma frase, dita sobre o plano.
     ///
-    /// A isenção nasceu na checagem de id fantasma e foi estendida a esta
-    /// recusa, e a extensão estava errada: as duas fazem perguntas diferentes.
-    /// "Este id nomeia um critério que existe?" fica sem resposta com o conjunto
-    /// vazio; "esta onda tem régua alguma?" tem a resposta MAIS enfática de
-    /// todas. Isentar aqui era isentar o pior caso — todas as ondas despachadas
-    /// com o `## ACCEPTANCE` colapsado, que é o despacho sem régua que esta
-    /// unidade inteira existe para recusar.
+    /// Substitui `a_plan_with_no_criterion_at_all_is_refused`, que exigia uma
+    /// frase "satisfies no criterion" POR ONDA (`for wave in [...] assert!(…any(|g|
+    /// g.contains(wave)…))`) — asserção que agora falha por desenho: nenhuma
+    /// onda é nomeada, porque a causa não é de nenhuma delas.
     #[test]
-    fn a_plan_with_no_criterion_at_all_is_refused() {
+    fn a_plan_with_no_criterion_at_all_says_so_once() {
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-sem-regua");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -2845,18 +2823,19 @@ mod tests {
         let ScaffoldOutcome::Created { untraced_waves, .. } = scaffold(&spec_dir, &plan_path) else {
             panic!("expected ScaffoldOutcome::Created");
         };
-        for wave in ["wave-1-rt", "wave-2-cli"] {
-            assert!(
-                untraced_waves
-                    .iter()
-                    .any(|g| g.contains(wave) && g.contains("satisfies no criterion")),
-                "toda onda que trabalha sem régua tem de ser nomeada ({wave}): {untraced_waves:?}",
-            );
-        }
+        assert_eq!(untraced_waves.len(), 1, "dito UMA vez, não por onda: {untraced_waves:?}");
+        let only = &untraced_waves[0];
+        assert!(
+            only.contains("no acceptance criterion is defined anywhere"),
+            "a frase nomeia a causa: {only}"
+        );
+        assert!(
+            !only.contains("wave-1-rt") && !only.contains("wave-2-cli"),
+            "e não culpa onda nenhuma — a causa é do plano: {only}"
+        );
 
-        // E a metade que NÃO muda: a checagem de ID FANTASMA continua pulando
-        // quando nada está definido — ali a pergunta ("este id nomeia um
-        // critério que existe?") não tem contra o que ser respondida.
+        // E o id FANTASMA num plano assim não ganha frase própria: sem conjunto
+        // definido não há contra o que compará-lo, e a única frase é a de cima.
         let phantom_plan = write_plan(
             dir.path(),
             json!([
@@ -2869,30 +2848,27 @@ mod tests {
         else {
             panic!("expected ScaffoldOutcome::Created");
         };
+        assert_eq!(phantom.len(), 1, "{phantom:?}");
         assert!(
-            !phantom.iter().any(|g| g.contains("name no criterion")),
+            !phantom[0].contains("AC-99"),
             "sem conjunto definido não há id fantasma a nomear: {phantom:?}",
         );
     }
 
-    /// A REGRESSÃO que este teste tranca, e a combinação que passava pelas DUAS
-    /// checagens: um `satisfies` inteiramente FANTASMA num plano onde nada está
-    /// definido compra um despacho sem régua.
+    /// Um `satisfies` inteiramente FANTASMA num plano onde nada está definido
+    /// não passa em silêncio: o relatório diz, uma vez, que nada define
+    /// critério — e o plano materializa, sem recusa, com o `## ACCEPTANCE` de
+    /// cada onda colapsado, que é exatamente o que a frase avisa.
     ///
-    /// O pai não declara `## Acceptance Criteria` parseável, nenhuma onda declara
-    /// `acceptance`, e toda onda declara `satisfies: ["AC-1"]`. Então `defined`
-    /// fica vazio, a checagem de id fantasma se ISENTA (não há contra o que
-    /// comparar — e essa isenção está certa), e a recusa por onda sem régua media
-    /// `satisfied.is_empty()`, que é FALSO porque a lista tem um id. As duas
-    /// caladas, o plano materializa, o `ac_pool` não tem `AC-1`, todo `spec.md`
-    /// de onda sai sem critério e todo `## ACCEPTANCE` despachado colapsa.
-    ///
-    /// O par: o materializador REAL recusa, e uma onda de um plano ACEITO
-    /// continua carregando a régua dela.
+    /// A asserção de RECUSA que este teste carregava
+    /// (`report["scaffold"]["error"] == json!(ERR_UNTRACED_WAVES)` e
+    /// `refused(&report)`) trancava a tese que esta rodada remove, e agora
+    /// falha por desenho. O par: uma onda de um plano com critérios continua
+    /// carregando a régua dela.
     #[test]
     fn a_wholly_phantom_satisfies_does_not_buy_a_ruler_less_dispatch() {
         use crate::commands::agent::render::sections::read_wave_acceptance;
-        use crate::commands::pipeline::plan_materialize::{materialize, refused, ERR_UNTRACED_WAVES};
+        use crate::commands::pipeline::plan_materialize::{materialize, refused};
 
         let dir = tempdir().unwrap();
         let project = dir.path();
@@ -2916,16 +2892,24 @@ mod tests {
         );
 
         let report = materialize(project, &spec_dir, &plan_path);
-        assert_eq!(
-            report["scaffold"]["error"],
-            json!(ERR_UNTRACED_WAVES),
-            "um `satisfies` que não nomeia critério algum não é régua: {report}",
+        assert!(report["scaffold"]["error"].is_null(), "um aviso não recusa: {report}");
+        assert!(!refused(&report), "{report}");
+        let advisory = report["scaffold"]["untraced_waves"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(advisory.len(), 1, "dito uma vez: {report}");
+        assert!(
+            advisory[0].as_str().unwrap_or_default().contains("no acceptance criterion is defined anywhere"),
+            "e nomeia a causa: {report}"
         );
-        assert!(refused(&report), "e a leitura única do relatório diz recusado: {report}");
+        // O que a frase avisa é verdade: a onda materializou SEM régua.
+        let w1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
+        assert!(!w1.contains("## Acceptance Criteria"), "{w1}");
 
         // A metade que NÃO pode ser apertada junto: um plano cujas ondas traçam a
-        // critérios que EXISTEM materializa, e a régua chega ao arquivo da onda —
-        // que é de onde o `## ACCEPTANCE` do prompt é recortado.
+        // critérios que EXISTEM materializa com a lista vazia, e a régua chega ao
+        // arquivo da onda — que é de onde o `## ACCEPTANCE` do prompt é recortado.
         let ok_dir = tempdir().unwrap();
         let ok_spec = ok_dir.path().join("epic-com-regua");
         std::fs::create_dir_all(&ok_spec).unwrap();
@@ -2954,18 +2938,17 @@ mod tests {
         );
     }
 
-    /// Um `satisfies` que nomeia critério NENHUM é recusado do mesmo jeito que
-    /// uma onda que não declara nada.
+    /// Um `satisfies` que nomeia critério NENHUM é NOMEADO pelo aviso, com o id
+    /// e os ids que existem — e o plano materializa.
     ///
-    /// O buraco que este teste fecha: `AC-01` onde o pai define `AC-1` devolve um
-    /// conjunto satisfeito NÃO-vazio, então a recusa por onda sem critério
-    /// passava batida; o `ac_pool` não tem essa chave, então a onda materializa
-    /// SEM `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt colapsa; e o id
-    /// fantasma só alimenta `defined - covered`, então a lacuna de cobertura
-    /// também não dispara. Um erro de digitação reproduzia em silêncio o defeito
-    /// que esta unidade existe para remover.
+    /// Substitui `a_satisfies_id_naming_no_criterion_is_refused`. O buraco que
+    /// fechava continua fechado: `AC-01` onde o pai define `AC-1` devolve um
+    /// conjunto satisfeito NÃO-vazio, o `ac_pool` não tem essa chave, a onda
+    /// materializa SEM `## Acceptance Criteria` e o `## ACCEPTANCE` do prompt
+    /// colapsa. O que muda é a forma do sinal: uma frase honesta, derivada do
+    /// mesmo conjunto que o renderizador recorta, em vez de uma recusa.
     #[test]
-    fn a_satisfies_id_naming_no_criterion_is_refused() {
+    fn a_satisfies_id_naming_no_criterion_is_named_by_the_warn() {
         let dir = tempdir().unwrap();
         let spec_dir = dir.path().join("epic-fantasma");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -2991,17 +2974,25 @@ mod tests {
         };
         let named = untraced_waves
             .iter()
-            .find(|g| g.contains("wave-1-rt"))
-            .unwrap_or_else(|| panic!("o id fantasma tem de recusar o plano: {untraced_waves:?}"));
-        assert!(named.contains("AC-01"), "a mensagem nomeia o id fantasma: {named}");
+            .find(|g| g.contains("wave-1-rt names AC-01, which no criterion defines"))
+            .unwrap_or_else(|| panic!("o id fantasma tem de ser nomeado: {untraced_waves:?}"));
         assert!(named.contains("AC-1") && named.contains("AC-2"), "e os que existem: {named}");
+        // O mesmo conjunto responde a outra pergunta: a onda 1 não traça a
+        // critério NENHUM que exista, e a frase é a mesma da onda sem
+        // `satisfies` — derivada do conjunto, nunca do tamanho da lista.
+        assert!(
+            untraced_waves
+                .iter()
+                .any(|g| g.contains("wave-1-rt has tasks but traces to no criterion that exists")),
+            "uma lista só de fantasmas é o mesmo despacho sem régua: {untraced_waves:?}"
+        );
         assert!(
             !untraced_waves.iter().any(|g| g.contains("wave-2-cli")),
             "a onda que declara ids reais não entra na lista: {untraced_waves:?}"
         );
 
         // E o outro lado: a onda 1 realmente materializou SEM régua — que é o
-        // motivo pelo qual o id fantasma conta como onda sem rastreio.
+        // que as duas frases dizem.
         let w1 = std::fs::read_to_string(spec_dir.join("wave-1-rt").join("spec.md")).unwrap();
         assert!(
             !w1.contains("## Acceptance Criteria"),
@@ -3009,49 +3000,63 @@ mod tests {
         );
     }
 
-    /// A onda que NÃO declara trabalho nenhum não é recusada pelo id fantasma —
-    /// a MESMA guarda `!tasks.is_empty()` que a recusa irmã (onda sem régua)
-    /// carrega logo abaixo, no mesmo laço.
+    /// A onda que NÃO declara trabalho nenhum ainda tem o id fantasma NOMEADO
+    /// — um erro de digitação é um erro de digitação — mas nunca é dita "sem
+    /// régua" (ela não trabalha), e o plano não é recusado.
     ///
-    /// A regressão que isto tranca: o braço do fantasma perdeu a guarda, e uma
-    /// onda de verificação (`{"tasks": [], "satisfies": ["AC-01"]}`) passou a
-    /// recusar o PLANO INTEIRO com uma frase que afirma que ela "trabalha sem
-    /// régua e é julgada por uma assim mesmo" — sobre uma onda que não declara
-    /// trabalho algum. O contrato da lacuna é "uma onda que FAZ trabalho".
+    /// Este teste media, sob a tese removida, que o aviso do fantasma não
+    /// recusava o PLANO INTEIRO por uma onda de verificação. Agora nada recusa,
+    /// então o que ele mede é o TEXTO: qual frase sai para uma onda sem tarefa,
+    /// e qual não sai. A asserção antiga `untraced_waves.is_empty()` falha por
+    /// desenho — o fantasma é nomeado com ou sem tarefas.
     #[test]
     fn a_task_less_wave_with_a_phantom_id_does_not_refuse_the_plan() {
+        use crate::commands::pipeline::plan_materialize::{materialize, refused};
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join("epic-sem-tarefa");
+        let project = dir.path();
+        let spec_dir = project.join(".claude").join("spec").join("epic-sem-tarefa");
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(
             spec_dir.join("spec.md"),
-            "# Epic\n\n## Acceptance Criteria\n\n\
-             - **AC-1** — a. Command: `true`\n\
-             - **AC-2** — b. Command: `true`\n",
+            "# Epic\n\n## Files\n- `src/a.rs` (create)\n\n\
+             ## Acceptance Criteria\n\
+             - **AC-1** — o comportamento novo vale. Command: `cd no-such-directory-abc`\n\
+             - **AC-2** — build green. Command: `cd .`\n",
         )
         .unwrap();
         let plan_path = write_plan(
-            dir.path(),
+            project,
             json!([
                 { "n": 1, "role": "rt", "summary": "s", "tasks": ["do it"],
                   "files": ["src/a.rs"], "satisfies": ["AC-1", "AC-2"] },
                 // A onda de verificação: nada a fazer, e um id com erro de
-                // digitação. Nenhum trabalho é despachado sem régua aqui.
+                // digitação.
                 { "n": 2, "role": "qa", "summary": "s", "tasks": [],
                   "files": [], "satisfies": ["AC-01"] }
             ]),
         );
 
-        let ScaffoldOutcome::Created { untraced_waves, .. } = scaffold(&spec_dir, &plan_path) else {
-            panic!("expected ScaffoldOutcome::Created");
-        };
+        let report = materialize(project, &spec_dir, &plan_path);
+        assert!(!refused(&report), "nada recusa: {report}");
+        assert!(report["scaffold"]["error"].is_null(), "{report}");
+        let advisory: Vec<String> = report["scaffold"]["untraced_waves"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|g| g.as_str().unwrap_or_default().to_string())
+            .collect();
         assert!(
-            !untraced_waves.iter().any(|g| g.contains("wave-2-qa")),
-            "uma onda sem tarefa nenhuma não trabalha, então nada há a recusar: {untraced_waves:?}"
+            advisory.iter().any(|g| g.contains("wave-2-qa names AC-01, which no criterion defines")),
+            "o erro de digitação é nomeado mesmo sem tarefas: {advisory:?}"
         );
         assert!(
-            untraced_waves.is_empty(),
-            "e o plano inteiro passa: {untraced_waves:?}"
+            !advisory.iter().any(|g| g.contains("wave-2-qa has tasks")),
+            "uma onda sem tarefa nenhuma não trabalha, então não é dita sem régua: {advisory:?}"
+        );
+        assert!(
+            !advisory.iter().any(|g| g.contains("wave-1-rt")),
+            "e a onda que declara ids reais não entra na lista: {advisory:?}"
         );
     }
 
@@ -3424,7 +3429,7 @@ mod tests {
         assert!(
             gaps.untraced_waves
                 .iter()
-                .any(|g| g.contains("wave-1-backend") && g.contains("satisfies no criterion")),
+                .any(|g| g.contains("wave-1-backend") && g.contains("traces to no criterion")),
             "wave with tasks but no AC must be a gap: {:?}",
             gaps.untraced_waves
         );
@@ -3434,10 +3439,7 @@ mod tests {
             gaps.uncovered_acs,
         );
         // (a') …e a MESMA onda com um `satisfies`, que é o que um plano real
-        // carrega: ela sai da lista. A fixture já mediu o contrário — a mesma
-        // onda SEM `satisfies` num plano sem critério nenhum, isentada — e a
-        // isenção estava errada: "esta onda tem régua alguma?" tem resposta com
-        // o conjunto vazio, e a resposta é NÃO (ver `pre_criteria_plan`).
+        // carrega: ela sai da lista.
         let mut traced = wave(vec!["do the thing"], vec![], vec!["AC-1"]);
         traced.files = vec!["src/lib.rs".to_string()];
         let drafting = traceability_gaps(&plan(traced), Some(parent_ac));

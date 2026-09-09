@@ -62,7 +62,8 @@
 //! {
 //!   "events": ["pipeline.scope", "pipeline.phase"],
 //!   "scaffold": {
-//!     "created_files": [], "skipped": [], "refreshed": [], "removed": []
+//!     "created_files": [], "skipped": [], "refreshed": [], "removed": [],
+//!     "untraced_waves": []
 //!   },
 //!   "validation": { "ok": true, "issues": [] },
 //!   "dependencies": { "ok": true, "issues": [] },
@@ -80,7 +81,10 @@
 //! scaffold failed — no phase transition is recorded for a plan that did not
 //! materialise). The four scaffold lists are ALWAYS present (empty when nothing
 //! changed) and `refreshed` / `removed` are sorted, so re-running an unchanged
-//! plan prints the same bytes. `refreshed` / `removed` are non-empty only before
+//! plan prints the same bytes. `untraced_waves` is advisory — a wave with tasks
+//! that traces to no existing criterion, or a `satisfies` id no criterion
+//! defines — and travels whether or not the scaffold refused, like
+//! `validation.issues`. `refreshed` / `removed` are non-empty only before
 //! the user approves the spec — see
 //! [`crate::commands::wave::wave_scaffold`]'s write modes. Keys serialize in
 //! insertion order (the workspace enables serde_json's `preserve_order`), which
@@ -135,21 +139,6 @@ const ERR_UNSUPPORTABLE_CLAIMS: &str = "unsupportable acceptance-criteria claims
 /// reader to edit different lines. Mapped to exit 2 like its two siblings.
 const ERR_CRITERIA_OUTSIDE_CLAIMANTS: &str = "acceptance criteria outside their claimants";
 
-/// Marcador `scaffold.error` para uma onda que faz trabalho (`tasks`) e não
-/// satisfaz critério nenhum. Mapeado para exit 2 como os três irmãos, e apartado
-/// deles pelo mesmo motivo: aqui o sujeito é a ONDA, não o critério, e a linha
-/// que o leitor precisa editar é a dela.
-///
-/// Era o único dos quatro sinais de rastreabilidade que só avisava. O que mudou
-/// é que o `## Acceptance Criteria` da onda — e o bloco `## ACCEPTANCE` do prompt
-/// despachado — passou a ser recortado por esse conjunto: uma onda sem critério
-/// é um agente despachado sem régua, e ainda assim medido por uma no QA.
-/// `pub(crate)` para que o teste que trava a RECUSA (em `wave_scaffold`, junto
-/// da onda que a provoca) afirme contra o marcador de verdade e não contra uma
-/// segunda cópia da frase.
-pub(crate) const ERR_UNTRACED_WAVES: &str =
-    "waves whose work traces to no acceptance criterion";
-
 /// Stdout `sharedFiles.error` marker for a plan whose dispatch-parallel waves
 /// declare the same file. [`run`] maps it to exit 2 and [`materialize`] withholds
 /// the PLAN transition — like the coverage gate, and with no env knob: waves of
@@ -201,8 +190,9 @@ pub fn run(opts: PlanMaterializeOpts) {
 /// A refusal is a blocking gate: the plan could not be read, one of the three
 /// scaffold gates (coverage / unsupportable claims / sufficiency) fired, two
 /// dispatch-parallel waves declared the same file, or the negative proof
-/// refused. The two WARN-level steps (`validation`, `dependencies`) are NOT
-/// refusals — they are expressed in the JSON and the plan still materialises.
+/// refused. The WARN-level signals (`validation`, `dependencies`, and the
+/// scaffold's `untraced_waves`) are NOT refusals — they are expressed in the
+/// JSON and the plan still materialises.
 pub(crate) fn refused(report: &Value) -> bool {
     let scaffold_err = report["scaffold"]["error"].as_str();
     let proven = report["proof"]["ok"].as_bool().unwrap_or(false);
@@ -213,7 +203,6 @@ pub(crate) fn refused(report: &Value) -> bool {
         || scaffold_err == Some(ERR_UNCOVERED_ACS)
         || scaffold_err == Some(ERR_UNSUPPORTABLE_CLAIMS)
         || scaffold_err == Some(ERR_CRITERIA_OUTSIDE_CLAIMANTS)
-        || scaffold_err == Some(ERR_UNTRACED_WAVES)
         || !disjoint
         || !proven
 }
@@ -327,6 +316,11 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
         // criterion that no wave covers BLOCKS the PLAN transition. The layout
         // was materialised (idempotent), but `scaffold_ok=false` withholds the
         // events and `run` exits non-zero, so the gap is fixed before EXECUTE.
+        //
+        // `untraced_waves` travels in BOTH arms and decides neither: it is
+        // advisory, like `validation.issues` — a wave with tasks and no
+        // criterion is dispatched with its `## ACCEPTANCE` collapsed, and the
+        // report says so without withholding the plan.
         ScaffoldOutcome::Created {
             created,
             skipped,
@@ -338,8 +332,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
             untraced_waves,
         } if uncovered_acs.is_empty()
             && unsupportable_claims.is_empty()
-            && criteria_outside_claimants.is_empty()
-            && untraced_waves.is_empty() =>
+            && criteria_outside_claimants.is_empty() =>
         {
             (
                 json!({
@@ -347,6 +340,7 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                     "skipped": skipped,
                     "refreshed": refreshed,
                     "removed": removed,
+                    "untraced_waves": untraced_waves,
                 }),
                 true,
             )
@@ -372,19 +366,16 @@ pub(crate) fn materialize(project: &Path, spec_dir: &Path, plan_path: &Path) -> 
                 "skipped": skipped,
                 "refreshed": refreshed,
                 "removed": removed,
-                // Coverage first, then the contradiction, then sufficiency, then
-                // the untraced wave: a criterion nobody claimed cannot also be
-                // judged on whether its claimant reaches its paths, so the
-                // earlier question owns the headline while every list travels in
-                // full.
+                // Coverage first, then the contradiction, then sufficiency: a
+                // criterion nobody claimed cannot also be judged on whether its
+                // claimant reaches its paths, so the earlier question owns the
+                // headline while every list travels in full.
                 "error": if !uncovered_acs.is_empty() {
                     ERR_UNCOVERED_ACS
                 } else if !unsupportable_claims.is_empty() {
                     ERR_UNSUPPORTABLE_CLAIMS
-                } else if !criteria_outside_claimants.is_empty() {
-                    ERR_CRITERIA_OUTSIDE_CLAIMANTS
                 } else {
-                    ERR_UNTRACED_WAVES
+                    ERR_CRITERIA_OUTSIDE_CLAIMANTS
                 },
                 "uncovered_acs": uncovered_acs,
                 "unsupportable_claims": unsupportable_claims,

@@ -124,14 +124,12 @@ pub struct AcAmendOpts {
     /// against the tree as it is, proving the replacement's red came from the
     /// missing behaviour rather than from a filter that selects nothing.
     ///
-    /// Optional for every command shape but one. A FILTERED TEST RUNNER exits 0
-    /// when its filter matches nothing, so
-    /// [`ac_negative_check::prove_one`] REFUSES one that declares no control —
-    /// and this door passed `None` unconditionally, which made it dead for
-    /// exactly the criterion shape the rule targets: the module doc's own
-    /// motivating case is `cargo test <unknown>` answering `0 passed` with
-    /// exit 0. A non-runner replacement, or an unfiltered one, still needs
-    /// nothing here and behaves exactly as before.
+    /// Optional for every command shape. Omitted, the criterion keeps the
+    /// control its line already carries; given, it is taken in the same pass
+    /// as the red proof and written onto the line. Worth declaring for a
+    /// FILTERED TEST RUNNER (`cargo test <unknown>` answers `0 passed` with
+    /// exit 0), which the drafting lint names as `test-ac-no-control` — but its
+    /// absence never refuses the amendment.
     pub control: Option<String>,
     /// Take the proof against ANOTHER tree — a checkout that does not yet carry
     /// the work — instead of the one being amended.
@@ -210,12 +208,8 @@ pub(crate) struct AcAmendReport {
     /// Where the proof ledger lives, when it was updated.
     pub(crate) ledger: Option<String>,
     /// Refusal / failure code: `blank_reason`, `unknown_spec`,
-    /// `unknown_criterion`, `control_required`, `replacement_not_proven`,
-    /// `rewrite_failed`, `ledger_write_failed`.
-    ///
-    /// `control_required` is split out of `replacement_not_proven` on purpose:
-    /// it is the ONE refusal here that a flag clears, so a generic "not proven"
-    /// would leave the caller with no action to take.
+    /// `unknown_criterion`, `replacement_not_proven`, `rewrite_failed`,
+    /// `ledger_write_failed`.
     pub(crate) error: Option<String>,
     /// The one action that clears the refusal. Absent when nothing is wrong.
     pub(crate) remedy: Option<String>,
@@ -889,8 +883,8 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // green before the work by design.
     let exempt = ac_negative_check::is_exempt(index, items.len());
     // The `Control:` the CALLER declared, if any — blank is the same as absent,
-    // so a shell that expanded an empty variable cannot smuggle a control past
-    // the requirement. Only this value is WRITTEN back to the line (see
+    // so a shell that expanded an empty variable cannot write an empty control
+    // onto the line. Only this value is WRITTEN back to the line (see
     // [`Rewrite::control`]), exactly as only `opts.expect` is.
     let declared_control = opts
         .control
@@ -901,9 +895,8 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // same rule `--expect` follows one statement above, and for the same reason:
     // each flag changes only what it names. Without this fallback, amending the
     // COMMAND of a criterion whose line already declares `Control:` handed
-    // `None` to the proof engine, `control_required` fired, and the door refused
-    // by demanding a flag whose value was already written on the line it was
-    // rewriting.
+    // `None` to the proof engine, and the control the line carries was never
+    // taken for the replacement.
     let control = declared_control.or_else(|| {
         superseded
             .control
@@ -993,34 +986,11 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
 
     if proof.verdict == Verdict::Unproven {
         let reason = proof.reason.clone().unwrap_or_default();
-        // The ONE refusal here a FLAG clears, said as itself. A filtered test
-        // runner with no `Control:` is unproven for a reason that has nothing to
-        // do with the replacement's quality, and answering it with the generic
-        // "does not clear the negative test" pointed the caller at the command —
-        // the one thing that is not the problem. The predicate is the engine's
-        // own ([`ac_negative_check::control_required`]), never a second reading
-        // of "is this a filtered runner".
-        let (error, remedy) = if ac_negative_check::control_required(&opts.command, control) {
-            (
-                "control_required",
-                format!(
-                    "the replacement's command is a FILTERED TEST RUNNER, which exits 0 when its \
-                     filter selects nothing — so its red can be an empty selection rather than the \
-                     missing behaviour. Re-run this amendment with `--control '<command>'`, naming \
-                     a command that comes back GREEN against the tree as it is (the suite without \
-                     the new filter, or a command naming the file the new test lands in) — {reason}"
-                ),
-            )
-        } else {
-            (
-                "replacement_not_proven",
-                format!(
-                    "the REPLACEMENT does not clear the negative test, so it proves exactly as \
-                     little as the criterion it would replace — {reason}"
-                ),
-            )
-        };
-        let mut report = AcAmendReport::refused(opts, &id, error, &remedy);
+        let remedy = format!(
+            "the REPLACEMENT does not clear the negative test, so it proves exactly as little as \
+             the criterion it would replace — {reason}"
+        );
+        let mut report = AcAmendReport::refused(opts, &id, "replacement_not_proven", &remedy);
         report.proof = Some(proof);
         return report;
     }
@@ -1260,73 +1230,71 @@ mod tests {
             .unwrap_or_else(|| panic!("{id} unreadable: {markdown:?}"))
     }
 
-    /// A REGRESSÃO que este teste tranca: esta porta chamava `prove_one` com
-    /// `control: None` SEMPRE, e nem a struct de opções nem a CLI carregavam um
-    /// `Control:`.
+    /// Um executor de teste FILTRADO sem `--control` é julgado pelo COMANDO,
+    /// como qualquer outro: a porta não o recusa por falta de controle.
     ///
-    /// Desde que a prova negativa passou a RECUSAR um executor de teste
-    /// FILTRADO que não declara controle, isso deixava a porta MORTA para
-    /// exatamente a forma de critério que a regra mira — a mesma que o doc deste
-    /// módulo dá como caso motivador (`cargo test <desconhecido>` respondendo
-    /// `0 passed` com exit 0). Não havia entrada nenhuma que limpasse a
-    /// exigência, e a recusa saía como o genérico `replacement_not_proven`, que
-    /// aponta o chamador para o comando — a única coisa que não era o problema.
+    /// Substitui `a_filtered_runner_replacement_owes_a_control_and_the_flag_clears_it`,
+    /// que trancava a tese "opcional deixa de ser opcional" com `!refused.ok` e
+    /// `refused.error == Some("control_required")` para o caso (a) abaixo —
+    /// asserções que agora falham por desenho. O que fica: a flag `--control`
+    /// continua sendo tomada e registrada quando declarada, e um comando que
+    /// não é executor continua não devendo nada.
     #[test]
-    fn a_filtered_runner_replacement_owes_a_control_and_the_flag_clears_it() {
-        // Um executor de teste FILTRADO: o `my_new_case` é seleção por nome, e
-        // um filtro que não casa nada sai 0 — que é toda a razão da exigência.
+    fn a_filtered_runner_replacement_without_a_control_is_judged_by_its_command() {
+        // Um executor de teste FILTRADO: o `my_new_case` é seleção por nome.
         const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
 
-        // (a) Sem `--control`: recusa PRÓPRIA, nomeando a flag que a limpa.
-        // Nada é executado — a exigência dispara antes do comando.
+        // (a) Sem `--control`: o comando é LANÇADO e o veredito é o dele. Que
+        // cor sai depende desta máquina (o cargo sem `Cargo.toml` sai vermelho;
+        // um cargo ausente sai 127), e as duas leituras são honestas — o que
+        // não pode acontecer é a recusa por exigência de controle.
         let a = tempdir().unwrap();
         seed(a.path(), "runner");
-        let refused = amend(
+        let judged = amend(
             a.path(),
             &opts("runner", "AC-1", FILTERED, "o critério passa a nomear o teste novo"),
         );
-        assert!(!refused.ok, "um executor filtrado sem controle não pode passar: {refused:?}");
-        assert_eq!(
-            refused.error.as_deref(),
+        assert_ne!(
+            judged.error.as_deref(),
             Some("control_required"),
-            "a recusa é a da exigência de controle, não a genérica: {refused:?}",
+            "não existe mais essa recusa: {judged:?}",
         );
+        let proof = judged.proof.as_ref().expect("a prova é registrada seja qual for o veredito");
+        assert!(proof.exit.is_some(), "o comando foi lançado — nada o recusou antes do shell: {judged:?}");
+        assert_eq!(proof.control, ac_negative_check::Control::NotDeclared, "{judged:?}");
         assert!(
-            refused.remedy.as_deref().unwrap_or_default().contains("--control"),
-            "e ela NOMEIA a ação que a limpa: {:?}",
-            refused.remedy,
+            !judged.remedy.as_deref().unwrap_or_default().contains("--control"),
+            "a recusa, se houver, é sobre o comando: {judged:?}",
         );
 
-        // (b) Com `--control`: a exigência está limpa. O veredito volta a ser
-        // sobre o comando (aqui, o que o executor devolver), e o controle
-        // declarado entra no registro da prova — a evidência de que ele foi
-        // mesmo levado ao motor, e não engolido pela porta.
+        // (b) Com `--control`: o controle declarado entra no registro da prova
+        // — a flag continua viva, como entrada OPCIONAL.
         let b = tempdir().unwrap();
         seed(b.path(), "runner");
         let mut with_control =
             opts("runner", "AC-1", FILTERED, "idem, agora com o controle declarado");
         with_control.control = Some(GREEN_COMMAND.to_string());
         let taken = amend(b.path(), &with_control);
-        assert_ne!(
-            taken.error.as_deref(),
-            Some("control_required"),
-            "declarar o controle tem de limpar a exigência: {taken:?}",
-        );
         assert_eq!(
             taken.proof.as_ref().and_then(|p| p.control_command.as_deref()),
             Some(GREEN_COMMAND),
-            "e o controle declarado chega ao registro da prova: {taken:?}",
+            "o controle declarado chega ao registro da prova: {taken:?}",
+        );
+        assert_eq!(
+            taken.proof.as_ref().map(|p| p.control),
+            Some(ac_negative_check::Control::Green),
+            "e foi tomado no mesmo passo: {taken:?}",
         );
 
-        // (c) A outra metade, que não pode ser afrouxada junto: um comando que
-        // NÃO é executor de teste continua sem dever controle nenhum.
+        // (c) A outra metade: um comando que NÃO é executor de teste continua
+        // sem dever controle nenhum, e passa.
         let c = tempdir().unwrap();
         seed(c.path(), "runner");
         let plain = amend(
             c.path(),
             &opts("runner", "AC-1", OTHER_RED_COMMAND, "sem executor, sem controle"),
         );
-        assert!(plain.ok, "a exigência é SÓ do executor filtrado: {plain:?}");
+        assert!(plain.ok, "{plain:?}");
     }
 
     /// `--control` OMITIDO cai no controle que o CRITÉRIO já declara — a mesma
@@ -1335,10 +1303,9 @@ mod tests {
     ///
     /// A regressão que isto tranca: `control` era `opts.control` e nada mais.
     /// Emendar o COMANDO de um critério cuja linha JÁ carrega `Control:`
-    /// entregava `None` ao motor, o `control_required` disparava, e a porta
-    /// recusava mandando declarar uma flag cujo valor já estava escrito na linha
-    /// que ela ia reescrever. O comentário que descrevia o comportamento
-    /// pretendido ficava inalcançável, porque a porta recusava antes.
+    /// entregava `None` ao motor, e o controle escrito na linha nunca era
+    /// tomado para a substituta — o registro dizia `not-declared` sobre um
+    /// critério que declara.
     #[test]
     fn an_omitted_control_falls_back_to_the_one_the_criterion_declares() {
         // O executor FILTRADO: sai 0 quando o filtro não casa nada, que é toda a
@@ -1364,17 +1331,12 @@ mod tests {
         .unwrap();
 
         // (a) A linha do AC-1 já carrega o controle; a emenda nomeia só o
-        // comando, e a porta NÃO cobra o que já está escrito.
+        // comando, e o controle DA LINHA é o que vai ao motor.
         let taken = amend(
             dir.path(),
             &opts("carried", "AC-1", FILTERED, "o critério passa a nomear o teste novo"),
         );
-        assert_ne!(
-            taken.error.as_deref(),
-            Some("control_required"),
-            "a linha já declara o controle que a recusa pediria: {taken:?}",
-        );
-        assert!(taken.ok, "e a emenda é aceita: {taken:?}");
+        assert!(taken.ok, "a emenda é aceita: {taken:?}");
         assert_eq!(
             taken.proof.as_ref().and_then(|p| p.control_command.as_deref()),
             Some(GREEN_COMMAND),
@@ -1391,16 +1353,20 @@ mod tests {
         assert_eq!(md.matches("Control:").count(), 1, "marcador duplicado: {md:?}");
 
         // (b) A metade que não pode afrouxar junto: o AC-2 nunca teve controle,
-        // e um executor filtrado continua devendo um.
+        // e a emenda dele não INVENTA um — o registro diz `not-declared`, e a
+        // porta não recusa por isso.
         let owed = amend(
             dir.path(),
             &opts("carried", "AC-2", FILTERED, "idem, num critério sem controle"),
         );
+        assert_ne!(owed.error.as_deref(), Some("control_required"), "{owed:?}");
+        let owed_proof = owed.proof.as_ref().expect("a prova é registrada");
         assert_eq!(
-            owed.error.as_deref(),
-            Some("control_required"),
-            "sem controle na linha a exigência continua de pé: {owed:?}",
+            owed_proof.control_command,
+            None,
+            "sem controle na linha e sem flag, nada é inventado: {owed:?}",
         );
+        assert_eq!(owed_proof.control, ac_negative_check::Control::NotDeclared, "{owed:?}");
 
         // (c) E o `--control` explícito ainda vence o que a linha carrega.
         let mut explicit = opts(
@@ -1426,17 +1392,20 @@ mod tests {
     ///
     /// A regressão que isto tranca: a flag chegava ao motor e ao
     /// `control_command` do ledger, e a reescrita não escrevia marcador nenhum
-    /// na linha. O critério admitido por esta porta era recusado OUTRA VEZ no
-    /// portão de aprovação — que é onde o operador o encontra. Uma flag que
-    /// parece funcionar e não funciona é pior que uma que não existe.
+    /// na linha. O critério admitido por esta porta reaparecia SEM controle na
+    /// passada seguinte, que registrava `not-declared` e avisava — sobre um
+    /// controle que o operador tinha declarado. Uma flag que parece funcionar e
+    /// não funciona é pior que uma que não existe.
     ///
-    /// Dois lados, e o veredito de cada um vem do predicado do próprio portão
-    /// ([`ac_negative_check::control_required`]) alimentado pela RELEITURA, não
-    /// de uma segunda leitura de "isto é um executor filtrado?".
+    /// Dois lados, e o veredito de cada um vem do predicado do lint de rascunho
+    /// (`test_runner_has_selector`, o que nomeia `test-ac-no-control`)
+    /// alimentado pela RELEITURA, não de uma segunda leitura de "isto é um
+    /// executor filtrado?".
     #[test]
     fn an_amended_control_lands_on_the_line_the_next_gate_reads() {
-        // Um executor de teste FILTRADO — a forma que o portão recusa quando
-        // não acha `Control:` na linha.
+        use crate::commands::review::analyze_validation::test_runner_has_selector;
+        // Um executor de teste FILTRADO — a forma que o lint de rascunho nomeia
+        // quando não acha `Control:` na linha.
         const FILTERED: &str = "cargo test -p mustard-rt my_new_case";
         let md = "## Acceptance Criteria\n- **AC-2** — old statement.\n  Command: `cd old`\n";
         let plan = |control: Option<&str>| Rewrite {
@@ -1446,8 +1415,8 @@ mod tests {
             control: control.map(str::to_string),
         };
 
-        // COM `--control`: a releitura acha o controle, e o portão seguinte já
-        // não tem o que cobrar.
+        // COM `--control`: a releitura acha o controle, e o lint de rascunho
+        // nada tem a nomear.
         let with =
             rewrite_markdown(md, "AC-2", &plan(Some(GREEN_COMMAND))).expect("the criterion changed");
         let item = read_back(&with, "AC-2");
@@ -1458,18 +1427,17 @@ mod tests {
             "o `Control:` tem de estar NA LINHA, não só no registro da prova: {with:?}",
         );
         assert!(
-            !ac_negative_check::control_required(&item.command, item.control.as_deref()),
-            "a passada seguinte tem de aceitar o critério admitido pela porta: {with:?}",
+            test_runner_has_selector(&item.command) && item.control.is_some(),
+            "a passada seguinte lê o controle da linha: {with:?}",
         );
 
-        // SEM ela: o critério fica sem controle e o portão volta a cobrar — que
-        // é exatamente a recusa que o critério encontrava logo adiante.
+        // SEM ela: o critério fica sem controle e o lint volta a nomeá-lo.
         let without = rewrite_markdown(md, "AC-2", &plan(None)).expect("the command changed");
         let item = read_back(&without, "AC-2");
         assert_eq!(item.control, None, "{without:?}");
         assert!(
-            ac_negative_check::control_required(&item.command, item.control.as_deref()),
-            "sem controle nenhum o portão TEM de cobrar — senão este teste não mede nada: \
+            test_runner_has_selector(&item.command) && item.control.is_none(),
+            "sem controle nenhum o lint TEM de nomear — senão este teste não mede nada: \
              {without:?}",
         );
     }

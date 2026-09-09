@@ -639,13 +639,12 @@ pub(crate) fn counts_per_file(command: &str) -> bool {
 /// nothing of this feature's, and red because the `Expect:` regex missed rather
 /// than because the behaviour is absent.
 ///
-/// `pub(crate)` because THREE readers ask this about the same criterion and must
-/// never disagree: the V6b lint (a runner AC with no `Expect:` evidence regex),
-/// the V6d lint (a runner AC with no `Control:`), and the negative test itself
-/// ([`ac_negative_check`]), which REFUSES a runner criterion that declares no
-/// control. A second copy is how the drafting warning and the proof-time
-/// refusal would come to name different criteria — the same reason
-/// [`counts_per_file`] is shared with the amendment door.
+/// `pub(crate)` because the readers that ask this about the same criterion must
+/// never disagree: the V6b lint (a runner AC with no `Expect:` evidence regex)
+/// and the V6d lint (a runner AC with no `Control:`), both WARN-level at
+/// drafting. A second copy is how two warnings would come to name different
+/// criteria — the same reason [`counts_per_file`] is shared with the amendment
+/// door.
 pub(crate) fn is_test_runner_command(command: &str) -> bool {
     let cmd = command.trim();
     if cmd.is_empty()
@@ -702,12 +701,12 @@ fn runner_tokens(command: &str) -> Vec<&str> {
 // BOOLEANAS no go, no pytest, no vitest e no jest. Com a lista única,
 // `go test ./... -v -run TestNewCase` pulava dois tokens no `-v`, engolia o
 // `-run` e lia `TestNewCase` como posicional — o detector devolvia "sem
-// seletor" e NEM o aviso `test-ac-no-control` NEM a recusa da prova negativa
-// disparavam para a população inteira que eles existem para pegar.
+// seletor" e o aviso `test-ac-no-control` não disparava para a população
+// inteira que ele existe para pegar.
 //
 // A direção do erro continua sendo a segura em cada lista: uma flag de valor
 // que a lista da família não conhece faz o valor dela ser lido como posicional,
-// e isso EXIGE o `Control:` — nunca o dispensa.
+// e isso faz o aviso DISPARAR — nunca o silencia.
 
 /// cargo: `-p`, `--features`, `--target` … escolhem ONDE rodar.
 const CARGO_SCOPE_VALUE_FLAGS: &[&str] = &[
@@ -752,14 +751,12 @@ const JS_SCOPE_VALUE_FLAGS: &[&str] = &[
 ///
 /// ## O que conta como seletor, e por quê
 ///
-/// A razão declarada da exigência de `Control:` é UMA: um executor de teste sai
-/// com código 0 quando o FILTRO dele não seleciona nada, então o vermelho do
-/// critério pode ser a seleção vazia em vez do comportamento ausente. Um comando
-/// que roda a SUÍTE INTEIRA (`cargo test -p mustard-rt --lib`, `pytest`,
-/// `go test ./...`) não tem filtro que possa selecionar nada — não existe o modo
-/// de falha que a exigência endereça, e cobrá-la ali é friccão pura. Pior: a
-/// prova negativa RE-JULGA registros já arquivados, então todo critério antigo
-/// dessa forma viraria `Unproven` sem sequer executar o comando.
+/// A razão declarada do aviso `test-ac-no-control` é UMA: um executor de teste
+/// sai com código 0 quando o FILTRO dele não seleciona nada, então o vermelho
+/// do critério pode ser a seleção vazia em vez do comportamento ausente. Um
+/// comando que roda a SUÍTE INTEIRA (`cargo test -p mustard-rt --lib`,
+/// `pytest`, `go test ./...`) não tem filtro que possa selecionar nada — não
+/// existe o modo de falha que o aviso endereça, e avisar ali é ruído puro.
 ///
 /// Então o gatilho é NOMEAÇÃO, não escopo:
 ///
@@ -823,12 +820,10 @@ pub(crate) fn test_runner_has_selector(command: &str) -> bool {
 ///
 /// `cargo nextest run` é a invocação da SUÍTE INTEIRA: `nextest` é o subcomando
 /// do cargo e `run` é o subcomando DELE, não um nome de teste. Lendo a partir do
-/// índice 2 fixo, o `run` caía como posicional e a suíte inteira passava a
-/// dever um `Control:` — e como a prova negativa RE-JULGA o ledger arquivado
-/// ([`super::ac_negative_check::run_pass`]), todo critério dessa forma virava
-/// `Unproven` sem o comando sequer ser executado: a recusa do acervo inteiro que
-/// o gatilho por NOMEAÇÃO existe para não causar. É a mesma isenção de
-/// subcomando que `vitest run` / `jest run` já tinham.
+/// índice 2 fixo, o `run` caía como posicional e a suíte inteira ganhava um
+/// `test-ac-no-control` que não tinha defeito atrás — o ruído que o gatilho por
+/// NOMEAÇÃO existe para não causar. É a mesma isenção de subcomando que
+/// `vitest run` / `jest run` já tinham.
 ///
 /// A isenção alcança SÓ a palavra `run`: `cargo nextest run my_case` e
 /// `cargo nextest run -E 'test(my_case)'` continuam estreitando por nome, e
@@ -1311,16 +1306,15 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
         // nome de teste com erro de digitação, um caminho que não existe) em vez
         // do comportamento ausente. O `Control:` — um comando que precisa vir
         // VERDE contra a árvore como ela está — é o que separa os dois, e ele é
-        // cobrado aqui, na redação, onde o conserto custa uma linha.
-        //
-        // Este aviso e a RECUSA do `ac-negative-check` leem o MESMO predicado
-        // ([`test_runner_has_selector`]): o critério que o portão vai recusar é
-        // exatamente o que este aviso nomeia, nunca um vizinho parecido.
+        // pedido aqui, na redação, onde o conserto custa uma linha. Só aqui: a
+        // prova negativa NÃO recusa o critério por isso — ela o prova do jeito
+        // de sempre e registra `control: not-declared`. Este aviso é o sinal
+        // honesto; a recusa é outra unidade.
         //
         // E o predicado é o do FILTRO, não o do verbo. Uma suíte inteira
         // (`cargo test -p x --lib`, `pytest`, `go test ./...`) não tem filtro que
-        // possa selecionar nada, então o modo de falha que a exigência endereça
-        // não existe ali — ver [`test_runner_has_selector`].
+        // possa selecionar nada, então o modo de falha que o aviso endereça não
+        // existe ali — ver [`test_runner_has_selector`].
         // Excludes the trailing safety AC, `<…>` skeletons, and ids already
         // flagged weak (a tautology's fix is replacement, not a Control line).
         let no_control: Vec<String> = ac_items
@@ -1345,8 +1339,8 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                      here can be an empty selection instead of the missing behaviour — add a \
                      `Control: `<command>`` line that comes back GREEN against the tree as it is \
                      (the unfiltered suite, or the file the new test lands in), so the red is \
-                     proven to be about the behaviour. `ac-negative-check` refuses such a \
-                     criterion.",
+                     proven to be about the behaviour. Without one, `ac-negative-check` still \
+                     takes the proof and records `control: not-declared`.",
                     no_control.join(", ")
                 ),
             }));
@@ -1481,9 +1475,9 @@ mod tests {
     /// `RUNNER_SCOPE_VALUE_FLAGS` era uma lista só para todas as famílias, e
     /// `-v`/`-w`/`-f`/`-c`/`-j` só tomam valor no `dotnet`. Então
     /// `go test ./... -v -run TestNewCase` pulava dois tokens no `-v`, engolia o
-    /// `-run` e lia `TestNewCase` como posicional de escopo: sem seletor. Nem o
-    /// aviso `test-ac-no-control` nem a recusa da prova negativa disparavam para
-    /// a população inteira que eles existem para pegar.
+    /// `-run` e lia `TestNewCase` como posicional de escopo: sem seletor. O
+    /// aviso `test-ac-no-control` não disparava para a população inteira que
+    /// ele existe para pegar.
     ///
     /// Um comando por família, com a booleana ANTES do seletor.
     #[test]
@@ -1555,12 +1549,10 @@ mod tests {
     /// comando FILTRADO, porque o `run` — subcomando do `nextest` — caía como
     /// posicional na varredura que começa no índice 2.
     ///
-    /// O custo não era um aviso a mais: um critério de SUÍTE INTEIRA passava a
-    /// dever um `Control:`, ganhava `test-ac-no-control` no rascunho e, como a
-    /// prova negativa RE-JULGA o ledger arquivado, virava `Unproven` sem o
-    /// comando ser executado — a recusa do acervo inteiro que o gatilho por
-    /// NOMEAÇÃO existe justamente para não causar. `vitest`/`jest` já tinham a
-    /// isenção de subcomando; o cargo e o nextest não.
+    /// O custo: um critério de SUÍTE INTEIRA ganhava `test-ac-no-control` no
+    /// rascunho sem ter o modo de falha que o aviso endereça — o ruído que o
+    /// gatilho por NOMEAÇÃO existe justamente para não causar. `vitest`/`jest`
+    /// já tinham a isenção de subcomando; o cargo e o nextest não.
     #[test]
     fn a_runner_subcommand_is_not_read_as_a_filter() {
         // A SUÍTE INTEIRA, nas duas grafias do cargo: nada aqui pode vir vazio.
