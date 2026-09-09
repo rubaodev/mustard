@@ -39,7 +39,9 @@
 //!   none of those.
 
 use crate::commands::agent::context_inject;
-use crate::commands::pipeline::resume_bootstrap::resolve_operational_spec_path;
+use crate::commands::pipeline::resume_bootstrap::{
+    find_wave_spec_path, resolve_operational_spec_path,
+};
 use crate::shared::context::project_dir;
 use mustard_core::io::fs as mfs;
 use mustard_core::ClaudePaths;
@@ -84,9 +86,9 @@ use reference::build_reference_files;
 use retry::compose_retry_context;
 use role::{build_role_block, patterns_task_block};
 use sections::{
-    build_conversation_material, collapse_empty_sections, filter_task_lines, read_guards_block,
-    read_reality_obligations, read_spec_lang, scan_unfilled, strip_unfilled_template_tokens,
-    MaterialCensus,
+    build_conversation_material, build_why_block, collapse_empty_sections, filter_task_lines,
+    read_guards_block, read_reality_obligations, read_spec_lang, read_wave_acceptance,
+    scan_unfilled, strip_unfilled_template_tokens, MaterialCensus,
 };
 use skills::build_skills_list;
 
@@ -121,6 +123,8 @@ pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
     "{cross_wave_memory}",
     "{reference_files}",
     "{skills_list}",
+    "{why_block}",
+    "{acceptance_block}",
     "{retry_context}",
 ];
 
@@ -141,6 +145,25 @@ impl RenderMode {
             "fix-loop" | "fix_loop" | "fixloop" => Self::FixLoop,
             _ => Self::First,
         }
+    }
+
+    /// The `--mode` spelling that selects this variant, so a refusal can quote
+    /// the caller's own flag back at it.
+    #[must_use]
+    fn flag(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Granular => "granular",
+            Self::FixLoop => "fix-loop",
+        }
+    }
+
+    /// `true` for the two RE-dispatch modes. A retry re-runs ONE agent that
+    /// already ran, so it always has a wave — [`wave_flag_refusal`] is the rule
+    /// that says so out loud.
+    #[must_use]
+    fn is_retry(self) -> bool {
+        matches!(self, Self::Granular | Self::FixLoop)
     }
 }
 
@@ -199,6 +222,12 @@ pub fn run(
     // project root, and emitted a prompt with an empty `## TASK` and zero
     // material — with exit 0, a written file, and no warning.
     if let Some(refusal) = spec_refusal(&project, spec) {
+        eprintln!("agent-prompt-render: REFUSED: {refusal}");
+        std::process::exit(2);
+    }
+    // A RETRY of a wave plan that names no wave. Same refusal, same reason: an
+    // argument that names nothing is not a placeholder to fail open on.
+    if let Some(refusal) = wave_flag_refusal(&project, spec, wave, mode) {
         eprintln!("agent-prompt-render: REFUSED: {refusal}");
         std::process::exit(2);
     }
@@ -291,6 +320,49 @@ fn spec_refusal(project: &Path, spec: Option<&str>) -> Option<String> {
         )),
         Ok(_) => None,
     }
+}
+
+/// Why a RETRY render (`--mode granular` / `--mode fix-loop`) of a WAVE PLAN
+/// cannot be honoured without `--wave N`, or `None` when it can.
+///
+/// A retry re-dispatches ONE agent that already ran, and that agent ran on a
+/// wave. Omitting the flag does not degrade — it silently renders the WRONG
+/// prompt: `resolve_operational_spec_path` falls back to the parent `spec.md`,
+/// so `## TASK` becomes the parent's checklist, and the ruler is cut with no
+/// `satisfies:` filter, handing the agent EVERY sibling's criteria under "these
+/// are the JUDGE of this wave" — the exact noise the per-wave cut exists to
+/// remove. The prose prescribed the flagless form for the fix loop; the
+/// dispatch path always passed `--wave`, so the two disagreed and only the
+/// prose's readers paid.
+///
+/// Only a wave plan is refused: a Light / tactical-fix spec has no wave to
+/// name, and its retry is the same spec-level render it always was. Fail-open
+/// on everything unresolvable (no `--spec`, no workspace anchor, no index) —
+/// this refuses a call it can PROVE is wrong, never one it cannot read.
+fn wave_flag_refusal(
+    project: &Path,
+    spec: Option<&str>,
+    wave: Option<u32>,
+    mode: RenderMode,
+) -> Option<String> {
+    if !mode.is_retry() || wave.is_some() {
+        return None;
+    }
+    let slug = spec.map(str::trim).filter(|s| !s.is_empty())?;
+    let paths = ClaudePaths::for_project(project).ok()?;
+    let sp = paths.for_spec(slug).ok()?;
+    // The plan INDEX is the witness: `plan-materialize` writes it for every
+    // wave layout and nothing else writes it.
+    if !sp.dir().join("wave-plan.md").is_file() {
+        return None;
+    }
+    Some(format!(
+        "`--mode {}` on the wave plan '{slug}' names no wave — `--wave <n>` is MISSING. A retry \
+         re-dispatches ONE wave, and without the flag the prompt reads the PARENT's `## TASK` and \
+         carries every sibling's criteria under \"these are the JUDGE of this wave\". Pass \
+         `--wave <n>` for the wave being retried; `.claude/spec/{slug}/wave-plan.md` lists them.",
+        mode.flag()
+    ))
 }
 
 /// Bullet lines under `## CONVERSATION MATERIAL`, or 0 when the section
@@ -475,8 +547,70 @@ pub(crate) fn render_prompt_with_census(
             .to_string(),
     };
     let role_block = build_role_block(role, &project, &subproject_str, &spec_lang);
+    // The RULER this wave is measured by — the criteria QA will EXECUTE,
+    // verbatim, `Command:` and all, cut by the `satisfies:` line the wave's own
+    // `spec.md` carries. The source is the file the JUDGE reads (the
+    // `wave-plan.md` union, and the parent's section only for a spec no wave
+    // plan materialised — see `sections::ruler_source`), so reader and judge
+    // cannot name different commands. Read at render time, never from a copy:
+    // the layout is frozen after approval, so a copy would never see an
+    // `ac-amend`. Empty for a wave whose line names none (heading collapses),
+    // which is the same silence the prompt had before.
+    //
+    // A WAVE render filters by the WAVE's own spec, never `op_spec_path`: that
+    // path falls back to the PARENT `spec.md` whenever the wave directory cannot
+    // be found (unmaterialised, a number past `total_waves`, a renamed folder),
+    // and the fallback would render the union of EVERY wave's criteria under
+    // "these are the JUDGE of this wave" — the exact noise the per-wave cut
+    // exists to remove. No wave directory means no `satisfies:` line, and the
+    // honest answer is the empty section. A spec-level render (no `--wave`) is
+    // the unit itself, so there the parent's whole section IS its ruler.
+    //
+    // A SPEC-LESS render carries none: with no `--spec`, `spec_dir` is the
+    // PROJECT ROOT and `op_spec_path` a root `spec.md`. A repository that
+    // happens to keep one at its root — or a `wave-N-*` directory — would have
+    // another project's criteria rendered under "these are the JUDGE of this
+    // wave", for a `/scan` guards enrich or a scopeless `/task`, which are
+    // judged by no criterion at all.
+    //
+    // So "is there a spec directory at all" is resolved ONCE, as an Option,
+    // before either block, and both blocks derive from it. The parent path is
+    // handed to both unfiltered — each resolves its own source from it:
+    // `## WHY` cuts the PARENT whole (`read_parent_spec` owns the `spec.md` /
+    // `spec.original.md` fallback a rewave's archiving needs), `## ACCEPTANCE`
+    // cuts the union QA executes and filters it by the wave's own `satisfies:`
+    // frontmatter (the wave's spec, found by `find_wave_spec_path` — `None`
+    // when unmaterialised, which renders no ruler; absent on a spec-level
+    // render, which renders the whole section). Neither arm carries its own
+    // guard. The `--wave N` arm used to check nothing and scanned the project
+    // root for `wave-N-*` on a spec-less render.
+    let spec_root: Option<&Path> = spec.map(|_| spec_dir.as_path());
+    let parent_spec: Option<PathBuf> = spec_root.map(|d| d.join("spec.md"));
+    let acceptance_block = match (spec_root, wave) {
+        (Some(d), Some(w)) => find_wave_spec_path(d, w)
+            .map(|ws| read_wave_acceptance(&d.join("spec.md"), Some(&ws)))
+            .unwrap_or_default(),
+        (Some(d), None) => read_wave_acceptance(&d.join("spec.md"), None),
+        (None, _) => String::new(),
+    };
+    // WHY the work exists, and the ground the unit deliberately does not cover —
+    // the parent spec's `## Context` + `## Non-Goals`. It rides from the PARENT
+    // (never the wave, which carries neither) through the same path already open
+    // for the material cut below, so it costs one more read of a file this
+    // function already resolves. Spec-less renders have no parent and carry none.
+    let why_block = parent_spec
+        .as_deref()
+        .map(build_why_block)
+        .unwrap_or_default();
+    // Both blocks are composed BEFORE the TASK, and that order is load-bearing:
+    // the TASK's tier-2 fallback is a POINTER at these two sections, and it is
+    // written from the blocks themselves rather than from a second reading of
+    // some spec. The second reading was the defect — it asked the WAVE's spec
+    // whether the prompt carries a narrative, while `## WHY` is cut from the
+    // PARENT's, so a wave could be handed the section and told it did not have
+    // it in the same breath.
     let task_steps = {
-        let raw = read_task_steps(&op_spec_path);
+        let raw = read_task_steps(&op_spec_path, &why_block, &acceptance_block);
         let raw = match task_filter {
             Some(pat) => filter_task_lines(&raw, pat),
             None => raw,
@@ -522,6 +656,9 @@ pub(crate) fn render_prompt_with_census(
     // happened to write. Empty for a wave that declares none (heading collapses)
     // and for spec-less renders, which have no wave spec to read.
     let reality_obligations = read_reality_obligations(&op_spec_path);
+    // `acceptance_block` and `why_block` were composed above, before the TASK
+    // that points at them.
+    //
     // What the CONVERSATION established, carried in by `spec-draft --material`
     // and living ONCE in the PARENT spec (`## Definitions` / `## Decisions` /
     // `## Evidence`). A per-wave copy would drift, so the cut happens HERE:
@@ -532,9 +669,13 @@ pub(crate) fn render_prompt_with_census(
     // byte-identical to one rendered before the channel existed. It sits in the
     // VARIABLE tail of the template (after `## EFFICIENCY`), never in the
     // prefix-stable head — carrying context is worthless if it breaks the
-    // prompt cache on every dispatch.
-    let (conversation_material, material_census) = spec
-        .map(|_| build_conversation_material(&spec_dir.join("spec.md"), &op_spec_path))
+    // prompt cache on every dispatch. The parent path is the SAME one `## WHY`
+    // and `## ACCEPTANCE` hand over: the helper resolves `spec.md` →
+    // `spec.original.md` itself, so a rewave's archiving cannot starve this
+    // section while the other two keep reading the archive.
+    let (conversation_material, material_census) = parent_spec
+        .as_deref()
+        .map(|p| build_conversation_material(p, &op_spec_path))
         .unwrap_or_default();
     // A task that NAMES a material item gets that item echoed right under it.
     // The material still lives once, in its own section — this resolves the
@@ -665,6 +806,8 @@ pub(crate) fn render_prompt_with_census(
         &cross_wave_memory,
         &reference_files,
         &skills_list,
+        &why_block,
+        &acceptance_block,
         &retry_context,
     ];
     for (key, value) in TEMPLATE_PLACEHOLDERS.iter().zip(values.iter()) {
@@ -672,10 +815,11 @@ pub(crate) fn render_prompt_with_census(
     }
 
     // ---- Drop headings whose fail-open body resolved to empty. ----
-    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## CONVERSATION
-    // MATERIAL`, `## CROSS-WAVE MEMORY` and `## PRIOR WAVE DIFF` all degrade to
-    // "" on the spec-less / wave-1 / no-Files / no-material paths; a dangling
-    // empty heading is negative signal, so collapse it.
+    // `## GUARDS`, `## SHARED LANGUAGE`, `## REFERENCE`, `## WHY`,
+    // `## ACCEPTANCE`, `## CONVERSATION MATERIAL`, `## CROSS-WAVE MEMORY` and
+    // `## PRIOR WAVE DIFF` all degrade to "" on the spec-less / wave-1 /
+    // no-Files / no-material / no-criteria paths; a dangling empty heading is
+    // negative signal, so collapse it.
     rendered = collapse_empty_sections(&rendered);
 
     // ---- Blank only the TEMPLATE placeholders left unfilled (warn on each). ----
@@ -1071,7 +1215,11 @@ mod tests {
         let path = dir.path().join("spec.md");
         std::fs::write(&path, spec_body).unwrap();
 
-        let task_steps = read_task_steps(&path);
+        let task_steps = read_task_steps(
+            &path,
+            &sections::build_why_block(&path),
+            &sections::read_wave_acceptance(&path, None),
+        );
         assert!(!task_steps.is_empty(), "task_steps fell back to empty for a lean spec");
         let mut rendered = extract_block(TEMPLATE, "dispatch").expect("dispatch block");
         rendered = rendered.replace("{task_steps}", &task_steps);
@@ -1182,7 +1330,11 @@ mod tests {
         )
         .unwrap();
 
-        let task_steps = read_task_steps(&spec);
+        let task_steps = read_task_steps(
+            &spec,
+            &sections::build_why_block(&spec),
+            &sections::read_wave_acceptance(&spec, None),
+        );
         let reference_files = build_reference_files(dir.path(), "api", &spec);
         assert!(!reference_files.is_empty(), "reference_files empty");
 
@@ -1205,6 +1357,8 @@ mod tests {
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
             ("{skills_list}", ""),
+            ("{why_block}", ""),
+            ("{acceptance_block}", ""),
             ("{retry_context}", ""),
         ];
         for (k, v) in subs {
@@ -1476,6 +1630,578 @@ mod tests {
             RenderMode::First, None, None, Some("ad-hoc task"),
         );
         assert!(!spec_less.contains("## CONVERSATION MATERIAL"), "{spec_less}");
+    }
+
+    /// The three sections cut from the PARENT survive its archiving TOGETHER. A
+    /// rewave renames `spec.md` to `spec.original.md` in step 9, and `## WHY`
+    /// and `## ACCEPTANCE` already followed it there — the material arm did
+    /// not, so a wave rendered after the archiving carried the story and the
+    /// ruler and an EMPTY material section. All three read the parent by the
+    /// one rule (`read_parent_spec`), so they cannot disagree on which file it
+    /// is; the per-wave cut of the material is untouched by the fallback.
+    #[test]
+    fn conversation_material_survives_the_parent_archiving() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "archived-parent-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-2-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
+             ## Files\n\n- `src/alpha.rs`\n- `src/beta.rs`\n\n\
+             ## Tasks\n\n- [ ] parent task\n\n\
+             ## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n\
+             - **AC-2** — beta holds.\n  Command: `cargo test beta`\n\n\
+             ## Definitions\n\n- **wave** — one level of the plan\n\n\
+             ## Decisions\n\n- everything branches off dev\n  Reason: the release train\n\n\
+             ## Evidence\n\n\
+             - alpha parses the header twice\n  Evidence: `src/alpha.rs:12`\n\
+             - beta swallows the error\n  Evidence: `src/beta.rs:30`\n",
+        )
+        .unwrap();
+        for (wave, file, ac) in [("wave-1-impl", "src/alpha.rs", "AC-1"), ("wave-2-impl", "src/beta.rs", "AC-2")] {
+            std::fs::write(
+                spec_dir.join(wave).join("spec.md"),
+                format!(
+                    "---\nid: wave.{spec}.{wave}\nsatisfies: [{ac}]\n---\n\n\
+                     # W\n\n## Files\n\n- `{file}`\n\n## Tasks\n\n- [ ] do it\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        // The archiving a rewave performs: the parent moves, nothing else does.
+        std::fs::rename(spec_dir.join("spec.md"), spec_dir.join("spec.original.md")).unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## WHY"), "o arquivamento matou o porquê: {rendered}");
+        assert!(rendered.contains("o despacho chega sem o porquê"), "{rendered}");
+        assert!(rendered.contains("## ACCEPTANCE"), "o arquivamento matou a régua: {rendered}");
+        assert!(rendered.contains("Command: `cargo test alpha`"), "{rendered}");
+        assert!(
+            rendered.contains("## CONVERSATION MATERIAL"),
+            "o arquivamento matou o material — o canal que só este braço lia direto: {rendered}"
+        );
+        assert!(rendered.contains("**wave** — one level of the plan"), "definitions lost: {rendered}");
+        assert!(rendered.contains("everything branches off dev"), "decisions lost: {rendered}");
+        // The per-wave cut is unchanged by the fallback: own finding rides, the
+        // sibling's stays home — same as when the parent is still `spec.md`.
+        assert!(rendered.contains("alpha parses the header twice"), "own finding lost: {rendered}");
+        assert!(!rendered.contains("beta swallows the error"), "sibling finding leaked: {rendered}");
+        assert!(!rendered.contains("cargo test beta"), "sibling criterion leaked: {rendered}");
+    }
+
+    /// The wave's prompt carries the RULER it will be judged by — the criteria
+    /// QA will EXECUTE, verbatim, `Command:` included, filtered by the
+    /// `satisfies:` line the wave's own `spec.md` carries — and only those: a
+    /// criterion belonging to another wave must not ride.
+    ///
+    /// This is the whole path the field report named: the prompt had 15 fields
+    /// and none of them was a criterion, so the executor was told where and what
+    /// and never how it would be measured.
+    ///
+    /// The criteria live in `wave-plan.md` and NOT in the parent, which is the
+    /// half the fixture is shaped to prove: the union is the file the judge
+    /// reads, so it is the file the prompt cuts. Reading the parent instead put
+    /// reader and judge on different documents wherever the two differ — a
+    /// plan-local criterion the parent never defined, and a rewave whose parent
+    /// was archived out from under the amendment doors.
+    #[test]
+    fn wave_prompt_carries_its_acceptance() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "ruler-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] parent task\n").unwrap();
+        std::fs::write(
+            spec_dir.join("wave-plan.md"),
+            "# Plan\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n  Expect: `1 passed`\n\
+             - **AC-2** — beta holds.\n  Command: `cargo test beta`\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "---\nid: wave.ruler-spec.1-impl\nsatisfies: [AC-1]\n---\n\n\
+             # W\n\n## Tasks\n\n- [ ] do alpha\n",
+        )
+        .unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## ACCEPTANCE"), "the ruler section is missing: {rendered}");
+        assert!(rendered.contains("**AC-1**"), "{rendered}");
+        assert!(
+            rendered.contains("Command: `cargo test alpha`"),
+            "the judging command must ride verbatim: {rendered}"
+        );
+        assert!(rendered.contains("Expect: `1 passed`"), "{rendered}");
+        // …and ONLY the criteria this wave satisfies: the sibling's stays home.
+        assert!(!rendered.contains("AC-2") && !rendered.contains("cargo test beta"), "{rendered}");
+        // The section says what it is: a judge, not a suggestion.
+        assert!(rendered.contains("JUDGE of this wave"), "{rendered}");
+        // The parent's `## Acceptance Criteria` heading is demoted, so it
+        // nests under `## ACCEPTANCE` instead of terminating it.
+        assert!(rendered.contains("### Acceptance Criteria"), "{rendered}");
+
+        // A wave that declares none renders NO such section — the heading
+        // collapses like every other fail-open placeholder.
+        std::fs::create_dir_all(spec_dir.join("wave-2-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("wave-2-impl").join("spec.md"),
+            "---\nid: wave.ruler-spec.2-impl\n---\n\n# W\n\n## Tasks\n\n- [ ] do beta\n",
+        )
+        .unwrap();
+        let bare = render_wave(dir.path(), spec, 2);
+        assert!(!bare.contains("## ACCEPTANCE"), "empty heading survived: {bare}");
+        assert!(!bare.contains("AC-1"), "another wave's criterion leaked: {bare}");
+
+        // Uma onda cujo diretório NÃO existe não empresta a régua do pai. O
+        // caminho operacional cai para o `spec.md` do pai quando não acha a
+        // onda, e renderizar a UNIÃO dos critérios sob "estes são o JUIZ desta
+        // onda" é exatamente o ruído que o recorte por onda existe para tirar.
+        let ghost = render_wave(dir.path(), spec, 9);
+        assert!(
+            !ghost.contains("## ACCEPTANCE"),
+            "uma onda inexistente herdou a régua do pai: {ghost}"
+        );
+
+        // E o RE-DESPACHO carrega as duas seções. O agente de `fix-loop` é
+        // re-despachado justamente por ter falhado um critério, então era o
+        // único modo que nunca via o critério: os dois valores eram calculados e
+        // substituídos num texto que não tinha nenhum dos dois marcadores.
+        let retry = render_prompt_at(
+            dir.path(), Some(spec), Some(1), "impl", Path::new("."),
+            RenderMode::FixLoop, None, None, None,
+        );
+        assert!(retry.contains("## ACCEPTANCE"), "o re-despacho perdeu a régua: {retry}");
+        assert!(
+            retry.contains("Command: `cargo test alpha`"),
+            "e o comando que a julga: {retry}"
+        );
+    }
+
+    /// A régua que o prompt MOSTRA é a que o QA RODA — nos dois casos em que
+    /// ler o pai fazia leitor e juiz divergirem, medidos pelas portas de
+    /// verdade (materializador, `ac-amend`, renderizador).
+    ///
+    /// 1. **Critério local do plano.** Uma onda pode declarar linhas de
+    ///    `acceptance` próprias, e o `satisfies` dela nasce dos ids DELAS. Esses
+    ///    ids só existem na união do `wave-plan.md`; o pai não define nenhum.
+    ///    Cortando o pai, o filtro não achava nada, o `## ACCEPTANCE` colapsava
+    ///    — e a rastreabilidade contava a onda como coberta assim mesmo. O QA
+    ///    depois rodava, contra um trabalho que nunca foi informado dele, um
+    ///    critério que o agente jamais viu.
+    /// 2. **Depois de um rewave.** O pai é renomeado para `spec.original.md`, e
+    ///    o `ac-amend` reescreve `[spec.md, wave-plan.md]` — nunca o arquivo
+    ///    arquivado. Cortando o pai, o prompt mostrava o comando VELHO sob
+    ///    "estes são o JUIZ desta onda" enquanto o QA executava o novo.
+    #[test]
+    fn the_ruler_the_prompt_shows_is_the_one_qa_runs() {
+        use crate::commands::spec::ac_amend::{amend, AcAmendOpts};
+        use crate::commands::wave::wave_scaffold::scaffold;
+
+        const WAVE_LOCAL: &str = "cd no-such-directory-w1";
+        const AMENDED: &str = "cd no-such-directory-amended";
+
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "plan-local-ruler";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        // O pai declara um critério com OUTRO id — se o corte saísse daqui, o
+        // filtro da onda não acharia nada e a seção colapsaria.
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\na régua e o juiz têm de ler o mesmo arquivo\n\n\
+             ## Acceptance Criteria\n\n\
+             - **AC-1** — só o pai declara este.\n  Command: `cd .`\n",
+        )
+        .unwrap();
+        let plan_path = spec_dir.join("plan.json");
+        std::fs::write(
+            &plan_path,
+            serde_json::to_string(&serde_json::json!({
+                "total_waves": 1,
+                "lang": "pt-BR",
+                // Sem `satisfies`: os ids saem das linhas de `acceptance` da
+                // própria onda — a forma que o `full-plan.md` prescreve.
+                "waves": [
+                    { "n": 1, "role": "impl", "summary": "s", "tasks": ["do it"],
+                      "files": ["src/alpha.rs"],
+                      "acceptance": [
+                          format!("**AC-W1-1** — a onda declara a sua.\n  Command: `{WAVE_LOCAL}`")
+                      ] }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _ = scaffold(&spec_dir, &plan_path);
+
+        // (1) A linha local do plano CHEGA ao prompt da onda que a declarou.
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## ACCEPTANCE"), "a régua colapsou: {rendered}");
+        assert!(rendered.contains("**AC-W1-1**"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("Command: `{WAVE_LOCAL}`")),
+            "o comando que julga tem de viajar literal: {rendered}"
+        );
+        assert!(
+            !rendered.contains("**AC-1**"),
+            "e o critério que a onda NÃO satisfaz fica em casa: {rendered}"
+        );
+
+        // (2) O rewave arquiva o pai; o `ac-amend` reescreve a união.
+        std::fs::rename(spec_dir.join("spec.md"), spec_dir.join("spec.original.md")).unwrap();
+        let amended = amend(
+            dir.path(),
+            &AcAmendOpts {
+                spec: spec.to_string(),
+                ac: "AC-W1-1".to_string(),
+                command: AMENDED.to_string(),
+                expect: None,
+                statement: None,
+                reason: "a review achou que o comando afirmava a coisa errada".to_string(),
+                control: None,
+                proof_tree: None,
+            },
+        );
+        assert!(amended.ok, "recusa inesperada: {:?} / {:?}", amended.error, amended.remedy);
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(
+            rendered.contains(&format!("Command: `{AMENDED}`")),
+            "o prompt tem de mostrar o comando NOVO — o mesmo que o QA roda: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!("Command: `{WAVE_LOCAL}`")),
+            "e nunca o superado: {rendered}"
+        );
+        // O `## WHY` continua saindo do pai ARQUIVADO — o fallback que só ele
+        // precisa, e que a régua deixou de usar.
+        assert!(
+            rendered.contains("a régua e o juiz têm de ler o mesmo arquivo"),
+            "o porquê é do pai, e sobrevive ao arquivamento: {rendered}"
+        );
+    }
+
+    /// Um RE-DESPACHO de um plano de ondas que não nomeia onda é RECUSADO, com
+    /// o flag que falta dito por nome.
+    ///
+    /// A prosa do fix-loop prescrevia a forma sem `--wave`, e o caminho de
+    /// despacho sempre passou o flag: as duas discordavam e só quem lia a prosa
+    /// pagava. Sem onda, o `## TASK` vira a checklist do PAI e a régua sai sem
+    /// filtro — todos os critérios das irmãs sob "estes são o JUIZ desta onda",
+    /// que é exatamente o ruído que o recorte por onda existe para tirar.
+    ///
+    /// Uma spec SEM plano de ondas (light, tactical-fix) não tem onda para
+    /// nomear: o re-despacho dela é o mesmo render de nível-spec de sempre.
+    #[test]
+    fn a_retry_of_a_wave_plan_must_name_its_wave() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "retry-needs-wave";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] parent\n").unwrap();
+        std::fs::write(spec_dir.join("wave-plan.md"), "# Plan\n").unwrap();
+
+        for mode in [RenderMode::FixLoop, RenderMode::Granular] {
+            let refusal = wave_flag_refusal(dir.path(), Some(spec), None, mode)
+                .unwrap_or_else(|| panic!("{mode:?} sem --wave tem de ser recusado"));
+            assert!(refusal.contains("--wave <n>"), "o flag que falta é dito: {refusal}");
+            assert!(refusal.contains(mode.flag()), "e o modo do chamador: {refusal}");
+            // Com a onda nomeada, nada é recusado.
+            assert!(wave_flag_refusal(dir.path(), Some(spec), Some(1), mode).is_none());
+        }
+        // O primeiro despacho não é um re-despacho: ele nomeia a onda por outro
+        // caminho e o nível-spec dele é legítimo.
+        assert!(wave_flag_refusal(dir.path(), Some(spec), None, RenderMode::First).is_none());
+
+        // Uma spec SEM `wave-plan.md` não é um plano de ondas, e o re-despacho
+        // dela segue passando.
+        let light = "light-spec";
+        let light_dir = dir.path().join(".claude/spec").join(light);
+        std::fs::create_dir_all(&light_dir).unwrap();
+        std::fs::write(light_dir.join("spec.md"), "# TF\n\n## Tasks\n\n- [ ] fix\n").unwrap();
+        assert!(wave_flag_refusal(dir.path(), Some(light), None, RenderMode::FixLoop).is_none());
+        // E um render SEM spec nenhum também não (o `/task` sem escopo).
+        assert!(wave_flag_refusal(dir.path(), None, None, RenderMode::FixLoop).is_none());
+    }
+
+    /// Um render SEM spec não tem régua nenhuma, e o bloco de aceitação tem de
+    /// se calar — a MESMA curto-circuitação que o `{why_block}` faz uma
+    /// instrução adiante, com o mesmo `spec.is_some()`.
+    ///
+    /// A regressão que isto tranca: o braço `None` chamava
+    /// `read_wave_acceptance(&op_spec_path)` sempre. Sem `--spec` (o enriquecer
+    /// do `/scan`, o `/task` sem escopo) o `spec_dir` cai para a RAIZ do projeto
+    /// e o caminho operacional para um `spec.md` da raiz — então um repositório
+    /// que por acaso carrega um renderizava os critérios de OUTRO projeto sob
+    /// "estes são o JUIZ desta onda", para um trabalho que critério nenhum
+    /// julga.
+    #[test]
+    fn a_spec_less_render_does_not_borrow_a_root_spec_as_its_ruler() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // O `spec.md` que o repositório por acaso carrega na raiz.
+        std::fs::write(
+            dir.path().join("spec.md"),
+            "# Outro projeto\n\n## Acceptance Criteria\n\n\
+             - **AC-7** — a régua de outra unidade.\n  Command: `cargo test alheio`\n",
+        )
+        .unwrap();
+
+        let spec_less = render_prompt_at(
+            dir.path(), None, None, "guards", Path::new("."),
+            RenderMode::First, None, None, Some("ad-hoc task"),
+        );
+        assert!(
+            !spec_less.contains("## ACCEPTANCE"),
+            "um render sem spec não tem régua: {spec_less}"
+        );
+        assert!(
+            !spec_less.contains("AC-7") && !spec_less.contains("cargo test alheio"),
+            "e nada do `spec.md` da raiz pode viajar nele: {spec_less}"
+        );
+
+        // A metade que não pode quebrar junto: COM spec, a régua continua
+        // chegando exatamente como antes.
+        let spec = "ruler-still-rides";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Tasks\n\n- [ ] parent task\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "---\nid: wave.ruler-still-rides.1-impl\nsatisfies: [AC-1]\n---\n\n\
+             # W\n\n## Tasks\n\n- [ ] do alpha\n",
+        )
+        .unwrap();
+        let with_spec = render_wave(dir.path(), spec, 1);
+        assert!(with_spec.contains("## ACCEPTANCE"), "{with_spec}");
+        assert!(with_spec.contains("Command: `cargo test alpha`"), "{with_spec}");
+    }
+
+    /// O IRMÃO do teste acima, no outro braço: `--wave N` SEM `--spec`.
+    ///
+    /// A regressão que isto tranca: o braço `None` do bloco de aceitação
+    /// curto-circuitava sem spec e o braço `Some(wave)` NÃO — ele chamava
+    /// `find_wave_spec_path(&spec_dir, w)` sempre, e sem `--spec` o `spec_dir`
+    /// é a RAIZ do projeto. Um repositório com um diretório `wave-1-*/spec.md`
+    /// na raiz renderizava a régua dele para um trabalho que critério nenhum
+    /// julga. Os dois braços agora derivam do MESMO `Option`, resolvido uma
+    /// vez, e nenhum carrega guarda própria.
+    #[test]
+    fn a_spec_less_wave_render_does_not_scan_the_project_root_for_a_wave() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        // O `wave-1-*` que o repositório por acaso carrega na raiz, e o
+        // `spec.md` de raiz que a linha dele apontaria.
+        std::fs::create_dir_all(dir.path().join("wave-1-alheio")).unwrap();
+        std::fs::write(
+            dir.path().join("wave-1-alheio").join("spec.md"),
+            "---\nid: wave.alheio.1-alheio\nsatisfies: [AC-7]\n---\n\n# Outra onda\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("spec.md"),
+            "# Outro projeto\n\n## Acceptance Criteria\n\n\
+             - **AC-7** — a régua de outra unidade.\n  Command: `cargo test alheio`\n",
+        )
+        .unwrap();
+
+        let spec_less = render_prompt_at(
+            dir.path(), None, Some(1), "guards", Path::new("."),
+            RenderMode::First, None, None, Some("ad-hoc task"),
+        );
+        assert!(
+            !spec_less.contains("## ACCEPTANCE"),
+            "um render sem spec não tem régua, com ou sem `--wave`: {spec_less}"
+        );
+        assert!(
+            !spec_less.contains("AC-7") && !spec_less.contains("cargo test alheio"),
+            "e nada de um `wave-1-*` da raiz pode viajar nele: {spec_less}"
+        );
+    }
+
+    /// A REGRESSÃO que este teste tranca: o ponteiro do fallback de TASK negava
+    /// uma seção que ESTÁ no prompt.
+    ///
+    /// A configuração é a de campo: a onda não tem `## Tasks` (então o fallback
+    /// dispara), não tem `## Contexto` próprio (o `spec.md` dela nunca tem — o
+    /// `wave-scaffold` não escreve narrativa), e o PAI tem os dois. O ponteiro
+    /// perguntava ao texto da ONDA se o prompt carrega narrativa, e o `## WHY` é
+    /// recortado do PAI: o prompt saía com a seção renderizada e, logo abaixo
+    /// dela, a frase dizendo que ele não diz por que o trabalho existe.
+    ///
+    /// As duas seções são medidas no MESMO prompt renderizado — é o par que a
+    /// contradição exige, e nenhuma metade sozinha a enxerga.
+    #[test]
+    fn the_task_pointer_agrees_with_the_sections_the_prompt_carries() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "pointer-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
+             ## Não-Objetivos\n\n- não endurecer o portão de resíduo\n\n\
+             ## Tasks\n\n- [ ] parent task\n\n## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n",
+        )
+        .unwrap();
+        // A onda: sem `## Tasks` (o fallback dispara) e sem narrativa própria.
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "---\nid: wave.pointer-spec.1-impl\nsatisfies: [AC-1]\n---\n\n\
+             # W\n\n## Files\n\n- `src/alpha.rs`\n",
+        )
+        .unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        // As duas seções ESTÃO no prompt…
+        assert!(rendered.contains("## WHY"), "o `## WHY` do pai tem de renderizar: {rendered}");
+        assert!(
+            rendered.contains("o despacho chega sem o porquê"),
+            "com o texto dele: {rendered}"
+        );
+        assert!(rendered.contains("## ACCEPTANCE"), "e a régua da onda: {rendered}");
+        // …e o ponteiro concorda com as duas, em vez de negar uma delas.
+        assert!(
+            rendered.contains("TASK fallback"),
+            "precondição: a onda sem `## Tasks` cai no tier 2: {rendered}",
+        );
+        assert!(
+            !rendered.contains("no narrative section reached it"),
+            "o prompt carrega o `## WHY` e diz ao agente que não carrega — o ponteiro \
+             respondeu do arquivo errado: {rendered}",
+        );
+        assert!(
+            !rendered.contains("no acceptance criteria reached it"),
+            "e o mesmo para a régua, que também está no prompt: {rendered}",
+        );
+        assert!(
+            rendered.contains("`## WHY` above") && rendered.contains("`## ACCEPTANCE`"),
+            "o ponteiro nomeia as duas seções que o prompt carrega: {rendered}",
+        );
+    }
+
+    /// The wave's prompt carries the PARENT's `## Contexto` + `## Não-Objetivos`
+    /// — why the work exists and what the unit deliberately does not cover.
+    ///
+    /// The parent is the only place either lives, and before this the sole path
+    /// to a wave was the TASK fallback, which fires ONLY for a spec with no
+    /// `## Tasks` — and a full-scope wave always has one. So the assertion is
+    /// made against a wave WITH tasks, which is the case that used to lose it.
+    #[test]
+    fn wave_prompt_carries_parent_why() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "why-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
+             ## Não-Objetivos\n\n- não endurecer o portão de resíduo\n\n\
+             ## Tasks\n\n- [ ] parent task\n",
+        )
+        .unwrap();
+        std::fs::write(
+            spec_dir.join("wave-1-impl").join("spec.md"),
+            "# W\n\n## Tasks\n\n- [ ] do alpha\n",
+        )
+        .unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## WHY"), "{rendered}");
+        assert!(rendered.contains("o despacho chega sem o porquê"), "context lost: {rendered}");
+        assert!(
+            rendered.contains("não endurecer o portão de resíduo"),
+            "non-goals lost: {rendered}"
+        );
+        // The cut sections nest under `## WHY` — a `## ` line here would end the
+        // section and `collapse_empty_sections` would then drop the heading.
+        assert!(rendered.contains("### Contexto"), "heading not demoted: {rendered}");
+        assert!(rendered.contains("### Não-Objetivos"), "heading not demoted: {rendered}");
+
+        // A spec that declares neither renders no WHY section at all.
+        let bare_spec = "no-why-spec";
+        let bare_dir = dir.path().join(".claude/spec").join(bare_spec);
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        std::fs::write(bare_dir.join("spec.md"), "# T\n\n## Tasks\n\n- [ ] a task\n").unwrap();
+        let bare = render_prompt_at(
+            dir.path(), Some(bare_spec), None, "impl", Path::new("."),
+            RenderMode::First, None, None, None,
+        );
+        assert!(!bare.contains("## WHY"), "empty heading survived: {bare}");
+
+        // O `## WHY` sobrevive ao ARQUIVAMENTO do spec do pai: um rewave renomeia
+        // `spec.md` para `spec.original.md` no passo 9, e sem o fallback este
+        // canal morre exatamente para a população que TEM ondas.
+        std::fs::rename(spec_dir.join("spec.md"), spec_dir.join("spec.original.md")).unwrap();
+        let after_rewave = render_wave(dir.path(), spec, 1);
+        assert!(
+            after_rewave.contains("o despacho chega sem o porquê"),
+            "o arquivamento do spec do pai não pode matar o canal: {after_rewave}"
+        );
+
+        // E o RE-DESPACHO carrega o porquê também — ver
+        // `wave_prompt_carries_its_acceptance` para a outra metade.
+        let retry = render_prompt_at(
+            dir.path(), Some(spec), Some(1), "impl", Path::new("."),
+            RenderMode::Granular, None, None, None,
+        );
+        assert!(retry.contains("## WHY"), "o re-despacho perdeu o porquê: {retry}");
+        assert!(retry.contains("o despacho chega sem o porquê"), "{retry}");
+    }
+
+    /// Um render de nível-spec SEM `## Tasks` — a forma tactical-fix / spec
+    /// recém-rascunhada — imprime o `## Contexto` UMA vez.
+    ///
+    /// É a única forma em que os dois recortes saem do MESMO arquivo: o `## WHY`
+    /// lê o spec do pai e o fallback de TASK lê o spec operacional, que aqui é o
+    /// mesmo. Enquanto o tier 2 copiava o Contexto, o prompt o trazia duas
+    /// vezes — uma sob `## WHY` e outra dentro do `## TASK`.
+    #[test]
+    fn a_no_tasks_spec_renders_its_context_exactly_once() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "tf-sem-tasks";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let story = "o digest nao acha intents em pt";
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            format!(
+                "# TF\n\n## Contexto\n\n{story}\n\n\
+                 ## Critérios de Aceitação\n\n- **AC-1** — a consulta volta com acertos.\n"
+            ),
+        )
+        .unwrap();
+
+        let rendered = render_prompt_at(
+            dir.path(), Some(spec), None, "impl", Path::new("."),
+            RenderMode::First, None, None, None,
+        );
+        assert_eq!(
+            rendered.matches(story).count(),
+            1,
+            "o Contexto tem de sair uma vez só: {rendered}"
+        );
+        // …e ele sai pelo canal que é dele, com o TASK apontando para lá.
+        assert!(rendered.contains("## WHY"), "{rendered}");
+        assert!(rendered.contains("TASK fallback"), "{rendered}");
+        assert!(rendered.contains("**AC-1**"), "a régua continua chegando: {rendered}");
     }
 
     /// AC-5: when the target subproject is its OWN nested git repository (`.git`

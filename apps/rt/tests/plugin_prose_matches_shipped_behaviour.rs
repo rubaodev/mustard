@@ -1178,7 +1178,7 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
     // Without this half every sentence above outlives its mechanism.
     let branch = read("apps/rt/src/commands/event/work_branch.rs");
     assert!(
-        branch.contains("fn holds_other_work") && branch.contains("fn busy_checkout"),
+        branch.contains("fn holds_other_work"),
         "nothing asks whether the checkout holds another unit's uncommitted work",
     );
     assert!(
@@ -1194,10 +1194,48 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
          spec, waves and proof while `git status` named all three",
     );
     let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    // ONE question, asked once per door, and NO door performs a step.
+    //
+    // This used to demand the opposite: two calls per door — the shared refusal
+    // and the census recording — kept in agreement by hand, in three files. Six
+    // review rounds each put a condition at a call site, and the seventh found
+    // the call site the sixth had missed; the refresh/record ORDER ended up
+    // right in two doors of three, and the re-mine's own recording was never
+    // guarded at all. The pair is now one function that decides AND acts, so the
+    // structural claim worth locking is that the doors stay stepless: a door
+    // that performs a step is a door that can perform it in the wrong order, or
+    // forget it.
+    let settlement = read("apps/rt/src/commands/event/census_settlement.rs");
     assert!(
-        gate.contains("busy_checkout(Path::new(&local)"),
-        "the gate no longer takes the shared refusal, so the two doors can disagree",
+        settlement.contains("pub(crate) fn settle(")
+            && settlement.contains("let work = checkout_work(root);"),
+        "the shared answer is gone, or it stopped measuring the tree itself — and a \
+         decision that does not own its measurement is two decisions again",
     );
+    let emit = read("apps/rt/src/commands/event/emit_pipeline.rs");
+    for (door, src) in [
+        ("emit-pipeline (the explicit open)", &emit),
+        ("spec-draft's cut", &branch),
+        ("the write hook", &gate),
+    ] {
+        assert!(src.contains("settle("), "{door} no longer asks the shared question");
+        // The steps the answer performs. `fetch_origin(&vcs` and its siblings
+        // are the CALL shapes — `work_branch.rs` still defines the functions.
+        for step in [
+            "fetch_origin(&vcs",
+            "paths_the_advance_overwrites(&vcs",
+            "discard_paths(&vcs",
+            "fast_forward_base(&vcs",
+            "commit_census(",
+            "mine_census_if_stale(",
+        ] {
+            assert!(
+                !src.contains(step),
+                "{door} performs `{step}` itself again — the step a door performs is the \
+                 step the next door forgets",
+            );
+        }
+    }
     assert!(
         !gate.contains("hook_create"),
         "the gate cuts a worktree again — the divert the prose says is withdrawn",
@@ -3603,5 +3641,134 @@ fn exemption_paths_are_matched_without_a_platform_separator() {
     assert!(
         normalise_separators(windows).ends_with(spelled),
         "the exemption table is written with `/` and the lookup must reach it from either platform",
+    );
+}
+
+/// An untraced wave is ADVISORY, the wave's ruler is READ (never copied) from
+/// the file the JUDGE reads, and neither the prose nor the code routes a new id
+/// onto frozen frontmatter.
+///
+/// Two sentences drifted from the shipped behaviour in one unit. The prompt ref
+/// said a plan is REFUSED when a wave with tasks traces to no criterion — it
+/// is a WARN (`untraced_waves`), and refusing was tried and reverted. And every
+/// surface described the wave's `## ACCEPTANCE` as a COPY materialised into
+/// the wave file — a snapshot the frozen layout never brought forward, so an
+/// `ac-amend` or `ac-add` written to the parent reached no wave's prompt.
+///
+/// A later round moved the ruler's SOURCE and closed the routing door: the cut
+/// runs on the `wave-plan.md` union — the file QA executes — so reader and
+/// judge cannot name different commands, and `ac-add --wave N` is gone because
+/// it wrote a wave's frontmatter outside the materialiser's ledger. The prose
+/// and the code are read together, because either one alone can drift.
+#[allow(clippy::too_many_lines)] // one behaviour, read across every surface that states it
+#[test]
+fn untraced_is_advisory_and_the_wave_ruler_is_read_not_copied() {
+    // --- 1. The prompt ref teaches the read, and no refusal ------------------
+    let prompt_ref = read("plugin/refs/agent-prompt/agent-prompt.md");
+    let row = line_with(&prompt_ref, "`{acceptance_block}`")
+        .expect("agent-prompt.md no longer documents the acceptance block");
+    assert!(
+        !row.contains("REFUSED"),
+        "the acceptance row still says an untraced wave refuses the plan: {row}",
+    );
+    assert!(
+        row.contains("WARN") && row.contains("untraced_waves"),
+        "the row must name the advisory signal the scaffold really emits: {row}",
+    );
+    assert!(
+        row.contains("satisfies:") && row.contains("CURRENT"),
+        "the row must say the ruler is the parent's CURRENT section cut by the wave's \
+         `satisfies:` line — a copy is what shipped and drifted: {row}",
+    );
+
+    // --- 2. The loop ref stops teaching a flag that no longer exists ---------
+    let loop_ref = read("plugin/refs/spec/resume-loop.md");
+    let add_call = line_with(&loop_ref, "mustard-rt run ac-add --spec")
+        .expect("the loop ref no longer shows the ac-add call");
+    assert!(
+        !add_call.contains("--wave"),
+        "the ac-add call still teaches `--wave`, a flag the door no longer has: {add_call}",
+    );
+    // …and the RE-DISPATCH does name its wave, because the renderer refuses a
+    // retry of a wave plan that does not. The prose was the odd one out: the
+    // dispatch path always passed the flag.
+    let retry_call = line_with(&loop_ref, "--mode fix-loop")
+        .expect("the loop ref no longer shows the fix-loop render");
+    assert!(
+        retry_call.contains("--wave {N}"),
+        "the fix-loop render omits `--wave {{N}}` — the renderer refuses that call: {retry_call}",
+    );
+    for gone in ["wavesStale", "staleWaves"] {
+        assert!(
+            !loop_ref.contains(gone),
+            "the loop ref still teaches `{gone}` — the staleness channel of a copy that no \
+             longer exists",
+        );
+    }
+
+    // --- 3. The CLI help says OPTIONAL, not REQUIRED -------------------------
+    let cli = read("apps/rt/src/commands/spec/cli.rs");
+    assert!(
+        !cli.contains("REQUIRED when the replacement command is a FILTERED")
+            && !cli.contains("REQUIRED when the criterion's command is a FILTERED"),
+        "`--control` help still calls the control REQUIRED; nothing refuses without it",
+    );
+
+    // --- 4. The code really warns, writes a line, and reads the parent -------
+    let scaffold = production_half("apps/rt/src/commands/wave/wave_scaffold.rs");
+    assert!(
+        scaffold.contains("for gap in &gaps.untraced_waves {")
+            && scaffold.contains("\"[wave-scaffold] WARN: {gap}\""),
+        "the scaffold no longer emits the untraced wave as a stderr WARN",
+    );
+    assert!(
+        !scaffold.contains("recusa com exit 2"),
+        "the scaffold's own prose still describes the reverted refusal",
+    );
+    assert!(
+        scaffold.contains("pub(crate) const SATISFIES_KEY: &str = \"satisfies\""),
+        "the wave no longer persists WHICH criteria it satisfies as frontmatter",
+    );
+    assert!(
+        !scaffold.contains("fn collect_ac_blocks") && !scaffold.contains("type AcPool"),
+        "the scaffold builds the criterion copy again — the snapshot the frozen layout \
+         never brings forward",
+    );
+    let sections = production_half("apps/rt/src/commands/agent/render/sections.rs");
+    assert!(
+        sections.contains("pub(crate) fn read_wave_acceptance(parent_spec: &Path, wave_spec: Option<&Path>)")
+            && sections.contains("parse_wave_ruler("),
+        "the prompt renderer stopped cutting the ruler through the wave's `satisfies:` line",
+    );
+    assert!(
+        sections.contains("fn ruler_source(parent_spec: &Path)")
+            && sections.contains("WAVE_PLAN_MD"),
+        "the ruler no longer reads the `wave-plan.md` union — reader and judge are back on \
+         two different files",
+    );
+    // The routing door is GONE, on both sides: the flag and the writer it used.
+    let add = production_half("apps/rt/src/commands/spec/ac_add.rs");
+    assert!(
+        !add.contains("pub wave: Option<u32>") && !add.contains("route_criterion("),
+        "`ac-add` routes a new id onto a wave's frozen frontmatter again — that write lives \
+         outside the materialiser's ledger and is regenerated away or read as plan drift",
+    );
+    assert!(
+        !production_half("apps/rt/src/commands/wave/wave_scaffold.rs").contains("fn route_criterion"),
+        "the frontmatter writer `ac-add --wave N` used is back with no caller",
+    );
+    assert!(
+        !cli.contains("The wave that will be JUDGED by the new criterion"),
+        "the CLI still offers `ac-add --wave N`",
+    );
+    // …and the RETRY refusal the prose now teaches is really in the renderer.
+    // Read WHOLE, not `production_half`: this file's own prose names
+    // `#[cfg(test)]` in a comment far above the code, so the split would cut
+    // away everything the assertion is about.
+    let render = read("apps/rt/src/commands/agent/render/mod.rs");
+    assert!(
+        render.contains("fn wave_flag_refusal(") && render.contains("`--wave <n>` is MISSING"),
+        "a `fix-loop` / `granular` render of a wave plan that names no wave is no longer \
+         refused — it silently hands the agent every sibling's criteria",
     );
 }

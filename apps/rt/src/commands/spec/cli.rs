@@ -392,6 +392,19 @@ pub enum SpecCmd {
         /// Why the criterion is being changed. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// The replacement's `Control:` — a command that must come back GREEN
+        /// against the tree as it is.
+        ///
+        /// OPTIONAL, and worth declaring when the replacement command is a
+        /// FILTERED TEST RUNNER (`cargo test -p x my_new_case`, `pytest -k
+        /// novo`, …): a runner exits 0 when its filter selects nothing, so
+        /// without a control the replacement's red can be an empty selection
+        /// rather than the missing behaviour. Omitted, the criterion keeps the
+        /// control its line already carries (a drafter placeholder is not
+        /// one), or is proven the ordinary way with the record saying
+        /// `control: not-declared` — a WARN at drafting, never a refusal.
+        #[arg(long)]
+        control: Option<String>,
         /// Take the proof against ANOTHER checkout — one that does not carry
         /// the work yet — instead of this tree.
         ///
@@ -413,10 +426,11 @@ pub enum SpecCmd {
     /// blur the rule that makes amend trustworthy. The command is run through
     /// `ac-negative-check` and REFUSED unless it comes back red — a criterion
     /// that already passes would join the spec verifying nothing. On acceptance
-    /// it is written into every PLAN artefact under the spec directory (the root
-    /// `spec.md`, `wave-plan.md` and each `wave-*/spec.md`), directly ABOVE the
-    /// trailing build-green criterion so the positional exemption does not move
-    /// onto it, and the addition is appended to the proof ledger's `additions`.
+    /// it is written into the root `spec.md` and `wave-plan.md` (the union QA
+    /// executes), directly ABOVE the trailing build-green criterion so the
+    /// positional exemption does not move onto it, and the addition is appended
+    /// to the proof ledger's `additions`. A wave spec carries no criterion
+    /// text — `--wave N` names the wave that will be judged by the new id.
     #[command(name = "ac-add")]
     #[command(display_order = 83)]
     AcAdd {
@@ -440,6 +454,17 @@ pub enum SpecCmd {
         /// Why the criterion is being added. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// The criterion's `Control:` — a command that must come back GREEN
+        /// against the tree as it is.
+        ///
+        /// OPTIONAL, and worth declaring when the criterion's command is a
+        /// FILTERED TEST RUNNER (`cargo test -p x my_new_case`, `pytest -k
+        /// novo`, …): a runner exits 0 when its filter selects nothing, so
+        /// without a control the criterion's red can be an empty selection
+        /// rather than the missing behaviour. Omitted, the record says
+        /// `control: not-declared` — a WARN at drafting, never a refusal.
+        #[arg(long)]
+        control: Option<String>,
         /// Take the proof against ANOTHER checkout — one that does not carry
         /// the work yet — instead of this tree.
         ///
@@ -592,6 +617,7 @@ pub fn dispatch(cmd: SpecCmd) {
             expect,
             statement,
             reason,
+            control,
             proof_tree,
         } => {
             spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
@@ -601,6 +627,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 expect,
                 statement,
                 reason,
+                control,
                 proof_tree,
             });
         }
@@ -611,6 +638,7 @@ pub fn dispatch(cmd: SpecCmd) {
             command,
             expect,
             reason,
+            control,
             proof_tree,
         } => {
             spec::ac_add::run(spec::ac_add::AcAddOpts {
@@ -620,6 +648,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 command,
                 expect,
                 reason,
+                control,
                 proof_tree,
             });
         }

@@ -24,9 +24,12 @@ use mustard_core::platform::i18n::{translate, Locale, Tone};
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// The unfilled `Control:` marker a fresh draft carries — the `<…>` shape
-/// `qa_run::is_skeleton` recognises, so an unanswered control is never mistaken
-/// for a control that ran.
+/// The unfilled `Control:` marker offered to a judged criterion that DECLARES
+/// no control — the `<…>` shape `qa_run::is_skeleton` recognises, so an
+/// unanswered control is never mistaken for a control that ran. The drafter's
+/// own seed declares one on every behaviour criterion
+/// (`spec_draft::seed_acceptance_criteria`), so a fresh draft carries this
+/// marker only for a criterion some other producer left blank.
 ///
 /// English regardless of the narrative locale: like every `Command:` value, the
 /// content is code the orchestrator replaces, not prose a reader consumes.
@@ -106,24 +109,26 @@ pub fn write_spec_md(
             stmt = ac.statement,
             cmd = ac.command
         );
-        // The optional `Control:` key, offered on every criterion the negative
-        // test will actually judge. It names a command that must come back
-        // GREEN against the tree AS IT IS: a red `Command:` proves nothing on
-        // its own, because a broken regex, a shell it cannot run under, a
+        // The `Control:` key, rendered the way `Command:` is: a criterion that
+        // DECLARES one carries it verbatim. It names a command that must come
+        // back GREEN against the tree AS IT IS: a red `Command:` proves nothing
+        // on its own, because a broken regex, a shell it cannot run under, a
         // missing binary and a quoting error all produce exactly the red an
         // honest criterion produces. A control that must be green TODAY rejects
-        // all four with one run, here at PLAN time, where the fix costs one
-        // edit.
+        // all four with one run, at PLAN time, where the fix costs one edit.
         //
-        // The trailing criterion is skipped through the SAME positional rule
-        // the negative test applies (`ac_negative_check::is_exempt`) rather than
-        // a second spelling of "which criterion is exempt": it is the
-        // build-green safety net, green before the work by design, so it has
-        // nothing to control for.
+        // A criterion that declares NONE is still OFFERED the key, as an
+        // unfilled placeholder — except the trailing criterion, skipped through
+        // the SAME positional rule the negative test applies
+        // (`ac_negative_check::is_exempt`) rather than a second spelling of
+        // "which criterion is exempt": it is the build-green safety net, green
+        // before the work by design, so it has nothing to control for.
         //
         // The placeholder is ENGLISH regardless of the narrative locale, like
         // every other `Command:` value — the content is code, not prose.
-        if !crate::commands::review::ac_negative_check::is_exempt(index, ac_total) {
+        if let Some(control) = ac.control.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            let _ = writeln!(body, "  Control: `{control}`");
+        } else if !crate::commands::review::ac_negative_check::is_exempt(index, ac_total) {
             let _ = writeln!(body, "  Control: `{AC_CONTROL_SKELETON}`");
         }
     }
@@ -484,8 +489,10 @@ mod tests {
         assert_eq!(fm.trim(), "id: spec.my-feature-slug", "frontmatter must carry only id:");
     }
 
-    /// A fresh draft OFFERS the `Control:` key on every criterion the negative
-    /// test will actually judge — and the SHARED parser reads it back.
+    /// A criterion that declares NO control is OFFERED the `Control:` key, on
+    /// every criterion the negative test will actually judge — and the SHARED
+    /// parser reads it back. (The drafter's seed declares one; this is the
+    /// path for every other producer of a `SpecInput`.)
     ///
     /// Both halves matter, and the second is why this is one test rather than a
     /// string assertion: a key the drafter emits in a shape `qa_run` does not
@@ -506,6 +513,7 @@ mod tests {
             id: id.to_string(),
             statement: "when x, then y.".to_string(),
             command: cmd.to_string(),
+            control: None,
         };
         let input = SpecInput {
             title: "Seed".to_string(),
@@ -543,6 +551,57 @@ mod tests {
             "the seeded control is a skeleton: {:?}",
             items[0].control,
         );
+    }
+
+    /// A criterion that DECLARES a control renders it verbatim, the way
+    /// `Command:` is rendered — the drafter seeds one on every behaviour
+    /// criterion, and a channel the renderer replaced with its own placeholder
+    /// would be a channel that only ever carried what a human typed.
+    ///
+    /// Two-sided in one document: AC-1 declares, AC-2 does not and is offered
+    /// the placeholder as before, AC-3 (trailing) declares nothing and gets
+    /// nothing. So the assertion cannot pass by the renderer printing the same
+    /// thing for everyone.
+    #[test]
+    fn a_declared_control_renders_verbatim_and_an_absent_one_is_still_offered() {
+        use crate::commands::review::qa_run::{extract_ac_section, is_skeleton, parse_ac_items};
+        use mustard_core::domain::spec::contract::{AcceptanceCriterion, SpecInput};
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("control-declared");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let ac = |id: &str, cmd: &str, control: Option<&str>| AcceptanceCriterion {
+            id: id.to_string(),
+            statement: "when x, then y.".to_string(),
+            command: cmd.to_string(),
+            control: control.map(str::to_string),
+        };
+        let input = SpecInput {
+            title: "Seed".to_string(),
+            acceptance_criteria: vec![
+                ac("AC-1", "cargo test foo", Some("cargo build")),
+                ac("AC-2", "cargo test bar", None),
+                ac("AC-3", "cargo build", None),
+            ],
+            ..SpecInput::default()
+        };
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+            .expect("write spec.md");
+        let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+
+        let section = extract_ac_section(&body).expect("the AC section parses");
+        let items = parse_ac_items(&section);
+        assert_eq!(items.len(), 3, "every criterion still parses: {body}");
+        assert_eq!(
+            items[0].control.as_deref(),
+            Some("cargo build"),
+            "the declared control lands verbatim: {body}"
+        );
+        assert!(
+            is_skeleton(items[1].control.as_deref().unwrap_or_default()),
+            "an undeclared control is still offered the placeholder: {:?}",
+            items[1].control,
+        );
+        assert_eq!(items[2].control, None, "the trailing criterion carries none: {body}");
     }
 
     /// The dual link: a `[[spec.{slug}]]` reference resolves to the generated
