@@ -597,9 +597,13 @@ pub(crate) fn render_prompt_with_census(
     // byte-identical to one rendered before the channel existed. It sits in the
     // VARIABLE tail of the template (after `## EFFICIENCY`), never in the
     // prefix-stable head — carrying context is worthless if it breaks the
-    // prompt cache on every dispatch.
-    let (conversation_material, material_census) = spec
-        .map(|_| build_conversation_material(&spec_dir.join("spec.md"), &op_spec_path))
+    // prompt cache on every dispatch. The parent path is the SAME one `## WHY`
+    // and `## ACCEPTANCE` hand over: the helper resolves `spec.md` →
+    // `spec.original.md` itself, so a rewave's archiving cannot starve this
+    // section while the other two keep reading the archive.
+    let (conversation_material, material_census) = parent_spec
+        .as_deref()
+        .map(|p| build_conversation_material(p, &op_spec_path))
         .unwrap_or_default();
     // A task that NAMES a material item gets that item echoed right under it.
     // The material still lives once, in its own section — this resolves the
@@ -1554,6 +1558,68 @@ mod tests {
             RenderMode::First, None, None, Some("ad-hoc task"),
         );
         assert!(!spec_less.contains("## CONVERSATION MATERIAL"), "{spec_less}");
+    }
+
+    /// The three sections cut from the PARENT survive its archiving TOGETHER. A
+    /// rewave renames `spec.md` to `spec.original.md` in step 9, and `## WHY`
+    /// and `## ACCEPTANCE` already followed it there — the material arm did
+    /// not, so a wave rendered after the archiving carried the story and the
+    /// ruler and an EMPTY material section. All three read the parent by the
+    /// one rule (`read_parent_spec`), so they cannot disagree on which file it
+    /// is; the per-wave cut of the material is untouched by the fallback.
+    #[test]
+    fn conversation_material_survives_the_parent_archiving() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let spec = "archived-parent-spec";
+        let spec_dir = dir.path().join(".claude/spec").join(spec);
+        std::fs::create_dir_all(spec_dir.join("wave-1-impl")).unwrap();
+        std::fs::create_dir_all(spec_dir.join("wave-2-impl")).unwrap();
+        std::fs::write(
+            spec_dir.join("spec.md"),
+            "# T\n\n## Contexto\n\no despacho chega sem o porquê\n\n\
+             ## Files\n\n- `src/alpha.rs`\n- `src/beta.rs`\n\n\
+             ## Tasks\n\n- [ ] parent task\n\n\
+             ## Acceptance Criteria\n\n\
+             - **AC-1** — alpha holds.\n  Command: `cargo test alpha`\n\
+             - **AC-2** — beta holds.\n  Command: `cargo test beta`\n\n\
+             ## Definitions\n\n- **wave** — one level of the plan\n\n\
+             ## Decisions\n\n- everything branches off dev\n  Reason: the release train\n\n\
+             ## Evidence\n\n\
+             - alpha parses the header twice\n  Evidence: `src/alpha.rs:12`\n\
+             - beta swallows the error\n  Evidence: `src/beta.rs:30`\n",
+        )
+        .unwrap();
+        for (wave, file, ac) in [("wave-1-impl", "src/alpha.rs", "AC-1"), ("wave-2-impl", "src/beta.rs", "AC-2")] {
+            std::fs::write(
+                spec_dir.join(wave).join("spec.md"),
+                format!(
+                    "---\nid: wave.{spec}.{wave}\nsatisfies: [{ac}]\n---\n\n\
+                     # W\n\n## Files\n\n- `{file}`\n\n## Tasks\n\n- [ ] do it\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        // The archiving a rewave performs: the parent moves, nothing else does.
+        std::fs::rename(spec_dir.join("spec.md"), spec_dir.join("spec.original.md")).unwrap();
+
+        let rendered = render_wave(dir.path(), spec, 1);
+        assert!(rendered.contains("## WHY"), "o arquivamento matou o porquê: {rendered}");
+        assert!(rendered.contains("o despacho chega sem o porquê"), "{rendered}");
+        assert!(rendered.contains("## ACCEPTANCE"), "o arquivamento matou a régua: {rendered}");
+        assert!(rendered.contains("Command: `cargo test alpha`"), "{rendered}");
+        assert!(
+            rendered.contains("## CONVERSATION MATERIAL"),
+            "o arquivamento matou o material — o canal que só este braço lia direto: {rendered}"
+        );
+        assert!(rendered.contains("**wave** — one level of the plan"), "definitions lost: {rendered}");
+        assert!(rendered.contains("everything branches off dev"), "decisions lost: {rendered}");
+        // The per-wave cut is unchanged by the fallback: own finding rides, the
+        // sibling's stays home — same as when the parent is still `spec.md`.
+        assert!(rendered.contains("alpha parses the header twice"), "own finding lost: {rendered}");
+        assert!(!rendered.contains("beta swallows the error"), "sibling finding leaked: {rendered}");
+        assert!(!rendered.contains("cargo test beta"), "sibling criterion leaked: {rendered}");
     }
 
     /// The wave's prompt carries the RULER it will be judged by — the criteria

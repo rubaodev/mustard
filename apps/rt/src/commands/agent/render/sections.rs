@@ -311,9 +311,10 @@ fn criterion_blocks(section: &str) -> Vec<(String, String)> {
 
 /// O spec do PAI, lido pela regra que o `wave-scaffold` aplica ao mesmo arquivo:
 /// `spec.md`, e `spec.original.md` quando aquele não abre. Um rewave RENOMEIA o
-/// spec do pai para lá no passo 9 da decomposição, então sem o fallback os dois
-/// canais que leem o pai (`## WHY` e `## ACCEPTANCE`) morrem exatamente para a
-/// população que TEM ondas. Fail-open: nada legível devolve "".
+/// spec do pai para lá no passo 9 da decomposição, então sem o fallback os três
+/// canais que leem o pai (`## WHY`, `## ACCEPTANCE` e `## CONVERSATION
+/// MATERIAL`) morrem exatamente para a população que TEM ondas. Fail-open: nada
+/// legível devolve "".
 fn read_parent_spec(parent_spec: &Path) -> String {
     let archived =
         parent_spec.parent().unwrap_or_else(|| Path::new(".")).join("spec.original.md");
@@ -566,6 +567,14 @@ const MATERIAL_EVIDENCE: &str = "### Evidence";
 /// byte-identical to one rendered before this channel existed. Fail-open: an
 /// unreadable spec yields "".
 ///
+/// The parent is opened by [`read_parent_spec`] — the SAME `spec.md` →
+/// `spec.original.md` resolution `## WHY` and `## ACCEPTANCE` use. A rewave
+/// archives the parent under that name, and this arm used to read `spec.md`
+/// directly: every wave rendered after the archiving carried the other two
+/// sections from the archive and an EMPTY material section, so the
+/// definitions/decisions/evidence channel died for exactly the population
+/// that has waves.
+///
 /// Returns the rendered block AND the [`MaterialCensus`] of what the cut did, so
 /// the dispatch can REPORT what it held back instead of printing a bare total
 /// that reads as a truncation. The census is computed by the cut ITSELF — a
@@ -575,7 +584,7 @@ pub(crate) fn build_conversation_material(
     parent_spec: &Path,
     wave_spec: &Path,
 ) -> (String, MaterialCensus) {
-    let text = mfs::read_to_string(parent_spec).unwrap_or_default();
+    let text = read_parent_spec(parent_spec);
     let wave_text = mfs::read_to_string(wave_spec).unwrap_or_default();
     cut_material_for_files(&text, &files_section_paths(&wave_text))
 }

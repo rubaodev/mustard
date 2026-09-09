@@ -264,9 +264,25 @@ fn backtick_file_refs(text: &str) -> Vec<String> {
 /// off-root (a worktree, a nested cwd) the two differ and the bare relative
 /// path would be tested against the wrong tree.
 fn ref_resolves(r: &str, spec_dir: &Path, root: &Path, project_roots: &[PathBuf]) -> bool {
+    let r = normalise_ref(r);
     fs::exists(spec_dir.join(r))
         || fs::exists(root.join(r))
         || project_roots.iter().any(|sub| fs::exists(sub.join(r)))
+}
+
+/// A `## Files` reference as a bare relative path: a leading `./` (however many)
+/// is dropped. `` `./src/x.rs` `` and `` `src/x.rs` `` name the SAME file, and
+/// both readers of a reference — [`ref_resolves`] and the suffix match in
+/// [`refs_found_elsewhere`] — go through here so they cannot disagree about it.
+/// The suffix match used to compare `found.ends_with("/./src/x.rs")`, which
+/// nothing on disk ends with, so a file that existed was reported as missing
+/// with the create-marker hint. Pure, total.
+fn normalise_ref(r: &str) -> &str {
+    let mut r = r.trim();
+    while let Some(rest) = r.strip_prefix("./") {
+        r = rest;
+    }
+    r
 }
 
 /// Diretórios que a varredura de [`refs_found_elsewhere`] nunca abre: nada que
@@ -377,7 +393,11 @@ fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, FoundE
                         continue;
                     }
                     let found = ac_negative_check::repo_relative(root, &entry.path);
-                    let score = u8::from(found.ends_with(&format!("/{r}")) || found == r) + 1;
+                    // A mesma normalização que o `ref_resolves` aplica: uma
+                    // referência escrita `./src/x.rs` é sufixo de
+                    // `apps/rt/src/x.rs` tanto quanto `src/x.rs` é.
+                    let bare = normalise_ref(r);
+                    let score = u8::from(found.ends_with(&format!("/{bare}")) || found == bare) + 1;
                     if best.get(r).is_none_or(|(previous, _)| *previous < score) {
                         best.insert(r.to_string(), (score, found));
                     }
@@ -2217,6 +2237,67 @@ mod tests {
             issues.iter().any(|i| i["type"] == json!("ac-task-gap")),
             "agent tasks with a broken AC section must warn: {issues:?}"
         );
+    }
+
+    /// `` `./src/x.rs` `` and `` `src/x.rs` `` are the same reference, and BOTH
+    /// readers answer the same for both spellings: `ref_resolves` finds the file
+    /// where it is, and the prefix walk recognises `apps/rt/src/x.rs` as the
+    /// same file under another prefix (not a homonym). The `./` form used to
+    /// fail the suffix match — `/./src/x.rs` ends nothing — so an existing file
+    /// got the create-marker hint.
+    #[test]
+    fn a_dot_slash_reference_resolves_like_its_bare_spelling() {
+        let dir = tempdir().unwrap();
+        let spec_dir = dir.path().join("spec");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let real = dir.path().join("apps").join("rt").join("src");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("x.rs"), "// existing").unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src").join("here.rs"), "// at root").unwrap();
+
+        // Reader 1: resolution on disk agrees across spellings.
+        for (dotted, bare) in [("./src/here.rs", "src/here.rs"), ("./src/x.rs", "src/x.rs")] {
+            assert_eq!(
+                ref_resolves(dotted, &spec_dir, dir.path(), &[]),
+                ref_resolves(bare, &spec_dir, dir.path(), &[]),
+                "`{dotted}` e `{bare}` são a mesma referência"
+            );
+        }
+        assert!(ref_resolves("./src/here.rs", &spec_dir, dir.path(), &[]));
+        assert!(!ref_resolves("./src/x.rs", &spec_dir, dir.path(), &[]));
+
+        // Reader 2: the prefix walk sees the `./` form as the SAME file under
+        // another prefix, exactly as it sees the bare form.
+        let found = refs_found_elsewhere(
+            dir.path(),
+            &["./src/x.rs".to_string(), "src/x.rs".to_string()],
+        );
+        for spelling in ["./src/x.rs", "src/x.rs"] {
+            let hit = found.get(spelling).unwrap_or_else(|| panic!("`{spelling}` not found"));
+            assert_eq!(hit.path, "apps/rt/src/x.rs");
+            assert!(hit.suffix, "`{spelling}` é o mesmo arquivo sob outro prefixo, não homônimo");
+        }
+
+        // And end to end: the WARN names where the file is, not the marker hint.
+        let path = dir.path().join("spec.md");
+        let body = "# Spec\n## Files\n- `./src/x.rs`\n\
+                    ### Backend Agent\n- [ ] t1\n- [ ] t2\n";
+        std::fs::write(&path, body).unwrap();
+        let issues = validate(dir.path(), &path, body);
+        let warn = issues
+            .iter()
+            .find(|i| i["type"] == json!("missing-file") && i["file"] == json!("./src/x.rs"))
+            .unwrap_or_else(|| panic!("expected the missing-file WARN: {issues:?}"));
+        let msg = warn["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("apps/rt/src/x.rs"), "a mensagem diz ONDE está: {msg}");
+        assert!(!msg.contains("(novo)"), "e não manda criar uma segunda cópia: {msg}");
+
+        // The normaliser itself: only a LEADING `./` goes, nothing else moves.
+        assert_eq!(normalise_ref("./src/x.rs"), "src/x.rs");
+        assert_eq!(normalise_ref("././src/x.rs"), "src/x.rs");
+        assert_eq!(normalise_ref("src/./x.rs"), "src/./x.rs");
+        assert_eq!(normalise_ref("src/x.rs"), "src/x.rs");
     }
 
     #[test]
