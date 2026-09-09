@@ -559,8 +559,19 @@ mod tests {
     }
 
     /// Init a repo whose single commit lives on `base`.
+    ///
+    /// The line-ending config is not cosmetic. These fixtures assert the BYTES
+    /// git puts back on disk after a `reset --hard`, a fast-forward or a stash
+    /// pop, and the Windows runner carries `core.autocrlf=true` globally — so
+    /// the same commit checks out with CRLF there and every byte comparison
+    /// fails while the content is identical. Pinning both keys makes the
+    /// fixture answer the same on every platform. Writing git config is
+    /// confined to `#[cfg(test)]` by the root `CLAUDE.md` guard; this is that
+    /// carve-out, not an exception to it.
     fn init_repo_on(root: &Path, base: &str) {
         git(root, &["init"]);
+        git(root, &["config", "core.autocrlf", "false"]);
+        git(root, &["config", "core.eol", "lf"]);
         git(root, &["config", "user.email", "t@example.com"]);
         git(root, &["config", "user.name", "t"]);
         git(root, &["checkout", "-b", base]);
