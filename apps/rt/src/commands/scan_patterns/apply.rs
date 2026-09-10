@@ -327,9 +327,7 @@ fn examples_defects(body: &str, root: &Path) -> Vec<String> {
             ));
             continue;
         }
-        let grounded = sources
-            .iter()
-            .any(|lines| wanted.iter().all(|w| lines.iter().any(|l| l.as_str() == *w)));
+        let grounded = sources.iter().any(|lines| wanted.iter().all(|w| line_present(w, lines)));
         if !grounded {
             out.push(format!(
                 "a code block in `{examples}` appears in none of the cited `Ref:` files ({}) — \
@@ -339,6 +337,41 @@ fn examples_defects(body: &str, root: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// O menor começo que ainda IDENTIFICA uma linha. Abaixo disso a abreviação não
+/// prova leitura nenhuma: `    pub ` ou `    return ` abrem dezenas de linhas em
+/// qualquer arquivo Rust ou TypeScript, e aceitar um começo desses seria trocar
+/// a prova por uma coincidência.
+const MIN_ABBREV_HEAD: usize = 12;
+
+/// Whether the pasted line `w` really is in `lines`.
+///
+/// A line the author did NOT abbreviate must be there verbatim once trimmed —
+/// that is the proof of reading, and it is not relaxed here. A line the author
+/// CUT with `...` is matched by its head instead, because the tail he removed
+/// was never claimed to be present.
+///
+/// Medido na primeira passada de enriquecimento real: 5 linhas em 712 vinham
+/// nessa forma, e cada uma reprovava o molde inteiro embora tivesse sido colada
+/// de verdade. O corte acontece no FIM porque é o começo que identifica a linha;
+/// uma abreviação no começo seria reescrita, não encurtamento, e continua sendo
+/// tratada como linha comum — sem `...` no fim, exige igualdade.
+fn line_present(w: &str, lines: &[String]) -> bool {
+    match abbreviated_head(w) {
+        Some(head) => lines.iter().any(|l| l.starts_with(head)),
+        None => lines.iter().any(|l| l.as_str() == w),
+    }
+}
+
+/// O começo de `w` antes da abreviação que ele carrega, quando carrega uma e o
+/// que sobra ainda identifica a linha. `None` quando a linha não foi abreviada,
+/// ou quando o corte deixou menos que [`MIN_ABBREV_HEAD`] — aí ela volta a ser
+/// julgada por igualdade, como qualquer outra.
+fn abbreviated_head(w: &str) -> Option<&str> {
+    let cut = w.find("...").or_else(|| w.find('…'))?;
+    let head = w[..cut].trim_end();
+    (head.chars().count() >= MIN_ABBREV_HEAD).then_some(head)
 }
 
 /// The content of every fenced block that lives INSIDE `## Examples`, in
@@ -1177,6 +1210,72 @@ mod tests {
             "re-indentation and elision are not defects: {:?}",
             examples_defects(&reshaped, dir.path())
         );
+    }
+
+    /// Um exemplar cuja linha do meio é LONGA, para que abreviá-la no fim ainda
+    /// deixe um começo capaz de identificá-la. O exemplar curto do resto do
+    /// arquivo não serve: `db: Db,` cortado não deixa nada que prove leitura.
+    fn write_long_exemplar(root: &Path) {
+        let p = root.join(EXEMPLAR_REL);
+        std::fs::create_dir_all(p.parent().expect("the exemplar has a parent")).unwrap();
+        std::fs::write(
+            &p,
+            "pub struct UserService {\n    pub db: Db, // the pool the house shares across requests\n}\n",
+        )
+        .unwrap();
+    }
+
+    /// A linha longa que o autor colou e cortou no FIM ainda É a linha que ele
+    /// leu. Medido na primeira passada de enriquecimento real: 5 linhas em 712
+    /// vinham assim, e cada uma reprovava um molde inteiro colado de verdade.
+    #[test]
+    fn a_line_shortened_at_its_tail_still_grounds() {
+        let dir = tempfile::tempdir().unwrap();
+        write_long_exemplar(dir.path());
+
+        let shortened = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct UserService {{\n    pub db: Db, // the pool the house ...\n}}\n```"
+            ),
+        );
+        let defects = examples_defects(&shortened, dir.path());
+        assert!(defects.is_empty(), "uma linha cortada no fim ainda fundamenta: {defects:?}");
+    }
+
+    /// A abreviação afrouxa o FIM, nunca a identidade. Um começo que não abre
+    /// nenhuma linha do exemplar continua sendo invenção, e um começo curto
+    /// demais não prova nada — `    pub ` abre dezenas de linhas em qualquer
+    /// arquivo Rust.
+    #[test]
+    fn an_abbreviated_line_with_no_matching_prefix_is_still_a_defect() {
+        let dir = tempfile::tempdir().unwrap();
+        write_long_exemplar(dir.path());
+
+        let invented = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct GhostService {{\n    pub cache: Cache, // inventado ...\n}}\n```"
+            ),
+        );
+        assert!(
+            examples_defects(&invented, dir.path())
+                .iter()
+                .any(|d| d.contains("appears in none of the cited")),
+            "um começo inventado continua sendo defeito"
+        );
+
+        assert_eq!(abbreviated_head("pub ..."), None, "um começo curto não identifica linha");
+        assert_eq!(
+            abbreviated_head("pub struct UserService { ... }"),
+            Some("pub struct UserService {"),
+            "o começo é o que vem antes do corte, aparado"
+        );
+
+        // E uma linha SEM abreviação segue exigindo igualdade exata.
+        let lines = vec!["pub struct UserService {".to_string()];
+        assert!(line_present("pub struct UserService {", &lines));
+        assert!(!line_present("pub struct UserService", &lines), "sem corte, sem prefixo");
     }
 
     /// The SECTION and `paths:` checks run against every `-pattern` mold this
