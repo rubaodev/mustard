@@ -140,6 +140,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          (flagged as dark surface in the F1 LOT C report)",
     ),
     (
+        "scratch-gc",
+        "scratch-copy collector (commands/maint/scratch_gc.rs) landing in wave 1 \
+         of the scratch-gc unit; its prose caller is the reviewer's cleanup step \
+         in plugin/agents/mustard-review.md, written in wave 2 - drop this row \
+         there",
+    ),
+    (
         "security-scan",
         "secret/permission scanner with an exit-code contract \
          (commands/review/security_scan.rs, JS-era port); no product caller \

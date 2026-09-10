@@ -14,6 +14,9 @@
 //! - **residue** (`--residue` only) — scan `settings.json`, SKILL.md files,
 //!   and refs for mentions of paths/commands that no longer exist (dead `.js`
 //!   names, `scripts/` entries with no resolvable target). WARN per hit.
+//! - **scratch-residue** (`--residue` só) — tamanho total das sobras que o
+//!   `scratch-gc` recolheria e o da compilação compartilhada, pela MESMA
+//!   varredura dele. WARN quando há sobra ou quando a compilação passou do teto.
 //! - **drift** — compare by hash the folders a fresh payload owns
 //!   (`CORE_FOLDERS`) between the installed `.claude/` and the
 //!   `templates/` source. Degrades to `skip` when `templates/` is not
@@ -260,6 +263,34 @@ fn check_residue(claude_dir: &Path) -> CheckResult {
     } else {
         CheckResult::warn("residue", hits)
     }
+}
+
+/// Sobras de cópias descartáveis e tamanho da compilação compartilhada, lidos
+/// pela varredura do `scratch-gc` — uma leitura só, para o doctor e a porta
+/// de limpeza nunca discordarem sobre o que é sobra. Só com `--residue`: a
+/// medida percorre cada candidata inteira.
+fn check_scratch_residue(roots: &crate::commands::maint::scratch_gc::ScratchRoots) -> CheckResult {
+    use crate::commands::maint::scratch_gc::{human_bytes, survey, MIN_AGE_HOURS};
+
+    let found = survey(roots);
+    let count = found.candidates.len();
+    let mut details = vec![format!(
+        "{count} scratch leftover(s) older than {MIN_AGE_HOURS}h: {} - list with `mustard-rt run scratch-gc`, remove with `--apply`",
+        human_bytes(found.candidates_bytes())
+    )];
+    let over_cap = found.shared_target.as_ref().is_some_and(|s| s.over_cap);
+    match found.shared_target.as_ref() {
+        Some(shared) => details.push(format!(
+            "shared build {}: {} (cap {}){}",
+            shared.path,
+            human_bytes(shared.size_bytes),
+            human_bytes(shared.cap_bytes),
+            if shared.over_cap { " - over the cap, `scratch-gc --apply` empties it" } else { "" }
+        )),
+        None => details.push("shared build: not present".to_string()),
+    }
+    let status = if count > 0 || over_cap { Status::Warn } else { Status::Ok };
+    CheckResult { name: "scratch-residue", status, details }
 }
 
 /// Scan text for `.js` filename patterns and check if they exist under
@@ -1410,6 +1441,9 @@ pub fn run(opts: DoctorOpts) {
 
     if opts.residue {
         results.push(check_residue(&claude_dir));
+        results.push(check_scratch_residue(
+            &crate::commands::maint::scratch_gc::ScratchRoots::from_env(),
+        ));
     }
 
     // W3.T3.10 — claude-paths-single-source check trio. Each check renders
@@ -1926,6 +1960,52 @@ mod tests {
         write_file(&claude_dir.join("settings.json"), r#"{ "foo": "bar" }"#);
         let result = check_residue(&claude_dir);
         assert_eq!(result.status, Status::Ok);
+    }
+
+    /// AC-5 — com sobra candidata, o `--residue` relata o tamanho dela e o da
+    /// compilação compartilhada.
+    #[test]
+    fn doctor_residue_reports_scratch_leftovers() {
+        use crate::commands::maint::scratch_gc::{human_bytes, ScratchRoots};
+
+        let base = tempdir().unwrap();
+        let temp_root = base.path().join("tmp");
+        let old = temp_root.join("tmp.old");
+        std::fs::create_dir_all(old.join("apps").join("rt")).unwrap();
+        write_file(&old.join("Cargo.toml"), "[workspace]\n");
+        std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 3 * 1024]).unwrap();
+        // Idade vem do arquivo mais recente: envelhecer os dois arquivos basta.
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
+        for f in [old.join("Cargo.toml"), old.join("apps").join("rt").join("big.bin")] {
+            let file = std::fs::OpenOptions::new().write(true).open(&f).unwrap();
+            file.set_modified(when).unwrap();
+        }
+        let candidate_bytes = std::fs::metadata(old.join("Cargo.toml")).unwrap().len() + 3 * 1024;
+
+        let shared = base.path().join("cache").join("scratch-target");
+        std::fs::create_dir_all(shared.join("debug")).unwrap();
+        std::fs::write(shared.join("debug").join("lib.rlib"), vec![0u8; 2048]).unwrap();
+
+        let roots = ScratchRoots {
+            temp_root,
+            shared_target: Some(shared.clone()),
+            cap_bytes: 1024 * 1024,
+            current_session: "sess-current".to_string(),
+            current_dir: None,
+        };
+        let result = check_scratch_residue(&roots);
+
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let text = result.details.join("\n");
+        assert!(
+            text.contains(&format!("1 scratch leftover(s) older than 12h: {}", human_bytes(candidate_bytes))),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("shared build {}: {}", shared.display(), human_bytes(2048))),
+            "{text}"
+        );
+        assert!(old.exists(), "the doctor only reads");
     }
 
     // --- drift tests ---

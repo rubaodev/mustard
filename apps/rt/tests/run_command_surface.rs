@@ -105,6 +105,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "scan-spec",
     "scope-classify",
     "scope-decompose",
+    "scratch-gc",
     "security-scan",
     "spec-children",
     "spec-children-tree",

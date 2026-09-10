@@ -64,6 +64,29 @@ pub enum MaintCmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Recolhe as cópias descartáveis que os agentes deixam no diretório
+    /// temporário (ou no `scratchpad/` de uma sessão do Claude Code): pasta
+    /// com cópia deste projeto ou `target/` de compilação, sem mudança há
+    /// mais de 12 horas, e que não é a da sessão atual.
+    ///
+    /// Só lista por padrão; `--apply` apaga as listadas e esvazia a
+    /// compilação compartilhada `~/.cache/mustard/scratch-target` acima de
+    /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
+    /// de conferir que ela está no temp e é uma cópia — fora do temp é
+    /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
+    #[command(name = "scratch-gc")]
+    #[command(display_order = 100)]
+    ScratchGc {
+        /// Só lista, sem apagar nada (o padrão).
+        #[arg(long, default_value_t = true, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apaga as candidatas listadas. Obrigatório para mexer no disco.
+        #[arg(long)]
+        apply: bool,
+        /// Apaga só esta pasta, conferida, sem o filtro de idade.
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
     /// Kill-switch: set `"disableAllHooks": true` in `.claude/settings.json`
     /// and wipe volatile harness state (`.agent-state/`,
     /// `.cluster-cache.json`). Everything else in the file —
@@ -197,6 +220,12 @@ pub fn dispatch(cmd: MaintCmd) {
                 age_days,
                 apply,
             });
+        }
+        MaintCmd::ScratchGc { dry_run, apply, path } => {
+            // `dry_run` vale `true` por padrão e o `conflicts_with` impede os
+            // dois juntos: `--apply` é quem decide.
+            let _ = dry_run;
+            maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
         MaintCmd::Unhook { repo, scope, confirm } => {
             maint::unhook::run(maint::unhook::UnhookOpts { repo, scope, confirm });
