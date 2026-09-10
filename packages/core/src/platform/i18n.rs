@@ -1166,6 +1166,9 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "[Mustard] Your previous reply failed the didactic-tone measurement. Fix these \
              points in this reply:"
         }
+        // A última linha da lista quando há mais defeitos do que ela mostra.
+        ("clarity.more", Locale::PtBr) => "e mais {count}",
+        ("clarity.more", Locale::EnUs) => "and {count} more",
 
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
@@ -1610,6 +1613,7 @@ mod tests {
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.note.head", &[][..]),
             ("clarity.next.head", &[][..]),
+            ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

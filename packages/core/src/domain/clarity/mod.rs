@@ -42,15 +42,29 @@ const COMMON_ACRONYMS: &[&str] = &[
     "UTF",
 ];
 
-/// Pontuação que, depois do termo e na mesma frase, anuncia a explicação dele:
-/// "slug — o nome curto da spec", "CI: integração contínua".
-const EXPLAINING_PUNCTUATION: &[&str] = &["—", "–", ": "];
+/// Travessão ou hífen colado logo depois do termo: abre um aposto que explica o
+/// termo em qualquer ponto da frase ("o slug — o nome curto da spec — mudou").
+const APPOSITION_MARKS: &[&str] = &[" — ", " - "];
 
-/// Expressões que, depois do termo e na mesma frase, anunciam a explicação
-/// dele. Casadas como palavra inteira, para "porque é" não passar por "que é".
+/// Dois-pontos colado logo depois do termo. Só explica quando o termo abre a
+/// frase, como num glossário ("CI: integração contínua"). No meio da frase
+/// ("Troquei o slug: agora é outro") ele anuncia o que vem depois, não o termo.
+const LABEL_MARK: &str = ": ";
+
+/// Expressões que anunciam a explicação quando ocupam as palavras logo depois
+/// do termo ("o CI, ou seja, a integração contínua"). Mais adiante na frase
+/// não contam: "o CI falhou, e o que é pior" não explica o CI.
 const EXPLAINING_PHRASES: &[&str] = &[
     "que é", "que são", "ou seja", "isto é", "which is", "which are", "meaning",
 ];
+
+/// Quantas palavras depois do termo podem trazer uma [`EXPLAINING_PHRASES`].
+const PHRASE_WINDOW: usize = 2;
+
+/// Pontuação que fecha o termo sem separá-lo do que vem depois (ênfase do
+/// markdown, aspas): "**slug** — o nome curto" ainda é o termo colado ao
+/// travessão.
+const TERM_CLOSERS: &[char] = &['*', '_', '"', '\'', '”', '»'];
 
 /// Pontuação que abre uma palavra sem fazer parte dela (parêntese, aspas,
 /// ênfase do markdown).
@@ -288,14 +302,26 @@ fn push_unique(list: &mut Vec<String>, item: String) {
 
 /// A ocorrência em `sentence[start..end]` vem acompanhada da explicação?
 ///
-/// Conta como explicação: um parêntese logo depois com texto em minúsculas
-/// ("CI (integração contínua)"); o termo sozinho num parêntese depois das
-/// palavras que ele resume ("integração contínua (CI)"); ou, depois do termo e
-/// na mesma frase, um travessão, dois-pontos ou "que é".
+/// A explicação precisa vir LOGO DEPOIS do termo. Conta como explicação:
+/// - um parêntese logo depois com texto em minúsculas ("CI (integração
+///   contínua)");
+/// - o termo sozinho num parêntese depois das palavras que ele resume
+///   ("integração contínua (CI)");
+/// - o termo seguido direto de travessão ou hífen ([`APPOSITION_MARKS`]), ou
+///   de dois-pontos quando o termo abre a frase ([`LABEL_MARK`]);
+/// - "que é", "ou seja" e afins nas [`PHRASE_WINDOW`] palavras seguintes.
+///
+/// Dois-pontos, travessão ou "que é" mais adiante na frase não contam: em "O
+/// CI falhou: veja o log" o dois-pontos explica a falha, não o CI.
 fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
     let is_decoration =
         |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '"' | '\'' | '“' | '”' | '«' | '»');
     let after = &sentence[end..];
+    // O `s` do plural ("slugs") ainda é o termo.
+    let after = after
+        .strip_prefix('s')
+        .filter(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+        .unwrap_or(after);
     let next = after.trim_start_matches(is_decoration);
 
     if let Some(inner) = next.strip_prefix('(') {
@@ -314,18 +340,25 @@ fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
         }
     }
 
-    let tail = after.to_lowercase();
-    EXPLAINING_PUNCTUATION.iter().any(|mark| tail.contains(mark))
-        || EXPLAINING_PHRASES.iter().any(|phrase| occurs_whole(&tail, phrase))
-}
+    let glued = after.trim_start_matches(TERM_CLOSERS);
+    if APPOSITION_MARKS.iter().any(|mark| glued.starts_with(mark)) {
+        return true;
+    }
+    let opens_sentence = !before.chars().any(char::is_alphanumeric);
+    if opens_sentence && glued.starts_with(LABEL_MARK) {
+        return true;
+    }
 
-/// `needle` aparece em `text` como palavra inteira — mesmo casador de
-/// `pending_gate::occurs_whole` no runtime.
-fn occurs_whole(text: &str, needle: &str) -> bool {
-    !needle.is_empty()
-        && text
-            .match_indices(needle)
-            .any(|(at, _)| bounded(text, at, at + needle.len(), false))
+    let following: Vec<String> = after
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|word| !word.is_empty())
+        .take(PHRASE_WINDOW)
+        .collect();
+    EXPLAINING_PHRASES.iter().any(|phrase| {
+        let wanted: Vec<&str> = phrase.split_whitespace().collect();
+        following.len() >= wanted.len() && following.iter().zip(&wanted).all(|(got, want)| got == want)
+    })
 }
 
 /// `text[start..end]` é uma palavra inteira: nenhuma letra, dígito ou `_`
@@ -682,6 +715,53 @@ mod tests {
         // Começo de frase e plural contam como uso; palavra maior não conta.
         assert_eq!(measure("Slugs mudaram.", &known, &[]).unexplained_terms, vec!["slug"]);
         assert!(measure("Rodei o slugify.", &known, &[]).unexplained_terms.is_empty());
+    }
+
+    /// AC-13: a explicação só conta quando vem logo depois do termo.
+    /// Dois-pontos, travessão ou "que é" mais adiante na frase falam de outra
+    /// coisa, e a sigla ou o nome inventado continua sem explicação.
+    #[test]
+    fn clarity_explanation_must_follow_the_term() {
+        let known = terms(&["slug"]);
+
+        // Mais adiante na frase: aponta.
+        for text in [
+            "O CI falhou: veja o log.",
+            "O CI falhou, e o que é pior, parou tudo.",
+            "O CI falhou, e o que e pior, parou tudo.",
+            "O CI falhou — veja o log.",
+        ] {
+            let report = measure(text, &known, &[]);
+            assert_eq!(report.unexpanded_acronyms, vec!["CI"], "{text}: {report:?}");
+            assert!(report.explained.is_empty(), "{text}: {report:?}");
+        }
+        // Dois-pontos colado ao termo, mas no meio da frase: anuncia o que vem
+        // depois, não o termo.
+        for text in ["Troquei o slug: agora é outro", "Troquei o slug: agora e outro"] {
+            let report = measure(text, &known, &[]);
+            assert_eq!(report.unexplained_terms, vec!["slug"], "{text}: {report:?}");
+        }
+
+        // Logo depois do termo: não aponta.
+        for text in [
+            "CI: integracao continua, falhou.",
+            "CI: integração contínua, falhou.",
+            "**CI**: integração contínua, falhou.",
+            "O CI — integração contínua — falhou.",
+            "O **CI** — integração contínua — falhou.",
+            "O CI - integração contínua - falhou.",
+            "O CI, ou seja, a integração contínua, falhou.",
+            "O CI, que é a integração contínua, falhou.",
+            "O CI (integração contínua) falhou.",
+            "A integração contínua (CI) falhou.",
+        ] {
+            let report = measure(text, &known, &[]);
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+            assert_eq!(report.explained, vec!["CI"], "{text}");
+        }
+        // O plural ainda é o termo colado à explicação.
+        let plural = measure("Os slugs, ou seja, os nomes curtos, mudaram.", &known, &[]);
+        assert!(plural.unexplained_terms.is_empty(), "{plural:?}");
     }
 
     /// AC-4: blocos de código, código inline, caminhos, links, URLs, tabelas e

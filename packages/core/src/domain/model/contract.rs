@@ -328,10 +328,17 @@ impl Outcome {
     /// the same priority tier, last writer wins.
     ///
     /// Exceção: um [`Verdict::Inject`] sobre outro `Inject` junta os dois
-    /// textos, na ordem do registro, separados por uma linha em branco. Cada
-    /// `Inject` é uma mensagem inteira de um módulo; quando o último apagava o
-    /// anterior, dois ganchos no mesmo fim de resposta (o link do documento e a
-    /// nota de clareza) viravam um só, e o usuário perdia o primeiro.
+    /// textos, na ordem do registro, separados por uma linha em branco — em
+    /// todo evento, não só no `Stop`. Cada `Inject` é uma mensagem inteira de
+    /// um módulo; quando o último apagava o anterior, dois ganchos no mesmo fim
+    /// de resposta (o link do documento e a nota de clareza) viravam um só, e o
+    /// usuário perdia o primeiro. O texto junto continua sendo UMA resposta de
+    /// gancho, sob um só teto de 10.000 caracteres: juntar não dá teto próprio
+    /// a ninguém. Hoje só dois pontos têm dois módulos que injetam na mesma
+    /// invocação — o `Stop` (link do documento e nota de clareza) e o
+    /// `PreToolUse(Task)` (aviso de orçamento e fatia de contexto do
+    /// subagente). No `SessionStart` e no `UserPromptSubmit` um só `Check`
+    /// injeta, então nada se junta ali.
     pub fn fold(&mut self, verdict: Verdict) {
         if self.verdict.is_blocking() {
             return;

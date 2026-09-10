@@ -17,7 +17,7 @@ metadata:
 
 ## Purpose
 
-An "inject" module owns one lifecycle trigger (`UserPromptSubmit` for `prompt_submit_inject.rs`, `SessionStart` for `session_start_inject.rs`) and composes several DISTINCT concerns — a gate, a cancel/close step, declared injectables — into a SINGLE `Verdict::Inject`, because the dispatcher's fold is last-writer-wins and separate `Inject`s would silently drop all but one. Both exemplars enumerate their composed concerns as an ordered list in the module doc-comment, stating the exact order they run in and why.
+An "inject" module owns one lifecycle trigger (`UserPromptSubmit` for `prompt_submit_inject.rs`, `SessionStart` for `session_start_inject.rs`) and composes several DISTINCT concerns — a gate, a cancel/close step, declared injectables — into a SINGLE `Verdict::Inject`, so the order the window reads is stated in one place: the dispatcher's fold would join separate `Inject`s too, but in registry order, and everything one invocation carries shares ONE 10,000-character hook response. Both exemplars enumerate their composed concerns as an ordered list in the module doc-comment, stating the exact order they run in and why.
 
 ## Convention
 

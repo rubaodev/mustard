@@ -32,6 +32,12 @@
 //!   uma nota curta ao usuário com os defeitos. O `fold` junta os `Inject` do
 //!   mesmo `Stop`, então a nota e o link do documento saem juntos (K-6).
 //!
+//! A nota e a mensagem seguinte listam no máximo [`MAX_LISTED_DEFECTS`]
+//! defeitos, cada um cortado em [`MAX_DEFECT_CHARS`] caracteres; o resto vira
+//! uma contagem. A lista da mensagem seguinte divide com o injetável do irmão
+//! eleito o teto de 10.000 caracteres de uma resposta de gancho, e uma resposta
+//! com cem frases longas não pode tirar o roteador da janela.
+//!
 //! Nunca bloqueia: a resposta já apareceu na tela, e barrar para reescrever
 //! deixaria o texto confuso e a reescrita juntos (K-2). Falha de disco só cala
 //! o registro; a nota ainda sai.
@@ -153,12 +159,25 @@ pub(crate) fn take_feedback(project_dir: &str, session: Option<&str>) -> Option<
     Some(text)
 }
 
-/// O cabeçalho do catálogo seguido de um defeito por linha.
+/// Quantos defeitos a nota e a mensagem seguinte listam; o resto vira uma
+/// contagem.
+const MAX_LISTED_DEFECTS: usize = 5;
+
+/// O tamanho máximo de uma linha de defeito, em caracteres.
+const MAX_DEFECT_CHARS: usize = 160;
+
+/// O cabeçalho do catálogo seguido de um defeito por linha — no máximo
+/// [`MAX_LISTED_DEFECTS`], cada um com até [`MAX_DEFECT_CHARS`] caracteres.
 fn with_head(key: &str, defects: &[String], lang: Locale) -> String {
     let mut text = mustard_core::translate(key, lang).to_string();
-    for defect in defects {
+    for defect in defects.iter().take(MAX_LISTED_DEFECTS) {
         text.push_str("\n- ");
-        text.push_str(defect);
+        text.extend(defect.chars().take(MAX_DEFECT_CHARS));
+    }
+    let rest = defects.len().saturating_sub(MAX_LISTED_DEFECTS);
+    if rest > 0 {
+        text.push_str("\n- ");
+        text.push_str(&mustard_core::translate("clarity.more", lang).replace("{count}", &rest.to_string()));
     }
     text
 }
@@ -537,6 +556,79 @@ mod tests {
         assert_eq!(metrics["too_long"], json!(false));
         for fragment in ["zebra-quartzo-sete", "falhou", "senha"] {
             assert!(!rows[0].contains(fragment), "the reply text leaked ({fragment}): {}", rows[0]);
+        }
+    }
+
+    /// AC-11 — a nota e o texto levado à mensagem seguinte mostram no máximo
+    /// [`MAX_LISTED_DEFECTS`] defeitos e ficam abaixo de 1.500 caracteres,
+    /// qualquer que seja a resposta: o texto da mensagem seguinte divide o teto
+    /// de 10.000 caracteres com o injetável do irmão eleito.
+    #[test]
+    fn clarity_defects_are_capped() {
+        let dir = project(Some("didactic"));
+        let root = dir.path();
+        // Sessenta frases longas de palavras compridas: cada defeito passa do
+        // corte de [`MAX_DEFECT_CHARS`], e os que sobram viram uma contagem.
+        let long = vec!["palavraextraordinariamentecomprida"; 40].join(" ");
+        let reply = format!("{long}.\n").repeat(60);
+        let Verdict::Inject { context: note } =
+            ClarityCheck.evaluate(&stop("s1", &reply), &ctx(root, Trigger::Stop)).unwrap()
+        else {
+            panic!("a failing reply speaks");
+        };
+        let next = next_context(root, "s1");
+        let block = &next[next.find("A sua resposta anterior").unwrap_or_else(|| panic!("{next}"))..];
+        for text in [note.as_str(), block] {
+            let listed: Vec<&str> = text.lines().skip(1).collect();
+            let (count, defects) = listed.split_last().unwrap_or_else(|| panic!("{text}"));
+            assert!(count.starts_with("- e mais "), "the rest becomes a count: {text}");
+            assert_eq!(defects.len(), MAX_LISTED_DEFECTS, "{text}");
+            for defect in defects {
+                assert_eq!(defect.chars().count(), "- ".len() + MAX_DEFECT_CHARS, "cut: {defect}");
+            }
+            assert!(text.chars().count() < 1_500, "{} chars: {text}", text.chars().count());
+        }
+    }
+
+    /// O `fold` junta os `Inject` de uma invocação, e no `UserPromptSubmit` e
+    /// no `SessionStart` um só `Check` injeta: a regra e os defeitos chegam uma
+    /// vez, na ordem de quem os compõe, e nada se junta ao que já mediu o teto.
+    #[test]
+    fn prompt_and_session_start_have_one_injecting_check() {
+        let dir = project(Some("didactic"));
+        let root = dir.path();
+        let _ = ClarityCheck.evaluate(&stop("s1", FAILING), &ctx(root, Trigger::Stop)).unwrap();
+
+        let registry = Registry::new();
+        let on_prompt = prompt("s1", "e agora?");
+        let on_start = HookInput {
+            hook_event_name: Some("SessionStart".to_string()),
+            session_id: Some("s1".to_string()),
+            ..HookInput::default()
+        };
+        for (name, trigger, input) in [
+            ("UserPromptSubmit", Trigger::UserPromptSubmit, &on_prompt),
+            ("SessionStart", Trigger::SessionStart, &on_start),
+        ] {
+            let c = ctx(root, trigger);
+            let mut outcome = Outcome::allow();
+            let mut injecting = Vec::new();
+            for module in registry.applicable(trigger, None) {
+                let Some(check) = &module.check else { continue };
+                let verdict = check.evaluate(input, &c).unwrap_or(Verdict::Allow);
+                if matches!(verdict, Verdict::Inject { .. }) {
+                    injecting.push(module.id);
+                }
+                outcome.fold(verdict);
+            }
+            assert!(injecting.len() <= 1, "{name}: {injecting:?} would share one response");
+            if name == "UserPromptSubmit" {
+                let Verdict::Inject { context } = &outcome.verdict else {
+                    panic!("the prompt carries the rule: {:?}", outcome.verdict);
+                };
+                assert_eq!(context.matches("ONE idea per sentence").count(), 1, "{context}");
+                assert_eq!(context.matches("reprovou").count(), 1, "{context}");
+            }
         }
     }
 

@@ -29,9 +29,13 @@
 //!   prompt rather than once per session — the thing it governs is always the
 //!   newest message, so a rule delivered once only drifts further from it.
 //!
-//! The three injecting concerns compose into a SINGLE [`Verdict::Inject`] (the
-//! dispatcher fold is last-writer-wins, so separate Injects would drop one):
-//! injectables first, banner next, writing rule last.
+//! The three injecting concerns compose into a SINGLE [`Verdict::Inject`]:
+//! injectables first, banner next, writing rule last (followed by the previous
+//! reply's clarity defects, when it failed). The dispatcher fold would join
+//! separate Injects too, but in registry order; this is the only `Check` that
+//! injects on this event, so composing here keeps the order stated in one
+//! place. The composed text is ONE hook response under ONE 10,000-character
+//! ceiling.
 //!
 //! ## Contract shape
 //!
@@ -402,11 +406,13 @@ impl Check for PromptSubmitInject {
                 economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
                 format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}")
             });
-        // ONE composed Inject — the dispatcher fold is last-writer-wins, so
-        // the concerns of THIS invocation must share a verdict. Injectables
-        // first, banner after, the writing rule last: it is about the answer,
-        // not about the work. Across sibling hooks the fold does not apply:
-        // Claude Code keeps every hook's additionalContext.
+        // ONE composed Inject, in the order stated here: injectables first,
+        // banner after, the writing rule last — it is about the answer, not
+        // about the work. The dispatcher fold would join separate Injects too,
+        // but in registry order; composing keeps the order local. It is still
+        // ONE response under ONE 10,000-character ceiling. Across sibling hooks
+        // the fold does not apply: each is its own invocation, and Claude Code
+        // keeps every hook's additionalContext.
         let parts: Vec<String> = [injected, banner, writing].into_iter().flatten().collect();
         let context = (!parts.is_empty()).then(|| parts.join("\n\n"));
         Ok(match context {
@@ -931,6 +937,68 @@ mod tests {
         ] {
             assert!(is_slash_command(prompt), "must stay a command: {prompt}");
         }
+    }
+
+    /// AC-12 — o pior caso da primeira mensagem da sessão cabe numa resposta de
+    /// gancho: o arquivo de regras injetado (`orchestrator.md`, o que a
+    /// instalação semeia), o aviso de pipeline em curso, a regra de tom e os
+    /// defeitos da resposta anterior no limite. Tudo sai numa só resposta, sob
+    /// um só teto de 10.000 caracteres — medido na resposta inteira, já em JSON.
+    #[test]
+    fn prompt_submit_inject_stays_under_hook_ceiling() {
+        use crate::hook_output::hook_specific_output;
+        use crate::hooks::task::clarity_check::ClarityCheck;
+        use mustard_core::domain::model::contract::Outcome;
+
+        let (dir, c) = ctx();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"specLang":"pt-BR","tone":"didactic","inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
+        )
+        .unwrap();
+        let mustard_dir = root.join(".claude").join("mustard");
+        std::fs::create_dir_all(&mustard_dir).unwrap();
+        std::fs::write(mustard_dir.join("orchestrator.md"), mustard_core::ORCHESTRATOR_MD).unwrap();
+        let paths = ClaudePaths::for_project(root).unwrap();
+        std::fs::create_dir_all(paths.pipeline_states_dir()).unwrap();
+        std::fs::write(paths.pipeline_state_file("uma-unidade-com-um-nome-bem-comprido"), "{}").unwrap();
+
+        // A resposta anterior reprova com defeitos no limite: mais do que a
+        // lista mostra, cada um mais longo do que o corte.
+        let long = vec!["palavraextraordinariamentecomprida"; 40].join(" ");
+        let stop = HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            session_id: Some("s1".to_string()),
+            raw: serde_json::json!({ "last_assistant_message": format!("{long}.\n").repeat(60) }),
+            ..HookInput::default()
+        };
+        let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
+        let note = ClarityCheck.evaluate(&stop, &on_stop).unwrap();
+        assert!(matches!(note, Verdict::Inject { .. }), "the reply failed: {note:?}");
+
+        let verdict =
+            PromptSubmitInject.evaluate(&prompt_input_with_session("como eu faço X?", "s1"), &c).unwrap();
+        let mut outcome = Outcome::allow();
+        outcome.fold(verdict);
+        let json = hook_specific_output("UserPromptSubmit", &outcome).expect("the prompt speaks");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let context = parsed["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{json}"));
+
+        let rules = mustard_core::ORCHESTRATOR_MD.lines().find(|l| !l.trim().is_empty()).unwrap();
+        for (what, needle) in [
+            ("the injected rules", rules),
+            ("the banner", PIPELINE_IN_FLIGHT_BANNER),
+            ("the tone rule", "ONE idea per sentence"),
+            ("the defects", "A sua resposta anterior reprovou"),
+            ("the capped rest", "- e mais "),
+        ] {
+            assert!(context.contains(needle), "{what} missing: {context}");
+        }
+        let size = json.chars().count();
+        assert!(size < 10_000, "{size} characters in one hook response");
     }
 
     #[test]
