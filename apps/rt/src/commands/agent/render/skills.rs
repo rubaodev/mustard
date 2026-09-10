@@ -2,9 +2,19 @@
 //! `<subproject>/.claude/skills/*/SKILL.md` (`- name — description`), names and
 //! trigger descriptions only (never bodies) so the `## SKILLS` section stays
 //! PREFIX-STABLE (cache-safe).
+//!
+//! `{mold_pointer}` — the shelf's other half: which of those molds actually
+//! govern the files THIS wave will touch. The shelf is a catalogue and is
+//! identical for every wave of a spec; the pointer is a prescription for one
+//! wave. They are two placeholders and two sections on purpose — folding the
+//! pointer into the shelf would make the shelf vary per wave and cost the
+//! prefix that sibling waves share, for a line that reads just as well one
+//! section further down.
 
 use std::fmt::Write as _;
 use std::path::Path;
+
+use crate::util::glob::glob_match;
 
 /// Build `{skills_list}` — the target subproject's skill shelf: one line per
 /// `<subproject>/.claude/skills/*/SKILL.md` (`- name — description`), sorted
@@ -50,6 +60,101 @@ pub(crate) fn build_skills_list(project: &Path, subproject: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Build `{mold_pointer}` — the molds whose `paths:` cover the files this wave
+/// declares, one line each, sorted by mold name for byte-stable output.
+///
+/// Both halves of this answer were already written down, in two places, and
+/// nothing crossed them: the wave declares its files under `## Arquivos`, and
+/// every mold declares under `paths:` the folders it governs. Handing the agent
+/// the whole shelf and leaving the crossing to it is a weak instruction — a
+/// menu asks for a choice where a name asks for obedience, and the choice falls
+/// due at the worst moment, before the agent knows the terrain.
+///
+/// Empty (the section collapses) when nothing matches, when the spec names no
+/// files, or when the subproject carries no mold — a dispatch with nothing to
+/// prescribe prescribes nothing rather than gesturing at the catalogue again.
+/// Fail-open throughout: an unreadable spec or an unparseable mold drops out of
+/// the crossing instead of sinking the block.
+pub(crate) fn build_mold_pointer(project: &Path, subproject: &str, spec_path: &Path) -> String {
+    let Ok(spec_text) = std::fs::read_to_string(spec_path) else {
+        return String::new();
+    };
+    let files = arquivos_paths(&spec_text);
+    if files.is_empty() {
+        return String::new();
+    }
+    let skills_dir = project.join(subproject).join(".claude").join("skills");
+    let Ok(entries) = std::fs::read_dir(&skills_dir) else {
+        return String::new();
+    };
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path().join("SKILL.md")) else {
+            continue;
+        };
+        let Ok(fm) = mustard_core::domain::skill::frontmatter::parse(&text) else {
+            continue;
+        };
+        // A mold with no `paths:` governs no folder and can cover nothing.
+        let Some(hit) = files.iter().find(|f| fm.paths.iter().any(|g| glob_match(f, g))) else {
+            continue;
+        };
+        rows.push((entry.file_name().to_string_lossy().into_owned(), hit.clone()));
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    rows.sort();
+    let mut out = String::from(
+        "These molds govern the files this wave touches — `## SKILLS` above is the \
+         catalogue, this is the PRESCRIPTION. Load each one named here (Skill tool, or \
+         Read its SKILL.md) BEFORE writing the first line of the module it governs; \
+         deviating from a mold named here is a review finding:\n",
+    );
+    for (name, hit) in rows {
+        let _ = writeln!(out, "- {name} — covers `{hit}`");
+    }
+    out.trim_end().to_string()
+}
+
+/// Every repo-relative path the spec's `## Arquivos` / `## Files` section names.
+///
+/// The section is a bullet list in some specs and a table in others, and in both
+/// the path is spelled inside backticks. So the read is on the BACKTICKED SPANS
+/// rather than on the row shape: a table row contributes its file cell and not
+/// its prose cell, and a bullet contributes its path either way. A bullet that
+/// carries no backticks still gives up its first slash-bearing token, because
+/// older specs wrote the path plain.
+fn arquivos_paths(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("## ") {
+            // Entering the section, or the next heading ending it.
+            in_section = trimmed == "## Arquivos" || trimmed == "## Files";
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let backticked: Vec<&str> = line.split('`').skip(1).step_by(2).collect();
+        if backticked.iter().any(|s| s.contains('/')) {
+            out.extend(backticked.iter().filter(|s| s.contains('/')).map(|s| s.trim().to_string()));
+            continue;
+        }
+        let lead = line.trim_start();
+        if lead.starts_with("- ") || lead.starts_with("* ") {
+            if let Some(tok) = lead[2..].split_whitespace().find(|t| t.contains('/')) {
+                out.push(tok.trim_matches(|c: char| !c.is_ascii_graphic()).to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +195,86 @@ mod tests {
         assert!(log < odd && odd < svc, "shelf must be sorted: {out}");
         // No skills dir → empty (the ## SKILLS section collapses).
         assert!(build_skills_list(root, "apps/none").is_empty());
+    }
+
+    /// Two molds, and only one governs a folder this wave touches. The mold the
+    /// files fall under is NAMED; the sibling that governs another folder is
+    /// not, which is the whole point — a list of two is already a choice handed
+    /// back, and sixteen is what the shelf hands back today.
+    #[test]
+    fn the_wave_names_the_mold_its_files_fall_under() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_mold(root, "rt-gate-pattern", "apps/rt/src/hooks/**");
+        seed_mold(root, "rt-cmd-pattern", "apps/rt/src/commands/**");
+
+        // A table-shaped `## Arquivos`, the shape this repository's specs use.
+        let spec = root.join("spec.md");
+        std::fs::write(
+            &spec,
+            "## Contexto\n\nprosa com `apps/rt/src/commands/nada.rs` que NÃO conta.\n\n\
+             ## Arquivos\n\n| arquivo | papel |\n|---|---|\n\
+             | `apps/rt/src/hooks/write/post_edit.rs` | o portão |\n\n\
+             ## Critérios de Aceitação\n\n- AC-1 — algo\n",
+        )
+        .unwrap();
+
+        let out = build_mold_pointer(root, "apps/rt", &spec);
+        assert!(
+            out.contains("rt-gate-pattern — covers `apps/rt/src/hooks/write/post_edit.rs`"),
+            "the mold the wave's files fall under is named: {out}"
+        );
+        assert!(
+            !out.contains("rt-cmd-pattern"),
+            "a mold governing another folder is NOT named — prose outside `## Arquivos` \
+             must not reach the crossing: {out}"
+        );
+    }
+
+    /// The block earns its own section by collapsing when it has nothing to say,
+    /// and by leaving the shelf byte-identical when it does. The shelf is shared
+    /// by every wave of a spec; a pointer folded into it would make it vary per
+    /// wave and cost that shared prefix.
+    #[test]
+    fn the_pointer_collapses_and_leaves_the_shelf_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_mold(root, "rt-gate-pattern", "apps/rt/src/hooks/**");
+        let shelf_before = build_skills_list(root, "apps/rt");
+        assert!(!shelf_before.is_empty(), "the shelf itself still renders");
+
+        // Files that fall under no mold → nothing to prescribe.
+        let spec = root.join("spec.md");
+        std::fs::write(&spec, "## Arquivos\n\n- `docs/leia-me.md`\n").unwrap();
+        assert!(
+            build_mold_pointer(root, "apps/rt", &spec).is_empty(),
+            "no match prescribes nothing"
+        );
+
+        // No `## Arquivos` at all (a spec-less or file-less dispatch) → same.
+        let bare = root.join("bare.md");
+        std::fs::write(&bare, "## Contexto\n\nsem seção de arquivos\n").unwrap();
+        assert!(build_mold_pointer(root, "apps/rt", &bare).is_empty(), "no files, no block");
+
+        // An unreadable spec path fails open rather than panicking.
+        assert!(build_mold_pointer(root, "apps/rt", &root.join("nao-existe.md")).is_empty());
+
+        // And through all of it the shelf never moved a byte.
+        assert_eq!(shelf_before, build_skills_list(root, "apps/rt"), "the shelf is untouched");
+    }
+
+    /// A mold under `<subproject>/.claude/skills/<name>/SKILL.md` governing
+    /// `glob`, with the frontmatter shape `scan-patterns-apply` writes.
+    fn seed_mold(root: &Path, name: &str, glob: &str) {
+        let d = root.join("apps/rt/.claude/skills").join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: \"Use when adding or refactoring an X.\"\n\
+                 paths:\n  - {glob}\nsource: scan\n---\n\n## Purpose\nbody\n"
+            ),
+        )
+        .unwrap();
     }
 }

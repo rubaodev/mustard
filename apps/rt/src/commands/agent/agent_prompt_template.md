@@ -51,6 +51,9 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 ## ACCEPTANCE
 {acceptance_block}
 
+## MOLDS FOR THIS WAVE
+{mold_pointer}
+
 ## TASK
 {task_steps}
 
@@ -73,6 +76,9 @@ Guards carregados via {guards_file} acima — respeite sem exceção.
 
 ## ACCEPTANCE
 {acceptance_block}
+
+## MOLDS FOR THIS WAVE
+{mold_pointer}
 
 ## TASK
 {task_steps}
