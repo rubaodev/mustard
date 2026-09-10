@@ -897,6 +897,7 @@ pub fn run(opts: ApproveSpecOpts) {
                 unit_name: None,
                 base: None,
                 work_kind: None,
+                pending: None,
             },
         );
     };

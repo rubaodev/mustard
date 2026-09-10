@@ -150,6 +150,7 @@ impl Observer for WaveStartObserver {
                 unit_name: None,
                 base: None,
                 work_kind: None,
+                pending: None,
             },
         );
         economy::emit(

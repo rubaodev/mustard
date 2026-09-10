@@ -76,6 +76,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "orient",
     "otel-collector",
     "otel-stop",
+    "pending",
     "pipeline-summary",
     "plan-materialize",
     "plan-prepare",

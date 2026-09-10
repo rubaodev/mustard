@@ -43,6 +43,7 @@ use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
 use crate::hooks::task::crystallise_nudge::CrystalliseNudge;
+use crate::hooks::task::pending_gate::PendingGate;
 use crate::hooks::task::stop_gate::StopGate;
 use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
@@ -549,6 +550,22 @@ impl Registry {
                 check: Some(Box::new(CrystalliseNudge)),
                 observer: None,
             },
+            // `pending_gate` — a cobrança de pendências. No `Stop` da sessão
+            // principal depois que uma unidade fechou (a marca que o escritor
+            // de eventos grava em `pipeline.complete` / `pr.merged`), bloqueia
+            // a mensagem final que não cita cada pendência aberta do ledger —
+            // no máximo duas vezes por fechamento. A marca só é consumida
+            // quando a trava LIBERA: o primeiro bloqueio vence, então um
+            // bloqueio dela engolido por um irmão acima deixa a marca, e o
+            // `Stop` seguinte confere de novo. Registrada depois dos irmãos: no
+            // turno do fechamento a spec já está concluída, e os dois acima se
+            // calam.
+            Module {
+                id: "pending_gate",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(PendingGate)),
+                observer: None,
+            },
             Module {
                 id: "user_prompt_observer",
                 // `UserPromptSubmit` lifecycle observer — appends a single
@@ -844,6 +861,7 @@ mod tests {
             "wave_start_observer",
             "wave_complete_observer",
             "stop_gate",
+            "pending_gate",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

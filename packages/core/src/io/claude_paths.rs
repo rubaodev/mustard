@@ -187,6 +187,9 @@ const DOCUMENTED_DIRS: &[&str] = &[
     // Per-session event directories, read by the MCP server and the dashboard
     // watcher.
     ".session",
+    // Lista de pendências fora de qualquer unidade (`run pending`), resolvida
+    // no checkout principal — sobrevive à troca de branch e ao fim da unidade.
+    "pending",
 ];
 
 /// File names under `<root>/.claude/.cache/` that Mustard owns. Single source
@@ -313,6 +316,20 @@ impl ClaudePaths {
     #[must_use]
     pub fn spec_dir(&self) -> PathBuf {
         self.claude_dir().join("spec")
+    }
+
+    /// `<root>/.claude/pending/` — a lista de pendências que mora fora de
+    /// qualquer unidade (`mustard-rt run pending`).
+    #[must_use]
+    pub fn pending_dir(&self) -> PathBuf {
+        self.claude_dir().join("pending")
+    }
+
+    /// `<root>/.claude/pending/ledger.json` — o arquivo da lista; o chamador
+    /// resolve `<root>` no checkout principal, para que um worktree leia o mesmo.
+    #[must_use]
+    pub fn pending_ledger_path(&self) -> PathBuf {
+        self.pending_dir().join("ledger.json")
     }
 
     /// `<root>/.claude/graph/` — graph artifacts (entity registry follow-up).
@@ -841,6 +858,7 @@ mod tests {
             "scratch",
             ".dispatch",
             ".session",
+            "pending",
         ];
         for name in expected {
             assert!(dirs.contains(&name), "missing {name} from documented_dirs");

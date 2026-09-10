@@ -300,11 +300,23 @@ pub fn write_event_with_ts(
     payload: &Value,
     ts_override: Option<&str>,
 ) -> Option<()> {
-    write_event_inner(
+    let written = write_event_inner(
         project, spec, wave_role, session_slug, event_name, kind, wave, session_id,
         actor, parent_id, payload, ts_override,
     )
-    .ok()
+    .ok();
+    // Um fechamento de unidade deixa a marca da sessão AQUI, e não em cada
+    // gravador: `complete-spec` escreve direto neste módulo, sem passar pelo
+    // roteador, então este é o único ponto que todo fechamento atravessa.
+    if written.is_some()
+        && !project_is_own_crate(project)
+        && crate::shared::context::UNIT_CLOSURE_EVENTS.contains(&event_name)
+    {
+        if let Some(sid) = session_id {
+            crate::shared::context::mark_unit_closed(&project.to_string_lossy(), sid);
+        }
+    }
+    written
 }
 
 
