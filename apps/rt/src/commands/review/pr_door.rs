@@ -856,6 +856,10 @@ fn merge_core(
 ///
 /// O motivo `PR #N mergeado` põe o número do pull request no ledger, para quem
 /// reler a lista saber o que entregou o item.
+///
+/// Roda também na promoção `dev` → `main`, de propósito: o `pr.merged` gravado
+/// aqui arma a cobrança de pendências do fim de turno, e uma promoção é um
+/// fechamento depois do qual o usuário deve ver o que segue aberto.
 fn after_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) -> (Option<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec);
     let reason = format!("PR #{} mergeado", facts.number);
@@ -885,6 +889,11 @@ fn linked_pending(root: &Path, spec: &str) -> Option<String> {
 /// Grava o `pr.merged` desta porta. O `pr_detect` só enxerga um `gh pr merge`
 /// digitado no Bash, e este merge acontece dentro do processo — sem o evento, a
 /// cobrança de pendências do fim de turno nunca saberia que a unidade fechou.
+///
+/// Efeito declarado: o evento também alimenta o `pr_metrics` — a contagem de
+/// merges quando o git não responde e o pareamento aberto → mergeado. Os merges
+/// feitos por esta porta, antes invisíveis ali, passam a contar. Não contam em
+/// dobro: o `pr_detect` só grava o `gh pr merge` digitado no Bash.
 fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) {
     use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     let event = HarnessEvent {

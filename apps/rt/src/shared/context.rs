@@ -871,11 +871,22 @@ pub fn take_unit_closed(project_dir_path: &str, session_id: &str) -> bool {
     marker.is_file() && fs::remove_file(&marker).is_ok()
 }
 
-/// `<project>/.claude/.session/<session_id>/unit-closed`, ao lado da marca
+/// `<main>/.claude/.session/<session_id>/unit-closed`, ao lado da marca
 /// `pending-work-branch`.
+///
+/// `<main>` é o checkout PRINCIPAL de `project_dir_path`, resolvido pelo mesmo
+/// [`main_checkout_root`](crate::commands::git_settle::main_checkout_root) que
+/// o ledger de pendências usa. Quem grava e quem lê chegam por caminhos
+/// diferentes — o fechamento pode ser gravado de dentro de um worktree, e o
+/// `Stop` lê o diretório do projeto da sessão —, então os dois lados passam
+/// pela mesma resolução, senão a marca cai num lugar que a cobrança não lê.
+/// Fora de um repositório git, o próprio diretório.
 fn unit_closed_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
+    let project = Path::new(project_dir_path);
+    let main = crate::commands::git_settle::main_checkout_root(project)
+        .unwrap_or_else(|| project.to_path_buf());
     Some(
-        ClaudePaths::for_project(Path::new(project_dir_path))
+        ClaudePaths::for_project(&main)
             .ok()?
             .claude_dir()
             .join(".session")

@@ -11,12 +11,12 @@
 //!
 //! ## Quando cobra — todos os fatos precisam valer
 //!
-//! 1. É o `Stop` da sessão principal (nunca o de um subagente) e não é a segunda
-//!    passada de um bloqueio (`stop_hook_active`).
+//! 1. É o `Stop` da sessão principal (nunca o de um subagente).
 //! 2. Uma unidade FECHOU neste turno: a sessão carrega a marca que o escritor de
 //!    eventos grava ao registrar `pipeline.complete` ou `pr.merged`
-//!    ([`take_unit_closed`]). A marca é consumida aqui, então só o primeiro
-//!    `Stop` depois do fechamento — o fim do turno em que ele aconteceu — a vê.
+//!    ([`take_unit_closed`]). A marca é consumida aqui, em TODO `Stop` da sessão
+//!    principal, então só o primeiro `Stop` depois do fechamento — o fim do
+//!    trecho de turno em que ele aconteceu — a vê.
 //! 3. O `Stop` trouxe `last_assistant_message` (o texto final do turno, campo
 //!    documentado do evento). Sem ele não há o que conferir.
 //! 4. Alguma pendência aberta não é citada nesse texto, pelo id (`P-3`) ou pelo
@@ -30,12 +30,18 @@
 //! resposta curta a recitar a lista — e um aviso que sempre dispara aprende-se a
 //! ignorar.
 //!
-//! ## Uma vez por turno
+//! ## Uma vez por fechamento — e `stop_hook_active` não libera
 //!
-//! Dois limites independentes, como no `stop_gate`: `stop_hook_active` marca a
-//! passada que o próprio bloqueio provocou, e a marca consumida garante o mesmo
-//! sem depender de o host mandar esse campo. O Claude Code também força a parada
-//! depois de 8 bloqueios seguidos, mas aqui nunca se chega ao segundo.
+//! O limite é UM só: a marca consumida. O bloqueio desta trava consome a marca
+//! no mesmo passo, então a reescrita que ele provoca chega sem marca e passa.
+//!
+//! `stop_hook_active` NÃO é um segundo limite, porque ele não diz QUEM bloqueou.
+//! Se o `stop_gate` barra o primeiro `Stop` (QA vermelho) e a continuação fecha
+//! a unidade, o `Stop` seguinte chega com `stop_hook_active` e uma marca nova —
+//! e é a mensagem que encerra o fechamento. Liberá-lo pelo campo deixaria essa
+//! mensagem sem conferência (a perda original) e a marca viva para cobrar o
+//! próximo turno comum. O Claude Code ainda força a parada depois de 8
+//! bloqueios seguidos, mas aqui cada fechamento cobra no máximo uma vez.
 //!
 //! ## Sem modo `MUSTARD_*_MODE`
 //!
@@ -55,19 +61,17 @@ pub struct PendingGate;
 
 impl Check for PendingGate {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        // Fato 1 — o `Stop` da sessão principal, na primeira passada.
+        // Fato 1 — o `Stop` da sessão principal. `stop_hook_active` NÃO libera
+        // aqui (ver "Uma vez por fechamento"): a marca consumida é o limite.
         if ctx.trigger != Some(Trigger::Stop) || input.is_subagent() {
-            return Ok(Verdict::Allow);
-        }
-        if input.raw.get("stop_hook_active").and_then(Value::as_bool) == Some(true) {
             return Ok(Verdict::Allow);
         }
         let project_dir = ctx.project_dir_or_cwd(input);
         let session = input.session_id.as_deref().unwrap_or_default();
 
         // Fato 2 — uma unidade fechou neste turno. Consumida ANTES de qualquer
-        // outra leitura: o turno terminou, cobrado ou não, e o próximo não herda
-        // um fechamento que não é dele.
+        // outra leitura e em todo `Stop` da sessão principal: o trecho terminou,
+        // cobrado ou não, e o próximo não herda um fechamento que não é dele.
         if !take_unit_closed(&project_dir, session) {
             return Ok(Verdict::Allow);
         }
@@ -258,6 +262,90 @@ mod tests {
             ..HookInput::default()
         };
         assert_eq!(verdict(root, &bare), Verdict::Allow, "no final text, nothing to check");
+    }
+
+    /// O fechamento que acontece na continuação de um bloqueio de OUTRA trava
+    /// (o `stop_gate` barrou o primeiro `Stop`, a continuação fechou a unidade)
+    /// chega com `stop_hook_active` e uma marca nova. Essa mensagem é conferida
+    /// — é a que encerra o fechamento — e a marca é consumida nela, cobrando ou
+    /// não: o próximo turno comum nunca herda o fechamento.
+    #[test]
+    fn a_closure_in_a_blocked_continuation_is_checked_and_never_leaks() {
+        let dir = project_with_two_open_items();
+        let root = dir.path();
+        let project = root.to_string_lossy().into_owned();
+        let continuation = |message: &str| {
+            let mut input = stop("s-cont", message);
+            input.raw["stop_hook_active"] = json!(true);
+            input
+        };
+
+        // Omite P-1: cobrada mesmo com `stop_hook_active`, uma vez só.
+        mark_unit_closed(&project, "s-cont");
+        match verdict(root, &continuation("Fechei a unidade; segue o P-2.")) {
+            Verdict::Deny { reason } => assert!(reason.contains("P-1"), "names the omitted: {reason}"),
+            other => panic!("the closing message of a continuation must be checked, got {other:?}"),
+        }
+        assert_eq!(verdict(root, &continuation("idem")), Verdict::Allow, "the rewrite is released");
+
+        // Cita todas: passa, e a marca NÃO sobrevive para o turno seguinte.
+        mark_unit_closed(&project, "s-cont");
+        assert_eq!(verdict(root, &continuation("Seguem P-1 e P-2.")), Verdict::Allow);
+        assert!(!take_unit_closed(&project, "s-cont"), "the marker was consumed by that Stop");
+        assert_eq!(
+            verdict(root, &stop("s-cont", "Pronto, ajustei o teste.")),
+            Verdict::Allow,
+            "the next ordinary turn never inherits the closure",
+        );
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed in {}", dir.display());
+    }
+
+    /// Um fechamento gravado de dentro de um worktree arma a cobrança que o
+    /// `Stop` faz no checkout principal: quem grava e quem lê resolvem a marca
+    /// pelo mesmo checkout principal.
+    #[test]
+    fn a_closure_recorded_in_a_worktree_arms_the_main_checkout() {
+        let dir = tempdir().expect("tempdir");
+        let main = dir.path().join("main");
+        std::fs::create_dir_all(&main).expect("main");
+        std::fs::write(main.join("mustard.json"), r#"{"lang":"pt-BR"}"#).expect("cfg");
+        for args in [
+            &["init"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+            &["commit", "--allow-empty", "-m", "root"],
+        ] {
+            git(&main, args);
+        }
+        let tree = dir.path().join("unit");
+        let tree_arg = tree.to_string_lossy().into_owned();
+        git(&main, &["worktree", "add", "-b", "feature/unit", &tree_arg]);
+        let out = pending_at(&PendingOpts {
+            root: main.clone(),
+            add: true,
+            title: Some("Humanize".into()),
+            detail: Some("terceiro trabalho".into()),
+            close: None,
+            drop: None,
+            reason: None,
+        });
+        assert_eq!(out["ok"], json!(true), "seed: {out}");
+
+        mark_unit_closed(&tree_arg, "s-tree");
+        match verdict(&main, &stop("s-tree", "Unidade fechada.")) {
+            Verdict::Deny { reason } => assert!(reason.contains("Humanize"), "{reason}"),
+            other => panic!("a worktree closure must arm the main checkout's Stop, got {other:?}"),
+        }
     }
 
     /// Um id conta inteiro: `P-10` não cita `P-1`.

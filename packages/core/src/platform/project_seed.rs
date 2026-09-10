@@ -3293,6 +3293,9 @@ mod tests {
             (".session/sess-demo/.events/2026-08-19.ndjson", "{}\n"),
             ("agent-memory/mustard-review.md", "# memory\n"),
             ("graph/entities.json", "{}\n"),
+            // `mustard-rt run pending --add` — the agreed-work ledger that lives
+            // outside every unit, so a worktree and the main checkout share it.
+            ("pending/ledger.json", "{\"items\":[]}\n"),
             ("plans/2026-08-19-demo.md", "# plan\n"),
             ("scratch/probe.json", "{}\n"),
             ("worktrees/fix/demo/CLAUDE.md", "# unit\n"),
