@@ -383,9 +383,25 @@ fn bounded(text: &str, start: usize, end: usize, plural: bool) -> bool {
 /// Siglas de `sentence`: palavras de 2 a 6 letras maiúsculas, com um `s` de
 /// plural opcional ("PRs"). Devolve o trecho da palavra inteira e a sigla.
 /// `_` conta como parte da palavra, então `MUSTARD_WORKSPACE_ROOT` não vira
-/// três siglas.
+/// três siglas — e `pt_BR` também não vira sigla nenhuma.
+/// Fica de fora o que só parece sigla: ver [`mimics_acronym`].
 fn acronyms_in(sentence: &str) -> Vec<(usize, usize, &str)> {
-    let mut found = Vec::new();
+    let runs = word_runs(sentence);
+    runs.iter()
+        .enumerate()
+        .filter_map(|(idx, &(start, end))| {
+            let run = &sentence[start..end];
+            let core = run.strip_suffix('s').filter(|c| is_acronym(c)).unwrap_or(run);
+            let counts = is_acronym(core) && !mimics_acronym(sentence, &runs, idx, core);
+            counts.then_some((start, end, core))
+        })
+        .collect()
+}
+
+/// O trecho `(início, fim)` de cada palavra de `sentence`, na ordem: letras,
+/// dígitos e `_` seguidos.
+fn word_runs(sentence: &str) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
     let mut run_start: Option<usize> = None;
     let ends = std::iter::once((sentence.len(), ' '));
     for (at, ch) in sentence.char_indices().chain(ends) {
@@ -394,21 +410,81 @@ fn acronyms_in(sentence: &str) -> Vec<(usize, usize, &str)> {
             (true, None) => run_start = Some(at),
             (false, Some(start)) => {
                 run_start = None;
-                let run = &sentence[start..at];
-                let core = run.strip_suffix('s').filter(|c| is_acronym(c)).unwrap_or(run);
-                if is_acronym(core) {
-                    found.push((start, at, core));
-                }
+                runs.push((start, at));
             }
             _ => {}
         }
     }
-    found
+    runs
 }
 
 /// De 2 a 6 letras, todas maiúsculas sem acento.
 fn is_acronym(word: &str) -> bool {
     (2..=6).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// A palavra `runs[idx]`, com cara de sigla (`core`), é outra coisa escrita em
+/// maiúsculas:
+/// - ênfase: faz parte de uma sequência de palavras em maiúsculas ("IN THIS
+///   CONVERSATION") ou é uma palavra comprida com vogais ("NUNCA", "RESUMO");
+/// - a região de um código de idioma ("pt-BR", "en-US");
+/// - um numeral romano ("Fase II", "onda IV").
+///
+/// Limite aceito: ênfase curta e com poucas vogais, sozinha ("MUST"), continua
+/// contando como sigla — não há como separá-la de "SSH" só pela forma.
+fn mimics_acronym(sentence: &str, runs: &[(usize, usize)], idx: usize, core: &str) -> bool {
+    is_roman_numeral(core)
+        || is_shouted_word(core)
+        || in_shouted_sequence(sentence, runs, idx)
+        || is_locale_region(sentence, runs[idx].0, core)
+}
+
+/// Só I, V e X: "II", "IV", "IX". O I sozinho nem chega a ser candidato.
+fn is_roman_numeral(core: &str) -> bool {
+    core.bytes().all(|b| matches!(b, b'I' | b'V' | b'X'))
+}
+
+/// Cinco letras ou mais e ao menos duas vogais: palavra em maiúsculas por
+/// ênfase ("NUNCA", "SEMPRE"). Sigla de verdade raramente tem tantas vogais.
+fn is_shouted_word(core: &str) -> bool {
+    let vowels = core.bytes().filter(|b| b"AEIOU".contains(b)).count();
+    core.len() >= 5 && vowels >= 2
+}
+
+/// A palavra está em maiúsculas e encosta, separada só por espaço, em outra
+/// palavra em maiúsculas: a frase inteira está gritando ("NÃO USE ISSO").
+/// Vírgula quebra a sequência, então "CI, QA e SSH" continua sendo três siglas.
+fn in_shouted_sequence(sentence: &str, runs: &[(usize, usize)], idx: usize) -> bool {
+    let shouted = |&(start, end): &(usize, usize)| {
+        let word = &sentence[start..end];
+        // duas letras no mínimo: o artigo "O" ou "A" no começo da frase não
+        // transforma "O CI" em ênfase
+        word.chars().count() >= 2 && word.chars().all(|c| c.is_alphabetic() && c.is_uppercase())
+    };
+    let joined = |left: &(usize, usize), right: &(usize, usize)| {
+        shouted(left)
+            && shouted(right)
+            && sentence[left.1..right.0].chars().all(char::is_whitespace)
+    };
+    let current = &runs[idx];
+    let with_previous = idx.checked_sub(1).is_some_and(|prev| joined(&runs[prev], current));
+    let with_next = runs.get(idx + 1).is_some_and(|next| joined(current, next));
+    with_previous || with_next
+}
+
+/// A sigla é a região de um código de idioma `xx-XX`: duas letras maiúsculas
+/// depois de hífen e de duas minúsculas que começam a palavra ("pt-BR"). A
+/// forma `xx_XX` já é uma palavra só, por causa do `_`.
+fn is_locale_region(sentence: &str, start: usize, core: &str) -> bool {
+    if core.len() != 2 {
+        return false;
+    }
+    let Some(before) = sentence[..start].strip_suffix('-') else {
+        return false;
+    };
+    let language = before.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    let joins = language.chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
+    before.len() - language.len() == 2 && !joins
 }
 
 // ---------------------------------------------------------------------------
@@ -805,5 +881,49 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
             report.defects(Locale::EnUs),
             vec!["reply with 21 lines of prose; the limit is 20"]
         );
+    }
+
+    /// Ênfase em maiúsculas não é sigla: nem a palavra comprida com vogais,
+    /// nem a sequência de palavras gritadas. Sigla de verdade continua
+    /// apontada, e a ênfase curta sozinha ("MUST") é o limite aceito.
+    #[test]
+    fn clarity_ignores_caps_emphasis() {
+        for text in [
+            "NUNCA rode isso sem ler o RESUMO.",
+            "SEMPRE confira antes de seguir.",
+            "Use only what was said IN THIS CONVERSATION.",
+            "**NÃO USE ISSO** em produção.",
+        ] {
+            let report = measure(text, &[], &[]);
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+        }
+
+        let real = measure("NUNCA pule o CI. O QA e o SSH falharam.", &[], &[]);
+        assert_eq!(real.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{real:?}");
+        // Vírgula quebra a sequência: siglas enfileiradas não viram ênfase.
+        let listed = measure("Falharam CI, QA, SSH.", &[], &[]);
+        assert_eq!(listed.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{listed:?}");
+
+        let short = measure("You MUST read it.", &[], &[]);
+        assert_eq!(short.unexpanded_acronyms, vec!["MUST"], "{short:?}");
+    }
+
+    /// Código de idioma e numeral romano não são sigla; a sigla colada por
+    /// hífen a outra coisa que não um idioma continua apontada.
+    #[test]
+    fn clarity_ignores_locale_codes_and_roman_numerals() {
+        for text in [
+            "Escrevo em pt-BR, en-US e pt_BR.",
+            "A Fase II e a onda IV terminaram, e o capítulo IX também.",
+            "O item III vem antes do XI.",
+        ] {
+            let report = measure(text, &[], &[]);
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+        }
+
+        let near_locale = measure("O CI roda em pt-BR.", &[], &[]);
+        assert_eq!(near_locale.unexpanded_acronyms, vec!["CI"], "{near_locale:?}");
+        let hyphen = measure("O CI-QA e o anti-SSH falharam.", &[], &[]);
+        assert_eq!(hyphen.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{hyphen:?}");
     }
 }
