@@ -1089,17 +1089,25 @@ fn files_list(files: &[String]) -> String {
     html
 }
 
-/// Um caminho ou endereço já escapado, com um ponto de quebra (`<wbr>`) depois
-/// de cada `/`: a coluna Onde quebra a linha entre um trecho e outro, nunca no
-/// meio de uma palavra. O `//` de um endereço fica inteiro.
+/// Um caminho ou endereço já escapado, com a barra como ÚNICO ponto de quebra:
+/// cada trecho (até a sua `/`, inclusive) vai num `<span class="nw">` que não
+/// quebra, e um `<wbr>` separa um trecho do seguinte. Só o `<wbr>` não bastava:
+/// com a célula em `white-space:normal`, o navegador também quebrava depois do
+/// hífen de um nome de pasta (`2026-09-10-pagina-…`). O `//` de um endereço fica
+/// inteiro, dentro do mesmo trecho.
 fn breakable_path(escaped: &str) -> String {
-    let mut out = String::with_capacity(escaped.len() + escaped.len() / 4);
+    let mut out = String::with_capacity(escaped.len() * 2);
+    let mut segment = String::new();
     let mut chars = escaped.chars().peekable();
     while let Some(c) = chars.next() {
-        out.push(c);
-        if c == '/' && chars.peek() != Some(&'/') {
-            out.push_str("<wbr>");
+        segment.push(c);
+        if c == '/' && chars.peek().is_some_and(|next| *next != '/') {
+            let _ = write!(out, "<span class=\"nw\">{segment}</span><wbr>");
+            segment.clear();
         }
+    }
+    if !segment.is_empty() {
+        let _ = write!(out, "<span class=\"nw\">{segment}</span>");
     }
     out
 }
@@ -1317,7 +1325,9 @@ mod tests {
             "<li><strong>RO-1.1</strong> — Conferir como o navegador abre um <code>file://</code> local.</li>",
             "<span class=\"label\">Critérios:</span> AC-1, AC-2",
             // Evidência com arquivo:linha; pendência aberta.
-            "<td class=\"where\">apps/<wbr>rt/<wbr>src/<wbr>report/<wbr>mod.rs:97</td>",
+            "<td class=\"where\"><span class=\"nw\">apps/</span><wbr><span class=\"nw\">rt/</span><wbr>\
+             <span class=\"nw\">src/</span><wbr><span class=\"nw\">report/</span><wbr>\
+             <span class=\"nw\">mod.rs:97</span></td>",
             "<td class=\"id\">P-1</td><td>Humanize: medir se o texto está claro</td>",
             // Próximo passo pelo estágio.
             "Para aprovar, digite <code>/mustard:spec</code> neste branch.",
@@ -1334,10 +1344,11 @@ mod tests {
         assert_eq!(again.hash, report.hash);
     }
 
-    /// AC-11 — na tabela de Evidências, a coluna Onde ganha um ponto de quebra
-    /// depois de cada barra, e só ali: nenhuma palavra é partida e o `//` de um
-    /// endereço fica inteiro. E a regra `td.where` do layout deixou de proibir a
-    /// quebra de linha, senão os `<wbr>` não serviriam para nada.
+    /// AC-11 — na tabela de Evidências, a coluna Onde quebra a linha só depois
+    /// de cada barra: cada trecho do caminho vai num `nowrap` inteiro (nem o
+    /// hífen de um nome de pasta quebra), o `<wbr>` fica só ENTRE trechos, e o
+    /// `//` de um endereço não se parte. E a regra `td.where` do layout deixou de
+    /// proibir a quebra de linha, senão os `<wbr>` não serviriam para nada.
     #[test]
     fn evidence_location_wraps_at_path_separators() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1345,7 +1356,8 @@ mod tests {
         seed(root);
         let findings = r#"[
     {"statement": "o caminho inteiro espremia a coluna", "file": "apps/rt/src/commands/spec/spec_doc.rs", "line": 863},
-    {"statement": "a página publicada", "file": "https://claude.ai/code/artifacts/demo"}
+    {"statement": "a página publicada", "file": "https://claude.ai/code/artifacts/demo"},
+    {"statement": "a pasta com hífens", "file": ".claude/spec/2026-09-10-pagina-spec-sempre-publicada/resumo.html"}
   ]"#;
         let material = MATERIAL.replace(
             r#"[{"statement": "o Report já existe", "file": "apps/rt/src/report/mod.rs", "line": 97}]"#,
@@ -1357,30 +1369,61 @@ mod tests {
         assert!(generate(root, "demo").ok);
         let html = fs::read_to_string(root.join(".claude/spec/demo").join(DOC_FILE)).unwrap();
 
-        for cell in [
-            "<td class=\"where\">apps/<wbr>rt/<wbr>src/<wbr>commands/<wbr>spec/<wbr>spec_doc.rs:863</td>",
-            "<td class=\"where\">https://<wbr>claude.ai/<wbr>code/<wbr>artifacts/<wbr>demo</td>",
+        const OPEN: &str = "<span class=\"nw\">";
+        for segment in [
+            "<span class=\"nw\">2026-09-10-pagina-spec-sempre-publicada/</span><wbr>",
+            "<span class=\"nw\">https://</span><wbr><span class=\"nw\">claude.ai/</span><wbr>",
+            "<span class=\"nw\">spec/</span><wbr><span class=\"nw\">spec_doc.rs:863</span></td>",
         ] {
-            assert!(html.contains(cell), "missing {cell}:\n{html}");
+            assert!(html.contains(segment), "missing {segment}:\n{html}");
         }
         let cells: Vec<&str> = html
             .split("<td class=\"where\">")
             .skip(1)
             .filter_map(|rest| rest.split_once("</td>").map(|(cell, _)| cell))
             .collect();
-        assert_eq!(cells.len(), 2, "{cells:?}");
-        for cell in cells {
-            assert!(!cell.contains("/<wbr>/"), "a break inside `//`: {cell}");
-            let slashes = cell.matches('/').count() - cell.matches("//").count();
-            assert_eq!(cell.matches("/<wbr>").count(), slashes, "a slash without a break: {cell}");
+        assert_eq!(cells.len(), 3, "{cells:?}");
+        for (cell, place) in cells.iter().zip([
+            "apps/rt/src/commands/spec/spec_doc.rs:863",
+            "https://claude.ai/code/artifacts/demo",
+            ".claude/spec/2026-09-10-pagina-spec-sempre-publicada/resumo.html",
+        ]) {
+            // O `<wbr>` só ENTRE trechos: cada pedaço entre dois `<wbr>` é
+            // exatamente um span `nw`, sem outra marca dentro.
+            let pieces: Vec<&str> = cell
+                .split("<wbr>")
+                .map(|piece| {
+                    piece
+                        .strip_prefix(OPEN)
+                        .and_then(|rest| rest.strip_suffix("</span>"))
+                        .filter(|text| !text.contains('<'))
+                        .unwrap_or_else(|| panic!("a piece outside a nowrap span: {piece:?} in {cell}"))
+                })
+                .collect();
+            // Os trechos, juntos, são o caminho inteiro: nada fica fora de um span.
+            assert_eq!(pieces.concat(), place, "{cell}");
+            // Cada trecho termina na sua barra, e barra só no fim (ou no `//`).
+            let (_, before_last) = pieces.split_last().expect("at least one piece");
+            for piece in before_last {
+                assert!(piece.ends_with('/'), "a break that is not after a slash: {cell}");
+            }
+            for piece in &pieces {
+                // O `//` sai primeiro: `https://` é um trecho só, inteiro.
+                let body = piece.replace("//", "");
+                let body = body.strip_suffix('/').unwrap_or(&body);
+                assert!(!body.contains('/'), "a slash without a break after it: {cell}");
+            }
         }
 
-        let rule = html
-            .split_once("td.where{")
-            .and_then(|(_, tail)| tail.split_once('}'))
-            .map(|(decls, _)| decls)
-            .expect("layout without a td.where rule");
-        assert!(!rule.contains("white-space:nowrap"), "td.where still forbids wrapping: {rule}");
+        let rule = |selector: &str| {
+            html.split_once(selector)
+                .and_then(|(_, tail)| tail.split_once('}'))
+                .map(|(decls, _)| decls.to_string())
+                .unwrap_or_else(|| panic!("layout without a {selector} rule"))
+        };
+        let place = rule("td.where{");
+        assert!(!place.contains("white-space:nowrap"), "td.where still forbids wrapping: {place}");
+        assert!(rule(".nw{").contains("white-space:nowrap"), "the .nw span must not wrap");
     }
 
     /// AC-10 — o `flow` do material vira a seção Antes e depois, entre os riscos

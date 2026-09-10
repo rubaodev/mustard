@@ -1190,18 +1190,18 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // A nota ao usuário quando a resposta reprova, e o aviso que a próxima
         // mensagem leva ao assistente. Os defeitos vêm abaixo, um por linha.
         ("clarity.note.head", Locale::PtBr) => {
-            "Mustard · clareza: a resposta acima fugiu do tom didático. A próxima corrige:"
+            "Mustard · clareza: a resposta acima fugiu da regra de escrita. A próxima corrige:"
         }
         ("clarity.note.head", Locale::EnUs) => {
-            "Mustard · clarity: the reply above missed the didactic tone. The next one fixes:"
+            "Mustard · clarity: the reply above missed the writing rule. The next one fixes:"
         }
         ("clarity.next.head", Locale::PtBr) => {
-            "[Mustard] A sua resposta anterior reprovou na medição do tom didático. Corrija \
-             estes pontos nesta resposta:"
+            "[Mustard] A sua resposta anterior reprovou na medição da escrita. Corrija estes \
+             pontos nesta resposta:"
         }
         ("clarity.next.head", Locale::EnUs) => {
-            "[Mustard] Your previous reply failed the didactic-tone measurement. Fix these \
-             points in this reply:"
+            "[Mustard] Your previous reply failed the writing measurement. Fix these points in \
+             this reply:"
         }
         // A última linha da lista quando há mais defeitos do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",

@@ -86,9 +86,11 @@ th{font-weight:600;font-size:13px;color:var(--muted);border-bottom:2px solid var
 tr:last-child td{border-bottom:0}
 .nw{white-space:nowrap}
 td.id{font-family:var(--mono);font-size:13.5px;color:var(--mustard-text);font-weight:500;white-space:nowrap}
-/* A coluna Onde quebra a linha, só nos <wbr> que o gerador põe depois de cada
-   barra do caminho, e fica em 40% da tabela para não espremer a primeira
-   coluna. width, não max-width: max-width não vale em célula de tabela. */
+/* A coluna Onde quebra a linha só entre os trechos do caminho: o gerador põe
+   cada trecho (até a sua barra) num .nw e um <wbr> entre um e outro, então nem
+   o hífen de um nome de pasta quebra. Fica em 40% da tabela para não espremer a
+   primeira coluna. width, não max-width: max-width não vale em célula de
+   tabela. */
 td.where{font-family:var(--mono);font-size:13px;white-space:normal;width:40%;color:var(--muted)}
 td.sev-alta{font-weight:650}
 

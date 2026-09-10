@@ -22,7 +22,9 @@
 //! que é o do usuário. O idioma da prosa sai de uma contagem de palavras comuns
 //! do português e do inglês ([`PT_COMMON_WORDS`], [`EN_COMMON_WORDS`]) — as
 //! outras duas listas fixas do módulo. Não há modelo estatístico: a contagem é
-//! determinística e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]).
+//! determinística e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]). Ela
+//! vale para todo projeto, qualquer que seja o tom: [`measure_language`] a faz
+//! sozinha, e [`measure`] a inclui junto das quatro do tom didático.
 
 use crate::domain::vocabulary::aho::KeyedAutomaton;
 use crate::platform::i18n::{translate, Locale};
@@ -140,6 +142,16 @@ pub struct WrongLanguage {
     pub expected: Locale,
 }
 
+impl WrongLanguage {
+    /// A linha do defeito, no idioma pedido, tirada do catálogo i18n.
+    #[must_use]
+    pub fn defect(self, lang: Locale) -> String {
+        translate("clarity.wrong_language", lang)
+            .replace("{found}", self.found.as_str())
+            .replace("{expected}", self.expected.as_str())
+    }
+}
+
 /// O resultado da medição de uma resposta.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClarityReport {
@@ -188,11 +200,7 @@ impl ClarityReport {
             );
         }
         if let Some(wrong) = self.wrong_language {
-            out.push(
-                translate("clarity.wrong_language", lang)
-                    .replace("{found}", wrong.found.as_str())
-                    .replace("{expected}", wrong.expected.as_str()),
-            );
+            out.push(wrong.defect(lang));
         }
         out
     }
@@ -243,6 +251,14 @@ pub fn measure(
 // ---------------------------------------------------------------------------
 // Idioma
 // ---------------------------------------------------------------------------
+
+/// Mede só o idioma de `text`: a medição que vale para todo projeto, qualquer
+/// que seja o tom. `lang` é o idioma do projeto. `None` quando a prosa está
+/// nele, é curta demais ou não tem idioma dominante.
+#[must_use]
+pub fn measure_language(text: &str, lang: Locale) -> Option<WrongLanguage> {
+    wrong_language(&prose_lines(text), lang)
+}
 
 /// O idioma dominante da prosa, quando ele não é `expected`. `None` com menos
 /// de [`MIN_LANGUAGE_WORDS`] palavras de texto corrido, sem idioma dominante ou

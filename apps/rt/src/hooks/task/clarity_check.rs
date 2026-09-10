@@ -11,8 +11,11 @@
 //! ## Os fatos, todos necessários
 //!
 //! 1. É o `Stop` da sessão principal — nunca o de um subagente.
-//! 2. O projeto DECLAROU `tone: didactic` — o campo cru, pela mesma leitura da
-//!    regra ([`declares_didactic`]); o padrão resolvido não é uma escolha.
+//! 2. O projeto tem `mustard.json`. Nele o idioma da resposta é medido sempre,
+//!    qualquer que seja o tom. As quatro medições do tom didático só rodam
+//!    quando o projeto DECLAROU `tone: didactic` — o campo cru, pela mesma
+//!    leitura da regra ([`declares_didactic`]); o padrão resolvido não é uma
+//!    escolha.
 //! 3. O `Stop` trouxe `last_assistant_message`, o texto final do turno.
 //!
 //! ## O que faz
@@ -44,7 +47,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::clarity::{measure, ClarityReport};
+use mustard_core::domain::clarity::{measure, measure_language, ClarityReport};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::io::fs;
@@ -98,8 +101,9 @@ impl Check for ClarityCheck {
         let project_dir = ctx.project_dir_or_cwd(input);
         let root = Path::new(&project_dir);
 
-        // Fato 2 — o projeto pediu o tom didático.
-        if !declares_didactic(root) {
+        // Fato 2 — o Mustard está instalado. O tom didático decide só quais
+        // medições rodam, mais abaixo.
+        if !mustard_core::ProjectConfig::exists(root) {
             return Ok(Verdict::Allow);
         }
 
@@ -114,12 +118,15 @@ impl Check for ClarityCheck {
         };
 
         let session = input.session_id.as_deref();
-        let record_path = record_path(root, session);
-        let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
-
         // O idioma do projeto serve duas vezes: é o que a prosa precisa ter e
         // é o dos defeitos.
         let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+        if !declares_didactic(root) {
+            return Ok(language_only(root, session, message, lang));
+        }
+
+        let record_path = record_path(root, session);
+        let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
         let report = measure(message, &invented_terms(root, &project_dir), &record.explained, lang);
         let defects = report.defects(lang);
 
@@ -141,6 +148,30 @@ impl Check for ClarityCheck {
         }
         Ok(Verdict::Inject { context: with_head("clarity.note.head", &defects, lang) })
     }
+}
+
+/// Fora do tom didático só o idioma é medido. O defeito segue os mesmos
+/// caminhos: a nota ao usuário e o registro que a mensagem seguinte leva ao
+/// assistente. O registro só é gravado quando há defeito a guardar ou um
+/// defeito antigo a apagar — a reescrita no idioma certo, no mesmo turno,
+/// limpa o anterior. Nenhum evento é registrado: `assistant.clarity` traz as
+/// contagens da medição didática inteira, que aqui não rodou.
+fn language_only(root: &Path, session: Option<&str>, message: &str, lang: Locale) -> Verdict {
+    let defects: Vec<String> = measure_language(message, lang)
+        .map(|wrong| wrong.defect(lang))
+        .into_iter()
+        .collect();
+    if let Some(path) = record_path(root, session) {
+        let mut record = read_record(&path);
+        if !defects.is_empty() || !record.defects.is_empty() {
+            record.defects.clone_from(&defects);
+            write_record(&path, &record);
+        }
+    }
+    if defects.is_empty() {
+        return Verdict::Allow;
+    }
+    Verdict::Inject { context: with_head("clarity.note.head", &defects, lang) }
 }
 
 /// Os defeitos da última resposta, prontos para a mensagem seguinte do usuário
