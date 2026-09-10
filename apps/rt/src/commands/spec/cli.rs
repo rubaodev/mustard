@@ -527,14 +527,21 @@ pub enum SpecCmd {
     ///
     /// Vem ANTES de qualquer pergunta de aprovação: o usuário recusou aprovar
     /// uma spec que só conseguia ler no terminal. Devolve `{ok, path, url,
-    /// hash, changed}` — `url` é o `file://` que o usuário clica, e `changed`
-    /// diz se a página mudou desde a última geração (só então ela é regravada).
+    /// hash, changed, publishedUrl}` — `url` é o `file://` que o usuário clica,
+    /// `changed` diz se a página mudou desde a última geração (só então ela é
+    /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
     #[command(display_order = 99)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
         spec: String,
+        /// O endereço em que a página foi publicada no claude.ai. Fica gravado
+        /// em `.claude/spec/<slug>/published-url` antes de a página ser
+        /// montada; a retomada e o gancho de fim de resposta o leem de lá.
+        /// Recusado quando não é um link `http(s)://`.
+        #[arg(long = "published-url")]
+        published_url: Option<String>,
     },
 }
 
@@ -689,8 +696,8 @@ pub fn dispatch(cmd: SpecCmd) {
                 reason.as_deref(),
             );
         }
-        SpecCmd::SpecDoc { spec: slug } => {
-            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug });
+        SpecCmd::SpecDoc { spec: slug, published_url } => {
+            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug, published_url });
         }
     }
 }

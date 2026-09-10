@@ -478,31 +478,46 @@ mod tests {
         assert!(!next_context(root, "s1").contains("reprovou"), "the newest reply rules");
     }
 
-    /// AC-7 — com a resposta reprovada e o documento da spec mudado, o usuário
-    /// vê a nota e o link numa só mensagem: todas as travas do `Stop`, na ordem
-    /// do registro, pelo `fold` e pela saída de verdade.
+    /// AC-7 — com a resposta reprovada e o documento da spec mudado, o fim é
+    /// barrado pela ordem de publicar: todas as travas do `Stop`, na ordem do
+    /// registro, pelo `fold` e pela saída de verdade. A nota ao usuário não sai
+    /// nesse fim — o bloqueio vence o `fold` —, mas a medição roda e os defeitos
+    /// ficam guardados para a mensagem seguinte; a continuação que a ordem pede,
+    /// solta pelo `stop_hook_active`, leva a nota ao usuário. O nome ficou o de
+    /// antes porque a spec `humanize` o cita num critério.
     #[test]
     fn clarity_note_and_doc_link_share_the_stop_message() {
         let dir = project(Some("didactic"));
         let root = dir.path();
         open_unit(root, "# Demo\n\n## Contexto\n\nPrimeira versão.\n");
-
-        let input = stop("s1", FAILING);
         let c = ctx(root, Trigger::Stop);
-        let mut outcome = Outcome::allow();
-        for module in Registry::new().applicable(Trigger::Stop, None) {
-            if let Some(check) = &module.check {
-                outcome.fold(check.evaluate(&input, &c).unwrap_or(Verdict::Allow));
+        let run_stop = |input: &HookInput| {
+            let mut outcome = Outcome::allow();
+            for module in Registry::new().applicable(Trigger::Stop, None) {
+                if let Some(check) = &module.check {
+                    outcome.fold(check.evaluate(input, &c).unwrap_or(Verdict::Allow));
+                }
             }
-        }
-        let json = hook_specific_output("Stop", &outcome).expect("the Stop speaks");
-        let parsed: Value = serde_json::from_str(&json).unwrap();
-        assert!(parsed.get("decision").is_none(), "never blocks: {json}");
-        let message = parsed["systemMessage"].as_str().unwrap_or_else(|| panic!("{json}"));
-        let link = message.find("resumo.html").unwrap_or_else(|| panic!("no doc link: {message}"));
-        let note = message.find("Mustard · clareza").unwrap_or_else(|| panic!("no note: {message}"));
+            let json = hook_specific_output("Stop", &outcome).expect("the Stop speaks");
+            serde_json::from_str::<Value>(&json).unwrap()
+        };
+
+        // A página mudou: a ordem de publicar barra o fim, sem nota ao usuário.
+        let blocked = run_stop(&stop("s1", FAILING));
+        assert_eq!(blocked["decision"].as_str(), Some("block"), "{blocked}");
+        let order = blocked["reason"].as_str().unwrap_or_else(|| panic!("{blocked}"));
+        assert!(order.contains("resumo.html") && order.contains("claude.ai"), "{order}");
+        assert!(blocked.get("systemMessage").is_none(), "{blocked}");
+        assert!(next_context(root, "s1").contains("reprovou"), "the defects still wait for the assistant");
+
+        // A continuação que a ordem pediu é solta, e a nota chega ao usuário.
+        let mut again = stop("s1", FAILING);
+        again.raw["stop_hook_active"] = serde_json::json!(true);
+        let released = run_stop(&again);
+        assert!(released.get("decision").is_none(), "the continuation is released: {released}");
+        let message = released["systemMessage"].as_str().unwrap_or_else(|| panic!("{released}"));
+        assert!(message.contains("Mustard · clareza"), "{message}");
         assert!(message.contains("- CI sem as palavras por extenso"), "{message}");
-        assert!(link < note, "registry order — the link, then the note: {message}");
     }
 
     /// AC-8 — só um projeto que declarou o tom didático tem as respostas

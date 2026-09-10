@@ -167,6 +167,12 @@ pub struct ResumeBootstrap {
     /// paid the ceremony.
     #[serde(rename = "insideWorkBranch")]
     pub inside_work_branch: bool,
+    /// O endereço em que a página da spec foi publicada no claude.ai, gravado
+    /// por `spec-doc --published-url`; `null` quando não há. A porta do
+    /// `/mustard:spec` entrega esse link em toda retomada, em qualquer etapa, e
+    /// publica a página quando ele é `null`.
+    #[serde(rename = "publishedUrl")]
+    pub published_url: Option<String>,
     /// Most recent unrecovered dispatch failure (if any, within 10 min).
     #[serde(rename = "lastDispatchFailure", skip_serializing_if = "Option::is_none")]
     pub last_dispatch_failure: Option<serde_json::Value>,
@@ -226,7 +232,20 @@ pub struct ResumeBootstrap {
 /// Fail-open: every step degrades to `null`/`false` on error; the process
 /// always exits 0 and prints a JSON document on stdout.
 pub fn run(spec: &str, json_flag: bool) {
-    let project = PathBuf::from(project_dir());
+    let out = bootstrap(Path::new(&project_dir()), spec);
+    if json_flag {
+        let pretty = serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string());
+        println!("{pretty}");
+    } else {
+        print_table(&out);
+    }
+}
+
+/// A decisão de retomada inteira de `spec` sob `project`, eventos incluídos: o
+/// [`run`] sem a impressão, para um teste ler o mesmo documento que o chamador
+/// recebe.
+pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
+    let project = project.to_path_buf();
     // Fail-open: the I1 guard rejecting the root OR `spec` failing slug
     // validation folds to `compose_unchecked` inside the resolver, so the
     // spec-dir path always flows through the canonical accessor surface.
@@ -239,6 +258,9 @@ pub fn run(spec: &str, json_flag: bool) {
 
     let mut out = ResumeBootstrap {
         mode: "ask".to_string(),
+        // O endereço publicado da página, pelo mesmo leitor do gancho de fim de
+        // resposta; `null` quando nada foi gravado.
+        published_url: crate::commands::spec::spec_doc::published_url(&project, spec),
         ..Default::default()
     };
 
@@ -460,13 +482,7 @@ pub fn run(spec: &str, json_flag: bool) {
         emit_resume_mode(&project, spec, &out.mode);
     }
 
-    // --- Output. ---
-    if json_flag {
-        let pretty = serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string());
-        println!("{pretty}");
-    } else {
-        print_table(&out);
-    }
+    out
 }
 
 /// Compact text-table fallback when `--json` is not requested.
@@ -482,6 +498,7 @@ fn print_table(out: &ResumeBootstrap) {
     println!("totalWaves       : {}", out.total_waves);
     println!("neverDispatched  : {}", out.never_dispatched);
     println!("insideWorkBranch : {}", out.inside_work_branch);
+    println!("publishedUrl     : {}", out.published_url.as_deref().unwrap_or("—"));
     println!("isStub           : {}", out.is_stub);
     let failure_str = match out.last_dispatch_failure.as_ref() {
         None => "(none)".to_string(),

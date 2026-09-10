@@ -1088,21 +1088,39 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
 
         // Entrega do resumo no fim da resposta
-        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — mensagem ao usuário,
-        // então segue o `specLang` e o tom. Sem parênteses no texto: o tom
-        // técnico os apaga. `{file}`, `{url}` e `{command}` vêm do chamador; o
-        // comando em si não se traduz.
-        ("deliver.head.awaiting", Locale::PtBr) => {
-            "Mustard · spec para aprovar: o {file} mudou. Formas de abrir:"
+        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — uma ordem ao
+        // assistente, que publica a página e entrega o link ao usuário. Segue o
+        // `specLang` e o tom, como a própria página. Sem parênteses no texto: o
+        // tom técnico os apaga. `{file}`, `{path}`, `{spec}`, `{url}` e
+        // `{command}` vêm do chamador; comandos e endereços não se traduzem.
+        ("deliver.head.awaiting", Locale::PtBr) => "Mustard · spec para aprovar: o {file} mudou.",
+        ("deliver.head.awaiting", Locale::EnUs) => "Mustard · spec awaiting approval: {file} changed.",
+        ("deliver.head.summary", Locale::PtBr) => "Mustard · resumo da spec: o {file} mudou.",
+        ("deliver.head.summary", Locale::EnUs) => "Mustard · spec summary: {file} changed.",
+        ("deliver.order", Locale::PtBr) => {
+            "Antes de encerrar, publique {path} no claude.ai como página, entregue o link ao \
+             usuário numa linha própria e grave o endereço com \
+             `mustard-rt run spec-doc --spec {spec} --published-url <endereço>`. Publicar faz \
+             parte da entrega e nunca é uma opção a oferecer ao usuário."
         }
-        ("deliver.head.awaiting", Locale::EnUs) => {
-            "Mustard · spec awaiting approval: {file} changed. Ways to open it:"
+        ("deliver.order", Locale::EnUs) => {
+            "Before you finish, publish {path} as a claude.ai page, hand the user its link on a \
+             line of its own, and record the address with \
+             `mustard-rt run spec-doc --spec {spec} --published-url <url>`. Publishing is part \
+             of the delivery and never an option to offer the user."
         }
-        ("deliver.head.summary", Locale::PtBr) => {
-            "Mustard · resumo da spec: o {file} mudou. Formas de abrir:"
+        ("deliver.order.same", Locale::PtBr) => {
+            "Já há um endereço gravado: republique no MESMO endereço, {url}, e entregue esse link."
         }
-        ("deliver.head.summary", Locale::EnUs) => {
-            "Mustard · spec summary: {file} changed. Ways to open it:"
+        ("deliver.order.same", Locale::EnUs) => {
+            "An address is already recorded: republish at that SAME address, {url}, and hand \
+             over that link."
+        }
+        ("deliver.fallback", Locale::PtBr) => {
+            "Sem ferramenta de publicação, entregue ao usuário as formas de abrir:"
+        }
+        ("deliver.fallback", Locale::EnUs) => {
+            "With no publishing tool, hand the user the ways to open it:"
         }
         ("deliver.click", Locale::PtBr) => "- Clique: {url}",
         ("deliver.click", Locale::EnUs) => "- Click: {url}",
@@ -1110,10 +1128,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("deliver.windows", Locale::EnUs) => "- Windows, in PowerShell: {command}",
         ("deliver.macos", _) => "- macOS: {command}",
         ("deliver.linux", _) => "- Linux: {command}",
-        ("deliver.publish", Locale::PtBr) => {
-            "- Peça ao assistente para publicar a página no claude.ai."
-        }
-        ("deliver.publish", Locale::EnUs) => "- Ask the assistant to publish it as a claude.ai page.",
 
         // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
         // e `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
@@ -1597,9 +1611,11 @@ mod tests {
             ("doc.section.flow", &[][..]),
             ("deliver.head.awaiting", &["{file}"][..]),
             ("deliver.head.summary", &["{file}"][..]),
+            ("deliver.order", &["{path}", "{spec}", "claude.ai", "--published-url"][..]),
+            ("deliver.order.same", &["{url}"][..]),
+            ("deliver.fallback", &[][..]),
             ("deliver.click", &["{url}"][..]),
             ("deliver.windows", &["{command}"][..]),
-            ("deliver.publish", &[][..]),
             ("pending.notice", &["{count}", "{items}"][..]),
             ("pending.gate.block", &["{count}", "{items}"][..]),
             ("scratch.residue.notice", &["{total}", "{count}"][..]),
@@ -1615,6 +1631,10 @@ mod tests {
         for key in ["deliver.macos", "deliver.linux"] {
             assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
         }
+        // A publicação deixou de ser uma opção oferecida ao usuário: a linha
+        // que a oferecia saiu do catálogo.
+        assert_eq!(translate("deliver.publish", Locale::PtBr), "<missing-key>");
+        assert_eq!(translate("deliver.publish", Locale::EnUs), "<missing-key>");
     }
 
     /// Os defeitos de clareza saem do catálogo nos dois idiomas, cada um com as
