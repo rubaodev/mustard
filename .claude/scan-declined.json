@@ -1,3 +1,3 @@
 {
-  "rt-azure": "Same two files (pr_azure.rs, pr_provider.rs) already covered in full by rt-pr-pattern; a second mold on the identical pair would duplicate guidance rather than teach a distinct shape."
+  "core-hit": "No teachable local shape: the `*Hit` structs across the three exemplars are independent one-off wire mirrors (TermHit, SliceHit, ContractHit vs. internal KeyedHit/ScanHit) sharing no fields, constructor, or convention beyond plain `#[derive(Deserialize)]`."
 }

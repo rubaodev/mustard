@@ -1,6 +1,6 @@
 ---
 name: core-status-pattern
-description: Use when adding or refactoring a small closed `{Foo}Status`/state-lifecycle enum inside packages/core/src/domain/model/view/.
+description: Use when adding or refactoring a parseable `{X}Status`/`{X}Filter` enum inside packages/core/src/domain/model/view.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,20 +17,56 @@ metadata:
 
 ## Purpose
 
-A `{Foo}Status`-shaped enum expresses a small closed lifecycle a dashboard row moves through, with every state EXPLICIT — never an "unknown" sentinel string. `WaveStatus` (wave.rs: `Queued`/`InProgress`/`Completed`/`Failed`/`Dropped`), `AcStatus` (quality.rs: `Pass`/`Fail`/`Skip`/`Pending`), and `Stage`/`Outcome` (spec.rs, the `SpecState` lifecycle split) are the exemplars in this subproject; `filter.rs`'s `SpecStatusFilter` is the query-side sibling that restricts a `list_specs` call to `Active`/`Closed`/`Any`.
+`AcStatus` (quality.rs) and `SpecStatusFilter` (filter.rs) are the two exemplars of a small closed status/filter enum consumed by dashboard `ViewModel`s. `AcStatus` is a projected FACT ("what did the latest `qa.result` say about this AC") and carries a lenient `parse` function that accepts multiple upstream spellings and returns `Option<Self>` rather than defaulting silently. `SpecStatusFilter` is a QUERY input (what the caller is asking to filter by) and its own default variant (`Any`) is the "no filter" case, distinct from `AcStatus`'s "no evidence yet" fact-variant (`Pending`) — the two enums answer different questions and must not be collapsed into one.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 4
 
-Every status enum here derives `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "lowercase")]` or `"kebab-case"` (matching whichever the sibling struct already uses in that file — never mix the two within one file). Each carries a `parse(raw: &str) -> Option<Self>` (or, when malformed input must degrade rather than vanish, `Self::default()`-returning `parse`, as `SpecStatusFilter` shows) that is case-insensitive and accepts documented legacy synonyms in its match arms, with every variant doc-commented with the concrete raw string(s)/condition it maps from. `WaveStatus` additionally exposes `is_running()`/`is_terminal()` const predicate methods so callers never re-derive "is this done?" via a manual match. `#[cfg(test)] mod tests` asserts both the round-trip (`as_str`/`parse` inverse) and the serde wire spelling explicitly, one `assert_eq!` per literal string, so a spelling change is caught even without a consumer noticing.
+A FACT-style `{X}Status` derives `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "lowercase")]`, includes an explicit "nothing has happened yet" variant (`Pending`, never a magic string), and carries a `pub fn parse(raw: &str) -> Option<Self>` that lowercases + trims the input and maps known synonyms (`"ok"`/`"success"` → `Pass`) before falling through to `None`. A QUERY-style `{X}Filter` derives `Default` with an explicit `Any`/`All`-style default variant representing "no restriction", and is consumed by a `list_*` function rather than a projection fold.
 
 ## How to apply
 
-A new lifecycle status enum is named `{Domain}Status` (or a domain-specific name like `Stage`/`SegmentState` when "Status" reads oddly), lives beside the struct/row it classifies, derives the `Copy + Hash + Serialize + Deserialize` set with a `rename_all` matching its file's existing convention, ships a case-insensitive `parse` accepting legacy synonyms, and gets a `#[cfg(test)]` block that pins the exact serde wire spelling of every variant — the ratchet these exemplars all carry against accidental renames.
+Add a FACT enum beside the `ViewModel` struct it classifies (same file, e.g. `view/quality.rs`), with a `parse` associated function and a unit test covering every synonym plus an unknown-input case. Add a QUERY enum in a small filter-only file (`view/filter.rs`) alongside the composite `{X}Filter` struct it belongs to, deriving `Default`.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/wave.rs
-- Ref: packages/core/src/domain/model/view/quality.rs
-- Ref: packages/core/src/domain/model/view/timeline.rs
+Ref: packages/core/src/domain/model/view/quality.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcStatus {
+    Pass,
+    Fail,
+    Skip,
+    /// No `qa.result` event has recorded this AC yet.
+    Pending,
+}
+
+impl AcStatus {
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "pass" | "ok" | "success" => Some(Self::Pass),
+            "fail" | "failed" | "error" => Some(Self::Fail),
+            "skip" | "skipped" => Some(Self::Skip),
+            "pending" | "queued" => Some(Self::Pending),
+            _ => None,
+        }
+    }
+}
+```
+
+Ref: packages/core/src/domain/model/view/filter.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SpecStatusFilter {
+    /// Specs whose status is `is_active()`.
+    Active,
+    /// Specs whose status is `is_terminal()`.
+    Closed,
+    /// No filter.
+    #[default]
+    Any,
+}
+```

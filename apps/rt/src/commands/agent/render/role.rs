@@ -195,8 +195,13 @@ fn build_patterns_role_block(subproject: &str) -> String {
          extension and tally are census facts, not yours to estimate; the apply refuses a \
          mold that reworded them), after which you add what only reading reveals \
          (visibility habits, test placement, derive sets); `## How to apply` (where a new \
-         member goes and what it follows), `## Examples` (2-3 real `Ref:` paths you read — \
-         the apply refuses a path that does not exist, so cite only files you opened). \
+         member goes and what it follows), `## Examples` (2-3 real `Ref:` paths you read AND, \
+         under them, a fenced code block PASTED from one of those files — the 5-15 lines that \
+         ARE the shape a new member copies, verbatim from what you opened, never retyped from \
+         memory or invented; a section that only lists paths points instead of teaching, and \
+         leaves the reader to guess which part of the file was the lesson. The apply refuses a \
+         path that does not exist, refuses a section with no code block, and refuses a block \
+         whose lines appear in none of the cited files). \
          Exactly those four `## ` sections, each ONCE, in that order and no others — the \
          apply refuses a mold whose sections differ. \
          Never cite a framework the exemplars don't use. NEVER write a universal claim \
@@ -766,5 +771,39 @@ mod tests {
             .map(|l| l.trim_start())
             .collect();
         assert_eq!(printed, ["paths:", "- apps/api/services/**"], "block shape: {task}");
+    }
+
+    /// AC-3 — o contrato pedia caminho, e caminho era o que voltava: dezesseis
+    /// moldes cuja seção `## Examples` é só uma lista de arquivos. Mudar o apply
+    /// sozinho não bastaria (o agente seria recusado por obedecer ao contrato),
+    /// e mudar só o contrato não bastaria (prosa que ninguém mede volta sozinha
+    /// ao formato antigo) — por isso as duas metades andam juntas, e este teste
+    /// guarda a metade que PEDE.
+    #[test]
+    fn the_mold_contract_demands_a_code_block() {
+        let dir = tempdir().unwrap();
+        anchor(dir.path());
+        let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
+        assert!(block.starts_with("ROLE: patterns"));
+        assert!(
+            block.contains("fenced code block"),
+            "the contract must ask for the snippet itself: {block}"
+        );
+        assert!(
+            block.contains("PASTED"),
+            "the snippet must be pasted from a file the agent opened: {block}"
+        );
+        // A metade que MEDE é nomeada no contrato, para que a recusa nunca
+        // chegue como surpresa.
+        assert!(
+            block.contains("refuses a section with no code block"),
+            "the contract must state that the apply enforces it: {block}"
+        );
+        assert!(
+            block.contains("appear in none of the cited files"),
+            "the contract must state the grounding rule: {block}"
+        );
+        // O `Ref:` continua sendo pedido — o trecho é acrescentado, não troca.
+        assert!(block.contains("`Ref:` paths you read"), "the paths survive: {block}");
     }
 }

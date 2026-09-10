@@ -9,8 +9,9 @@
 //! ([`super::origin::stamp`]), makes the parent directories, and lands
 //! atomically via the same primitive `scan_claude` uses.
 //!
-//! What a mold CLAIMS is checked before it is written ([`grounding_defects`]) and
-//! so is its SHAPE ([`structure_defects`]); its `paths:` key is tolerated in any
+//! What a mold CLAIMS is checked before it is written ([`grounding_defects`]),
+//! so is its SHAPE ([`structure_defects`]), and so is what its `## Examples`
+//! section PROVES it read ([`examples_defects`]); its `paths:` key is tolerated in any
 //! YAML form on the way in ([`paths_key`]) and rewritten to one canonical form on
 //! the way out ([`canonical_paths_form`]), because the form is not what the check
 //! measures but IS what the platform reads back.
@@ -106,7 +107,15 @@ pub(crate) fn apply_one(path: &Path, body: &str, root: &Path) -> Applied {
     // agent never wrote.)
     let mut defects: Vec<String> =
         super::origin::frontmatter_defects(body).into_iter().map(|d| d.to_string()).collect();
-    defects.extend(structure_defects(body));
+    // A checagem de `## Examples` só corre quando a lista de seções está certa:
+    // com a seção ausente ou duplicada, "não há bloco de código" é o MESMO
+    // evento contado duas vezes, e o segundo motivo é o que o leitor guarda.
+    let structure = structure_defects(body);
+    if structure.is_empty() {
+        defects.extend(examples_defects(body, root));
+    } else {
+        defects.extend(structure);
+    }
     defects.extend(grounding_defects(body, path, root));
     if !defects.is_empty() {
         return Applied::Refused(defects);
@@ -250,6 +259,177 @@ fn grounding_defects(body: &str, path: &Path, root: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// What the mold's `## Examples` section PROVES it read, checked.
+///
+/// A section that is only a list of file paths did not teach — it pointed. The
+/// reader still has to open those files and guess which part was the lesson, and
+/// a mold auto-loads into every later edit of its folder, so that guess is paid
+/// again on every wave. The contract now asks for the snippet itself
+/// ([`crate::commands::agent::render::build_role_block`]); this is the half that
+/// MEASURES it, because contract prose nobody measures drifts back to the old
+/// shape on its own — the defect class this repository repeats most.
+///
+/// Two checks, by the same proof-by-reading principle that already governs
+/// `Ref:`:
+///
+/// 1. **A fenced block exists.** Without one the section is exactly the path
+///    list the change exists to end.
+/// 2. **The block came from a cited exemplar.** Its pasted lines must appear in
+///    a file the mold itself cites in `Ref:` — the same reason
+///    [`grounding_defects`] refuses a `Ref:` to a path that does not exist.
+///
+/// A `Ref:` that does not resolve is already named by [`grounding_defects`], so
+/// when NONE of the cited paths exists check 2 stays silent rather than give one
+/// event two reasons.
+fn examples_defects(body: &str, root: &Path) -> Vec<String> {
+    let examples = CANONICAL_SECTIONS[3];
+    let blocks = examples_code_blocks(body);
+    if blocks.is_empty() {
+        return vec![format!(
+            "`{examples}` carries no fenced code block — a mold must PASTE the lines that ARE \
+             the shape, from an exemplar it read; a list of paths points instead of teaching"
+        )];
+    }
+    let cited = cited_refs(body);
+    if cited.is_empty() {
+        return vec![format!(
+            "`{examples}` shows a code block but cites no `Ref:` — the snippet must name the \
+             file it was copied from"
+        )];
+    }
+    // Só um exemplar legível pode provar o trecho; os ilegíveis/inexistentes já
+    // têm o seu próprio defeito.
+    let sources: Vec<Vec<String>> = cited
+        .iter()
+        .filter_map(|c| std::fs::read_to_string(root.join(c)).ok())
+        .map(|text| text.lines().map(|l| l.trim().to_string()).collect())
+        .collect();
+    if sources.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for block in &blocks {
+        let wanted = pasted_lines(block);
+        // Um bloco que sobra em menos de duas linhas de código não ensina forma
+        // nenhuma: `// ...` sozinho some inteiro em `pasted_lines` e chegaria aqui
+        // vazio, e um `}` solitário casa com quase qualquer arquivo Rust. Os dois
+        // são o molde que APONTA em vez de ensinar — o defeito que esta checagem
+        // existe para fechar — e passavam pelo laço de fundamentação sem tocá-lo.
+        // O contrato pede 5-15 linhas, então o piso de duas não recusa paste real.
+        if wanted.len() < 2 {
+            out.push(format!(
+                "a code block in `{examples}` carries fewer than two lines of code — an \
+                 elision-only or one-line fence points instead of teaching; paste the 5-15 \
+                 lines that ARE the shape, from the exemplar you read"
+            ));
+            continue;
+        }
+        let grounded = sources.iter().any(|lines| wanted.iter().all(|w| line_present(w, lines)));
+        if !grounded {
+            out.push(format!(
+                "a code block in `{examples}` appears in none of the cited `Ref:` files ({}) — \
+                 paste the lines you read, never lines retyped from memory",
+                cited.join(", ")
+            ));
+        }
+    }
+    out
+}
+
+/// O menor começo que ainda IDENTIFICA uma linha. Abaixo disso a abreviação não
+/// prova leitura nenhuma: `    pub ` ou `    return ` abrem dezenas de linhas em
+/// qualquer arquivo Rust ou TypeScript, e aceitar um começo desses seria trocar
+/// a prova por uma coincidência.
+const MIN_ABBREV_HEAD: usize = 12;
+
+/// Se a linha colada `w` está mesmo em `lines`.
+///
+/// Uma linha que o autor NÃO abreviou tem de estar ali palavra por palavra,
+/// depois de aparada — é a prova de leitura, e ela não afrouxa aqui. Uma linha
+/// que ele CORTOU com `...` é casada pelo começo, porque o fim que ele removeu
+/// nunca foi apresentado como presente.
+///
+/// Medido na primeira passada de enriquecimento real: 5 linhas em 712 vinham
+/// nessa forma, e cada uma reprovava o molde inteiro embora tivesse sido colada
+/// de verdade. O corte acontece no FIM porque é o começo que identifica a linha;
+/// uma abreviação no começo seria reescrita, não encurtamento, e continua sendo
+/// tratada como linha comum — sem `...` no fim, exige igualdade.
+fn line_present(w: &str, lines: &[String]) -> bool {
+    match abbreviated_head(w) {
+        Some(head) => lines.iter().any(|l| l.starts_with(head)),
+        None => lines.iter().any(|l| l.as_str() == w),
+    }
+}
+
+/// O começo de `w` antes da abreviação que ele carrega, quando carrega uma e o
+/// que sobra ainda identifica a linha. `None` quando a linha não foi abreviada,
+/// ou quando o corte deixou menos que [`MIN_ABBREV_HEAD`] — aí ela volta a ser
+/// julgada por igualdade, como qualquer outra.
+fn abbreviated_head(w: &str) -> Option<&str> {
+    let cut = w.find("...").or_else(|| w.find('…'))?;
+    let head = w[..cut].trim_end();
+    (head.chars().count() >= MIN_ABBREV_HEAD).then_some(head)
+}
+
+/// The content of every fenced block that lives INSIDE `## Examples`, in
+/// document order.
+///
+/// Blocks in the other sections stay out: a snippet under `## How to apply`
+/// shows where a new member goes, not the shape it copies. A fence the agent
+/// forgot to close still surrenders what it had collected — a formatting slip
+/// must not read as "there is no example".
+fn examples_code_blocks(body: &str) -> Vec<String> {
+    let examples = CANONICAL_SECTIONS[3];
+    let mut out = Vec::new();
+    let mut in_examples = false;
+    let mut fenced = false;
+    let mut current = String::new();
+    for line in body.lines() {
+        let lead = line.trim_start();
+        if lead.starts_with("```") || lead.starts_with("~~~") {
+            if fenced && in_examples {
+                out.push(std::mem::take(&mut current));
+            }
+            current.clear();
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            if in_examples {
+                current.push_str(line);
+                current.push('\n');
+            }
+            continue;
+        }
+        if line.trim_end().starts_with("## ") {
+            in_examples = line.trim_end() == examples;
+        }
+    }
+    if fenced && in_examples {
+        out.push(current);
+    }
+    out.retain(|b| !b.trim().is_empty());
+    out
+}
+
+/// The block's lines that must exist in the exemplar: trimmed, blanks dropped,
+/// and elisions dropped with them.
+///
+/// Trimmed because a snippet is often re-indented to sit flush in the mold, and
+/// the check measures the LINE, not its column. Elisions (`...`, `// …`) are the
+/// standard way to shorten a long paste — demanding them of the exemplar would
+/// demand that the source file contain ellipses.
+fn pasted_lines(block: &str) -> Vec<&str> {
+    block.lines().map(str::trim).filter(|l| !is_elision(l)).collect()
+}
+
+/// Whether the line carries no code at all: blank, or only elision punctuation
+/// and comment marks (`...`, `…`, `// ...`, `# ---`).
+fn is_elision(line: &str) -> bool {
+    line.chars().all(|c| c.is_whitespace() || matches!(c, '.' | '…' | '/' | '#' | '*' | '-'))
 }
 
 /// Every path a `Ref:` line cites, forward-slashed. Tolerates the backtick and
@@ -566,6 +746,7 @@ mod tests {
     #[test]
     fn apply_reads_the_mold_body_from_a_file_path() {
         let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
         let on_disk = dir.path().join("authored-mold.md");
         std::fs::write(&on_disk, valid_mold("api-service-pattern")).unwrap();
 
@@ -582,22 +763,60 @@ mod tests {
         );
     }
 
+    /// O exemplar que os moldes de teste citam, e o trecho que eles colam dele —
+    /// o par que o apply agora exige em `## Examples`.
+    const EXEMPLAR_REL: &str = "apps/api/services/UserService.x";
+    const EXEMPLAR_SNIPPET: &str = "pub struct UserService {\n    db: Db,\n}";
+
+    /// Põe o exemplar em `root`, para que o `Ref:` resolva e o trecho tenha onde
+    /// ser provado.
+    fn write_exemplar(root: &Path) {
+        let p = root.join(EXEMPLAR_REL);
+        std::fs::create_dir_all(p.parent().expect("the exemplar has a parent")).unwrap();
+        std::fs::write(&p, format!("// the house shape\n{EXEMPLAR_SNIPPET}\n")).unwrap();
+    }
+
+    /// A seção `## Examples` canônica: o `Ref:` do exemplar E o trecho copiado
+    /// dele.
+    fn grounded_examples() -> String {
+        format!(
+            "- Ref: `{EXEMPLAR_REL}` — the shape a new member copies\n\n```rust\n{EXEMPLAR_SNIPPET}\n```"
+        )
+    }
+
     /// A well-formed generated mold body — frontmatter-first, `name` +
     /// `description` + `source: scan`, and the four canonical sections in
     /// order, all of which the apply now requires.
     fn valid_mold(name: &str) -> String {
+        mold_with_examples(name, &grounded_examples())
+    }
+
+    /// The same body with an arbitrary `## Examples` section — how the checks on
+    /// that section are exercised without re-spelling the frontmatter.
+    fn mold_with_examples(name: &str, examples: &str) -> String {
         format!(
             "---\nname: {name}\ndescription: Use when adding or refactoring an X.\nsource: scan\n---\n\n{}",
-            canonical_sections().trim_end()
+            sections_with_examples(examples).trim_end()
         )
     }
 
     /// The four `## ` sections in the contracted order, each with a line of
     /// body — the shape [`structure_defects`] requires.
     fn canonical_sections() -> String {
+        sections_with_examples(&grounded_examples())
+    }
+
+    /// The four sections with `## Examples` carrying `examples`.
+    fn sections_with_examples(examples: &str) -> String {
         CANONICAL_SECTIONS
             .iter()
-            .map(|s| format!("{s}\nbody\n"))
+            .map(|s| {
+                if *s == CANONICAL_SECTIONS[3] {
+                    format!("{s}\n{examples}\n")
+                } else {
+                    format!("{s}\nbody\n")
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -605,6 +824,7 @@ mod tests {
     #[test]
     fn run_writes_and_marks_generated() {
         let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
         let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
         run(&path, &valid_mold("api-service-pattern"), dir.path());
         assert!(path.exists(), "mold written");
@@ -633,6 +853,7 @@ mod tests {
         // `source: scan` was written by this very run (the sweep clears them
         // all first), so it is a discarded authoring pass, never a human's file.
         let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
         let path = mold(dir.path(), "apps/api/.claude/skills/api-report-pattern/SKILL.md");
         run(&path, &valid_mold("api-report-pattern"), dir.path());
         let first = std::fs::read_to_string(&path).unwrap();
@@ -671,6 +892,7 @@ mod tests {
     #[test]
     fn run_preserves_the_paths_key() {
         let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
         let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
         run(
             &path,
@@ -775,6 +997,7 @@ mod tests {
     #[test]
     fn an_inline_paths_value_is_accepted_and_written_as_a_list() {
         let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         std::fs::write(
             dir.path().join(".claude/grain.model.json"),
@@ -790,9 +1013,10 @@ mod tests {
             .find(|c| c.mold_path == mold_rel)
             .expect("the fixture proposes this cluster");
         let census = super::super::list::convention_line(&expected);
+        let examples = grounded_examples();
         let body = |paths: &str| {
             format!(
-                "---\nname: api-service-pattern\ndescription: Use when adding or refactoring an X.\n{paths}\nsource: scan\n---\n\n## Purpose\nbody\n\n## Convention\n{census}\n\n## How to apply\nbody\n\n## Examples\nbody\n"
+                "---\nname: api-service-pattern\ndescription: Use when adding or refactoring an X.\n{paths}\nsource: scan\n---\n\n## Purpose\nbody\n\n## Convention\n{census}\n\n## How to apply\nbody\n\n## Examples\n{examples}\n"
             )
         };
 
@@ -869,12 +1093,225 @@ mod tests {
         assert!(structure_defects(&fenced).is_empty(), "fenced samples are not sections");
     }
 
-    /// The section check run against every `-pattern` mold this repository
-    /// already carries. They were measured as conforming, so a red here means
-    /// the CHECK is wrong, not the molds. Reads outside the crate fail open
-    /// (skip) per this codebase's test convention.
+    /// AC-1 — uma `## Examples` sem bloco cercado é exatamente o formato que os
+    /// dezesseis moldes deste repositório carregam: uma lista de caminhos. Um
+    /// molde que manda ler o código não ensinou, apontou — e como ele
+    /// auto-carrega em toda edição futura da pasta, esse custo se repete em cada
+    /// onda. O apply recusa e nomeia a falta.
     #[test]
-    fn every_mold_this_repository_carries_passes_the_new_checks() {
+    fn a_mold_without_a_code_block_is_a_defect() {
+        let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
+
+        let paths_only = mold_with_examples(
+            "api-service-pattern",
+            &format!("- Ref: `{EXEMPLAR_REL}` — the shape a new member copies"),
+        );
+        let Applied::Refused(defects) = apply_one(&path, &paths_only, dir.path()) else {
+            panic!("a `## Examples` that is only a path list must be refused");
+        };
+        assert!(
+            defects.iter().any(|d| d.contains("no fenced code block")),
+            "the refusal names the missing block: {defects:?}"
+        );
+        assert!(!path.exists(), "a mold without a code block is never written");
+
+        // Uma cerca vazia é o mesmo nada, com pontuação em volta.
+        let empty_fence = mold_with_examples(
+            "api-service-pattern",
+            &format!("- Ref: `{EXEMPLAR_REL}`\n\n```rust\n```"),
+        );
+        assert!(
+            examples_defects(&empty_fence, dir.path())
+                .iter()
+                .any(|d| d.contains("no fenced code block")),
+            "an empty fence is not an example"
+        );
+
+        // Uma cerca só de reticências é o mesmo nada com cinco caracteres a mais:
+        // `pasted_lines` descarta a elisão e o bloco chega vazio ao laço de
+        // fundamentação. Medido com o binário real: antes desta guarda o molde era
+        // CRIADO.
+        let elision_only = mold_with_examples(
+            "api-service-pattern",
+            &format!("- Ref: `{EXEMPLAR_REL}`\n\n```rust\n// ...\n```"),
+        );
+        assert!(
+            examples_defects(&elision_only, dir.path())
+                .iter()
+                .any(|d| d.contains("fewer than two lines")),
+            "an elision-only fence is not an example: {:?}",
+            examples_defects(&elision_only, dir.path())
+        );
+
+        // E uma linha trivial sozinha fundamenta qualquer arquivo Rust: `}` existe
+        // em todos. O piso de duas linhas fecha os dois pelo mesmo lado.
+        let lone_brace = mold_with_examples(
+            "api-service-pattern",
+            &format!("- Ref: `{EXEMPLAR_REL}`\n\n```rust\n}}\n```"),
+        );
+        assert!(
+            examples_defects(&lone_brace, dir.path())
+                .iter()
+                .any(|d| d.contains("fewer than two lines")),
+            "a one-line fence is not an example: {:?}",
+            examples_defects(&lone_brace, dir.path())
+        );
+
+        // A checagem não é over-eager: o MESMO molde com o trecho colado passa e
+        // é escrito.
+        assert_eq!(
+            apply_one(&path, &valid_mold("api-service-pattern"), dir.path()),
+            Applied::Created
+        );
+    }
+
+    /// AC-2 — o trecho vem dos exemplares que o agente leu, nunca de código
+    /// inventado. Um bloco que não aparece em nenhum `Ref:` citado é uma lição
+    /// falsa ensinada para sempre, e cai pelo mesmo princípio de
+    /// prova-por-leitura que já derruba um `Ref:` para caminho inexistente.
+    #[test]
+    fn a_code_block_absent_from_every_cited_ref_is_a_defect() {
+        let dir = tempfile::tempdir().unwrap();
+        write_exemplar(dir.path());
+        let path = mold(dir.path(), "apps/api/.claude/skills/api-service-pattern/SKILL.md");
+
+        let invented = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}` — the shape\n\n```rust\npub struct GhostService {{\n    fabricated: bool,\n}}\n```"
+            ),
+        );
+        let Applied::Refused(defects) = apply_one(&path, &invented, dir.path()) else {
+            panic!("a block no cited exemplar carries must be refused");
+        };
+        assert!(
+            defects.iter().any(|d| d.contains("appears in none of the cited")),
+            "the refusal names the ungrounded block: {defects:?}"
+        );
+        assert!(!path.exists(), "an invented snippet never reaches disk");
+
+        // Colado do exemplar, o mesmo molde passa...
+        assert!(
+            examples_defects(&valid_mold("api-service-pattern"), dir.path()).is_empty(),
+            "the pasted snippet is grounded"
+        );
+        // ...e continua passando reindentado ou encurtado por elisão: a checagem
+        // mede a LINHA lida, não a coluna nem o comprimento do recorte.
+        let reshaped = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\n      pub struct UserService {{\n          // ...\n      }}\n```"
+            ),
+        );
+        assert!(
+            examples_defects(&reshaped, dir.path()).is_empty(),
+            "re-indentation and elision are not defects: {:?}",
+            examples_defects(&reshaped, dir.path())
+        );
+    }
+
+    /// Um exemplar cuja linha do meio é LONGA, para que abreviá-la no fim ainda
+    /// deixe um começo capaz de identificá-la. O exemplar curto do resto do
+    /// arquivo não serve: `db: Db,` cortado não deixa nada que prove leitura.
+    fn write_long_exemplar(root: &Path) {
+        let p = root.join(EXEMPLAR_REL);
+        std::fs::create_dir_all(p.parent().expect("the exemplar has a parent")).unwrap();
+        std::fs::write(
+            &p,
+            "pub struct UserService {\n    pub db: Db, // the pool the house shares across requests\n}\n",
+        )
+        .unwrap();
+    }
+
+    /// A linha longa que o autor colou e cortou no FIM ainda É a linha que ele
+    /// leu. Medido na primeira passada de enriquecimento real: 5 linhas em 712
+    /// vinham assim, e cada uma reprovava um molde inteiro colado de verdade.
+    #[test]
+    fn a_line_shortened_at_its_tail_still_grounds() {
+        let dir = tempfile::tempdir().unwrap();
+        write_long_exemplar(dir.path());
+
+        let shortened = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct UserService {{\n    pub db: Db, // the pool the house ...\n}}\n```"
+            ),
+        );
+        let defects = examples_defects(&shortened, dir.path());
+        assert!(defects.is_empty(), "uma linha cortada no fim ainda fundamenta: {defects:?}");
+    }
+
+    /// A abreviação afrouxa o FIM, nunca a identidade. Um começo que não abre
+    /// nenhuma linha do exemplar continua sendo invenção, e um começo curto
+    /// demais não prova nada — `    pub ` abre dezenas de linhas em qualquer
+    /// arquivo Rust.
+    #[test]
+    fn an_abbreviated_line_with_no_matching_prefix_is_still_a_defect() {
+        let dir = tempfile::tempdir().unwrap();
+        write_long_exemplar(dir.path());
+
+        // A linha ABREVIADA é a única que não bate. As outras duas são colagem
+        // verbatim do exemplar, de propósito: com uma linha comum já ausente, o
+        // `all` reprovaria antes de chegar na abreviada e o teste passaria sem
+        // ter julgado nada — foi assim que ele nasceu, e a revisão pegou.
+        let invented = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct UserService {{\n    pub cache: Cache, // um começo que o exemplar não tem ...\n}}\n```"
+            ),
+        );
+        assert!(
+            examples_defects(&invented, dir.path())
+                .iter()
+                .any(|d| d.contains("appears in none of the cited")),
+            "um começo inventado continua sendo defeito"
+        );
+
+        // E a abreviação vale só no FIM: cortar o COMEÇO é reescrever a linha,
+        // não encurtá-la. Hoje isso é recusado porque o que sobra antes do corte
+        // é vazio; sem esta trava, um refactor que casasse pelo ÚLTIMO corte em
+        // vez do primeiro aceitaria a linha e nada ficaria vermelho.
+        let head_cut = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct UserService {{\n    ... the pool the house shares across requests\n}}\n```"
+            ),
+        );
+        assert!(
+            examples_defects(&head_cut, dir.path())
+                .iter()
+                .any(|d| d.contains("appears in none of the cited")),
+            "abreviar o COMEÇO é reescrita, não encurtamento"
+        );
+
+        assert_eq!(abbreviated_head("pub ..."), None, "um começo curto não identifica linha");
+        assert_eq!(
+            abbreviated_head("pub struct UserService { ... }"),
+            Some("pub struct UserService {"),
+            "o começo é o que vem antes do corte, aparado"
+        );
+
+        // E uma linha SEM abreviação segue exigindo igualdade exata.
+        let lines = vec!["pub struct UserService {".to_string()];
+        assert!(line_present("pub struct UserService {", &lines));
+        assert!(!line_present("pub struct UserService", &lines), "sem corte, sem prefixo");
+    }
+
+    /// The SECTION and `paths:` checks run against every `-pattern` mold this
+    /// repository already carries. They were measured as conforming, so a red
+    /// here means the CHECK is wrong, not the molds. Reads outside the crate
+    /// fail open (skip) per this codebase's test convention.
+    ///
+    /// `examples_defects` is deliberately NOT run here, and the name says
+    /// `structure` for that reason: the corpus predates the code-block rule and
+    /// this spec's non-objectives keep it untouched — the molds are rewritten by
+    /// the next scan enrich, not by hand. A version of this test that swept the
+    /// new rule over the old corpus would be red on all sixteen and would say
+    /// nothing about the check.
+    #[test]
+    fn every_mold_this_repository_carries_passes_the_structure_checks() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let Some(workspace) = manifest_dir.parent().and_then(Path::parent) else {
             eprintln!("[skip] cannot resolve workspace root from CARGO_MANIFEST_DIR");

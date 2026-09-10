@@ -1,6 +1,6 @@
 ---
 name: core-id-pattern
-description: Use when adding or refactoring a newtype `{Foo}Id` identifier struct inside packages/core/src/domain/economy/.
+description: Use when adding or refactoring a newtype identifier (`*Id`/`*Path`-style single-field wrapper) that keys an economy scope or query under `domain/economy/`.
 paths:
   - packages/core/src/domain/economy/**
 tags: [add, refactor]
@@ -17,19 +17,69 @@ metadata:
 
 ## Purpose
 
-`{Foo}Id` newtypes wrap a bare `String` so the type system stops two different identifiers from being passed in the wrong argument position. `SpecId`, `WaveId`, and `AgentId` (scope.rs) are the three in this subproject; `ProjectPath` (also scope.rs, wrapping `PathBuf` rather than `String`) is the fourth newtype in the same family. `model.rs` and `reader.rs` are the consumers — every public function signature in `reader.rs` takes `SpecId`/`WaveId`/`AgentId` instead of three interchangeable `String` parameters, which is the entire reason the newtypes exist.
+`domain/economy/scope.rs` wraps every identifier that threads through the economy reader API — `ProjectPath`, `SpecId`, `WaveId`, `AgentId` — in its own single-field newtype instead of passing raw `String`/`PathBuf` positionally. The module doc states the reason directly: three bare `String` parameters let a caller silently swap a spec id and a wave id, and the newtypes turn that mistake into a compile error. Each newtype exists purely to be a map key, a `match` discriminant, or an API parameter — none of them carry business logic beyond construction and borrowing.
 
 ## Convention
 
 Folder: packages/core/src/domain/economy/** · Extension: .rs · Files of this role in this subproject: 3
 
-Every `{Foo}Id` is `pub struct {Foo}Id(pub String)`, deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(transparent)]` so it round-trips on the wire as a bare JSON string. Each carries a `new(id: impl Into<String>) -> Self` constructor and an `as_str(&self) -> &str` borrow accessor — no other methods. The public field (`pub String`, not private) lets call sites struct-init directly (`SpecId(name.to_string())`) when the `new` constructor would be noisy, mirrored consistently across all four newtypes in the file.
+Every id newtype is a tuple struct with one **public** field (`pub struct SpecId(pub String)`), deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize` and `#[serde(transparent)]` so it round-trips as the bare inner value on the wire, not as a wrapped object. Each carries exactly two inherent methods: a generic constructor named `new(id: impl Into<String>) -> Self` (or `impl Into<PathBuf>` for `ProjectPath`) and a borrowing accessor — `as_str(&self) -> &str` for string-backed ids, `as_path(&self) -> &Path` for `ProjectPath`. No `Default`, no arithmetic, no domain methods live on the newtype itself; anything that interprets the id belongs to the reader functions that consume it.
 
 ## How to apply
 
-A new identifier newtype goes in `economy/scope.rs` beside its siblings, named `{Domain}Id`, wrapping the smallest correct inner type (`String` for a slug, `PathBuf` for a filesystem path) with a public tuple field, deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize` + `#[serde(transparent)]`, and exposing `new(...)` + `as_str()`/`as_path()`. Update every reader/writer signature that currently takes the bare inner type to take the newtype instead — the whole point is that a caller cannot silently swap two ids.
+A new identifier that could be confused with an existing one at a call site (a second kind of run id, a metric id, etc.) gets its own newtype in `scope.rs` beside the existing four, following the same two-method shape, and is added to any `EconomyScope` variant or reader signature that needs to discriminate it from the others — never passed as a bare `String` alongside the typed ids that already exist.
 
 ## Examples
 
-- Ref: packages/core/src/domain/economy/scope.rs
-- Ref: packages/core/src/domain/economy/reader.rs
+Ref: packages/core/src/domain/economy/scope.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SpecId(pub String);
+
+impl SpecId {
+    /// Build a [`SpecId`] from anything convertible to a [`String`].
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Borrow the underlying id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+```
+
+Ref: packages/core/src/domain/economy/scope.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProjectPath(pub PathBuf);
+
+impl ProjectPath {
+    /// Build a [`ProjectPath`] from anything convertible to a [`PathBuf`].
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+
+    /// Borrow the underlying path.
+    #[must_use]
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+```
+
+Ref: packages/core/src/domain/economy/model.rs
+```rust
+/// Spec the saving is attributed to (when known).
+#[serde(default)]
+pub spec_id: Option<SpecId>,
+/// Wave the saving is attributed to (when known).
+#[serde(default)]
+pub wave_id: Option<WaveId>,
+/// Agent the saving is attributed to (when known).
+#[serde(default)]
+pub agent_id: Option<AgentId>,
+```
