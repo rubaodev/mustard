@@ -682,7 +682,10 @@ const SUPERSEDED: &[(&str, &str)] = &[
 /// outra ensinaria um critério que o motor não usa.
 #[test]
 fn spec_door_teaches_remote_publishing() {
-    let picker = read("plugin/commands/spec.md");
+    // O checkout do Windows entrega a prosa com CRLF, e o recorte por
+    // parágrafo abaixo divide em "\n\n": sem normalizar, o arquivo inteiro vira
+    // um parágrafo só e a posição da regra sai errada.
+    let picker = read("plugin/commands/spec.md").replace("\r\n", "\n");
     let paragraph = picker
         .split("\n\n")
         .find(|p| p.contains("SSH_CONNECTION"))
