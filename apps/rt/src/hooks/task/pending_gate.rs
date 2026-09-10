@@ -69,6 +69,7 @@ use crate::commands::event::pending::{format_pending_items, open_pending, OpenPe
 use crate::shared::context::{record_unit_closed_block, take_unit_closed, unit_closed_blocks};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
+use mustard_core::platform::i18n::Locale;
 use serde_json::Value;
 use std::path::Path;
 
@@ -110,7 +111,8 @@ impl Check for PendingGate {
         {
             return Ok(Verdict::Allow);
         }
-        Ok(Verdict::Deny { reason: block_reason(&omitted) })
+        let lang = mustard_core::ProjectConfig::load(Path::new(&project_dir)).i18n().lang;
+        Ok(Verdict::Deny { reason: block_reason(&omitted, lang) })
     }
 }
 
@@ -166,17 +168,12 @@ fn occurs_whole(text: &str, needle: &str, joins_after: fn(char) -> bool) -> bool
 }
 
 /// O motivo do bloqueio: nomeia CADA pendência omitida — sem corte, porque o
-/// próximo passo é citá-las todas — e diz as duas saídas honestas.
-fn block_reason(omitted: &[OpenPending]) -> String {
-    format!(
-        "[Mustard] A unit closed in this turn, and the final message does not name {count} \
-         open pending item(s): {items}. Agreed work outlives the unit that closed — rewrite \
-         the closing message naming each one by id or title. An item that no longer stands \
-         leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
-         \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up).",
-        count = omitted.len(),
-        items = format_pending_items(omitted, omitted.len()),
-    )
+/// próximo passo é citá-las todas — e diz as duas saídas honestas. O texto sai
+/// do catálogo, no idioma do projeto.
+fn block_reason(omitted: &[OpenPending], lang: Locale) -> String {
+    mustard_core::translate("pending.gate.block", lang)
+        .replace("{count}", &omitted.len().to_string())
+        .replace("{items}", &format_pending_items(omitted, omitted.len()))
 }
 
 #[cfg(test)]

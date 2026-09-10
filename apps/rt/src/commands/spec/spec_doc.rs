@@ -13,11 +13,12 @@
 //! ## O que a página traz, nesta ordem
 //!
 //! Cabeçalho (título, spec, branch, base, estágio, data), resumo da conversa,
-//! onde estamos (os sete passos), o que foi esclarecido, decisões, riscos, a
-//! spec, critérios com o estado da prova, cada onda com tarefas, arquivos,
-//! critérios, obrigações externas e skills, evidências, pendências abertas e o
-//! próximo passo. Cada seção só aparece quando tem conteúdo; o texto sai do
-//! catálogo `i18n` no idioma da spec.
+//! onde estamos (os sete passos), o que foi esclarecido, decisões, riscos,
+//! antes e depois (o `flow` do material), a spec, critérios com o estado da
+//! prova, cada onda com tarefas, arquivos, critérios, obrigações externas e
+//! skills, evidências, pendências abertas e o próximo passo. Cada seção só
+//! aparece quando tem conteúdo; o texto sai do catálogo `i18n` no idioma da
+//! spec.
 //!
 //! ## Contrato
 //!
@@ -26,6 +27,13 @@
 //! novo não custa nada. Exit 0 quando monta; 1 numa recusa (nome inválido, spec
 //! inexistente, disco sem escrita). Fail-open no conteúdo: um arquivo ausente ou
 //! ilegível só apaga a seção que dependia dele.
+//!
+//! ## A exceção à saída byte-estável, de propósito
+//!
+//! Os guards do `run` pedem saída sem caminho de máquina, e `path` segue a regra
+//! (relativo ao repositório). `url` é a exceção deliberada: é o `file://`
+//! ABSOLUTO que o usuário clica, e um link relativo não abre nada. `changed`
+//! também depende do disco — é justamente a pergunta que ele responde.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -226,27 +234,37 @@ fn wave_number(name: &str) -> Option<u32> {
 
 /// Os ids do `satisfies: [AC-1, AC-2]` do frontmatter de uma onda.
 fn satisfies(text: &str) -> Vec<String> {
+    frontmatter_value(text, "satisfies")
+        .map(|value| {
+            value
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// O valor de `key:` no frontmatter `---` do começo do arquivo, sem aspas nas
+/// pontas. `None` sem frontmatter, sem a chave ou com valor vazio.
+fn frontmatter_value(text: &str, key: &str) -> Option<String> {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("---") {
-        return Vec::new();
+        return None;
     }
     for line in lines {
         let line = line.trim();
         if line == "---" {
             break;
         }
-        if let Some(rest) = line.strip_prefix("satisfies:") {
-            return rest
-                .trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+        if let Some(rest) = line.strip_prefix(key).and_then(|r| r.strip_prefix(':')) {
+            let value = rest.trim().trim_matches(['"', '\'']).trim();
+            return (!value.is_empty()).then(|| value.to_string());
         }
     }
-    Vec::new()
+    None
 }
 
 /// O corpo de uma seção `## ` (título fora), pelo resolvedor compartilhado de
@@ -271,6 +289,31 @@ fn spec_title(text: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix("# "))
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
+}
+
+/// O título curto do cabeçalho. O `# ` de uma spec costuma ser o pedido
+/// inteiro, longo demais para um `<h1>`. Vale, nesta ordem: o `title:` do
+/// frontmatter; o trecho do `# ` antes do primeiro `: `; o `# ` inteiro. O
+/// segundo valor é o pedido completo quando o título foi encurtado — a página o
+/// mostra logo abaixo, para nada do pedido se perder.
+fn short_title(spec_text: &str, heading: &str) -> (String, Option<String>) {
+    if let Some(title) = frontmatter_value(spec_text, "title") {
+        let rest = (title != heading).then(|| heading.to_string());
+        return (title, rest);
+    }
+    match heading.split_once(": ") {
+        Some((head, _)) if !head.trim().is_empty() && head.len() < heading.len() => {
+            (head.trim().to_string(), Some(heading.to_string()))
+        }
+        _ => (heading.to_string(), None),
+    }
+}
+
+/// O idioma e o tom de uma spec já montados, para quem fala da página ao
+/// usuário fora dela — a mensagem de entrega do fim de resposta.
+#[must_use]
+pub(crate) fn spec_i18n(root: &Path, spec_dir: &Path) -> I18n {
+    i18n_for(root, &read_meta(spec_dir))
 }
 
 /// O idioma da spec (`meta.json#lang`, que nasce do `specLang`) e o tom do
@@ -396,7 +439,8 @@ fn render(root: &Path, slug: &str, dir: &Path) -> String {
     let material = read_material(dir).unwrap_or_default();
     let waves = read_waves(dir, &meta);
 
-    let title = spec_title(&spec_text).unwrap_or_else(|| slug.to_string());
+    let heading = spec_title(&spec_text).unwrap_or_else(|| slug.to_string());
+    let (title, full_request) = short_title(&spec_text, &heading);
     let kind = if position == Position::AwaitingApproval {
         "doc.kind.approval"
     } else {
@@ -417,6 +461,9 @@ fn render(root: &Path, slug: &str, dir: &Path) -> String {
         report = report.with_note(&date);
     }
 
+    if let Some(request) = full_request {
+        report.raw(&format!("<p class=\"muted\">{}</p>", inline(&request)));
+    }
     if let Some(html) = summary_html(&material, &i18n) {
         report.raw(&html);
     }
@@ -429,6 +476,9 @@ fn render(root: &Path, slug: &str, dir: &Path) -> String {
     }
     if let Some(html) = risks_html(&material, &i18n) {
         report.section(&t("doc.section.risks"), &html);
+    }
+    if let Some(html) = flow_html(&material) {
+        report.section(&t("doc.section.flow"), &html);
     }
     if let Some(html) = spec_html(&spec_text, &i18n) {
         report.section(&t("doc.section.spec"), &html);
@@ -564,6 +614,23 @@ fn risks_html(material: &Material, i: &I18n) -> Option<String> {
         &[i.render("doc.col.severity"), i.render("doc.col.risk"), i.render("doc.col.mitigation")],
         &rows,
     ))
+}
+
+/// O antes e depois: o título como rótulo e o diagrama num `<pre>`, escapado e
+/// com o recuo intacto — um diagrama em texto alinha pelas colunas.
+fn flow_html(material: &Material) -> Option<String> {
+    let flow = material.flow.as_ref()?;
+    let diagram = flow.diagram.trim_end();
+    if diagram.trim().is_empty() {
+        return None;
+    }
+    let mut html = String::new();
+    let title = flow.title.trim();
+    if !title.is_empty() {
+        let _ = write!(html, "<p class=\"label\">{}</p>", inline(title));
+    }
+    let _ = write!(html, "<pre>{}</pre>", escape(diagram));
+    Some(html)
 }
 
 fn severity_rank(severity: Severity) -> u8 {
@@ -812,20 +879,44 @@ fn next_html(position: Position, waves: &[WaveDoc], i: &I18n) -> String {
 // ---------------------------------------------------------------------------
 
 /// Texto de usuário para HTML: escapado, com cada trecho entre crases virando
-/// `<code>`. Uma crase sem par sai como está.
+/// `<code>` e cada `**negrito**` fora delas virando `<strong>`. Uma crase ou um
+/// `**` sem par sai como está.
 fn inline(text: &str) -> String {
     let parts: Vec<&str> = text.split('`').collect();
     let last = parts.len() - 1;
     let mut out = String::with_capacity(text.len());
     for (index, part) in parts.iter().enumerate() {
         if index % 2 == 0 {
-            out.push_str(&escape(part));
+            out.push_str(&bold(&escape(part)));
         } else if index == last {
             // Número ímpar de crases: a última não fecha nada.
             out.push('`');
             out.push_str(&escape(part));
         } else {
             let _ = write!(out, "<code>{}</code>", escape(part));
+        }
+    }
+    out
+}
+
+/// `**x**` (já escapado) vira `<strong>x</strong>`; o último `**` de uma
+/// contagem ímpar não fecha nada e sai como está. É o que impede a linha de
+/// uma obrigação (`- **RO-4.1** — …`) de mostrar os asteriscos crus.
+fn bold(escaped: &str) -> String {
+    let parts: Vec<&str> = escaped.split("**").collect();
+    if parts.len() < 3 {
+        return escaped.to_string();
+    }
+    let last = parts.len() - 1;
+    let mut out = String::with_capacity(escaped.len());
+    for (index, part) in parts.iter().enumerate() {
+        if index % 2 == 0 {
+            out.push_str(part);
+        } else if index == last {
+            out.push_str("**");
+            out.push_str(part);
+        } else {
+            let _ = write!(out, "<strong>{part}</strong>");
         }
     }
     out
@@ -985,7 +1076,7 @@ mod tests {
 ## Summary\n\nO comando que monta o documento\n\n\
 ## Tasks\n\n- [ ] Novo comando `spec-doc` que monta a página.\n\n\
 ## Files\n\n- `apps/rt/src/commands/spec/spec_doc.rs`\n- `apps/rt/src/commands/spec/cli.rs`\n\n\
-## Reality Obligations\n\n- Conferir como o navegador abre um `file://` local.\n";
+## Reality Obligations\n\n- **RO-1.1** — Conferir como o navegador abre um `file://` local.\n";
 
     const MATERIAL: &str = r#"{
   "definitions": [{"term": "onda", "meaning": "uma etapa de execução"}],
@@ -996,7 +1087,8 @@ mod tests {
     {"risk": "o navegador abre sem pedir", "mitigation": "um interruptor desliga", "severity": "alta"}
   ],
   "clarifications": [{"question": "Abrir sozinho?", "answer": "Só na aprovação", "notes": "uma vez por versão"}],
-  "summary": "A conversa pediu um HTML legível."
+  "summary": "A conversa pediu um HTML legível.",
+  "flow": {"title": "Entrega do documento", "diagram": "  antes: terminal <texto>\n    |\n  depois: página"}
 }"#;
 
     const PROOF: &str = r#"{"spec": "demo", "criteria": [
@@ -1074,6 +1166,7 @@ mod tests {
             "<h2>O que foi esclarecido</h2>",
             "<h2>Decisões</h2>",
             "<h2>Riscos</h2>",
+            "<h2>Antes e depois</h2>",
             "<h2>A spec</h2>",
             "<h2>Critérios de aceite</h2>",
             "<h2>Ondas e skills</h2>",
@@ -1120,6 +1213,7 @@ mod tests {
             "<code>rt-entry-pattern</code> — cobre <code>apps/rt/src/commands/spec/cli.rs</code>, \
              <code>apps/rt/src/commands/spec/spec_doc.rs</code>",
             "Obrigação externa",
+            "<li><strong>RO-1.1</strong> — Conferir como o navegador abre um <code>file://</code> local.</li>",
             "<span class=\"label\">Critérios:</span> AC-1, AC-2",
             // Evidência com arquivo:linha; pendência aberta.
             "<td class=\"where\">apps/rt/src/report/mod.rs:97</td>",
@@ -1137,6 +1231,53 @@ mod tests {
         let again = generate(root, "demo");
         assert!(again.ok && !again.changed, "{again:?}");
         assert_eq!(again.hash, report.hash);
+    }
+
+    /// AC-10 — o `flow` do material vira a seção Antes e depois, entre os riscos
+    /// e a spec, com o diagrama num bloco monoespaçado, escapado e com o recuo
+    /// intacto; sem `flow`, a seção some.
+    #[test]
+    fn a_flow_material_renders_before_and_after() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed(root);
+        let dir = root.join(".claude/spec/demo");
+
+        assert!(generate(root, "demo").ok);
+        let html = fs::read_to_string(dir.join(DOC_FILE)).unwrap();
+        let at = html.find("<h2>Antes e depois</h2>").unwrap_or_else(|| panic!("no section:\n{html}"));
+        let risks = html.find("<h2>Riscos</h2>").unwrap();
+        let spec = html.find("<h2>A spec</h2>").unwrap();
+        assert!(risks < at && at < spec, "the section sits between the risks and the spec");
+        assert!(
+            html.contains(
+                "<p class=\"label\">Entrega do documento</p>\
+                 <pre>  antes: terminal &lt;texto&gt;\n    |\n  depois: página</pre>"
+            ),
+            "title, then the diagram escaped with its indentation:\n{html}",
+        );
+
+        // Sem `flow` no material, a seção não aparece.
+        fs::write(dir.join("spec-material.json"), r#"{"summary": "Sem fluxo."}"#).unwrap();
+        assert!(generate(root, "demo").ok);
+        let html = fs::read_to_string(dir.join(DOC_FILE)).unwrap();
+        assert!(!html.contains("Antes e depois"), "no flow, no section:\n{html}");
+    }
+
+    /// O cabeçalho usa o título curto: o `title:` do frontmatter, senão o
+    /// trecho antes do primeiro `: `; o pedido inteiro vai logo abaixo.
+    #[test]
+    fn the_header_prefers_the_short_title() {
+        let long = "HTML padrão da spec: documento autocontido que o Mustard gera";
+        assert_eq!(
+            short_title("# x\n", long),
+            ("HTML padrão da spec".to_string(), Some(long.to_string())),
+        );
+        assert_eq!(
+            short_title("---\ntitle: \"Resumo da spec\"\n---\n", long),
+            ("Resumo da spec".to_string(), Some(long.to_string())),
+        );
+        assert_eq!(short_title("# x\n", "Sem dois-pontos"), ("Sem dois-pontos".to_string(), None));
     }
 
     /// Uma seção sem conteúdo some, e a aprovação muda o passo e o próximo passo.
@@ -1170,5 +1311,7 @@ mod tests {
     fn inline_turns_backticks_into_code_and_escapes_the_rest() {
         assert_eq!(inline("use `a<b>` agora"), "use <code>a&lt;b&gt;</code> agora");
         assert_eq!(inline("crase `sem par"), "crase `sem par");
+        assert_eq!(inline("- **RO-4.1** — ler `a**b`"), "- <strong>RO-4.1</strong> — ler <code>a**b</code>");
+        assert_eq!(inline("um ** sozinho"), "um ** sozinho");
     }
 }

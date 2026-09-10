@@ -914,6 +914,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("doc.section.decisions", Locale::EnUs) => "Decisions",
         ("doc.section.risks", Locale::PtBr) => "Riscos",
         ("doc.section.risks", Locale::EnUs) => "Risks",
+        ("doc.section.flow", Locale::PtBr) => "Antes e depois",
+        ("doc.section.flow", Locale::EnUs) => "Before and after",
         ("doc.section.spec", Locale::PtBr) => "A spec",
         ("doc.section.spec", Locale::EnUs) => "The spec",
         ("doc.section.criteria", Locale::PtBr) => "Critérios de aceite",
@@ -1069,6 +1071,69 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("doc.footer", Locale::EnUs) => {
             "Built by Mustard from the spec, the waves, the conversation material, the \
              criteria proof and the pending list."
+        }
+
+        // Entrega do resumo no fim da resposta
+        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — mensagem ao usuário,
+        // então segue o `specLang` e o tom. Sem parênteses no texto: o tom
+        // técnico os apaga. `{file}`, `{url}` e `{command}` vêm do chamador; o
+        // comando em si não se traduz.
+        ("deliver.head.awaiting", Locale::PtBr) => {
+            "Mustard · spec para aprovar: o {file} mudou. Formas de abrir:"
+        }
+        ("deliver.head.awaiting", Locale::EnUs) => {
+            "Mustard · spec awaiting approval: {file} changed. Ways to open it:"
+        }
+        ("deliver.head.summary", Locale::PtBr) => {
+            "Mustard · resumo da spec: o {file} mudou. Formas de abrir:"
+        }
+        ("deliver.head.summary", Locale::EnUs) => {
+            "Mustard · spec summary: {file} changed. Ways to open it:"
+        }
+        ("deliver.click", Locale::PtBr) => "- Clique: {url}",
+        ("deliver.click", Locale::EnUs) => "- Click: {url}",
+        ("deliver.windows", Locale::PtBr) => "- Windows, no PowerShell: {command}",
+        ("deliver.windows", Locale::EnUs) => "- Windows, in PowerShell: {command}",
+        ("deliver.macos", _) => "- macOS: {command}",
+        ("deliver.linux", _) => "- Linux: {command}",
+        ("deliver.publish", Locale::PtBr) => {
+            "- Peça ao assistente para publicar a página no claude.ai."
+        }
+        ("deliver.publish", Locale::EnUs) => "- Ask the assistant to publish it as a claude.ai page.",
+
+        // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
+        // e `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
+        // do chamador; a lista usa a grafia de `format_pending_items`.
+        ("pending.notice", Locale::PtBr) => {
+            "[Mustard] Trabalho combinado ainda aberto ({count}): {items}. Esses itens vivem \
+             fora de toda unidade e sobrevivem à que os entrega: quando uma unidade fecha \
+             (pull request mergeado ou spec concluída), a mensagem final cita cada item aberto \
+             pelo id ou pelo título. Grave trabalho combinado novo com \
+             `mustard-rt run pending --add`; um item só sai da lista com um motivo \
+             (`--close <id>` ou `--drop <id>`, mais `--reason`)."
+        }
+        ("pending.notice", Locale::EnUs) => {
+            "[Mustard] Agreed work still open ({count}): {items}. These items live outside \
+             every unit and outlive the one that delivers them: when a unit closes (pull \
+             request merged or spec completed), the final message names each open item by id \
+             or title. Record new agreed work with `mustard-rt run pending --add`; an item \
+             leaves the list only with a reason (`--close <id>` or `--drop <id>`, plus \
+             `--reason`)."
+        }
+        ("pending.gate.block", Locale::PtBr) => {
+            "[Mustard] Uma unidade fechou neste turno, e a mensagem final não cita {count} \
+             pendência(s) aberta(s): {items}. O trabalho combinado sobrevive à unidade que \
+             fechou — reescreva a mensagem de fechamento citando cada uma pelo id ou pelo \
+             título. Uma pendência que não vale mais só sai da lista com um motivo: \
+             `mustard-rt run pending --close <id> --reason \"…\"` (entregue) ou \
+             `mustard-rt run pending --drop <id> --reason \"…\"` (desistência)."
+        }
+        ("pending.gate.block", Locale::EnUs) => {
+            "[Mustard] A unit closed in this turn, and the final message does not name {count} \
+             open pending item(s): {items}. Agreed work outlives the unit that closed — rewrite \
+             the closing message naming each one by id or title. An item that no longer stands \
+             leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
+             \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
         }
 
         // Fail-open: unknown key returns the key itself so callers always have
@@ -1473,6 +1538,33 @@ mod tests {
             let notice = translate("prune.pending.notice", lang);
             assert!(notice.contains("{count}"), "the advisory interpolates the count: {notice}");
             assert!(notice.contains("{branches}"), "and names the units: {notice}");
+        }
+    }
+
+    /// A entrega do resumo e os avisos de pendência saem do catálogo nos dois
+    /// idiomas, e cada um carrega as vagas que o chamador preenche.
+    #[test]
+    fn i18n_translates_delivery_and_pending_keys() {
+        for (key, slots) in [
+            ("doc.section.flow", &[][..]),
+            ("deliver.head.awaiting", &["{file}"][..]),
+            ("deliver.head.summary", &["{file}"][..]),
+            ("deliver.click", &["{url}"][..]),
+            ("deliver.windows", &["{command}"][..]),
+            ("deliver.publish", &[][..]),
+            ("pending.notice", &["{count}", "{items}"][..]),
+            ("pending.gate.block", &["{count}", "{items}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+        for key in ["deliver.macos", "deliver.linux"] {
+            assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
         }
     }
 

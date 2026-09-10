@@ -41,6 +41,12 @@
 //!   endereço do servidor).
 //! - Sempre: pedir ao assistente que publique a página no claude.ai.
 //!
+//! O texto sai do catálogo `i18n`, no idioma da spec e no tom do projeto — é
+//! mensagem ao usuário, como a própria página; os comandos não se traduzem.
+//! A origem do `scp` vai entre aspas simples, na regra de cada shell, para um
+//! caminho com espaço seguir válido. Uma camada só de aspas, a do shell local:
+//! o `scp` do OpenSSH 9 em diante usa SFTP e lê o caminho remoto literal.
+//!
 //! ## Abrir sozinho, só na espera de aprovação
 //!
 //! Estágio `Plan` sem `.approved-by-user` (o predicado compartilhado do
@@ -64,9 +70,10 @@ use std::process::{Command, Stdio};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::io::fs;
 use mustard_core::platform::error::Error;
+use mustard_core::platform::i18n::I18n;
 use mustard_core::ClaudePaths;
 
-use crate::commands::spec::spec_doc::{generate, DOC_FILE};
+use crate::commands::spec::spec_doc::{generate, spec_i18n, DOC_FILE};
 use crate::hooks::observe::approval_marker_observer::is_awaiting_approval;
 use crate::hooks::task::crystallise_nudge::spec_is_closed;
 use crate::shared::context::{approval_marker_path, current_spec};
@@ -200,29 +207,52 @@ fn present(
     if !remember(root, "shown", spec, &report.hash) {
         return None;
     }
-    Some(ways_to_open(awaiting, &file, &report.url, seat))
+    // O idioma e o tom são os da página: a mensagem fala dela ao mesmo leitor.
+    let i18n = file.parent().map(|dir| spec_i18n(root, dir)).unwrap_or_default();
+    Some(ways_to_open(awaiting, &file, &report.url, seat, &i18n))
 }
 
 /// A mensagem: o que mudou e cada forma de abrir, uma por linha.
-fn ways_to_open(awaiting: bool, file: &Path, url: &str, seat: &Seat) -> String {
-    let what = if awaiting { "spec awaiting approval" } else { "spec summary" };
-    let mut text = format!("Mustard · {what}: {DOC_FILE} changed. Ways to open it:");
+fn ways_to_open(awaiting: bool, file: &Path, url: &str, seat: &Seat, i: &I18n) -> String {
+    let head = if awaiting { "deliver.head.awaiting" } else { "deliver.head.summary" };
+    let mut text = i.render(head).replace("{file}", DOC_FILE);
     match seat {
         Seat::Local { .. } => {
-            let _ = write!(text, "\n- Click: {url}");
+            let _ = write!(text, "\n{}", i.render("deliver.click").replace("{url}", url));
         }
         Seat::Remote { user, host } => {
             let source = format!("{user}@{host}:{}", file.display());
-            let _ = write!(
-                text,
-                "\n- Windows (PowerShell): scp {source} $env:TEMP\\{DOC_FILE}; start $env:TEMP\\{DOC_FILE}"
-            );
-            let _ = write!(text, "\n- macOS: scp {source} /tmp/{DOC_FILE} && open /tmp/{DOC_FILE}");
-            let _ = write!(text, "\n- Linux: scp {source} /tmp/{DOC_FILE} && xdg-open /tmp/{DOC_FILE}");
+            let posix = posix_quote(&source);
+            let commands = [
+                (
+                    "deliver.windows",
+                    format!(
+                        "scp {} $env:TEMP\\{DOC_FILE}; start $env:TEMP\\{DOC_FILE}",
+                        powershell_quote(&source),
+                    ),
+                ),
+                ("deliver.macos", format!("scp {posix} /tmp/{DOC_FILE} && open /tmp/{DOC_FILE}")),
+                ("deliver.linux", format!("scp {posix} /tmp/{DOC_FILE} && xdg-open /tmp/{DOC_FILE}")),
+            ];
+            for (key, command) in commands {
+                let _ = write!(text, "\n{}", i.render(key).replace("{command}", &command));
+            }
         }
     }
-    text.push_str("\n- Ask the assistant to publish it as a claude.ai page.");
+    let _ = write!(text, "\n{}", i.render("deliver.publish"));
     text
+}
+
+/// Aspas simples do PowerShell: o texto sai literal, e uma aspa simples dentro
+/// dele se escreve dobrada.
+fn powershell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+/// Aspas simples do sh (macOS, Linux): o texto sai literal; uma aspa simples
+/// dentro dele fecha as aspas, entra escapada e as reabre.
+fn posix_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Grava `hash` como a última versão que `what` (`shown` / `opened`) viu desta
@@ -286,15 +316,33 @@ mod tests {
 
     /// Uma unidade `demo` no estágio pedido, com uma spec que dá para mudar.
     fn seed(root: &Path, stage: &str) {
-        std::fs::write(root.join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
+        seed_in(root, stage, "pt-BR");
+    }
+
+    /// A mesma unidade, no idioma `lang` (projeto e spec).
+    fn seed_in(root: &Path, stage: &str, lang: &str) {
+        std::fs::write(root.join("mustard.json"), format!(r#"{{"specLang":"{lang}"}}"#)).unwrap();
         let dir = root.join(".claude/spec/demo");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("meta.json"),
-            format!(r#"{{"stage":"{stage}","outcome":"Active","lang":"pt-BR"}}"#),
+            format!(r#"{{"stage":"{stage}","outcome":"Active","lang":"{lang}"}}"#),
         )
         .unwrap();
         rewrite_spec(root, "Primeira versão.");
+    }
+
+    /// O lugar de uma sessão por SSH no servidor `10.0.0.5`, como `rubens`.
+    fn ssh_seat() -> Seat {
+        Seat::from_env(
+            &|key| match key {
+                "SSH_CONNECTION" => Some("10.0.0.9 51234 10.0.0.5 22".to_string()),
+                "USER" => Some("rubens".to_string()),
+                "DISPLAY" => Some("localhost:10.0".to_string()),
+                _ => None,
+            },
+            false,
+        )
     }
 
     fn rewrite_spec(root: &Path, context: &str) {
@@ -318,9 +366,9 @@ mod tests {
         seed(root, "Execute");
 
         let first = present(root, "demo", OpenMode::On, &LOCAL, &never).expect("first turn shows");
-        assert!(first.contains("spec summary"), "{first}");
-        assert!(first.contains("- Click: file://") && first.contains("/resumo.html"), "{first}");
-        assert!(first.contains("claude.ai page"), "{first}");
+        assert!(first.contains("resumo da spec"), "{first}");
+        assert!(first.contains("- Clique: file://") && first.contains("/resumo.html"), "{first}");
+        assert!(first.contains("claude.ai"), "{first}");
 
         let outcome = Outcome {
             verdict: Verdict::Inject {
@@ -358,7 +406,7 @@ mod tests {
         };
 
         let message = present(root, "demo", OpenMode::On, &LOCAL, &opener).expect("shows");
-        assert!(message.contains("spec awaiting approval"), "{message}");
+        assert!(message.contains("spec para aprovar"), "{message}");
         assert_eq!(opened.borrow().len(), 1);
         assert!(opened.borrow()[0].ends_with(Path::new(".claude/spec/demo").join(DOC_FILE)));
 
@@ -386,7 +434,7 @@ mod tests {
         std::fs::write(marker, "approved\n").unwrap();
         rewrite_spec(root, "Quarta versão.");
         let after = present(root, "demo", OpenMode::On, &LOCAL, &opener).expect("still shows");
-        assert!(after.contains("spec summary"), "{after}");
+        assert!(after.contains("resumo da spec"), "{after}");
         assert_eq!(opened.borrow().len(), 2);
     }
 
@@ -397,28 +445,74 @@ mod tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         seed(root, "Plan");
-        let seat = Seat::from_env(
-            &|key| match key {
-                "SSH_CONNECTION" => Some("10.0.0.9 51234 10.0.0.5 22".to_string()),
-                "USER" => Some("rubens".to_string()),
-                "DISPLAY" => Some("localhost:10.0".to_string()),
-                _ => None,
-            },
-            false,
-        );
+        let seat = ssh_seat();
         assert_eq!(seat, Seat::Remote { user: "rubens".to_string(), host: "10.0.0.5".to_string() });
 
         let message = present(root, "demo", OpenMode::On, &seat, &never).expect("shows");
         let source = format!("rubens@10.0.0.5:{}", root.join(".claude/spec/demo/resumo.html").display());
         for needle in [
-            format!("- Windows (PowerShell): scp {source} $env:TEMP\\resumo.html; start $env:TEMP\\resumo.html"),
-            format!("- macOS: scp {source} /tmp/resumo.html && open /tmp/resumo.html"),
-            format!("- Linux: scp {source} /tmp/resumo.html && xdg-open /tmp/resumo.html"),
-            "- Ask the assistant to publish it as a claude.ai page.".to_string(),
+            format!(
+                "- Windows, no PowerShell: scp '{source}' $env:TEMP\\resumo.html; start $env:TEMP\\resumo.html"
+            ),
+            format!("- macOS: scp '{source}' /tmp/resumo.html && open /tmp/resumo.html"),
+            format!("- Linux: scp '{source}' /tmp/resumo.html && xdg-open /tmp/resumo.html"),
+            "- Peça ao assistente para publicar a página no claude.ai.".to_string(),
         ] {
             assert!(message.contains(&needle), "missing {needle}:\n{message}");
         }
         assert!(!message.contains("file://"), "{message}");
+    }
+
+    /// AC-11 — a mensagem de entrega fala o idioma da spec: pt-BR num projeto
+    /// que declara pt-BR, inglês num que declara en-US. Os comandos e o link não
+    /// se traduzem.
+    #[test]
+    fn delivery_message_follows_spec_lang() {
+        let pt = tempdir().unwrap();
+        seed_in(pt.path(), "Plan", "pt-BR");
+        let message = present(pt.path(), "demo", OpenMode::Off, &LOCAL, &never).expect("shows");
+        for needle in ["Mustard · spec para aprovar: o resumo.html mudou. Formas de abrir:", "- Clique: file://"] {
+            assert!(message.contains(needle), "missing {needle}:\n{message}");
+        }
+        assert!(message.contains("- Peça ao assistente para publicar a página no claude.ai."), "{message}");
+        assert!(!message.contains("Ways to open"), "no English left in a pt-BR unit:\n{message}");
+
+        let en = tempdir().unwrap();
+        seed_in(en.path(), "Execute", "en-US");
+        let message = present(en.path(), "demo", OpenMode::Off, &LOCAL, &never).expect("shows");
+        for needle in [
+            "Mustard · spec summary: resumo.html changed. Ways to open it:",
+            "- Click: file://",
+            "- Ask the assistant to publish it as a claude.ai page.",
+        ] {
+            assert!(message.contains(needle), "missing {needle}:\n{message}");
+        }
+    }
+
+    /// AC-13 — um projeto num diretório com espaço ainda recebe um `scp` que
+    /// funciona: a origem vai entre aspas simples, na regra de cada shell.
+    #[test]
+    fn scp_path_with_spaces_is_quoted() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("meu projeto");
+        std::fs::create_dir_all(&root).unwrap();
+        seed(&root, "Plan");
+
+        let message = present(&root, "demo", OpenMode::On, &ssh_seat(), &never).expect("shows");
+        let source = format!("rubens@10.0.0.5:{}", root.join(".claude/spec/demo/resumo.html").display());
+        assert!(source.contains(' '), "the fixture path carries a space: {source}");
+        for needle in [
+            format!("scp '{source}' $env:TEMP\\resumo.html"),
+            format!("scp '{source}' /tmp/resumo.html && open"),
+            format!("scp '{source}' /tmp/resumo.html && xdg-open"),
+        ] {
+            assert!(message.contains(&needle), "missing {needle}:\n{message}");
+        }
+        assert!(!message.contains(&format!("scp {source}")), "an unquoted source breaks at the space");
+
+        // Uma aspa simples no caminho também fica literal, em cada shell.
+        assert_eq!(powershell_quote("a'b c"), "'a''b c'");
+        assert_eq!(posix_quote("a'b c"), r"'a'\''b c'");
     }
 
     /// O lugar da sessão: SSH vence a tela; sem o endereço do servidor vale o

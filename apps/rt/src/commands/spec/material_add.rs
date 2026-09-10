@@ -47,6 +47,12 @@
 //!   observador de `AskUserQuestion` grava por esta mesma porta, com as notas
 //!   do usuário quando existem.
 //!
+//! - `flow` — o antes e depois da mudança, em texto: `--subject` é o título,
+//!   `--detail` o diagrama. Como o resumo, o mais recente substitui o anterior:
+//!   é UM retrato da mudança, redesenhado conforme a conversa avança. O recuo
+//!   do diagrama é preservado — só as linhas em branco das pontas e o espaço
+//!   do fim saem —, porque um diagrama em texto alinha pelas colunas.
+//!
 //! Os campos novos só aparecem no arquivo quando carregam algo, então um
 //! material que não os usa continua com os mesmos bytes de antes.
 
@@ -144,6 +150,14 @@ pub(crate) struct Clarification {
     pub(crate) notes: Option<String>,
 }
 
+/// O antes e depois da mudança: um título e o diagrama em texto, que o
+/// documento da spec mostra em bloco monoespaçado.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Flow {
+    pub(crate) title: String,
+    pub(crate) diagram: String,
+}
+
 /// The accumulating document. Field names and shape mirror what
 /// `spec-draft --material` deserialises, byte for byte — two spellings of one
 /// contract is how a writer lands material where no reader looks.
@@ -168,6 +182,8 @@ pub(crate) struct Material {
     pub(crate) clarifications: Vec<Clarification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) flow: Option<Flow>,
 }
 
 /// Lê o material de `spec_dir` para EXIBIR — o resumo da spec em HTML.
@@ -195,6 +211,7 @@ pub enum Kind {
     Risk,
     Clarification,
     Summary,
+    Flow,
 }
 
 impl Kind {
@@ -209,6 +226,7 @@ impl Kind {
             "risk" => Some(Self::Risk),
             "clarification" => Some(Self::Clarification),
             "summary" => Some(Self::Summary),
+            "flow" => Some(Self::Flow),
             _ => None,
         }
     }
@@ -250,6 +268,8 @@ pub struct MaterialAddReport {
     pub clarifications: usize,
     /// `true` quando o material guarda um resumo da conversa.
     pub summary: bool,
+    /// `true` quando o material guarda o antes e depois da mudança.
+    pub flow: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -269,6 +289,7 @@ impl MaterialAddReport {
             risks: 0,
             clarifications: 0,
             summary: false,
+            flow: false,
             error: Some(error.to_string()),
             remedy: Some(remedy.to_string()),
         }
@@ -283,14 +304,20 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
             &opts.spec,
             "unknown_kind",
             "--kind takes exactly one of: definition, decision, finding, risk, clarification, \
-             summary",
+             summary, flow",
         );
     };
     // BOTH halves, always. `spec-draft`'s own loader refuses an entry missing
     // the second one, so accepting it here would only move the refusal to a
     // moment when the operator can no longer supply what is missing.
     let subject = opts.subject.trim();
-    let detail = opts.detail.trim();
+    // O diagrama de um `flow` alinha pelas colunas: o recuo da primeira linha
+    // faz parte do desenho, então só saem as linhas em branco das pontas.
+    let detail = if kind == Kind::Flow {
+        diagram_text(&opts.detail)
+    } else {
+        opts.detail.trim()
+    };
     // O resumo é a exceção: é um texto só, então só a primeira metade existe.
     let incomplete = match kind {
         Kind::Summary => subject.is_empty(),
@@ -311,6 +338,8 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
                                mitigation only tells the reader to worry",
                 Kind::Clarification => "a clarification needs the question AND the answer it got",
                 Kind::Summary => "a summary needs its text in --subject",
+                Kind::Flow => "a flow needs its title in --subject AND the before/after \
+                               diagram, as plain text, in --detail",
             },
         );
     }
@@ -448,6 +477,13 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
             doc.summary = Some(subject.to_string());
             grew
         }
+        Kind::Flow => {
+            // Como o resumo: o mais recente substitui o anterior.
+            let item = Flow { title: subject.to_string(), diagram: detail.to_string() };
+            let grew = doc.flow.as_ref() != Some(&item);
+            doc.flow = Some(item);
+            grew
+        }
     };
 
     let body = match serde_json::to_string_pretty(&doc) {
@@ -475,9 +511,26 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
         risks: doc.risks.len(),
         clarifications: doc.clarifications.len(),
         summary: doc.summary.is_some(),
+        flow: doc.flow.is_some(),
         error: None,
         remedy: None,
     }
+}
+
+/// O diagrama como o autor desenhou: sem as linhas em branco das pontas e sem
+/// espaço no fim, mas com o recuo de cada linha — inclusive o da primeira.
+fn diagram_text(raw: &str) -> &str {
+    let trimmed = raw.trim_end();
+    // Pula as linhas em branco do começo, sem tocar no recuo da primeira linha
+    // que tem conteúdo.
+    let mut start = 0;
+    for line in trimmed.split_inclusive('\n') {
+        if !line.trim().is_empty() {
+            break;
+        }
+        start += line.len();
+    }
+    &trimmed[start..]
 }
 
 /// Append unless an identical entry is already there. Returns whether it grew.
@@ -627,9 +680,37 @@ mod tests {
             dir.path().join(".claude/spec/demo").join(MATERIAL_FILE),
         )
         .unwrap();
-        for key in ["risks", "clarifications", "summary"] {
+        for key in ["risks", "clarifications", "summary", "flow"] {
             assert!(!raw.contains(key), "`{key}` must not appear when unused:\n{raw}");
         }
+    }
+
+    /// O `flow` guarda título e diagrama, o mais novo substitui o anterior, o
+    /// recuo do desenho sobrevive e um fluxo sem diagrama é recusado.
+    #[test]
+    fn material_add_records_the_newest_flow_with_its_indentation() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+        let diagram = "\n\n   antes: terminal\n     |\n   depois: página\n\n";
+        let first = add(dir.path(), &opts("flow", "Entrega", "velho"));
+        assert!(first.ok && first.added && first.flow, "{first:?}");
+        let second = add(dir.path(), &opts("flow", "Entrega do documento", diagram));
+        assert!(second.ok && second.added, "a new flow is a change: {second:?}");
+        let again = add(dir.path(), &opts("flow", "Entrega do documento", diagram));
+        assert!(again.ok && !again.added, "the same flow again is not: {again:?}");
+
+        let raw = std::fs::read_to_string(
+            dir.path().join(".claude/spec/demo").join(MATERIAL_FILE),
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(doc["flow"]["title"], "Entrega do documento", "the newest replaces");
+        assert_eq!(doc["flow"]["diagram"], "   antes: terminal\n     |\n   depois: página");
+
+        assert_eq!(
+            add(dir.path(), &opts("flow", "Sem desenho", "  \n ")).error.as_deref(),
+            Some("incomplete_entry"),
+        );
     }
 
     /// BOTH halves, always — the same refusal `spec-draft`'s loader makes, taken

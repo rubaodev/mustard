@@ -342,6 +342,15 @@ struct Clarification {
     notes: Option<String>,
 }
 
+/// O antes e depois da mudança, em texto. Como o resumo, fica só no material:
+/// quem o mostra é o documento da spec, não este rascunho.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Flow {
+    title: String,
+    diagram: String,
+}
+
 /// The structured material a conversation produced, carried into the draft by
 /// `spec-draft --material <FILE>`.
 ///
@@ -373,6 +382,8 @@ struct ConversationMaterial {
     clarifications: Vec<Clarification>,
     #[serde(default)]
     summary: Option<String>,
+    #[serde(default)]
+    flow: Option<Flow>,
 }
 
 impl ConversationMaterial {
@@ -385,6 +396,7 @@ impl ConversationMaterial {
             && self.risks.is_empty()
             && self.clarifications.is_empty()
             && self.summary.as_deref().is_none_or(|s| s.trim().is_empty())
+            && self.flow.is_none()
     }
 }
 
@@ -456,6 +468,11 @@ fn load_material(path: &Path) -> Result<ConversationMaterial, String> {
             return Err(format!(
                 "clarifications[{i}]: a clarification needs the question and the answer it got"
             ));
+        }
+    }
+    if let Some(flow) = &material.flow {
+        if flow.title.trim().is_empty() || flow.diagram.trim().is_empty() {
+            return Err("flow: a flow needs its title and the before/after diagram".to_string());
         }
     }
     Ok(material)
@@ -3000,11 +3017,13 @@ mod tests {
         record("risk", "o navegador abre sem pedir", "um interruptor de ambiente desliga", Some("alta"));
         record("clarification", "Abrir o navegador sozinho?", "Só na aprovação", None);
         record("summary", "A conversa fechou o layout v4 como padrão.", "", None);
+        record("flow", "Entrega do documento", "antes: terminal\ndepois: página", None);
         let material_path = project.join(".claude/spec/demo").join(MATERIAL_FILE);
 
         let loaded = load_material(&material_path).expect("the new kinds must load, not abort");
         assert_eq!((loaded.risks.len(), loaded.clarifications.len()), (1, 1));
         assert!(loaded.summary.is_some());
+        assert!(loaded.flow.is_some(), "a flow must load, not abort the draft");
 
         let out = project.join("pt");
         run(SpecDraftOpts {
@@ -3036,6 +3055,7 @@ mod tests {
         // Resumo e esclarecimentos ficam SÓ no material.
         assert!(!body.contains("A conversa fechou o layout v4"), "summary stays out:\n{body}");
         assert!(!body.contains("Abrir o navegador sozinho?"), "clarification stays out:\n{body}");
+        assert!(!body.contains("antes: terminal"), "the flow stays out:\n{body}");
         // O título é canônico — o validador não o lê como seção estranha.
         assert_eq!(
             crate::commands::spec::spec_sections::canonical_key("## Riscos"),
