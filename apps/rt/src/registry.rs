@@ -43,6 +43,7 @@ use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
+use crate::hooks::task::spec_doc_present::SpecDocPresent;
 use crate::hooks::task::crystallise_nudge::CrystalliseNudge;
 use crate::hooks::task::pending_gate::PendingGate;
 use crate::hooks::task::stop_gate::StopGate;
@@ -578,6 +579,21 @@ impl Registry {
                 check: Some(Box::new(PendingGate)),
                 observer: None,
             },
+            // `spec_doc_present` — a entrega do resumo da spec. No `Stop` da
+            // sessão principal, com uma unidade aberta, remonta o `resumo.html`
+            // e, só quando ele mudou desde a última entrega, mostra ao usuário
+            // as formas de abrir (`systemMessage`); na espera de aprovação, com
+            // tela local e fora de SSH, abre o navegador uma vez por versão
+            // (`MUSTARD_DOC_OPEN=off` desliga). Um `Check` que só devolve
+            // `Allow`/`Inject` — nunca bloqueia. Registrado depois das três
+            // travas do `Stop`, sem reordená-las: um bloqueio delas vence o
+            // `fold` e esta mensagem espera a próxima mudança.
+            Module {
+                id: "spec_doc_present",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(SpecDocPresent)),
+                observer: None,
+            },
             Module {
                 id: "user_prompt_observer",
                 // `UserPromptSubmit` lifecycle observer — appends a single
@@ -857,6 +873,21 @@ mod tests {
     }
 
     #[test]
+    fn spec_doc_present_rides_stop_after_the_three_gates() {
+        let registry = Registry::new();
+        let ids = applicable_ids(&registry, Trigger::Stop, None);
+        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("{id} on Stop"));
+        // Depois das travas, na ordem delas, que não muda.
+        assert!(at("stop_gate") < at("crystallise_nudge"));
+        assert!(at("crystallise_nudge") < at("pending_gate"));
+        assert!(at("pending_gate") < at("spec_doc_present"));
+        // Nunca no `Stop` de um subagente.
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"spec_doc_present"));
+        let module = registry.by_id("spec_doc_present").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    #[test]
     fn by_id_finds_registered_modules() {
         let registry = Registry::new();
         for id in [
@@ -895,6 +926,7 @@ mod tests {
             "wave_complete_observer",
             "stop_gate",
             "pending_gate",
+            "spec_doc_present",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }
