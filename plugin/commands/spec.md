@@ -35,6 +35,16 @@ Letter mode: map the picked letter to its `active-specs` row → `{specName}`. F
 rtk mustard-rt run resume-bootstrap --spec {specName} --json
 ```
 
+**On a `Plan`-stage spec the user reads the spec as a PAGE before anything asks for approval.** Run, first:
+
+```bash
+rtk mustard-rt run spec-doc --spec {specName}
+```
+
+and hand the user its `url` (the `file://…/resumo.html`) as a clickable link, on a line of its own, BEFORE plan mode, the approval `AskUserQuestion`, or any "aprovar?" in text. The page carries the conversation summary, where the unit stands, what was clarified, the decisions, the risks, the criteria with their red proof, each wave with its skills, and the open pending items. The terminal render is no substitute: an approval was refused precisely because the user could not read the spec there ("não consigo ler a spec por isso preciso do html"). The page is rewritten only when its content changed (`changed`), so running it every time costs nothing — and when the approval is already minted and §A asks nothing, the link is still handed over once, as the record of what was approved.
+
+**Remote session — the page has to travel.** When the session runs over SSH (`SSH_CONNECTION` or `SSH_CLIENT` is set — `printenv SSH_CONNECTION SSH_CLIENT` prints something), the `file://` link points at the server's disk and a browser there never reaches the user. So, when you have a tool that publishes a web page (a claude.ai artifact), publish `resumo.html` there and hand over that page's link BEFORE plan mode, the approval `AskUserQuestion`, or any "aprovar?" in text — the `file://` line alone does not count as showing the page. Without such a tool, hand over the `scp` commands the end-of-turn message lists (PowerShell, macOS, Linux) before asking.
+
 Route on the returned `stage` — the whole procedure lives in **`${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md`**:
 
 - **`Plan`** → resume-loop **§A Approve** (owns the single-spec render + the approval: plan mode first, the approve/implement `AskUserQuestion` as fallback). **A letter that arrived as the whole prompt brings the approval already made** — `/mustard:spec a` (or the `ar` alias) minted `<spec>/.approved-by-user`, so §A presents the plan for the record and falls straight into the dispatch: no plan-mode round trip, no second question. **The bare `/mustard:spec r`, and the bare `/mustard:spec` itself, typed in full inside the unit's own work branch, arrive here identically** — same door, same marker, same whole-prompt rule; only the spec they named came from the branch instead of a row letter, so §A takes that same shortcut and nothing asks again. Where no marker was minted (a table answer, an integration base with no letter) the user still accepts via `ExitPlanMode` or answers the approval `AskUserQuestion`, and on a Full spec `.clarified` must precede it either way. **`approvedByUser:true` (already approved in `/feature`) takes the same shortcut** — §A skips the re-approval and asks only implement-now vs approve-only.
@@ -46,6 +56,7 @@ Route on the returned `stage` — the whole procedure lives in **`${CLAUDE_PLUGI
 
 ## Inviolable
 
+- **The page precedes the question.** No approval is ever asked with terminal text alone: `spec-doc` runs and its link is shown first (§3). In a remote (SSH) session the link that counts is the page published to claude.ai, when a publishing tool exists — a `file://` link never leaves the server.
 - Siglas + Modo blocks are mandatory + literal in **picker/letter mode**; **FORBIDDEN in focused mode** (render only that one spec).
 - **Inside the unit's own branch the resume costs NOTHING — and that starts at §1, not at §3.** `insideWorkBranch: true` ⇒ no table, no header, no *implement now* question. Asking a caller standing on the unit's own branch whether to start the work they are demonstrably already inside is the ceremony this door exists to remove. The rule used to be stated here and enforced only from §3, while §1 still said "Empty → render the table" with no exception — so a bare `/mustard:spec` typed inside a unit rendered the table anyway, and the inviolable was true about the step after the one that broke it (found in the field, 2026-08-18, on this repository's own unit).
 - A bare spec name routes **directly** to that spec — NEVER list all specs first to "find" it (`resume-bootstrap`/`approve-spec` are name-addressable; `active-specs` exists only for letter picking).

@@ -670,3 +670,48 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "the `wave-scaffold` renderer inside `plan-materialize` owns `wave-plan.md`",
     ),
 ];
+
+/// AC-12 — em sessão remota, o roteiro do `/mustard:spec` manda publicar o
+/// documento como página do claude.ai ANTES da pergunta de aprovação.
+///
+/// Numa sessão por SSH o `file://` aponta para o disco do servidor, e o
+/// navegador de lá nunca chega ao usuário: foi assim que ele ficou sem ler a
+/// spec em 10/09/2026. As duas metades são lidas: a prosa (o parágrafo do §3,
+/// entre a chamada do `spec-doc` e o roteamento, e o inviolável) e o gancho que
+/// reconhece a sessão remota pelas MESMAS variáveis — uma prosa que nomeasse
+/// outra ensinaria um critério que o motor não usa.
+#[test]
+fn spec_door_teaches_remote_publishing() {
+    // O checkout do Windows entrega a prosa com CRLF, e o recorte por
+    // parágrafo abaixo divide em "\n\n": sem normalizar, o arquivo inteiro vira
+    // um parágrafo só e a posição da regra sai errada.
+    let picker = read("plugin/commands/spec.md").replace("\r\n", "\n");
+    let paragraph = picker
+        .split("\n\n")
+        .find(|p| p.contains("SSH_CONNECTION"))
+        .unwrap_or_else(|| panic!("no paragraph of spec.md names the remote (SSH) session"));
+    for needle in ["SSH_CLIENT", "claude.ai", "resumo.html", "BEFORE", "AskUserQuestion", "scp"] {
+        assert!(paragraph.contains(needle), "the remote-session rule misses {needle}:\n{paragraph}");
+    }
+
+    // No §3, depois da chamada do `spec-doc` e antes do roteamento pelo
+    // estágio — o ponto em que a pergunta de aprovação ainda não foi feita.
+    let at = picker.find(paragraph).unwrap();
+    let call = picker.find("rtk mustard-rt run spec-doc --spec").expect("the spec-doc call");
+    let route = picker.find("Route on the returned `stage`").expect("the stage routing");
+    assert!(call < at && at < route, "the remote rule must sit between the spec-doc call and the routing");
+
+    let inviolable = &picker[picker.find("## Inviolable").expect("the Inviolable section")..];
+    let rule = line_with(inviolable, "The page precedes the question").expect("the page rule");
+    assert!(
+        rule.contains("claude.ai") && rule.contains("SSH"),
+        "the inviolable never says what counts as the page in a remote session: {rule}",
+    );
+
+    // A metade do motor: o gancho de entrega reconhece a mesma sessão remota.
+    let hook = read("apps/rt/src/hooks/task/spec_doc_present.rs");
+    assert!(
+        hook.contains("\"SSH_CONNECTION\"") && hook.contains("\"SSH_CLIENT\""),
+        "the delivery hook no longer detects SSH by the variables the prose names",
+    );
+}

@@ -876,6 +876,266 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              a path column, then re-run"
         }
 
+        // Resumo da spec em HTML (`apps/rt/src/commands/spec/spec_doc.rs`) — o
+        // documento que o usuário lê ANTES de aprovar. Texto de usuário, então
+        // segue o `specLang` e mora aqui, não embutido no comando. `{wave}` e
+        // `{term}` são preenchidos pelo chamador.
+        ("doc.kind.approval", Locale::PtBr) => "spec para aprovar",
+        ("doc.kind.approval", Locale::EnUs) => "spec awaiting approval",
+        ("doc.kind.summary", Locale::PtBr) => "resumo da spec",
+        ("doc.kind.summary", Locale::EnUs) => "spec summary",
+        ("doc.meta.spec", _) => "spec",
+        ("doc.meta.branch", _) => "branch",
+        ("doc.meta.base", Locale::PtBr) => "sai de",
+        ("doc.meta.base", Locale::EnUs) => "cut from",
+        ("doc.stage.analyze", Locale::PtBr) => "em análise",
+        ("doc.stage.analyze", Locale::EnUs) => "under analysis",
+        ("doc.stage.awaiting", Locale::PtBr) => "aguardando aprovação",
+        ("doc.stage.awaiting", Locale::EnUs) => "awaiting approval",
+        ("doc.stage.approved", Locale::PtBr) => "aprovada, execução por começar",
+        ("doc.stage.approved", Locale::EnUs) => "approved, execution not started",
+        ("doc.stage.execute", Locale::PtBr) => "em execução",
+        ("doc.stage.execute", Locale::EnUs) => "executing",
+        ("doc.stage.review", Locale::PtBr) => "em revisão",
+        ("doc.stage.review", Locale::EnUs) => "under review",
+        ("doc.stage.verify", Locale::PtBr) => "em verificação",
+        ("doc.stage.verify", Locale::EnUs) => "under verification",
+        ("doc.stage.close", Locale::PtBr) => "fechando",
+        ("doc.stage.close", Locale::EnUs) => "closing",
+        ("doc.stage.completed", Locale::PtBr) => "fechada",
+        ("doc.stage.completed", Locale::EnUs) => "closed",
+        ("doc.summary.lead", Locale::PtBr) => "Resumo.",
+        ("doc.summary.lead", Locale::EnUs) => "Summary.",
+        ("doc.section.where", Locale::PtBr) => "Onde estamos",
+        ("doc.section.where", Locale::EnUs) => "Where we are",
+        ("doc.section.clarified", Locale::PtBr) => "O que foi esclarecido",
+        ("doc.section.clarified", Locale::EnUs) => "What was clarified",
+        ("doc.section.decisions", Locale::PtBr) => "Decisões",
+        ("doc.section.decisions", Locale::EnUs) => "Decisions",
+        ("doc.section.risks", Locale::PtBr) => "Riscos",
+        ("doc.section.risks", Locale::EnUs) => "Risks",
+        ("doc.section.flow", Locale::PtBr) => "Antes e depois",
+        ("doc.section.flow", Locale::EnUs) => "Before and after",
+        ("doc.section.spec", Locale::PtBr) => "A spec",
+        ("doc.section.spec", Locale::EnUs) => "The spec",
+        ("doc.section.criteria", Locale::PtBr) => "Critérios de aceite",
+        ("doc.section.criteria", Locale::EnUs) => "Acceptance criteria",
+        ("doc.section.waves", Locale::PtBr) => "Ondas e skills",
+        ("doc.section.waves", Locale::EnUs) => "Waves and skills",
+        ("doc.section.evidence", Locale::PtBr) => "Evidências",
+        ("doc.section.evidence", Locale::EnUs) => "Evidence",
+        ("doc.section.pending", Locale::PtBr) => "Pendências abertas",
+        ("doc.section.pending", Locale::EnUs) => "Open pending items",
+        ("doc.section.next", Locale::PtBr) => "Próximo passo",
+        ("doc.section.next", Locale::EnUs) => "Next step",
+        // Os sete passos do processo, na ordem em que acontecem.
+        ("doc.step.analyze.name", Locale::PtBr) => "Análise",
+        ("doc.step.analyze.name", Locale::EnUs) => "Analysis",
+        ("doc.step.analyze.desc", Locale::PtBr) => "ler o código e a conversa.",
+        ("doc.step.analyze.desc", Locale::EnUs) => "read the code and the conversation.",
+        ("doc.step.plan.name", Locale::PtBr) => "Plano",
+        ("doc.step.plan.name", Locale::EnUs) => "Plan",
+        ("doc.step.plan.desc", Locale::PtBr) => {
+            "spec e ondas escritas, e cada critério rodado para provar que hoje ele falha."
+        }
+        ("doc.step.plan.desc", Locale::EnUs) => {
+            "spec and waves written, and each criterion run to prove it fails today."
+        }
+        ("doc.step.approval.name", Locale::PtBr) => "Aprovação",
+        ("doc.step.approval.name", Locale::EnUs) => "Approval",
+        ("doc.step.approval.desc", Locale::PtBr) => "você aprova com `/mustard:spec`.",
+        ("doc.step.approval.desc", Locale::EnUs) => "you approve with `/mustard:spec`.",
+        ("doc.step.execute.name", Locale::PtBr) => "Execução",
+        ("doc.step.execute.name", Locale::EnUs) => "Execution",
+        ("doc.step.execute.desc", Locale::PtBr) => {
+            "um agente por onda escreve o código, uma onda depois da outra."
+        }
+        ("doc.step.execute.desc", Locale::EnUs) => {
+            "one agent per wave writes the code, one wave after another."
+        }
+        ("doc.step.review.name", Locale::PtBr) => "Revisão",
+        ("doc.step.review.name", Locale::EnUs) => "Review",
+        ("doc.step.review.desc", Locale::PtBr) => "um agente revisor tenta achar falhas.",
+        ("doc.step.review.desc", Locale::EnUs) => "a reviewer agent tries to find flaws.",
+        ("doc.step.verify.name", Locale::PtBr) => "Verificação",
+        ("doc.step.verify.name", Locale::EnUs) => "Verification",
+        ("doc.step.verify.desc", Locale::PtBr) => "os critérios rodam de novo e agora precisam passar.",
+        ("doc.step.verify.desc", Locale::EnUs) => "the criteria run again and must now pass.",
+        ("doc.step.close.name", Locale::PtBr) => "Fechamento",
+        ("doc.step.close.name", Locale::EnUs) => "Closing",
+        ("doc.step.close.desc", Locale::PtBr) => "pull request e merge na base.",
+        ("doc.step.close.desc", Locale::EnUs) => "pull request and merge into the base.",
+        ("doc.step.here", Locale::PtBr) => "Estamos aqui.",
+        ("doc.step.here", Locale::EnUs) => "We are here.",
+        ("doc.col.question", Locale::PtBr) => "Pergunta",
+        ("doc.col.question", Locale::EnUs) => "Question",
+        ("doc.col.answer", Locale::PtBr) => "Resposta",
+        ("doc.col.answer", Locale::EnUs) => "Answer",
+        ("doc.clarified.definition", Locale::PtBr) => "O que quer dizer {term} aqui?",
+        ("doc.clarified.definition", Locale::EnUs) => "What does {term} mean here?",
+        ("doc.clarified.terms", Locale::PtBr) => "Termos definidos na rodada de termos",
+        ("doc.clarified.terms", Locale::EnUs) => "Terms settled in the term round",
+        ("doc.clarified.reason", Locale::PtBr) => "Por que não houve rodada de termos?",
+        ("doc.clarified.reason", Locale::EnUs) => "Why was there no term round?",
+        ("doc.clarified.notes", Locale::PtBr) => "Nota:",
+        ("doc.clarified.notes", Locale::EnUs) => "Note:",
+        ("doc.col.severity", Locale::PtBr) => "Gravidade",
+        ("doc.col.severity", Locale::EnUs) => "Severity",
+        ("doc.col.risk", Locale::PtBr) => "Risco",
+        ("doc.col.risk", Locale::EnUs) => "Risk",
+        ("doc.col.mitigation", Locale::PtBr) => "O que atenua",
+        ("doc.col.mitigation", Locale::EnUs) => "What mitigates it",
+        ("doc.severity.alta", Locale::PtBr) => "Alta",
+        ("doc.severity.alta", Locale::EnUs) => "High",
+        ("doc.severity.media", Locale::PtBr) => "Média",
+        ("doc.severity.media", Locale::EnUs) => "Medium",
+        ("doc.severity.baixa", Locale::PtBr) => "Baixa",
+        ("doc.severity.baixa", Locale::EnUs) => "Low",
+        ("doc.criteria.lead", Locale::PtBr) => {
+            "Cada critério é um comando. Antes de o código existir ele precisa falhar, e é \
+             essa falha que prova que ele mede algo novo; depois da entrega, precisa passar."
+        }
+        ("doc.criteria.lead", Locale::EnUs) => {
+            "Each criterion is a command. Before the code exists it must fail, and that \
+             failure is what proves it measures something new; after delivery it must pass."
+        }
+        ("doc.col.id", _) => "Id",
+        ("doc.col.criterion", Locale::PtBr) => "Quando… então…",
+        ("doc.col.criterion", Locale::EnUs) => "When… then…",
+        ("doc.col.wave", Locale::PtBr) => "Onda",
+        ("doc.col.wave", Locale::EnUs) => "Wave",
+        ("doc.col.proof", Locale::PtBr) => "Hoje",
+        ("doc.col.proof", Locale::EnUs) => "Today",
+        ("doc.proof.red", Locale::PtBr) => "falha provada",
+        ("doc.proof.red", Locale::EnUs) => "failure proven",
+        ("doc.proof.confirmed", Locale::PtBr) => "confirmado",
+        ("doc.proof.confirmed", Locale::EnUs) => "confirmed",
+        ("doc.proof.exempt", Locale::PtBr) => "isento",
+        ("doc.proof.exempt", Locale::EnUs) => "exempt",
+        ("doc.proof.none", Locale::PtBr) => "sem prova",
+        ("doc.proof.none", Locale::EnUs) => "not proven",
+        ("doc.waves.lead", Locale::PtBr) => {
+            "As skills são os moldes que o agente de cada onda carrega antes de escrever os \
+             arquivos que elas governam. A lista sai do cruzamento dos arquivos da onda com \
+             as pastas de cada molde."
+        }
+        ("doc.waves.lead", Locale::EnUs) => {
+            "Skills are the molds each wave's agent loads before writing the files they \
+             govern. The list comes from crossing the wave's files with each mold's folders."
+        }
+        ("doc.wave.done", Locale::PtBr) => "concluída",
+        ("doc.wave.done", Locale::EnUs) => "done",
+        ("doc.wave.skills", _) => "Skills",
+        ("doc.wave.covers", Locale::PtBr) => "cobre",
+        ("doc.wave.covers", Locale::EnUs) => "covers",
+        ("doc.wave.criteria", Locale::PtBr) => "Critérios",
+        ("doc.wave.criteria", Locale::EnUs) => "Criteria",
+        ("doc.wave.obligations", Locale::PtBr) => "Obrigação externa",
+        ("doc.wave.obligations", Locale::EnUs) => "External obligation",
+        ("doc.col.seen", Locale::PtBr) => "O que foi visto no código",
+        ("doc.col.seen", Locale::EnUs) => "What was seen in the code",
+        ("doc.col.where", Locale::PtBr) => "Onde",
+        ("doc.col.where", Locale::EnUs) => "Where",
+        ("doc.col.pending", Locale::PtBr) => "Pendência",
+        ("doc.col.pending", Locale::EnUs) => "Pending item",
+        ("doc.next.analyze", Locale::PtBr) => "A análise segue; a spec é escrita no passo seguinte.",
+        ("doc.next.analyze", Locale::EnUs) => "Analysis continues; the spec is written in the next step.",
+        ("doc.next.approve", Locale::PtBr) => {
+            "Para aprovar, digite `/mustard:spec` neste branch. A onda 1 começa."
+        }
+        ("doc.next.approve", Locale::EnUs) => {
+            "To approve, type `/mustard:spec` on this branch. Wave 1 starts."
+        }
+        ("doc.next.adjust", Locale::PtBr) => "Para ajustar, diga o que mudar.",
+        ("doc.next.adjust", Locale::EnUs) => "To adjust, say what to change.",
+        ("doc.next.approved", Locale::PtBr) => "A spec está aprovada. `/mustard:spec` começa a onda 1.",
+        ("doc.next.approved", Locale::EnUs) => "The spec is approved. `/mustard:spec` starts wave 1.",
+        ("doc.next.execute", Locale::PtBr) => "A execução segue na onda {wave}, com `/mustard:spec`.",
+        ("doc.next.execute", Locale::EnUs) => "Execution continues with wave {wave}, via `/mustard:spec`.",
+        ("doc.next.execute_done", Locale::PtBr) => "Todas as ondas terminaram; a revisão vem a seguir.",
+        ("doc.next.execute_done", Locale::EnUs) => "Every wave is done; review comes next.",
+        ("doc.next.review", Locale::PtBr) => {
+            "A revisão e a verificação estão rodando; o resultado aparece nesta página."
+        }
+        ("doc.next.review", Locale::EnUs) => {
+            "Review and verification are running; the result shows up on this page."
+        }
+        ("doc.next.close", Locale::PtBr) => "Falta fechar: pull request e merge na base.",
+        ("doc.next.close", Locale::EnUs) => "What is left is closing: pull request and merge into the base.",
+        ("doc.next.completed", Locale::PtBr) => "A unidade está fechada. Não há mais nada a fazer aqui.",
+        ("doc.next.completed", Locale::EnUs) => "The unit is closed. Nothing else to do here.",
+        ("doc.footer", Locale::PtBr) => {
+            "Montado pelo Mustard a partir da spec, das ondas, do material da conversa, da \
+             prova dos critérios e da lista de pendências."
+        }
+        ("doc.footer", Locale::EnUs) => {
+            "Built by Mustard from the spec, the waves, the conversation material, the \
+             criteria proof and the pending list."
+        }
+
+        // Entrega do resumo no fim da resposta
+        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — mensagem ao usuário,
+        // então segue o `specLang` e o tom. Sem parênteses no texto: o tom
+        // técnico os apaga. `{file}`, `{url}` e `{command}` vêm do chamador; o
+        // comando em si não se traduz.
+        ("deliver.head.awaiting", Locale::PtBr) => {
+            "Mustard · spec para aprovar: o {file} mudou. Formas de abrir:"
+        }
+        ("deliver.head.awaiting", Locale::EnUs) => {
+            "Mustard · spec awaiting approval: {file} changed. Ways to open it:"
+        }
+        ("deliver.head.summary", Locale::PtBr) => {
+            "Mustard · resumo da spec: o {file} mudou. Formas de abrir:"
+        }
+        ("deliver.head.summary", Locale::EnUs) => {
+            "Mustard · spec summary: {file} changed. Ways to open it:"
+        }
+        ("deliver.click", Locale::PtBr) => "- Clique: {url}",
+        ("deliver.click", Locale::EnUs) => "- Click: {url}",
+        ("deliver.windows", Locale::PtBr) => "- Windows, no PowerShell: {command}",
+        ("deliver.windows", Locale::EnUs) => "- Windows, in PowerShell: {command}",
+        ("deliver.macos", _) => "- macOS: {command}",
+        ("deliver.linux", _) => "- Linux: {command}",
+        ("deliver.publish", Locale::PtBr) => {
+            "- Peça ao assistente para publicar a página no claude.ai."
+        }
+        ("deliver.publish", Locale::EnUs) => "- Ask the assistant to publish it as a claude.ai page.",
+
+        // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
+        // e `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
+        // do chamador; a lista usa a grafia de `format_pending_items`.
+        ("pending.notice", Locale::PtBr) => {
+            "[Mustard] Trabalho combinado ainda aberto ({count}): {items}. Esses itens vivem \
+             fora de toda unidade e sobrevivem à que os entrega: quando uma unidade fecha \
+             (pull request mergeado ou spec concluída), a mensagem final cita cada item aberto \
+             pelo id ou pelo título. Grave trabalho combinado novo com \
+             `mustard-rt run pending --add`; um item só sai da lista com um motivo \
+             (`--close <id>` ou `--drop <id>`, mais `--reason`)."
+        }
+        ("pending.notice", Locale::EnUs) => {
+            "[Mustard] Agreed work still open ({count}): {items}. These items live outside \
+             every unit and outlive the one that delivers them: when a unit closes (pull \
+             request merged or spec completed), the final message names each open item by id \
+             or title. Record new agreed work with `mustard-rt run pending --add`; an item \
+             leaves the list only with a reason (`--close <id>` or `--drop <id>`, plus \
+             `--reason`)."
+        }
+        ("pending.gate.block", Locale::PtBr) => {
+            "[Mustard] Uma unidade fechou neste turno, e a mensagem final não cita {count} \
+             pendência(s) aberta(s): {items}. O trabalho combinado sobrevive à unidade que \
+             fechou — reescreva a mensagem de fechamento citando cada uma pelo id ou pelo \
+             título. Uma pendência que não vale mais só sai da lista com um motivo: \
+             `mustard-rt run pending --close <id> --reason \"…\"` (entregue) ou \
+             `mustard-rt run pending --drop <id> --reason \"…\"` (desistência)."
+        }
+        ("pending.gate.block", Locale::EnUs) => {
+            "[Mustard] A unit closed in this turn, and the final message does not name {count} \
+             open pending item(s): {items}. Agreed work outlives the unit that closed — rewrite \
+             the closing message naming each one by id or title. An item that no longer stands \
+             leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
+             \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
+        }
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
@@ -1278,6 +1538,59 @@ mod tests {
             let notice = translate("prune.pending.notice", lang);
             assert!(notice.contains("{count}"), "the advisory interpolates the count: {notice}");
             assert!(notice.contains("{branches}"), "and names the units: {notice}");
+        }
+    }
+
+    /// A entrega do resumo e os avisos de pendência saem do catálogo nos dois
+    /// idiomas, e cada um carrega as vagas que o chamador preenche.
+    #[test]
+    fn i18n_translates_delivery_and_pending_keys() {
+        for (key, slots) in [
+            ("doc.section.flow", &[][..]),
+            ("deliver.head.awaiting", &["{file}"][..]),
+            ("deliver.head.summary", &["{file}"][..]),
+            ("deliver.click", &["{url}"][..]),
+            ("deliver.windows", &["{command}"][..]),
+            ("deliver.publish", &[][..]),
+            ("pending.notice", &["{count}", "{items}"][..]),
+            ("pending.gate.block", &["{count}", "{items}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+        for key in ["deliver.macos", "deliver.linux"] {
+            assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
+        }
+    }
+
+    /// O resumo da spec em HTML tira todo o texto do catálogo, nos dois idiomas,
+    /// e o próximo passo da execução carrega o número da onda.
+    #[test]
+    fn i18n_translates_spec_doc_keys() {
+        for key in [
+            "doc.section.where",
+            "doc.step.plan.name",
+            "doc.proof.red",
+            "doc.next.approve",
+            "doc.footer",
+        ] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
+            }
+            assert_ne!(
+                translate(key, Locale::PtBr),
+                translate(key, Locale::EnUs),
+                "{key} must differ per locale (proof it is catalogue-driven)"
+            );
+        }
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            assert!(translate("doc.next.execute", lang).contains("{wave}"));
+            assert!(translate("doc.clarified.definition", lang).contains("{term}"));
         }
     }
 

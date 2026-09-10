@@ -462,7 +462,7 @@ fn session_start_core(
     // Aviso de pendências: o que foi combinado e segue aberto. Um combinado que
     // só existe na memória da conversa se perde quando ela acaba; relido aqui,
     // ele atravessa a sessão.
-    let pending = pending_notice(Path::new(&cwd));
+    let pending = pending_notice(Path::new(&cwd), terrain_lang);
     // ONE composed Inject (the dispatcher fold is last-writer-wins):
     // terrain first, injectables after, the advisories last — blank-line
     // separated.
@@ -644,9 +644,9 @@ const PENDING_NOTICE_ITEMS: usize = 6;
 /// importuna) e quando não há nada aberto. Um ledger ilegível também cala: quem
 /// recusa e explica o conserto é `run pending`.
 ///
-/// O texto sai em inglês, como os outros avisos deste módulo que não passam pelo
-/// catálogo i18n — o catálogo mora em `packages/core`, fora desta unidade.
-pub(crate) fn pending_notice(root: &Path) -> Option<String> {
+/// O texto sai do catálogo (`pending.notice`), no idioma do projeto — o mesmo
+/// que o aviso de poda ao lado usa.
+pub(crate) fn pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }
@@ -654,15 +654,14 @@ pub(crate) fn pending_notice(root: &Path) -> Option<String> {
     if open.is_empty() {
         return None;
     }
-    Some(format!(
-        "[Mustard] Agreed work still open ({count}): {items}. These items live outside every \
-         unit and outlive the one that delivers them: when a unit closes (pull request merged \
-         or spec completed), the final message names each open item by id or title. Record new \
-         agreed work with `mustard-rt run pending --add`; an item leaves the list only with a \
-         reason (`--close <id>` or `--drop <id>`, plus `--reason`).",
-        count = open.len(),
-        items = crate::commands::event::pending::format_pending_items(&open, PENDING_NOTICE_ITEMS),
-    ))
+    Some(
+        mustard_core::translate("pending.notice", lang)
+            .replace("{count}", &open.len().to_string())
+            .replace(
+                "{items}",
+                &crate::commands::event::pending::format_pending_items(&open, PENDING_NOTICE_ITEMS),
+            ),
+    )
 }
 
 #[cfg(test)]
@@ -941,18 +940,19 @@ mod tests {
     /// sem nada aberto, cala.
     #[test]
     fn pending_notice_caps_the_list_and_stays_quiet_when_empty() {
+        let lang = SupportedLocale::default();
         let bare = tempdir().unwrap();
-        assert_eq!(pending_notice(bare.path()), None, "not installed");
+        assert_eq!(pending_notice(bare.path(), lang), None, "not installed");
 
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
-        assert_eq!(pending_notice(root), None, "nothing open");
+        assert_eq!(pending_notice(root, lang), None, "nothing open");
 
         for n in 1..=8 {
             add_pending(root, &format!("trabalho {n}"));
         }
-        let notice = pending_notice(root).expect("eight open items");
+        let notice = pending_notice(root, lang).expect("eight open items");
         assert!(notice.contains("(8)"), "carries the count: {notice}");
         assert!(notice.contains(r#"P-6 "trabalho 6""#), "the sixth is named: {notice}");
         assert!(!notice.contains("P-7"), "past the cap only the count shows: {notice}");

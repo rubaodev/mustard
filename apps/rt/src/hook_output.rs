@@ -100,6 +100,33 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
             return Some(root.to_string());
         }
     }
+
+    // `Stop` fala com o USUÁRIO por `systemMessage` — campo universal, "Warning
+    // message shown to the user", e a seção do `Stop` não o descarta (conferido
+    // em code.claude.com/docs/en/hooks.md em 10/09/2026). No `Stop` não há
+    // próximo turno onde injetar contexto, e `hookSpecificOutput.additionalContext`
+    // ali faz a conversa CONTINUAR; por isso um `Inject` do `Stop` sai só como
+    // `systemMessage` — sem `decision`, sem `additionalContext` próprio. Avisos
+    // (`Warn`) que venham junto saem no formato de sempre, montados pelo mesmo
+    // caminho abaixo, e a mensagem entra ao lado deles.
+    if event_name == "Stop" {
+        if let Verdict::Inject { context } = &outcome.verdict {
+            let advisory = Outcome {
+                verdict: Verdict::Allow,
+                warnings: outcome.warnings.clone(),
+            };
+            let mut root = hook_specific_output(event_name, &advisory)
+                .and_then(|json| {
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&json).ok()
+                })
+                .unwrap_or_default();
+            root.insert(
+                "systemMessage".to_string(),
+                serde_json::Value::String(context.clone()),
+            );
+            return Some(serde_json::Value::Object(root).to_string());
+        }
+    }
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
@@ -272,5 +299,46 @@ mod tests {
 
         // A Stop ALLOW with no warnings stays silent (no forced continue).
         assert!(hook_specific_output("Stop", &Outcome::allow()).is_none());
+    }
+
+    #[test]
+    fn stop_inject_reaches_the_user_as_system_message() {
+        // Um `Inject` do `Stop` vira só `systemMessage`: nada de `decision`
+        // (bloquearia) nem de `additionalContext` (faria a conversa continuar).
+        let json = hook_specific_output("Stop", &inject_outcome())
+            .expect("a Stop inject must emit output");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed, serde_json::json!({"systemMessage": "remember this"}), "{json}");
+
+        // Com avisos junto, os avisos saem no formato de antes, byte a byte, e a
+        // mensagem entra ao lado deles.
+        let warnings = vec!["prune the stale specs".to_string()];
+        let with_warning = Outcome {
+            verdict: Verdict::Inject {
+                context: "remember this".to_string(),
+            },
+            warnings: warnings.clone(),
+        };
+        let json = hook_specific_output("Stop", &with_warning).expect("emits");
+        let mut parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let message = parsed
+            .as_object_mut()
+            .and_then(|o| o.remove("systemMessage"))
+            .expect("systemMessage present");
+        assert_eq!(message, "remember this");
+        let before = hook_specific_output(
+            "Stop",
+            &Outcome {
+                verdict: Verdict::Allow,
+                warnings,
+            },
+        )
+        .expect("a warning emits");
+        let before: serde_json::Value = serde_json::from_str(&before).expect("valid JSON");
+        assert_eq!(parsed, before, "the warning shape must not change");
+
+        // Fora do `Stop`, o `Inject` segue como `additionalContext`.
+        let json = hook_specific_output("UserPromptSubmit", &inject_outcome()).expect("emits");
+        assert!(!json.contains("systemMessage"), "{json}");
     }
 }

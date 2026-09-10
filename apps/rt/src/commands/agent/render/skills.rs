@@ -80,14 +80,56 @@ pub(crate) fn build_mold_pointer(project: &Path, subproject: &str, spec_path: &P
         return String::new();
     };
     let files = arquivos_paths(&spec_text);
-    if files.is_empty() {
+    let covers = wave_molds(project, subproject, &files);
+    if covers.is_empty() {
         return String::new();
+    }
+    let mut out = String::from(
+        "These molds govern the files this wave touches — `## SKILLS` above is the \
+         catalogue, this is the PRESCRIPTION. Load each one named here (Skill tool, or \
+         Read its SKILL.md) BEFORE writing the first line of the module it governs; \
+         deviating from a mold named here is a review finding:\n",
+    );
+    for cover in covers {
+        let files: Vec<String> = cover.files.iter().map(|f| format!("`{f}`")).collect();
+        let _ = writeln!(out, "- {} — covers {}", cover.name, files.join(", "));
+    }
+    out.trim_end().to_string()
+}
+
+/// Um molde e TODOS os arquivos da onda que ele cobre.
+///
+/// A forma estruturada do cruzamento: o prompt da onda a transforma em prosa
+/// (`build_mold_pointer`) e o resumo da spec em HTML, cada um no seu idioma, a
+/// partir da mesma lista — dois leitores do cruzamento com duas contas próprias
+/// divergiriam sobre qual molde governa qual arquivo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MoldCover {
+    /// O nome da pasta do molde (`rt-entry-pattern`).
+    pub(crate) name: String,
+    /// Os arquivos da onda que caem sob o `paths:` do molde, ordenados.
+    pub(crate) files: Vec<String>,
+}
+
+/// Os moldes de `<subproject>/.claude/skills/` cujo `paths:` cobre algum dos
+/// `files`, cada um com a lista COMPLETA dos arquivos que cobre, ordenados
+/// pelo nome do molde para a saída ser estável byte a byte.
+///
+/// Antes só o primeiro arquivo de cada molde era guardado, e uma onda com três
+/// comandos sob o mesmo molde lia como se só um deles o seguisse.
+///
+/// Vazio quando nada casa, quando `files` está vazio ou quando o subprojeto não
+/// tem moldes. Fail-open: um SKILL.md ilegível ou sem frontmatter sai do
+/// cruzamento em vez de derrubar a lista.
+pub(crate) fn wave_molds(project: &Path, subproject: &str, files: &[String]) -> Vec<MoldCover> {
+    if files.is_empty() {
+        return Vec::new();
     }
     let skills_dir = project.join(subproject).join(".claude").join("skills");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
-        return String::new();
+        return Vec::new();
     };
-    let mut rows: Vec<(String, String)> = Vec::new();
+    let mut covers: Vec<MoldCover> = Vec::new();
     for entry in entries.flatten() {
         let Ok(text) = std::fs::read_to_string(entry.path().join("SKILL.md")) else {
             continue;
@@ -96,25 +138,20 @@ pub(crate) fn build_mold_pointer(project: &Path, subproject: &str, spec_path: &P
             continue;
         };
         // A mold with no `paths:` governs no folder and can cover nothing.
-        let Some(hit) = files.iter().find(|f| fm.paths.iter().any(|g| glob_match(f, g))) else {
+        let mut hits: Vec<String> = files
+            .iter()
+            .filter(|f| fm.paths.iter().any(|g| glob_match(f, g)))
+            .cloned()
+            .collect();
+        if hits.is_empty() {
             continue;
-        };
-        rows.push((entry.file_name().to_string_lossy().into_owned(), hit.clone()));
+        }
+        hits.sort();
+        hits.dedup();
+        covers.push(MoldCover { name: entry.file_name().to_string_lossy().into_owned(), files: hits });
     }
-    if rows.is_empty() {
-        return String::new();
-    }
-    rows.sort();
-    let mut out = String::from(
-        "These molds govern the files this wave touches — `## SKILLS` above is the \
-         catalogue, this is the PRESCRIPTION. Load each one named here (Skill tool, or \
-         Read its SKILL.md) BEFORE writing the first line of the module it governs; \
-         deviating from a mold named here is a review finding:\n",
-    );
-    for (name, hit) in rows {
-        let _ = writeln!(out, "- {name} — covers `{hit}`");
-    }
-    out.trim_end().to_string()
+    covers.sort_by(|a, b| a.name.cmp(&b.name));
+    covers
 }
 
 /// Every repo-relative path the spec's `## Arquivos` / `## Files` section names.
@@ -125,7 +162,11 @@ pub(crate) fn build_mold_pointer(project: &Path, subproject: &str, spec_path: &P
 /// its prose cell, and a bullet contributes its path either way. A bullet that
 /// carries no backticks still gives up its first slash-bearing token, because
 /// older specs wrote the path plain.
-fn arquivos_paths(text: &str) -> Vec<String> {
+///
+/// `pub(crate)` para o resumo da spec ler os arquivos de cada onda por este
+/// mesmo leitor — o cruzamento com os moldes só concorda com o prompt enquanto
+/// os dois partem da mesma lista.
+pub(crate) fn arquivos_paths(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut in_section = false;
     for line in text.lines() {
@@ -261,6 +302,52 @@ mod tests {
 
         // And through all of it the shelf never moved a byte.
         assert_eq!(shelf_before, build_skills_list(root, "apps/rt"), "the shelf is untouched");
+    }
+
+    /// AC-6 — um molde que cobre vários arquivos da onda os nomeia TODOS, na
+    /// lista estruturada e na linha do prompt, e não só o primeiro que casou.
+    #[test]
+    fn wave_molds_list_every_covered_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_mold(root, "rt-entry-pattern", "apps/rt/src/commands/**");
+        seed_mold(root, "rt-gate-pattern", "apps/rt/src/hooks/**");
+
+        let spec = root.join("spec.md");
+        std::fs::write(
+            &spec,
+            "## Arquivos\n\n\
+             - `apps/rt/src/commands/spec/spec_doc.rs`\n\
+             - `apps/rt/src/commands/spec/cli.rs`\n\
+             - `apps/rt/src/commands/spec/mod.rs`\n\
+             - `docs/fora-de-molde.md`\n",
+        )
+        .unwrap();
+        let files = arquivos_paths(&std::fs::read_to_string(&spec).unwrap());
+
+        let covers = wave_molds(root, "apps/rt", &files);
+        assert_eq!(
+            covers,
+            vec![MoldCover {
+                name: "rt-entry-pattern".to_string(),
+                files: vec![
+                    "apps/rt/src/commands/spec/cli.rs".to_string(),
+                    "apps/rt/src/commands/spec/mod.rs".to_string(),
+                    "apps/rt/src/commands/spec/spec_doc.rs".to_string(),
+                ],
+            }],
+            "every covered file is listed, and a mold that covers none is absent"
+        );
+
+        let out = build_mold_pointer(root, "apps/rt", &spec);
+        assert!(
+            out.contains(
+                "- rt-entry-pattern — covers `apps/rt/src/commands/spec/cli.rs`, \
+                 `apps/rt/src/commands/spec/mod.rs`, `apps/rt/src/commands/spec/spec_doc.rs`"
+            ),
+            "the prompt line names all three files: {out}"
+        );
+        assert!(!out.contains("rt-gate-pattern"), "{out}");
     }
 
     /// A mold under `<subproject>/.claude/skills/<name>/SKILL.md` governing
