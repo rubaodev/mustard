@@ -326,6 +326,12 @@ impl Outcome {
     /// produced a decisive verdict. Other verdicts (Rewrite, Inject) replace
     /// [`Outcome::verdict`] when the outcome is not already blocking — within
     /// the same priority tier, last writer wins.
+    ///
+    /// Exceção: um [`Verdict::Inject`] sobre outro `Inject` junta os dois
+    /// textos, na ordem do registro, separados por uma linha em branco. Cada
+    /// `Inject` é uma mensagem inteira de um módulo; quando o último apagava o
+    /// anterior, dois ganchos no mesmo fim de resposta (o link do documento e a
+    /// nota de clareza) viravam um só, e o usuário perdia o primeiro.
     pub fn fold(&mut self, verdict: Verdict) {
         if self.verdict.is_blocking() {
             return;
@@ -333,6 +339,14 @@ impl Outcome {
         match verdict {
             Verdict::Warn { message } => self.warnings.push(message),
             Verdict::Allow => {} // No opinion — preserve any prior decisive verdict.
+            Verdict::Inject { context } => {
+                self.verdict = match std::mem::take(&mut self.verdict) {
+                    Verdict::Inject { context: earlier } if !earlier.is_empty() => {
+                        Verdict::Inject { context: format!("{earlier}\n\n{context}") }
+                    }
+                    _ => Verdict::Inject { context },
+                };
+            }
             other => self.verdict = other,
         }
     }
@@ -514,6 +528,28 @@ mod tests {
             outcome.verdict,
             Verdict::Inject { context: "hint".into() }
         );
+    }
+
+    /// Dois `Inject` no mesmo evento chegam os dois, na ordem do registro; um
+    /// `Rewrite` continua substituindo, e um `Deny` continua vencendo.
+    #[test]
+    fn inject_messages_accumulate_in_fold() {
+        let mut outcome = Outcome::allow();
+        outcome.fold(Verdict::Inject { context: "link do documento".into() });
+        outcome.fold(Verdict::Allow);
+        outcome.fold(Verdict::Inject { context: "nota de clareza".into() });
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Inject { context: "link do documento\n\nnota de clareza".into() }
+        );
+
+        let rewrite = Verdict::Rewrite { tool_input: serde_json::json!({ "command": "ls" }) };
+        outcome.fold(rewrite.clone());
+        assert_eq!(outcome.verdict, rewrite);
+
+        outcome.fold(Verdict::Deny { reason: "blocked".into() });
+        outcome.fold(Verdict::Inject { context: "ignored".into() });
+        assert!(outcome.is_blocking());
     }
 
     #[test]

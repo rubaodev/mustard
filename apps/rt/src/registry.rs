@@ -44,6 +44,7 @@ use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
 use crate::hooks::task::spec_doc_present::SpecDocPresent;
+use crate::hooks::task::clarity_check::ClarityCheck;
 use crate::hooks::task::crystallise_nudge::CrystalliseNudge;
 use crate::hooks::task::pending_gate::PendingGate;
 use crate::hooks::task::stop_gate::StopGate;
@@ -594,6 +595,20 @@ impl Registry {
                 check: Some(Box::new(SpecDocPresent)),
                 observer: None,
             },
+            // `clarity_check` — a medição de clareza. No `Stop` da sessão
+            // principal de um projeto que declarou `tone: didactic`, mede a
+            // resposta contra a regra de tom, guarda os defeitos para a mensagem
+            // seguinte levar ao assistente e registra `assistant.clarity` só com
+            // as contagens. Quando reprova, devolve a nota ao usuário (`Inject`,
+            // que no `Stop` vira `systemMessage`); o `fold` junta os `Inject`, e
+            // a nota sai na mesma mensagem do link do documento. Nunca bloqueia.
+            // Registrado por último no `Stop`, sem reordenar os irmãos.
+            Module {
+                id: "clarity_check",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(ClarityCheck)),
+                observer: None,
+            },
             Module {
                 id: "user_prompt_observer",
                 // `UserPromptSubmit` lifecycle observer — appends a single
@@ -888,6 +903,20 @@ mod tests {
     }
 
     #[test]
+    fn clarity_check_rides_stop_last() {
+        let registry = Registry::new();
+        let ids = applicable_ids(&registry, Trigger::Stop, None);
+        // Depois de todos os irmãos do `Stop`, que seguem na ordem de antes.
+        assert_eq!(ids.last(), Some(&"clarity_check"), "{ids:?}");
+        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("{id} on Stop"));
+        assert!(at("pending_gate") < at("spec_doc_present"));
+        assert!(at("spec_doc_present") < at("clarity_check"));
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"clarity_check"));
+        let module = registry.by_id("clarity_check").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    #[test]
     fn by_id_finds_registered_modules() {
         let registry = Registry::new();
         for id in [
@@ -927,6 +956,7 @@ mod tests {
             "stop_gate",
             "pending_gate",
             "spec_doc_present",
+            "clarity_check",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

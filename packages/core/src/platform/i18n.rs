@@ -1150,6 +1150,22 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "resposta com {lines} linhas de texto; o limite é {limit}"
         }
         ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines of prose; the limit is {limit}",
+        // A nota ao usuário quando a resposta reprova, e o aviso que a próxima
+        // mensagem leva ao assistente. Os defeitos vêm abaixo, um por linha.
+        ("clarity.note.head", Locale::PtBr) => {
+            "Mustard · clareza: a resposta acima fugiu do tom didático. A próxima corrige:"
+        }
+        ("clarity.note.head", Locale::EnUs) => {
+            "Mustard · clarity: the reply above missed the didactic tone. The next one fixes:"
+        }
+        ("clarity.next.head", Locale::PtBr) => {
+            "[Mustard] A sua resposta anterior reprovou na medição do tom didático. Corrija \
+             estes pontos nesta resposta:"
+        }
+        ("clarity.next.head", Locale::EnUs) => {
+            "[Mustard] Your previous reply failed the didactic-tone measurement. Fix these \
+             points in this reply:"
+        }
 
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
@@ -1592,6 +1608,8 @@ mod tests {
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.unexplained_term", &["{term}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
+            ("clarity.note.head", &[][..]),
+            ("clarity.next.head", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

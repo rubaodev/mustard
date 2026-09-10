@@ -1,5 +1,6 @@
 mod common;
 
+pub mod clarity_check;
 pub mod context_budget_gate;
 pub mod delegation_advisory;
 pub mod main_context_counter;
