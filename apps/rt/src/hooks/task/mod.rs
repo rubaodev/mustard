@@ -1,10 +1,13 @@
 mod common;
 
+pub mod clarity_check;
 pub mod context_budget_gate;
 pub mod delegation_advisory;
 pub mod main_context_counter;
 pub mod metrics_observer;
+pub mod pending_gate;
 pub mod skill_usage_observer;
+pub mod spec_doc_present;
 pub mod crystallise_nudge;
 pub mod stop_gate;
 pub mod subagent_inject;

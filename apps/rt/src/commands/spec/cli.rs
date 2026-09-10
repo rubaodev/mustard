@@ -325,7 +325,8 @@ pub enum SpecCmd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
         spec: String,
-        /// Which channel: `definition`, `decision` or `finding`.
+        /// Which channel: `definition`, `decision`, `finding`, `risk`,
+        /// `clarification` or `summary`.
         #[arg(long)]
         kind: String,
         /// The first half: the term, the decision, or the statement.
@@ -346,7 +347,11 @@ pub enum SpecCmd {
         ///
         /// Same `allow_hyphen_values` reasoning as `--subject`: a reason is
         /// prose too, and it names flags.
-        #[arg(long, allow_hyphen_values = true)]
+        ///
+        /// Opcional no parser porque o `summary` é um texto só e não tem
+        /// segunda metade; a exigência dos outros tipos continua no
+        /// `material-add`, que recusa com `incomplete_entry` e diz o que falta.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
         detail: String,
         /// A finding's line number, when the claim is line-precise.
         ///
@@ -354,6 +359,10 @@ pub enum SpecCmd {
         /// would let the door accept a value the draft refuses.
         #[arg(long)]
         line: Option<u32>,
+        /// O peso de um `risk`: `alta`, `media` ou `baixa`. Obrigatório para
+        /// risco; ignorado pelos outros tipos.
+        #[arg(long)]
+        severity: Option<String>,
     },
     /// Deliberately change ONE acceptance criterion after the spec artefacts are
     /// frozen, and prove the replacement still knows how to fail.
@@ -510,6 +519,23 @@ pub enum SpecCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Monta o resumo legível da spec em `.claude/spec/<slug>/resumo.html`, no
+    /// layout padrão do Mustard: resumo da conversa, onde estamos, o que foi
+    /// esclarecido, decisões, riscos, a spec, critérios com o estado da prova,
+    /// ondas com as skills prescritas, evidências, pendências abertas e o
+    /// próximo passo.
+    ///
+    /// Vem ANTES de qualquer pergunta de aprovação: o usuário recusou aprovar
+    /// uma spec que só conseguia ler no terminal. Devolve `{ok, path, url,
+    /// hash, changed}` — `url` é o `file://` que o usuário clica, e `changed`
+    /// diz se a página mudou desde a última geração (só então ela é regravada).
+    #[command(name = "spec-doc")]
+    #[command(display_order = 99)]
+    SpecDoc {
+        /// Slug da spec em `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -601,13 +627,16 @@ pub fn dispatch(cmd: SpecCmd) {
                 instruction,
             });
         }
-        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line } => {
+        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line, severity } => {
             spec::material_add::run(&spec::material_add::MaterialAddOpts {
                 spec: slug,
                 kind,
                 subject,
                 detail,
                 line,
+                severity,
+                // As notas vêm só do observador de `AskUserQuestion`.
+                notes: None,
             });
         }
         SpecCmd::AcAmend {
@@ -659,6 +688,9 @@ pub fn dispatch(cmd: SpecCmd) {
                 to.as_deref(),
                 reason.as_deref(),
             );
+        }
+        SpecCmd::SpecDoc { spec: slug } => {
+            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug });
         }
     }
 }

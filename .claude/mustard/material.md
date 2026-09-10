@@ -10,7 +10,12 @@ The conversation's own channel. `orchestrator.md` classifies the request and `di
 mustard-rt run material-add --spec {slug} --kind decision   --subject "<what>"  --detail "<why>"
 mustard-rt run material-add --spec {slug} --kind definition --subject "<term>"  --detail "<what it means here>"
 mustard-rt run material-add --spec {slug} --kind finding    --subject "<claim>" --detail "<file>" [--line N]
+mustard-rt run material-add --spec {slug} --kind risk       --subject "<risk>"  --detail "<what mitigates it>" --severity alta|media|baixa
+mustard-rt run material-add --spec {slug} --kind summary    --subject "<the whole conversation so far>"
+mustard-rt run material-add --spec {slug} --kind flow       --subject "<title>" --detail "<before/after diagram, plain text>"
 ```
+
+**The summary is ONE text, and the newest replaces the last** — rewrite it whole as the conversation moves; a `--detail` on it is refused. A `flow` is the change drawn before/after in plain text; the newest replaces the last too, and its indentation is kept. A `risk` with no `--severity` is refused: a risk without a weight does not tell the reader whether to stop and read it. A `clarification` (question + answer) is recorded ON ITS OWN when the user answers a question — never by hand. The spec page reads all of them: `mustard-rt run spec-doc --spec {slug}` writes `.claude/spec/{slug}/resumo.html`.
 
 One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open from ▸6 on:** the base gate's event log creates `.claude/spec/{slug}/`, so a decision settled before the draft still lands. `unknown_spec` means no gate minted that slug — no unit is open.
 
@@ -21,6 +26,19 @@ mustard-rt run spec-draft --slug {slug} --intent "{intent}" --material .claude/s
 ```
 
 A full `--force` re-draft is for a spec whose NARRATIVE changed. Reach for it and you rewrite the whole body to get one decision in — measured in the field, that cost the operator a save-and-splice script on every round of the conversation, which is a good way to stop recording decisions at all.
+
+## Pending
+
+**Work agreed beyond the unit being opened is recorded BEFORE the gate call** — one item per agreed piece of work, including an ORDER between units. The pending ledger lives outside every unit (`.claude/pending/ledger.json` in the main checkout), so it takes an item with no unit open and outlives the unit that delivers it. Measured 2026-09-09: three works agreed in the order 2 → 3 → 1; the order belonged to no unit, and the closing summary dropped the third.
+
+```
+mustard-rt run pending --add --title "<what was agreed>" --detail "<scope / why>"
+mustard-rt run pending --close P-{n} --reason "<what delivered it>"
+mustard-rt run pending --drop P-{n} --reason "<why it no longer stands>"
+mustard-rt run pending
+```
+
+An item leaves the list ONLY with a reason — a blank `--reason` is refused and nothing is written. Without a flag it lists what is open.
 
 ## Where it lands
 

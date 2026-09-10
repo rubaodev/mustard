@@ -1153,9 +1153,10 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 /// next prompt re-delivers. `sessionStart` cannot do that — it only fires on
 /// openings, and `fork` matched no matcher at all until this unit.
 ///
-/// Mustard's own dispatcher fold is still last-writer-wins, so two Injects
-/// within ONE invocation would drop one; a hook per injectable sidesteps that
-/// without touching the dispatcher. Rationale in full:
+/// Mustard's own dispatcher fold joins the Injects of ONE invocation into a
+/// single response, and that response has ONE 10,000-character ceiling — so
+/// joining never buys an injectable room of its own. A hook per injectable is
+/// what does, without touching the dispatcher. Rationale in full:
 /// `plugin/refs/mustard/router-rationale.md`.
 ///
 /// The didactic response style used to ride `sessionStart` here; it is now the
@@ -2339,6 +2340,23 @@ mod tests {
         );
     }
 
+    /// Uma instalação anterior à lista de pendências recebe `pending/` pelo merge
+    /// por linha, sem perder nada do que já estava lá. Sem a linha, o primeiro
+    /// `git add -A` levaria o ledger para o branch em uso — e ele existe
+    /// justamente para não mudar com o branch.
+    #[test]
+    fn the_line_merge_backfills_the_pending_ledger() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        std_fs::write(claude.join(".gitignore"), "# mine\nmy-notes/\nworktrees/\n").unwrap();
+
+        assert_eq!(seed_gitignore(&claude, false).unwrap(), SeedOutcome::Updated);
+        let merged = std_fs::read_to_string(claude.join(".gitignore")).unwrap();
+        assert!(merged.lines().any(|l| l.trim() == "pending/"), "pending/ backfilled: {merged}");
+        assert!(merged.starts_with("# mine\nmy-notes/\nworktrees/\n"), "merge-only: {merged}");
+    }
+
     /// The two GATE MARKERS are held back, and the unit's own RECORD is not.
     ///
     /// Both halves are asserted, and the second is the one that makes the test
@@ -3276,6 +3294,9 @@ mod tests {
             (".session/sess-demo/.events/2026-08-19.ndjson", "{}\n"),
             ("agent-memory/mustard-review.md", "# memory\n"),
             ("graph/entities.json", "{}\n"),
+            // `mustard-rt run pending --add` — the agreed-work ledger that lives
+            // outside every unit, so a worktree and the main checkout share it.
+            ("pending/ledger.json", "{\"items\":[]}\n"),
             ("plans/2026-08-19-demo.md", "# plan\n"),
             ("scratch/probe.json", "{}\n"),
             ("worktrees/fix/demo/CLAUDE.md", "# unit\n"),

@@ -9,6 +9,7 @@
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
 use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
+use crate::hooks::observe::clarification_observer::ClarificationObserver;
 use crate::hooks::observe::picker_approval_observer::PickerApprovalObserver;
 use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
@@ -42,7 +43,10 @@ use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
+use crate::hooks::task::spec_doc_present::SpecDocPresent;
+use crate::hooks::task::clarity_check::ClarityCheck;
 use crate::hooks::task::crystallise_nudge::CrystalliseNudge;
+use crate::hooks::task::pending_gate::PendingGate;
 use crate::hooks::task::stop_gate::StopGate;
 use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
@@ -499,6 +503,17 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ApprovalMarkerObserver)),
             },
+            // Gravador de esclarecimentos — na MESMA pergunta, grava pergunta,
+            // resposta escolhida e notas como `clarification` no material da
+            // unidade ativa, sem depender de o assistente registrar. Não
+            // destrava nada, então texto livre também conta. Sem unidade ativa,
+            // nada é gravado. Observer puro, fail-open, nunca bloqueia.
+            Module {
+                id: "clarification_observer",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
+                check: None,
+                observer: Some(Box::new(ClarificationObserver)),
+            },
             // Plan-mode approval recorder — the primary source of the same
             // `<spec>/.approved-by-user` marker. When the user ACCEPTS the
             // plan-mode plan (`ExitPlanMode` succeeds with the plan payload)
@@ -547,6 +562,51 @@ impl Registry {
                 id: "crystallise_nudge",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: Some(Box::new(CrystalliseNudge)),
+                observer: None,
+            },
+            // `pending_gate` — a cobrança de pendências. No `Stop` da sessão
+            // principal depois que uma unidade fechou (a marca que o escritor
+            // de eventos grava em `pipeline.complete` / `pr.merged`), bloqueia
+            // a mensagem final que não cita cada pendência aberta do ledger —
+            // no máximo duas vezes por fechamento. A marca só é consumida
+            // quando a trava LIBERA: o primeiro bloqueio vence, então um
+            // bloqueio dela engolido por um irmão acima deixa a marca, e o
+            // `Stop` seguinte confere de novo. Registrada depois dos irmãos: no
+            // turno do fechamento a spec já está concluída, e os dois acima se
+            // calam.
+            Module {
+                id: "pending_gate",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(PendingGate)),
+                observer: None,
+            },
+            // `spec_doc_present` — a entrega do resumo da spec. No `Stop` da
+            // sessão principal, com uma unidade aberta, remonta o `resumo.html`
+            // e, só quando ele mudou desde a última entrega, mostra ao usuário
+            // as formas de abrir (`systemMessage`); na espera de aprovação, com
+            // tela local e fora de SSH, abre o navegador uma vez por versão
+            // (`MUSTARD_DOC_OPEN=off` desliga). Um `Check` que só devolve
+            // `Allow`/`Inject` — nunca bloqueia. Registrado depois das três
+            // travas do `Stop`, sem reordená-las: um bloqueio delas vence o
+            // `fold` e esta mensagem espera a próxima mudança.
+            Module {
+                id: "spec_doc_present",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(SpecDocPresent)),
+                observer: None,
+            },
+            // `clarity_check` — a medição de clareza. No `Stop` da sessão
+            // principal de um projeto que declarou `tone: didactic`, mede a
+            // resposta contra a regra de tom, guarda os defeitos para a mensagem
+            // seguinte levar ao assistente e registra `assistant.clarity` só com
+            // as contagens. Quando reprova, devolve a nota ao usuário (`Inject`,
+            // que no `Stop` vira `systemMessage`); o `fold` junta os `Inject`, e
+            // a nota sai na mesma mensagem do link do documento. Nunca bloqueia.
+            // Registrado por último no `Stop`, sem reordenar os irmãos.
+            Module {
+                id: "clarity_check",
+                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
+                check: Some(Box::new(ClarityCheck)),
                 observer: None,
             },
             Module {
@@ -791,6 +851,26 @@ mod tests {
     }
 
     #[test]
+    fn ask_user_question_post_tool_use_runs_clarification_observer() {
+        let registry = Registry::new();
+        // Ao lado do gravador de aprovação, na mesma pergunta respondida.
+        let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"));
+        assert!(ids.contains(&"clarification_observer"));
+        assert!(ids.contains(&"approval_marker_observer"));
+        // Nunca no lado Pre, nem numa ferramenta qualquer.
+        assert!(
+            !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
+                .contains(&"clarification_observer")
+        );
+        assert!(
+            !applicable_ids(&registry, Trigger::PostToolUse, Some("Bash"))
+                .contains(&"clarification_observer")
+        );
+        let module = registry.by_id("clarification_observer").expect("registered");
+        assert!(module.check.is_none(), "a pure Observer never carries a verdict");
+    }
+
+    #[test]
     fn stop_gate_is_the_check_on_the_stop_trigger() {
         let registry = Registry::new();
         // `stop_gate` rides `Stop` (any tool / none) alongside the observer.
@@ -808,6 +888,35 @@ mod tests {
     }
 
     #[test]
+    fn spec_doc_present_rides_stop_after_the_three_gates() {
+        let registry = Registry::new();
+        let ids = applicable_ids(&registry, Trigger::Stop, None);
+        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("{id} on Stop"));
+        // Depois das travas, na ordem delas, que não muda.
+        assert!(at("stop_gate") < at("crystallise_nudge"));
+        assert!(at("crystallise_nudge") < at("pending_gate"));
+        assert!(at("pending_gate") < at("spec_doc_present"));
+        // Nunca no `Stop` de um subagente.
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"spec_doc_present"));
+        let module = registry.by_id("spec_doc_present").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    #[test]
+    fn clarity_check_rides_stop_last() {
+        let registry = Registry::new();
+        let ids = applicable_ids(&registry, Trigger::Stop, None);
+        // Depois de todos os irmãos do `Stop`, que seguem na ordem de antes.
+        assert_eq!(ids.last(), Some(&"clarity_check"), "{ids:?}");
+        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("{id} on Stop"));
+        assert!(at("pending_gate") < at("spec_doc_present"));
+        assert!(at("spec_doc_present") < at("clarity_check"));
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"clarity_check"));
+        let module = registry.by_id("clarity_check").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    #[test]
     fn by_id_finds_registered_modules() {
         let registry = Registry::new();
         for id in [
@@ -820,6 +929,7 @@ mod tests {
             "skill_usage_observer",
             "tool_result_observer",
             "approval_marker_observer",
+            "clarification_observer",
             "plan_approval_observer",
             "size_gate",
             "secret_files",
@@ -844,6 +954,9 @@ mod tests {
             "wave_start_observer",
             "wave_complete_observer",
             "stop_gate",
+            "pending_gate",
+            "spec_doc_present",
+            "clarity_check",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

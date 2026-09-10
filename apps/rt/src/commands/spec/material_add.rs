@@ -31,6 +31,30 @@
 //! An item already present is not appended twice. A conversation revisits the
 //! same decision, and a material file that accumulates duplicates is one nobody
 //! reads to the end.
+//!
+//! ## Resumo, riscos e esclarecimentos
+//!
+//! Três tipos a mais alimentam o documento que o usuário lê antes de aprovar:
+//!
+//! - `summary` — o resumo da conversa, escrito pelo assistente. É UM texto só
+//!   (`--subject`), e o mais recente substitui o anterior: um resumo descreve a
+//!   conversa inteira até aqui, então dois resumos lado a lado seriam duas
+//!   versões da mesma coisa.
+//! - `risk` — `--subject` é o risco, `--detail` o que o atenua, e
+//!   `--severity alta|media|baixa` é obrigatório: um risco sem peso não diz ao
+//!   leitor se ele deve parar para ler.
+//! - `clarification` — `--subject` é a pergunta, `--detail` a resposta. O
+//!   observador de `AskUserQuestion` grava por esta mesma porta, com as notas
+//!   do usuário quando existem.
+//!
+//! - `flow` — o antes e depois da mudança, em texto: `--subject` é o título,
+//!   `--detail` o diagrama. Como o resumo, o mais recente substitui o anterior:
+//!   é UM retrato da mudança, redesenhado conforme a conversa avança. O recuo
+//!   do diagrama é preservado — só as linhas em branco das pontas e o espaço
+//!   do fim saem —, porque um diagrama em texto alinha pelas colunas.
+//!
+//! Os campos novos só aparecem no arquivo quando carregam algo, então um
+//! material que não os usa continua com os mesmos bytes de antes.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -40,23 +64,23 @@ pub(crate) const MATERIAL_FILE: &str = "spec-material.json";
 
 /// One term and what it means in THIS spec.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Definition {
-    term: String,
-    meaning: String,
+pub(crate) struct Definition {
+    pub(crate) term: String,
+    pub(crate) meaning: String,
 }
 
 /// One decision and the reason it was taken.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Decision {
-    decision: String,
-    reason: String,
+pub(crate) struct Decision {
+    pub(crate) decision: String,
+    pub(crate) reason: String,
 }
 
 /// One verified statement plus the file that makes it checkable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Finding {
-    statement: String,
-    file: String,
+pub(crate) struct Finding {
+    pub(crate) statement: String,
+    pub(crate) file: String,
     /// The line, when the claim is line-precise.
     ///
     /// `u32`, matching `spec_draft`'s own `Finding` exactly. It was `u64` for
@@ -66,7 +90,72 @@ struct Finding {
     /// hand-edited JSON. Two spellings of one contract is how a writer lands
     /// material where no reader looks — the type is half of that contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    line: Option<u32>,
+    pub(crate) line: Option<u32>,
+}
+
+/// O peso de um risco. Vocabulário fechado, e é ESTE enum que o `spec-draft`
+/// lê: uma grafia só para o escritor e o leitor, para que um valor aceito aqui
+/// nunca seja um que o carregador falhando fechado recusa.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Severity {
+    Alta,
+    Media,
+    Baixa,
+}
+
+impl Severity {
+    /// Lê o `--severity`. `média` com acento é aceito e gravado sem ele, porque
+    /// o arquivo guarda a grafia canônica; qualquer outro valor é `None`.
+    #[must_use]
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_lowercase().as_str() {
+            "alta" => Some(Self::Alta),
+            "media" | "média" => Some(Self::Media),
+            "baixa" => Some(Self::Baixa),
+            _ => None,
+        }
+    }
+
+    /// A grafia canônica — a mesma que o serde grava.
+    #[must_use]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Alta => "alta",
+            Self::Media => "media",
+            Self::Baixa => "baixa",
+        }
+    }
+}
+
+/// Um risco, o que o atenua e o seu peso.
+///
+/// O campo `risk` repete o nome do tipo porque o nome do campo É a chave do
+/// JSON que o `spec-draft` lê — o mesmo desenho de `Decision { decision }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::struct_field_names)]
+pub(crate) struct Risk {
+    pub(crate) risk: String,
+    pub(crate) mitigation: String,
+    pub(crate) severity: Severity,
+}
+
+/// Uma pergunta feita ao usuário e a resposta que ele deu. `notes` é o texto
+/// livre que o usuário acrescentou à escolha, quando acrescentou.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Clarification {
+    pub(crate) question: String,
+    pub(crate) answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) notes: Option<String>,
+}
+
+/// O antes e depois da mudança: um título e o diagrama em texto, que o
+/// documento da spec mostra em bloco monoespaçado.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Flow {
+    pub(crate) title: String,
+    pub(crate) diagram: String,
 }
 
 /// The accumulating document. Field names and shape mirror what
@@ -78,13 +167,39 @@ struct Finding {
 /// drift with nothing detecting it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Material {
+pub(crate) struct Material {
     #[serde(default)]
-    definitions: Vec<Definition>,
+    pub(crate) definitions: Vec<Definition>,
     #[serde(default)]
-    decisions: Vec<Decision>,
+    pub(crate) decisions: Vec<Decision>,
     #[serde(default)]
-    findings: Vec<Finding>,
+    pub(crate) findings: Vec<Finding>,
+    // Os campos novos somem do arquivo quando vazios: um material que não os
+    // usa sai byte a byte igual ao de antes deles existirem.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) risks: Vec<Risk>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) clarifications: Vec<Clarification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) flow: Option<Flow>,
+}
+
+/// Lê o material de `spec_dir` para EXIBIR — o resumo da spec em HTML.
+///
+/// Pelo mesmo tipo que esta porta grava, para que o documento nunca leia uma
+/// grafia do contrato diferente da que o escritor produz. `None` quando o
+/// arquivo falta, não abre ou não parseia: quem só mostra não conserta, e a
+/// recusa com remédio é deste `material-add` (e do `spec-draft`), que falham
+/// fechados na hora de gravar.
+#[must_use]
+pub(crate) fn read_material(spec_dir: &Path) -> Option<Material> {
+    let raw = std::fs::read_to_string(spec_dir.join(MATERIAL_FILE)).ok()?;
+    if raw.trim().is_empty() {
+        return Some(Material::default());
+    }
+    serde_json::from_str(&raw).ok()
 }
 
 /// What the caller is recording.
@@ -93,6 +208,10 @@ pub enum Kind {
     Definition,
     Decision,
     Finding,
+    Risk,
+    Clarification,
+    Summary,
+    Flow,
 }
 
 impl Kind {
@@ -104,6 +223,10 @@ impl Kind {
             "definition" => Some(Self::Definition),
             "decision" => Some(Self::Decision),
             "finding" => Some(Self::Finding),
+            "risk" => Some(Self::Risk),
+            "clarification" => Some(Self::Clarification),
+            "summary" => Some(Self::Summary),
+            "flow" => Some(Self::Flow),
             _ => None,
         }
     }
@@ -122,6 +245,11 @@ pub struct MaterialAddOpts {
     pub detail: String,
     /// A finding's line number, when the claim is line-precise.
     pub line: Option<u32>,
+    /// O peso de um `risk` (`alta|media|baixa`). Obrigatório para risco.
+    pub severity: Option<String>,
+    /// As notas livres de um `clarification` — preenchidas pelo observador de
+    /// `AskUserQuestion`, que é quem as vê.
+    pub notes: Option<String>,
 }
 
 /// The JSON report. Deterministic: repo-relative path, counts, no timestamp.
@@ -136,6 +264,12 @@ pub struct MaterialAddReport {
     pub definitions: usize,
     pub decisions: usize,
     pub findings: usize,
+    pub risks: usize,
+    pub clarifications: usize,
+    /// `true` quando o material guarda um resumo da conversa.
+    pub summary: bool,
+    /// `true` quando o material guarda o antes e depois da mudança.
+    pub flow: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +286,10 @@ impl MaterialAddReport {
             definitions: 0,
             decisions: 0,
             findings: 0,
+            risks: 0,
+            clarifications: 0,
+            summary: false,
+            flow: false,
             error: Some(error.to_string()),
             remedy: Some(remedy.to_string()),
         }
@@ -165,15 +303,27 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
         return MaterialAddReport::refused(
             &opts.spec,
             "unknown_kind",
-            "--kind takes exactly one of: definition, decision, finding",
+            "--kind takes exactly one of: definition, decision, finding, risk, clarification, \
+             summary, flow",
         );
     };
     // BOTH halves, always. `spec-draft`'s own loader refuses an entry missing
     // the second one, so accepting it here would only move the refusal to a
     // moment when the operator can no longer supply what is missing.
     let subject = opts.subject.trim();
-    let detail = opts.detail.trim();
-    if subject.is_empty() || detail.is_empty() {
+    // O diagrama de um `flow` alinha pelas colunas: o recuo da primeira linha
+    // faz parte do desenho, então só saem as linhas em branco das pontas.
+    let detail = if kind == Kind::Flow {
+        diagram_text(&opts.detail)
+    } else {
+        opts.detail.trim()
+    };
+    // O resumo é a exceção: é um texto só, então só a primeira metade existe.
+    let incomplete = match kind {
+        Kind::Summary => subject.is_empty(),
+        _ => subject.is_empty() || detail.is_empty(),
+    };
+    if incomplete {
         return MaterialAddReport::refused(
             &opts.spec,
             "incomplete_entry",
@@ -184,9 +334,44 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
                                    reader cannot use",
                 Kind::Finding => "a finding needs the statement AND the file it was checked \
                                   against — a statement with no file is an opinion",
+                Kind::Risk => "a risk needs the risk AND what mitigates it — a risk with no \
+                               mitigation only tells the reader to worry",
+                Kind::Clarification => "a clarification needs the question AND the answer it got",
+                Kind::Summary => "a summary needs its text in --subject",
+                Kind::Flow => "a flow needs its title in --subject AND the before/after \
+                               diagram, as plain text, in --detail",
             },
         );
     }
+    // Um resumo com `--detail` perderia metade do texto em silêncio, então a
+    // chamada é recusada em vez de gravar só o `--subject`.
+    if kind == Kind::Summary && !detail.is_empty() {
+        return MaterialAddReport::refused(
+            &opts.spec,
+            "unexpected_detail",
+            "a summary is ONE text — pass all of it in --subject and drop --detail",
+        );
+    }
+    let severity = if kind == Kind::Risk {
+        let Some(raw) = opts.severity.as_deref().filter(|s| !s.trim().is_empty()) else {
+            return MaterialAddReport::refused(
+                &opts.spec,
+                "missing_severity",
+                "a risk needs --severity alta|media|baixa — a risk with no weight does not tell \
+                 the reader whether to stop and read it",
+            );
+        };
+        let Some(parsed) = Severity::parse(raw) else {
+            return MaterialAddReport::refused(
+                &opts.spec,
+                "unknown_severity",
+                "--severity takes exactly one of: alta, media, baixa",
+            );
+        };
+        Some(parsed)
+    } else {
+        None
+    };
 
     let dir = mustard_core::ClaudePaths::spec_dir_or_unchecked(root, &opts.spec);
     if !dir.is_dir() {
@@ -256,6 +441,49 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
             };
             push_unique(&mut doc.findings, item)
         }
+        Kind::Risk => {
+            // `severity` é sempre `Some` aqui — o bloco acima recusou o resto.
+            let Some(severity) = severity else {
+                return MaterialAddReport::refused(
+                    &opts.spec,
+                    "missing_severity",
+                    "a risk needs --severity alta|media|baixa",
+                );
+            };
+            let item = Risk {
+                risk: subject.to_string(),
+                mitigation: detail.to_string(),
+                severity,
+            };
+            push_unique(&mut doc.risks, item)
+        }
+        Kind::Clarification => {
+            let item = Clarification {
+                question: subject.to_string(),
+                answer: detail.to_string(),
+                notes: opts
+                    .notes
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string),
+            };
+            push_unique(&mut doc.clarifications, item)
+        }
+        Kind::Summary => {
+            // O mais recente SUBSTITUI o anterior; o mesmo texto de novo não
+            // conta como mudança.
+            let grew = doc.summary.as_deref() != Some(subject);
+            doc.summary = Some(subject.to_string());
+            grew
+        }
+        Kind::Flow => {
+            // Como o resumo: o mais recente substitui o anterior.
+            let item = Flow { title: subject.to_string(), diagram: detail.to_string() };
+            let grew = doc.flow.as_ref() != Some(&item);
+            doc.flow = Some(item);
+            grew
+        }
     };
 
     let body = match serde_json::to_string_pretty(&doc) {
@@ -280,9 +508,29 @@ pub fn add(root: &Path, opts: &MaterialAddOpts) -> MaterialAddReport {
         definitions: doc.definitions.len(),
         decisions: doc.decisions.len(),
         findings: doc.findings.len(),
+        risks: doc.risks.len(),
+        clarifications: doc.clarifications.len(),
+        summary: doc.summary.is_some(),
+        flow: doc.flow.is_some(),
         error: None,
         remedy: None,
     }
+}
+
+/// O diagrama como o autor desenhou: sem as linhas em branco das pontas e sem
+/// espaço no fim, mas com o recuo de cada linha — inclusive o da primeira.
+fn diagram_text(raw: &str) -> &str {
+    let trimmed = raw.trim_end();
+    // Pula as linhas em branco do começo, sem tocar no recuo da primeira linha
+    // que tem conteúdo.
+    let mut start = 0;
+    for line in trimmed.split_inclusive('\n') {
+        if !line.trim().is_empty() {
+            break;
+        }
+        start += line.len();
+    }
+    &trimmed[start..]
 }
 
 /// Append unless an identical entry is already there. Returns whether it grew.
@@ -329,6 +577,8 @@ mod tests {
             subject: subject.to_string(),
             detail: detail.to_string(),
             line: None,
+            severity: None,
+            notes: None,
         }
     }
 
@@ -359,6 +609,108 @@ mod tests {
         // A finding with no line carries no key at all, rather than a null the
         // reader would have to special-case.
         assert!(doc["findings"][0].get("line").is_none());
+    }
+
+    /// AC-2 — resumo, risco e esclarecimento ficam gravados, e um resumo novo
+    /// SUBSTITUI o anterior em vez de somar um segundo.
+    #[test]
+    fn material_add_accepts_summary_risk_and_clarification() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+
+        let mut risk = opts("risk", "o navegador abre sem pedir", "um interruptor desliga");
+        risk.severity = Some("Alta".to_string());
+        assert!(add(dir.path(), &risk).ok);
+        let mut clarification = opts("clarification", "Abrir sozinho?", "Só na aprovação");
+        clarification.notes = Some("  uma vez por versão  ".to_string());
+        assert!(add(dir.path(), &clarification).ok);
+
+        let first = add(dir.path(), &opts("summary", "primeiro resumo", ""));
+        assert!(first.ok && first.added && first.summary, "{first:?}");
+        let second = add(dir.path(), &opts("summary", "segundo resumo", ""));
+        assert!(second.ok && second.added, "a new summary is a change: {second:?}");
+        let again = add(dir.path(), &opts("summary", "segundo resumo", ""));
+        assert!(again.ok && !again.added, "the same summary again is not: {again:?}");
+        assert_eq!((again.risks, again.clarifications), (1, 1));
+
+        let raw = std::fs::read_to_string(
+            dir.path().join(".claude/spec/demo").join(MATERIAL_FILE),
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(doc["summary"], "segundo resumo", "the newest summary replaces the old");
+        assert_eq!(doc["risks"][0]["risk"], "o navegador abre sem pedir");
+        assert_eq!(doc["risks"][0]["mitigation"], "um interruptor desliga");
+        assert_eq!(doc["risks"][0]["severity"], "alta", "stored in its canonical spelling");
+        assert_eq!(doc["clarifications"][0]["question"], "Abrir sozinho?");
+        assert_eq!(doc["clarifications"][0]["answer"], "Só na aprovação");
+        assert_eq!(doc["clarifications"][0]["notes"], "uma vez por versão");
+    }
+
+    /// Um risco sem peso, com peso desconhecido, ou um resumo com `--detail`
+    /// são recusados pelo nome — nada é gravado pela metade.
+    #[test]
+    fn a_risk_without_a_known_severity_or_a_split_summary_is_refused() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+        let bare = opts("risk", "risco", "atenuante");
+        assert_eq!(add(dir.path(), &bare).error.as_deref(), Some("missing_severity"));
+        let mut odd = opts("risk", "risco", "atenuante");
+        odd.severity = Some("grave".to_string());
+        assert_eq!(add(dir.path(), &odd).error.as_deref(), Some("unknown_severity"));
+        assert_eq!(
+            add(dir.path(), &opts("summary", "resumo", "segunda metade")).error.as_deref(),
+            Some("unexpected_detail"),
+        );
+        assert_eq!(
+            add(dir.path(), &opts("summary", "  ", "")).error.as_deref(),
+            Some("incomplete_entry"),
+        );
+        assert!(!dir.path().join(".claude/spec/demo").join(MATERIAL_FILE).exists());
+    }
+
+    /// A material with none of the new kinds keeps the bytes it had before
+    /// they existed — the new keys are absent, not empty.
+    #[test]
+    fn a_material_without_the_new_kinds_carries_none_of_their_keys() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+        assert!(add(dir.path(), &opts("decision", "escolha", "razao")).ok);
+        let raw = std::fs::read_to_string(
+            dir.path().join(".claude/spec/demo").join(MATERIAL_FILE),
+        )
+        .unwrap();
+        for key in ["risks", "clarifications", "summary", "flow"] {
+            assert!(!raw.contains(key), "`{key}` must not appear when unused:\n{raw}");
+        }
+    }
+
+    /// O `flow` guarda título e diagrama, o mais novo substitui o anterior, o
+    /// recuo do desenho sobrevive e um fluxo sem diagrama é recusado.
+    #[test]
+    fn material_add_records_the_newest_flow_with_its_indentation() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "demo");
+        let diagram = "\n\n   antes: terminal\n     |\n   depois: página\n\n";
+        let first = add(dir.path(), &opts("flow", "Entrega", "velho"));
+        assert!(first.ok && first.added && first.flow, "{first:?}");
+        let second = add(dir.path(), &opts("flow", "Entrega do documento", diagram));
+        assert!(second.ok && second.added, "a new flow is a change: {second:?}");
+        let again = add(dir.path(), &opts("flow", "Entrega do documento", diagram));
+        assert!(again.ok && !again.added, "the same flow again is not: {again:?}");
+
+        let raw = std::fs::read_to_string(
+            dir.path().join(".claude/spec/demo").join(MATERIAL_FILE),
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(doc["flow"]["title"], "Entrega do documento", "the newest replaces");
+        assert_eq!(doc["flow"]["diagram"], "   antes: terminal\n     |\n   depois: página");
+
+        assert_eq!(
+            add(dir.path(), &opts("flow", "Sem desenho", "  \n ")).error.as_deref(),
+            Some("incomplete_entry"),
+        );
     }
 
     /// BOTH halves, always — the same refusal `spec-draft`'s loader makes, taken

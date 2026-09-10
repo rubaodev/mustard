@@ -1981,8 +1981,8 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
 /// Two claims used to be wrong in the prose, and both were load-bearing. The
 /// router said sibling hooks share one ceiling (they do not — measured
 /// 2026-08-25 with two 6,000-character siblings, both intact), and it attributed
-/// that limit to Claude Code rather than to Mustard's own last-writer-wins
-/// dispatcher fold. A maintainer reading either sentence would re-derive the
+/// that limit to Claude Code rather than to Mustard's own dispatcher, which
+/// makes one response of each invocation. A maintainer reading either sentence would re-derive the
 /// two-event split this unit undid.
 #[test]
 fn router_teaches_the_self_healing_delivery() {

@@ -24,6 +24,11 @@ settings.local.json
 # Work-unit worktrees (created by `work-unit-open`, pruned by git-settle).
 worktrees/
 
+# Lista de pendências fora de qualquer unidade (`mustard-rt run pending`). Fica
+# fora do git de propósito: versionada, mudaria com o branch em uso, e uma
+# unidade cortada antes do item não o veria.
+pending/
+
 # Plan-mode plan files. The peer of `scratch/` below — the write gate treats
 # both as the harness's carve-out, and neither is code. It was covered only by
 # the clone-local exclude, which does not travel.

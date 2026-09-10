@@ -48,7 +48,9 @@ use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
 mod capabilities;
-mod prompt_ref;
+// `pub(crate)` para o resumo da spec carimbar o documento com o mesmo
+// `fnv1a64` que nomeia o arquivo de despacho — um hash estável só, no crate.
+pub(crate) mod prompt_ref;
 // `pub(crate)` so the `/mustard:pr` door's review step reads a spec's declared
 // files through the SAME parser the dispatch prompt uses — a second reader of
 // `## Files` is a second spelling of the section, and the two would drift.

@@ -61,10 +61,11 @@ NAMES a paragraph enumerates and the NUMBER it claims, against the seed.
 ## Why the internal fold is not the ceiling
 
 `prompt_submit_inject.rs` folds every injectable of one event into a single
-`Verdict::Inject`, because Mustard's own dispatcher is last-writer-wins: two Injects on the
-same invocation would drop one. **That limit is Mustard's, not Claude Code's.** Registering
-one sibling hook per injectable sidesteps it without rewriting the dispatcher — each hook
-is its own invocation, with its own verdict and its own ceiling.
+`Verdict::Inject`, and Mustard's own dispatcher joins every `Inject` of one invocation into
+one response: whatever one invocation carries shares ONE 10,000-character ceiling.
+**Sharing that ceiling is Mustard's doing, not Claude Code's.** Registering one sibling hook
+per injectable gives each its own — each hook is its own invocation, with its own verdict
+and its own ceiling.
 
 Do not write in a shipped template that Claude Code overwrites sibling context. It does
 not; it combines.

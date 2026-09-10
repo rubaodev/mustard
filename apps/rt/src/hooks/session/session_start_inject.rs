@@ -37,6 +37,10 @@
 //!   running harness, so a session on an old plugin reads as aligned.
 //! - pending-prune advisory — delivered work units still carrying a live
 //!   branch get one line naming what is owed. Advisory, never blocking.
+//! - aviso de pendências — o trabalho combinado que segue aberto no ledger
+//!   (`.claude/pending/ledger.json`) entra por último, uma linha com id e
+//!   título de cada item: uma sessão nova abre sabendo o que ficou combinado.
+//!   Nunca bloqueia; a cobrança dura mora no `pending_gate` do `Stop`.
 //!
 //! ## Contract shape
 //!
@@ -455,11 +459,20 @@ fn session_start_core(
     // alive. The prune command already existed and worked; what was missing
     // was anyone SAYING it was owed, so six units piled up unnoticed.
     let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
-    // ONE composed Inject (the dispatcher fold is last-writer-wins):
-    // terrain first, injectables after, the advisories last — blank-line
-    // separated.
-    let parts: Vec<String> =
-        [terrain, injected, drift, stale, behind, prune].into_iter().flatten().collect();
+    // Aviso de pendências: o que foi combinado e segue aberto. Um combinado que
+    // só existe na memória da conversa se perde quando ela acaba; relido aqui,
+    // ele atravessa a sessão.
+    let pending = pending_notice(Path::new(&cwd), terrain_lang);
+    // ONE composed Inject. This is the only `Check` that injects on
+    // `SessionStart`, so the order below is the order the window reads (the
+    // dispatcher fold joins Injects in registry order and has nothing to join
+    // here): terrain first, injectables after, the advisories last —
+    // blank-line separated. All of it is ONE response under the 10,000
+    // character ceiling, which is why the prompt family stays out (above).
+    let parts: Vec<String> = [terrain, injected, drift, stale, behind, prune, pending]
+        .into_iter()
+        .flatten()
+        .collect();
     Ok(if parts.is_empty() {
         Verdict::Allow
     } else {
@@ -614,6 +627,43 @@ pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option
         mustard_core::translate("prune.pending.notice", lang)
             .replace("{count}", &pending.len().to_string())
             .replace("{branches}", &branches),
+    )
+}
+
+/// Quantas pendências o aviso escreve antes de só contar o resto. Uma lista
+/// mais longa que isso deixa de ser lida — o mesmo limite de usabilidade que
+/// [`PRUNE_NOTICE_NAMES`] impõe às branches; o `(+N)` diz que há mais.
+const PENDING_NOTICE_ITEMS: usize = 6;
+
+/// Uma linha com as pendências abertas: id e título, no máximo
+/// [`PENDING_NOTICE_ITEMS`] e depois `(+N)`.
+///
+/// No molde do [`prune_pending_notice`] — um construtor, e cada leitor fala do
+/// item do mesmo jeito: a grafia `P-1 "título"` vem de
+/// [`format_pending_items`](crate::commands::event::pending::format_pending_items),
+/// a mesma que a cobrança do `Stop` e a abertura da unidade usam.
+///
+/// `None` para projeto sem `mustard.json` (nunca instalado — o harness não o
+/// importuna) e quando não há nada aberto. Um ledger ilegível também cala: quem
+/// recusa e explica o conserto é `run pending`.
+///
+/// O texto sai do catálogo (`pending.notice`), no idioma do projeto — o mesmo
+/// que o aviso de poda ao lado usa.
+pub(crate) fn pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
+    if !mustard_core::ProjectConfig::exists(root) {
+        return None;
+    }
+    let open = crate::commands::event::pending::open_pending(root);
+    if open.is_empty() {
+        return None;
+    }
+    Some(
+        mustard_core::translate("pending.notice", lang)
+            .replace("{count}", &open.len().to_string())
+            .replace(
+                "{items}",
+                &crate::commands::event::pending::format_pending_items(&open, PENDING_NOTICE_ITEMS),
+            ),
     )
 }
 
@@ -844,6 +894,72 @@ mod tests {
             notice.contains("git-settle"),
             "points at the command that was never called: {notice}"
         );
+    }
+
+    // --- aviso de pendências -----------------------------------------------
+
+    /// Grava uma pendência aberta no ledger de `root`, pelo mesmo passe de
+    /// `run pending`.
+    fn add_pending(root: &Path, title: &str) {
+        let out = crate::commands::event::pending::pending_at(
+            &crate::commands::event::pending::PendingOpts {
+                root: root.to_path_buf(),
+                add: true,
+                title: Some(title.to_string()),
+                detail: Some("combinado na conversa".to_string()),
+                close: None,
+                drop: None,
+                reason: None,
+            },
+        );
+        assert_eq!(out["ok"], json!(true), "seed: {out}");
+    }
+
+    /// AC-4 — a sessão que abre com pendências abertas recebe, no contexto
+    /// injetado, cada uma com id e título.
+    #[test]
+    fn session_start_lists_open_pending_items() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("mustard.json"),
+            format!(r#"{{"version":"{}"}}"#, mustard_core::harness_version()),
+        )
+        .unwrap();
+        add_pending(root, "HTML padrao da spec");
+        add_pending(root, "Humanize");
+
+        let verdict =
+            session_start_core(&session_input("s-pend"), &ctx(root.to_str().unwrap()), NO_REGISTRY)
+                .unwrap();
+        let Verdict::Inject { context } = verdict else {
+            panic!("open pending items must reach the session: {verdict:?}");
+        };
+        assert!(context.contains(r#"P-1 "HTML padrao da spec""#), "id + title of P-1: {context}");
+        assert!(context.contains(r#"P-2 "Humanize""#), "id + title of P-2: {context}");
+    }
+
+    /// O aviso escreve no máximo seis itens e conta o resto; sem instalação ou
+    /// sem nada aberto, cala.
+    #[test]
+    fn pending_notice_caps_the_list_and_stays_quiet_when_empty() {
+        let lang = SupportedLocale::default();
+        let bare = tempdir().unwrap();
+        assert_eq!(pending_notice(bare.path(), lang), None, "not installed");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        assert_eq!(pending_notice(root, lang), None, "nothing open");
+
+        for n in 1..=8 {
+            add_pending(root, &format!("trabalho {n}"));
+        }
+        let notice = pending_notice(root, lang).expect("eight open items");
+        assert!(notice.contains("(8)"), "carries the count: {notice}");
+        assert!(notice.contains(r#"P-6 "trabalho 6""#), "the sixth is named: {notice}");
+        assert!(!notice.contains("P-7"), "past the cap only the count shows: {notice}");
+        assert!(notice.contains("(+2)"), "the rest is counted: {notice}");
     }
 
     // --- harness-init parity -----------------------------------------------
