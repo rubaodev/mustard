@@ -34,7 +34,10 @@
 //!
 //! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas
 //! que o `worktree-gc` recolhe pelo dono vivo ou morto, e duas portas
-//! apagando o mesmo alvo com critérios diferentes não se somam.
+//! apagando o mesmo alvo com critérios diferentes não se somam. Pelo mesmo
+//! motivo, QUALQUER worktree registrada — pasta cujo `.git` é um arquivo, nela
+//! ou numa filha direta — fica de fora e o `--path` a recusa: ela pode ter
+//! trabalho não commitado, e quem a remove é o `git worktree remove`.
 //!
 //! ## Modos
 //!
@@ -60,7 +63,9 @@
 //! ## Saída
 //!
 //! JSON pretty, campos em ordem de declaração e listas ordenadas por caminho.
-//! Exit 0 sempre, exceto `--path` recusado (exit 1).
+//! Exit 0 sempre, exceto recusa (exit 1): `--path` recusado, ou — em qualquer
+//! modo, inclusive a lista e o `--apply` — um diretório temporário inseguro
+//! (a raiz do disco, a home, ou uma pasta acima da home).
 
 use crate::shared::context;
 use crate::shared::events::economy;
@@ -402,6 +407,19 @@ fn is_build_target(dir: &Path) -> bool {
             || dir.join("release").is_dir())
 }
 
+/// Uma worktree registrada no git: o `.git` dela é um ARQUIVO
+/// (`gitdir: <repo>/.git/worktrees/<nome>`), não uma pasta como num clone.
+/// Conferido sem seguir link (`symlink_metadata`): `.git` que não é uma pasta
+/// de verdade — arquivo ou link — conta como worktree, porque na dúvida não se
+/// apaga. Olha a pasta e as filhas diretas, a mesma profundidade do filtro 2
+/// (o clone de um `mktemp -d` fica uma pasta abaixo).
+fn holds_linked_worktree(dir: &Path) -> bool {
+    let linked = |d: &Path| {
+        std::fs::symlink_metadata(d.join(".git")).is_ok_and(|m| !m.file_type().is_dir())
+    };
+    linked(dir) || child_dirs(dir).iter().any(|child| linked(child))
+}
+
 /// Filtro 2: a pasta — ou uma filha direta — é cópia do projeto, tem um
 /// `target/` de compilação, ou ela mesma é um `target/`.
 fn holds_scratch_build(dir: &Path) -> bool {
@@ -660,7 +678,10 @@ pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf
 ///   do temp, nada que passe aqui é a home nem uma pasta acima dela;
 /// - a entrada do topo do temp é do usuário atual ([`owned_by`]);
 /// - não é um `mustard-removal-*` (é do `worktree-gc`);
-/// - dentro de `claude-*/`, só vale o que está abaixo de um `scratchpad/`.
+/// - dentro de `claude-*/`, só vale o que está abaixo de um `scratchpad/`;
+/// - não é nem contém uma worktree registrada no git
+///   ([`holds_linked_worktree`]): apagá-la perderia o que não foi commitado e
+///   deixaria o registro apontando para o nada. Um clone (`.git/` pasta) passa.
 fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf, String> {
     let dir = std::fs::canonicalize(target)
         .map_err(|e| format!("refused: cannot resolve {}: {e}", target.display()))?;
@@ -703,6 +724,12 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
     let top = temp.join(parts[0]);
     if !std::fs::symlink_metadata(&top).is_ok_and(|m| owned_by(&m, owner_uid)) {
         return Err(format!("refused: {} is not owned by the current user", top.display()));
+    }
+    if holds_linked_worktree(&dir) {
+        return Err(format!(
+            "refused: {} is a registered git worktree — use git worktree remove",
+            dir.display()
+        ));
     }
     Ok(dir)
 }
@@ -1196,6 +1223,55 @@ mod tests {
         assert!(owned_by(&meta, Some(me)));
         assert!(!owned_by(&meta, Some(me.wrapping_add(1))));
         assert!(!owned_by(&meta, None));
+    }
+
+    /// AC-9 — uma worktree registrada no git (`.git` ARQUIVO) nunca é tocada:
+    /// nem listada, nem apagada pelo `--apply`, e o `--path` a recusa — seja a
+    /// candidata, seja uma filha direta dela, seja no `scratchpad/` de uma
+    /// sessão antiga (o caso medido nesta máquina). O clone ao lado, com
+    /// `.git/` pasta, continua candidato.
+    #[test]
+    fn scratch_gc_never_touches_a_registered_worktree() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let tmp = roots.temp_root.clone();
+        let worktree = |dir: &Path| {
+            project_copy(dir);
+            fs::write(dir.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        };
+
+        let wt = tmp.join("tmp.wt");
+        worktree(&wt);
+        let nested = tmp.join("tmp.nested-wt");
+        worktree(&nested.join("mustard"));
+        let in_session = tmp.join("claude-1000").join("-home-x-proj").join("sess-antiga").join(SCRATCHPAD_DIR).join("wt");
+        worktree(&in_session);
+        let clone = tmp.join("tmp.clone");
+        project_copy(&clone);
+        fs::create_dir_all(clone.join(".git")).unwrap();
+        fs::write(clone.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        backdate_tree(&tmp, 35);
+
+        // A lista: só o clone.
+        let (report, _) = gc(&roots, false);
+        let listed: Vec<&str> = report.candidates.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(listed, vec![clone.display().to_string().as_str()], "only the clone is listed");
+
+        // O `--apply`: só o clone sai; as worktrees ficam com o `.git` intacto.
+        let (report, _) = gc(&roots, true);
+        assert_eq!(report.removed, vec![clone.display().to_string()]);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(!clone.exists(), "the clone is still a candidate and goes");
+        for dir in [&wt, &nested.join("mustard"), &in_session] {
+            assert!(dir.join(".git").is_file(), "{} survives --apply", dir.display());
+        }
+
+        // O `--path`: recusado, com o caminho de saída certo no motivo.
+        for dir in [&wt, &nested, &in_session] {
+            let err = remove_path(dir, &roots).unwrap_err();
+            assert!(err.contains("registered git worktree — use git worktree remove"), "{err}");
+        }
+        assert!(wt.join("Cargo.toml").exists() && in_session.join("Cargo.toml").exists());
     }
 
     #[test]
