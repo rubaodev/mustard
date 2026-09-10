@@ -1136,6 +1136,21 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
         }
 
+        // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
+        // uma linha curta que o usuário lê e o assistente recebe para corrigir.
+        // Sem parênteses: o tom técnico os apagaria. `{words}`, `{opening}`,
+        // `{acronym}`, `{term}`, `{lines}` e `{limit}` vêm do chamador.
+        ("clarity.long_sentence", Locale::PtBr) => "frase com {words} palavras: \"{opening}…\"",
+        ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
+        ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
+        ("clarity.unexpanded_acronym", Locale::EnUs) => "{acronym} without its full words",
+        ("clarity.unexplained_term", Locale::PtBr) => "{term} usado sem tradução",
+        ("clarity.unexplained_term", Locale::EnUs) => "{term} used without a translation",
+        ("clarity.too_long", Locale::PtBr) => {
+            "resposta com {lines} linhas de texto; o limite é {limit}"
+        }
+        ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines of prose; the limit is {limit}",
+
         // Fail-open: unknown key returns the key itself so callers always have
         // *something* to render. This is what `karpathy-guidelines` calls a
         // "safe default" — never panic on a typo in a hook.
@@ -1565,6 +1580,26 @@ mod tests {
         }
         for key in ["deliver.macos", "deliver.linux"] {
             assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
+        }
+    }
+
+    /// Os defeitos de clareza saem do catálogo nos dois idiomas, cada um com as
+    /// vagas que o medidor preenche.
+    #[test]
+    fn i18n_translates_clarity_defect_keys() {
+        for (key, slots) in [
+            ("clarity.long_sentence", &["{words}", "{opening}"][..]),
+            ("clarity.unexpanded_acronym", &["{acronym}"][..]),
+            ("clarity.unexplained_term", &["{term}"][..]),
+            ("clarity.too_long", &["{lines}", "{limit}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
         }
     }
 
