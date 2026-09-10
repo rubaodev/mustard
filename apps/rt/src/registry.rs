@@ -551,11 +551,15 @@ impl Registry {
                 observer: None,
             },
             // `pending_gate` — a cobrança de pendências. No `Stop` da sessão
-            // principal do turno em que uma unidade fechou (a marca que o
-            // escritor de eventos grava em `pipeline.complete` / `pr.merged`),
-            // bloqueia UMA vez a mensagem final que não cita cada pendência
-            // aberta do ledger. Registrada depois dos irmãos: no turno do
-            // fechamento a spec já está concluída, e os dois acima se calam.
+            // principal depois que uma unidade fechou (a marca que o escritor
+            // de eventos grava em `pipeline.complete` / `pr.merged`), bloqueia
+            // a mensagem final que não cita cada pendência aberta do ledger —
+            // no máximo duas vezes por fechamento. A marca só é consumida
+            // quando a trava LIBERA: o primeiro bloqueio vence, então um
+            // bloqueio dela engolido por um irmão acima deixa a marca, e o
+            // `Stop` seguinte confere de novo. Registrada depois dos irmãos: no
+            // turno do fechamento a spec já está concluída, e os dois acima se
+            // calam.
             Module {
                 id: "pending_gate",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],

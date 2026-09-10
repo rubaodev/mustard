@@ -840,27 +840,59 @@ pub(crate) const UNIT_CLOSURE_EVENTS: &[&str] =
 /// `pr-merge` e o `gh pr merge` visto pelo `pr_detect`. Uma marca por gravador
 /// esqueceria o próximo. Sessão placeholder não recebe marca: nenhum gancho a
 /// leria. Falha de IO é engolida — o evento já foi gravado.
+///
+/// A marca carrega quantas vezes a cobrança já bloqueou por ESTE fechamento
+/// (`blocks: N`). Um fechamento novo nasce com `blocks: 0`.
 pub fn mark_unit_closed(project_dir_path: &str, session_id: &str) {
+    write_unit_closed(project_dir_path, session_id, 0);
+}
+
+/// Quantas vezes a cobrança já bloqueou pelo fechamento marcado nesta sessão;
+/// `None` quando não há marca (nenhuma unidade fechou desde o último consumo).
+///
+/// Só lê — quem consome é [`take_unit_closed`]. Um conteúdo ilegível conta como
+/// `0`: a marca existe, então houve fechamento.
+pub fn unit_closed_blocks(project_dir_path: &str, session_id: &str) -> Option<u32> {
     if is_placeholder_session(session_id) {
-        return;
+        return None;
+    }
+    let marker = unit_closed_marker(project_dir_path, session_id)?;
+    let body = fs::read_to_string(&marker).ok()?;
+    Some(
+        body.trim()
+            .strip_prefix("blocks:")
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0),
+    )
+}
+
+/// Regrava a marca com o novo total de bloqueios. `true` quando gravou — quem
+/// bloqueia sem conseguir contar precisa saber, senão bloquearia sem limite.
+pub fn record_unit_closed_block(project_dir_path: &str, session_id: &str, blocks: u32) -> bool {
+    write_unit_closed(project_dir_path, session_id, blocks)
+}
+
+fn write_unit_closed(project_dir_path: &str, session_id: &str, blocks: u32) -> bool {
+    if is_placeholder_session(session_id) {
+        return false;
     }
     let Some(marker) = unit_closed_marker(project_dir_path, session_id) else {
-        return;
+        return false;
     };
     let Some(parent) = marker.parent() else {
-        return;
+        return false;
     };
     let _ = fs::create_dir_all(parent);
-    let _ = fs::write_atomic(&marker, b"1");
+    fs::write_atomic(&marker, format!("blocks: {blocks}").as_bytes()).is_ok()
 }
 
 /// Consome a marca de fechamento: `true` quando uma unidade fechou nesta
 /// sessão desde o último consumo, e a marca some no mesmo passo.
 ///
-/// Consumir É o que limita a cobrança a um turno: a marca nasce durante o turno
-/// do fechamento, e o primeiro `Stop` da sessão principal depois dela é o fim
-/// desse turno. Uma marca que não pôde ser removida responde `false`, porque
-/// ela responderia `true` em todo turno seguinte.
+/// A cobrança consome só quando LIBERA o `Stop`: um turno só termina num `Stop`
+/// que todas as travas liberaram, então é ali que o fechamento se encerra. Uma
+/// marca que não pôde ser removida responde `false`, porque ela responderia
+/// `true` em todo turno seguinte.
 pub fn take_unit_closed(project_dir_path: &str, session_id: &str) -> bool {
     if is_placeholder_session(session_id) {
         return false;
