@@ -827,6 +827,63 @@ fn pending_branch_marker(project_dir_path: &str, session_id: &str) -> Option<Pat
     )
 }
 
+/// Os eventos que registram o FECHAMENTO de uma unidade: a spec concluída e o
+/// pull request mergeado. Quando um deles é gravado, a sessão ganha a marca
+/// [`mark_unit_closed`], que a cobrança de pendências do `Stop` consome.
+pub(crate) const UNIT_CLOSURE_EVENTS: &[&str] =
+    &[mustard_core::domain::model::event::EVENT_PIPELINE_COMPLETE, "pr.merged"];
+
+/// Marca que uma unidade fechou nesta sessão.
+///
+/// Gravada pelo escritor de eventos, o único ponto por onde passam TODOS os
+/// fechamentos — `emit-pipeline`, `complete-spec`, `close-orchestrate`, o
+/// `pr-merge` e o `gh pr merge` visto pelo `pr_detect`. Uma marca por gravador
+/// esqueceria o próximo. Sessão placeholder não recebe marca: nenhum gancho a
+/// leria. Falha de IO é engolida — o evento já foi gravado.
+pub fn mark_unit_closed(project_dir_path: &str, session_id: &str) {
+    if is_placeholder_session(session_id) {
+        return;
+    }
+    let Some(marker) = unit_closed_marker(project_dir_path, session_id) else {
+        return;
+    };
+    let Some(parent) = marker.parent() else {
+        return;
+    };
+    let _ = fs::create_dir_all(parent);
+    let _ = fs::write_atomic(&marker, b"1");
+}
+
+/// Consome a marca de fechamento: `true` quando uma unidade fechou nesta
+/// sessão desde o último consumo, e a marca some no mesmo passo.
+///
+/// Consumir É o que limita a cobrança a um turno: a marca nasce durante o turno
+/// do fechamento, e o primeiro `Stop` da sessão principal depois dela é o fim
+/// desse turno. Uma marca que não pôde ser removida responde `false`, porque
+/// ela responderia `true` em todo turno seguinte.
+pub fn take_unit_closed(project_dir_path: &str, session_id: &str) -> bool {
+    if is_placeholder_session(session_id) {
+        return false;
+    }
+    let Some(marker) = unit_closed_marker(project_dir_path, session_id) else {
+        return false;
+    };
+    marker.is_file() && fs::remove_file(&marker).is_ok()
+}
+
+/// `<project>/.claude/.session/<session_id>/unit-closed`, ao lado da marca
+/// `pending-work-branch`.
+fn unit_closed_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
+    Some(
+        ClaudePaths::for_project(Path::new(project_dir_path))
+            .ok()?
+            .claude_dir()
+            .join(".session")
+            .join(session_id)
+            .join("unit-closed"),
+    )
+}
+
 /// Filename of the per-spec **user-approval** marker (see
 /// [`approval_marker_path`]).
 pub(crate) const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";

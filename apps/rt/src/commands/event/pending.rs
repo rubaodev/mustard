@@ -344,6 +344,76 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
     Value::Object(report)
 }
 
+/// A chave, no payload do evento `pipeline.kind`, que liga a unidade a uma
+/// pendência. Um só nome para quem grava (`emit-pipeline --pending`) e para
+/// quem lê (`pr-merge`), para que os dois nunca discordem da grafia.
+pub(crate) const UNIT_PENDING_KEY: &str = "pending";
+
+/// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
+/// início de sessão, a cobrança de fim de turno, a abertura e o merge da
+/// unidade. Só id e título: é o que cada um deles exibe ou confere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct OpenPending {
+    pub id: String,
+    pub title: String,
+}
+
+/// As pendências abertas, na ordem do ledger (a ordem em que foram combinadas).
+///
+/// Lê o MESMO arquivo que `run pending`, resolvido pelo mesmo
+/// [`ledger_root`], para que nenhum leitor veja uma lista diferente da que o
+/// operador grava. Arquivo ausente, ilegível ou corrompido devolve a lista
+/// vazia: quem só EXIBE não tem o que fazer com um ledger quebrado, e
+/// `run pending` é quem recusa e diz como consertar.
+#[must_use]
+pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
+    let project = ledger_root(root);
+    mustard_core::ClaudePaths::for_project(&project)
+        .ok()
+        .and_then(|paths| load(&paths.pending_ledger_path()).ok())
+        .map(|ledger| {
+            ledger
+                .items
+                .into_iter()
+                .filter(|i| i.status == Status::Open)
+                .map(|i| OpenPending { id: i.id, title: i.title })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fecha `id` como ENTREGUE com `reason`, pelo mesmo passe de `run pending`
+/// (motivo obrigatório, item já resolvido recusado). `true` só quando o
+/// arquivo foi de fato gravado.
+pub(crate) fn close_pending(root: &Path, id: &str, reason: &str) -> bool {
+    pending_at(&PendingOpts {
+        root: root.to_path_buf(),
+        add: false,
+        title: None,
+        detail: None,
+        close: Some(id.to_string()),
+        drop: None,
+        reason: Some(reason.to_string()),
+    })["ok"]
+        == json!(true)
+}
+
+/// Uma linha com os itens, `P-1 "título"; P-2 "título"`, cortada em `cap` com
+/// `(+N)` para o resto. A ÚNICA grafia de uma pendência em texto corrido: o
+/// aviso de início de sessão, a cobrança de fim de turno e a abertura da
+/// unidade escrevem o item do mesmo jeito.
+#[must_use]
+pub(crate) fn format_pending_items(items: &[OpenPending], cap: usize) -> String {
+    let named: Vec<String> =
+        items.iter().take(cap).map(|i| format!("{} \"{}\"", i.id, i.title)).collect();
+    let rest = items.len().saturating_sub(named.len());
+    if rest > 0 {
+        format!("{} (+{rest})", named.join("; "))
+    } else {
+        named.join("; ")
+    }
+}
+
 /// Run `pending` and print the JSON report; exit 1 on a refusal.
 pub fn run(opts: &PendingOpts) {
     let report = pending_at(opts);

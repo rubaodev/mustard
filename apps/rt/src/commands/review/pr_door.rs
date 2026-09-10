@@ -54,6 +54,12 @@
 //!   written and already covering the in-place unit and the per-repo report.
 //!   Reimplementing it here would be a second exit ritual to keep in step.
 //!
+//!   Todo merge também grava o evento `pr.merged` (é ele que arma a cobrança
+//!   de pendências no fim do turno) e, quando a unidade nasceu ligada a uma
+//!   pendência (`emit-pipeline --pending`), fecha esse item com o motivo
+//!   `PR #N mergeado`. O relatório devolve `pendingClosed` e `pendingOpen` — as
+//!   que seguem abertas — para que o fechamento as repasse ao operador.
+//!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
 //!
 //! A merge requested without an `approved` verdict answers `action:"confirm"`
@@ -86,6 +92,7 @@ use serde_json::Value;
 
 use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
+use crate::commands::event::pending::{close_pending, open_pending, OpenPending, UNIT_PENDING_KEY};
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
@@ -652,6 +659,15 @@ pub(crate) struct PrMergeReport {
     pub settle: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// A pendência que ESTE merge fechou — a que a unidade carregava desde a
+    /// abertura (`emit-pipeline --pending`). Ausente quando não havia ligação.
+    #[serde(rename = "pendingClosed", skip_serializing_if = "Option::is_none")]
+    pub pending_closed: Option<String>,
+    /// As pendências que seguem abertas depois do merge. Presente em todo
+    /// `merged` (vazia quando nada segue aberto) e ausente quando nada foi
+    /// mergeado: o momento de repassar a lista é o do fechamento.
+    #[serde(rename = "pendingOpen", skip_serializing_if = "Option::is_none")]
+    pub pending_open: Option<Vec<OpenPending>>,
 }
 
 /// Merge a resolved PR, with all three external effects injected: `checks` asks
@@ -750,6 +766,8 @@ fn merge_core(
             verdict,
             checks: checks_word,
             settle: None,
+            pending_closed: None,
+            pending_open: None,
         };
     }
 
@@ -770,8 +788,14 @@ fn merge_core(
                  draft state, required checks) and run `pr merge` again"
                     .to_string(),
             ),
+            pending_closed: None,
+            pending_open: None,
         };
     }
+
+    // Mergeado — o fechamento se registra ANTES de qualquer outro passo, nos dois
+    // caminhos abaixo: a promoção também é um pull request mergeado.
+    let (pending_closed, pending_open) = after_merge(root, facts, spec.as_deref());
 
     // **A promotion has no unit, so it has nothing to settle.** `dev` → `main`
     // is the ordinary end of a cycle and its HEAD is a declared BASE; handing
@@ -799,6 +823,8 @@ fn merge_core(
                  `git fetch origin <base>:<base>` — nenhuma branch foi apagada.",
                 head = facts.head,
             )),
+            pending_closed,
+            pending_open: Some(pending_open),
         };
     }
 
@@ -819,7 +845,63 @@ fn merge_core(
         warning: None,
         settle: Some(settled),
         hint: None,
+        pending_closed,
+        pending_open: Some(pending_open),
     }
+}
+
+/// O que um merge deixa registrado além do merge: o evento `pr.merged` e o
+/// fechamento da pendência ligada à unidade. Devolve o id fechado (se houve) e
+/// as pendências que seguem abertas.
+///
+/// O motivo `PR #N mergeado` põe o número do pull request no ledger, para quem
+/// reler a lista saber o que entregou o item.
+fn after_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) -> (Option<String>, Vec<OpenPending>) {
+    record_merge(root, facts, spec);
+    let reason = format!("PR #{} mergeado", facts.number);
+    let closed = spec
+        .and_then(|slug| linked_pending(root, slug))
+        .filter(|id| close_pending(root, id, &reason));
+    (closed, open_pending(root))
+}
+
+/// A pendência à qual a unidade nasceu ligada: o `pending` do evento
+/// `pipeline.kind` mais recente que o carrega, lido do mesmo armazém de eventos
+/// de onde [`recorded_verdict`] lê o veredito. `None` quando a unidade nasceu
+/// sem ligação.
+fn linked_pending(root: &Path, spec: &str) -> Option<String> {
+    let spec_paths = mustard_core::ClaudePaths::for_project(root).ok()?.for_spec(spec).ok()?;
+    let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
+        &spec_paths.dir().join(".events"),
+    );
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+    events
+        .iter()
+        .rev()
+        .filter(|e| e.event == mustard_core::domain::model::event::EVENT_PIPELINE_KIND)
+        .find_map(|e| e.payload.get(UNIT_PENDING_KEY).and_then(Value::as_str).map(str::to_string))
+}
+
+/// Grava o `pr.merged` desta porta. O `pr_detect` só enxerga um `gh pr merge`
+/// digitado no Bash, e este merge acontece dentro do processo — sem o evento, a
+/// cobrança de pendências do fim de turno nunca saberia que a unidade fechou.
+fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) {
+    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+    let event = HarnessEvent {
+        v: SCHEMA_VERSION,
+        ts: mustard_core::time::now_iso8601(),
+        session_id: crate::shared::context::session_id(),
+        wave: 0,
+        actor: Actor {
+            kind: ActorKind::Orchestrator,
+            id: Some("pr-merge".to_string()),
+            actor_type: None,
+        },
+        event: "pr.merged".to_string(),
+        payload: serde_json::json!({ "branch": facts.head, "spec": spec, "pr": facts.number }),
+        spec: spec.map(str::to_string),
+    };
+    let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
 }
 
 /// Ask the provider to merge. The strategy is explicit because it has to be: a
@@ -1232,6 +1314,78 @@ mod tests {
             Some("rejected"),
             "one subproject's rejection is not buried by another's approval"
         );
+    }
+
+    /// AC-7 — o merge do pull request de uma unidade ligada a uma pendência
+    /// fecha essa pendência com o número do PR no motivo, e o relatório lista as
+    /// que seguem abertas. A ligação é gravada pelo gravador de verdade
+    /// (`with_pending_link`, o mesmo do `emit-pipeline --pending`).
+    #[test]
+    fn pr_merge_closes_linked_pending_item() {
+        use crate::commands::event::pending::{pending_at, PendingOpts};
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        let opts = |add: bool, title: Option<&str>| PendingOpts {
+            root: root.to_path_buf(),
+            add,
+            title: title.map(str::to_string),
+            detail: title.map(|_| "combinado".to_string()),
+            close: None,
+            drop: None,
+            reason: None,
+        };
+        assert_eq!(pending_at(&opts(true, Some("trava de pendencias")))["id"], json!("P-1"));
+        assert_eq!(pending_at(&opts(true, Some("Humanize")))["id"], json!("P-2"));
+
+        // A abertura da unidade, como o `emit-pipeline --pending P-1` a grava.
+        let payload = crate::commands::event::emit_pipeline::with_pending_link(
+            json!({ "kind": "feature" }),
+            Some("P-1"),
+        );
+        let opened = mustard_core::domain::model::event::HarnessEvent {
+            v: mustard_core::domain::model::event::SCHEMA_VERSION,
+            ts: "2026-09-10T12:00:00.000Z".to_string(),
+            session_id: "s-merge".to_string(),
+            wave: 0,
+            actor: mustard_core::domain::model::event::Actor {
+                kind: mustard_core::domain::model::event::ActorKind::Orchestrator,
+                id: Some("emit-pipeline".to_string()),
+                actor_type: None,
+            },
+            event: "pipeline.kind".to_string(),
+            payload,
+            spec: Some("trava-pendencias".to_string()),
+        };
+        assert!(crate::shared::events::route::emit(&root.to_string_lossy(), &opened));
+
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let merge = |_: &Path, _: u64| Ok(());
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let facts = PrFacts { number: 271, head: "feature/trava-pendencias".to_string() };
+        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle);
+
+        assert_eq!(done.action, "merged");
+        assert_eq!(done.pending_closed.as_deref(), Some("P-1"), "the linked item is closed");
+        assert_eq!(
+            done.pending_open,
+            Some(vec![OpenPending { id: "P-2".into(), title: "Humanize".into() }]),
+            "the report lists what is still open",
+        );
+        let ledger = pending_at(&opts(false, None));
+        assert_eq!(ledger["closed"][0]["id"], json!("P-1"));
+        assert_eq!(ledger["closed"][0]["reason"], json!("PR #271 mergeado"), "{ledger}");
+        let wire = serde_json::to_value(&done).expect("serialize");
+        assert_eq!(wire["pendingClosed"], json!("P-1"), "{wire}");
+        assert_eq!(wire["pendingOpen"], json!([{ "id": "P-2", "title": "Humanize" }]), "{wire}");
+
+        // Controle: uma unidade SEM ligação mergeia sem fechar nada, e ainda
+        // assim o relatório lista o que segue aberto.
+        let loose = PrFacts { number: 272, head: "feature/outra-coisa".to_string() };
+        let plain = merge_core(root, &loose, &door_flow(), true, &green, &merge, &settle);
+        assert_eq!(plain.pending_closed, None, "no link, nothing closed");
+        assert_eq!(plain.pending_open.map(|o| o.len()), Some(1), "P-2 is still open");
     }
 
     /// The base model of a project declaring the ordinary two-tier flow.

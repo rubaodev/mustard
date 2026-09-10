@@ -116,6 +116,13 @@ pub enum EventCmd {
         /// primary base. The `--type` does not decide it, in either direction.
         #[arg(long)]
         base: Option<String>,
+        /// The pending item (`P-{n}`) this unit delivers. On `--kind
+        /// pipeline.kind` it must name an OPEN item of the pending ledger (any
+        /// other id → error, exit 1, before any emit); the id is recorded in the
+        /// unit's event, and merging the unit's pull request closes that item.
+        /// Ignored for every other kind.
+        #[arg(long, value_name = "ID")]
+        pending: Option<String>,
     },
     /// Query the harness event log by view.
     #[command(display_order = 32)]
@@ -230,6 +237,7 @@ pub fn dispatch(cmd: EventCmd) {
             unit_name,
             work_kind,
             base,
+            pending,
         } => {
             event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
@@ -240,6 +248,7 @@ pub fn dispatch(cmd: EventCmd) {
                 unit_name,
                 base,
                 work_kind,
+                pending,
             });
         }
         EventCmd::EventProjections {

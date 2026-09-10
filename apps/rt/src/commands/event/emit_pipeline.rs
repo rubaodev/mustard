@@ -35,7 +35,17 @@
 //! read the derived name and corrected it on purpose. It runs through the SAME
 //! derivation, so the unit still has one name with one spelling, and the report
 //! says which side named it (`nameFrom`).
+//!
+//! ## A unidade nasce mostrando o que segue combinado
+//!
+//! Ao abrir a unidade (`pipeline.kind`), o relatório carrega `pendingOpen` — as
+//! pendências abertas do ledger, id e título — e o stderr as repete: nenhuma
+//! unidade nasce sem mostrar o trabalho combinado que ela não substitui. Com
+//! `--pending <id>` a unidade nasce LIGADA a uma delas: o id precisa ser de um
+//! item aberto (senão exit 1, antes de qualquer gravação) e fica no payload do
+//! evento da unidade, de onde o `pr-merge` o lê para fechar o item.
 
+use super::pending::{format_pending_items, open_pending, OpenPending, UNIT_PENDING_KEY};
 use crate::shared::context::{project_dir, session_id};
 use crate::shared::work_kind::{BaseFlow, WorkKind};
 use mustard_core::time::now_iso8601;
@@ -172,6 +182,18 @@ pub struct EmitPipelineOpts {
     /// caller that did not ask, and takes the ordinary unit
     /// ([`default_work_kind()`]) rather than guessing an emergency.
     pub work_kind: Option<String>,
+    /// A pendência (`P-{n}`) que esta unidade entrega. Só é lida em
+    /// `--kind pipeline.kind`: precisa nomear um item ABERTO do ledger, e o id
+    /// vai para o payload do evento da unidade sob [`UNIT_PENDING_KEY`].
+    /// Ignorada nos outros kinds, como `--intent` e `--unit-name`.
+    pub pending: Option<String>,
+}
+
+/// O que a abertura da unidade diz sobre as pendências: as abertas e, quando a
+/// unidade nasceu ligada a uma, qual.
+struct PendingEcho {
+    open: Vec<OpenPending>,
+    linked: Option<String>,
 }
 
 /// How the unit's kind was decided — echoed in the report next to the kind, so
@@ -296,6 +318,8 @@ pub fn run(opts: EmitPipelineOpts) {
         resolve_kind_base_or_exit(&opts, work_kind.as_ref().map(|(kind, _)| kind));
     let overlapping = enforce_base_gate_or_exit(&opts, kind_base.as_deref());
     enforce_qa_gate_or_exit(&opts);
+    let pending_link = resolve_pending_link_or_exit(&opts, &payload);
+    let payload = with_pending_link(payload, pending_link.as_deref());
 
     // --- EMIT the primary event (+ any legacy→new alias twin) -----------------
     //
@@ -366,9 +390,101 @@ pub fn run(opts: EmitPipelineOpts) {
     // Remove the terminal-state marker (keyed on the predicate, so it runs for
     // every kind), then echo the one deterministic success line.
     cleanup_terminal_state(&kind, &payload, &spec);
+    // A abertura da unidade mostra o que segue combinado — no relatório e no
+    // stderr, onde o operador lê mesmo quando o JSON é só repassado.
+    let pending_echo = (kind == EVENT_PIPELINE_KIND).then(|| PendingEcho {
+        open: open_pending(Path::new(&project_dir())),
+        linked: pending_link,
+    });
+    if let Some(echo) = &pending_echo {
+        announce_open_pending(&echo.open);
+    }
     println!(
         "{}",
-        success_line(&kind, &spec, work_branch, minted.as_ref(), work_kind, &overlapping)
+        success_line(
+            &kind,
+            &spec,
+            work_branch,
+            minted.as_ref(),
+            work_kind,
+            &overlapping,
+            pending_echo.as_ref(),
+        )
+    );
+}
+
+/// Valida `--pending` em `pipeline.kind`: o id precisa nomear um item ABERTO do
+/// ledger. Recusa com exit 1 ANTES de qualquer gravação — um id digitado errado
+/// ligaria a unidade a nada, e o merge depois não fecharia coisa alguma.
+fn resolve_pending_link_or_exit(opts: &EmitPipelineOpts, payload: &Value) -> Option<String> {
+    if opts.kind != EVENT_PIPELINE_KIND {
+        return None;
+    }
+    let asked = opts.pending.as_deref()?.trim().to_ascii_uppercase();
+    let open = open_pending(Path::new(&project_dir()));
+    if let Some(refusal) = pending_link_refusal(&asked, &open, payload) {
+        eprintln!("{refusal}");
+        std::process::exit(1);
+    }
+    Some(asked)
+}
+
+/// A recusa de um `--pending` que não fecha, ou `None` quando a ligação vale.
+/// Pura — testada sem `process::exit`.
+fn pending_link_refusal(asked: &str, open: &[OpenPending], payload: &Value) -> Option<String> {
+    if asked.is_empty() {
+        return Some(
+            "emit-pipeline: --pending names no item — pass the id of an OPEN pending item, \
+             e.g. `--pending P-1`"
+                .to_string(),
+        );
+    }
+    if !(payload.is_object() || payload.is_null()) {
+        return Some(
+            "emit-pipeline: --pending records the link inside the unit's --payload, which \
+             must then be a JSON object"
+                .to_string(),
+        );
+    }
+    if open.iter().any(|item| item.id == asked) {
+        return None;
+    }
+    let listed = if open.is_empty() {
+        "none".to_string()
+    } else {
+        format_pending_items(open, open.len())
+    };
+    Some(format!(
+        "emit-pipeline: --pending {asked} is not an open pending item (open: {listed}). \
+         List the ledger with `mustard-rt run pending`; nothing was written."
+    ))
+}
+
+/// Grava a ligação no payload do evento da unidade, sob [`UNIT_PENDING_KEY`] —
+/// a chave que o `pr-merge` lê de volta. Um payload ausente vira um objeto só com
+/// a ligação. `pub(crate)` para que o teste do leitor use o gravador de verdade.
+pub(crate) fn with_pending_link(payload: Value, link: Option<&str>) -> Value {
+    let Some(id) = link else {
+        return payload;
+    };
+    let mut map = match payload {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    map.insert(UNIT_PENDING_KEY.to_string(), json!(id));
+    Value::Object(map)
+}
+
+/// As pendências abertas no stderr, uma linha — a promessa de que nenhuma
+/// unidade nasce sem mostrar o que segue combinado. Nada aberto, nada impresso.
+fn announce_open_pending(open: &[OpenPending]) {
+    if open.is_empty() {
+        return;
+    }
+    eprintln!(
+        "emit-pipeline: {} pending item(s) still open — agreed work this unit does not replace: {}",
+        open.len(),
+        format_pending_items(open, open.len())
     );
 }
 
@@ -922,6 +1038,7 @@ fn success_line(
     minted: Option<&MintedName>,
     work_kind: Option<(WorkKind, &'static str)>,
     overlapping: &[String],
+    pending: Option<&PendingEcho>,
 ) -> Value {
     let mut done = json!({ "ok": true, "kind": kind, "spec": spec });
     if let Some(branch) = work_branch {
@@ -945,6 +1062,16 @@ fn success_line(
     }
     if !overlapping.is_empty() {
         done["overlappingSpecs"] = json!(overlapping);
+    }
+    // Só na abertura da unidade: `pendingOpen` SEMPRE presente ali (vazio quando
+    // nada segue aberto, para que o leitor não confunda "nada aberto" com "não
+    // perguntado"), e `pending` quando a unidade nasceu ligada a um item. Os
+    // outros kinds seguem byte-idênticos.
+    if let Some(echo) = pending {
+        done["pendingOpen"] = json!(echo.open);
+        if let Some(id) = &echo.linked {
+            done["pending"] = json!(id);
+        }
     }
     done
 }
@@ -2983,6 +3110,7 @@ mod tests {
             None,
             None,
             &suspects,
+            None,
         );
         assert_eq!(
             line["overlappingSpecs"],
@@ -2993,10 +3121,53 @@ mod tests {
 
         // A chave só aparece quando tem o que dizer — toda outra chamada segue
         // byte-idêntica à de antes.
-        let quiet = success_line(EVENT_PIPELINE_KIND, "x", None, None, None, &[]);
+        let quiet = success_line(EVENT_PIPELINE_KIND, "x", None, None, None, &[], None);
         assert!(
             quiet.get("overlappingSpecs").is_none(),
             "sem suspeita, sem chave: {quiet}",
         );
+    }
+
+    /// `--pending` liga a unidade a um item ABERTO — qualquer outro id recusa
+    /// antes de gravar — e a ligação vai para o payload do evento. A abertura
+    /// devolve `pendingOpen`, presente mesmo vazio.
+    #[test]
+    fn a_unit_opens_linked_to_an_open_pending_item() {
+        let open = vec![
+            OpenPending { id: "P-1".into(), title: "trava de pendencias".into() },
+            OpenPending { id: "P-3".into(), title: "Humanize".into() },
+        ];
+        let object = json!({ "kind": "feature" });
+
+        assert_eq!(pending_link_refusal("P-3", &open, &object), None, "an open item links");
+        assert_eq!(pending_link_refusal("P-3", &open, &Value::Null), None, "no payload is fine");
+        let unknown = pending_link_refusal("P-2", &open, &object).expect("P-2 is not open");
+        assert!(unknown.contains("P-2") && unknown.contains(r#"P-3 "Humanize""#), "{unknown}");
+        assert!(pending_link_refusal("", &open, &object).is_some(), "a blank id refuses");
+        assert!(
+            pending_link_refusal("P-1", &open, &json!("texto")).is_some(),
+            "a non-object payload cannot carry the link",
+        );
+
+        let linked = with_pending_link(object, Some("P-3"));
+        assert_eq!(linked, json!({ "kind": "feature", "pending": "P-3" }));
+        assert_eq!(with_pending_link(Value::Null, Some("P-1")), json!({ "pending": "P-1" }));
+        assert_eq!(with_pending_link(json!({ "a": 1 }), None), json!({ "a": 1 }), "no link, untouched");
+
+        let echo = PendingEcho { open: open.clone(), linked: Some("P-3".into()) };
+        let line = success_line(EVENT_PIPELINE_KIND, "x", None, None, None, &[], Some(&echo));
+        assert_eq!(
+            line["pendingOpen"],
+            json!([
+                { "id": "P-1", "title": "trava de pendencias" },
+                { "id": "P-3", "title": "Humanize" },
+            ]),
+            "{line}",
+        );
+        assert_eq!(line["pending"], json!("P-3"));
+        let none_open = PendingEcho { open: Vec::new(), linked: None };
+        let empty = success_line(EVENT_PIPELINE_KIND, "x", None, None, None, &[], Some(&none_open));
+        assert_eq!(empty["pendingOpen"], json!([]), "present even when empty: {empty}");
+        assert!(empty.get("pending").is_none());
     }
 }

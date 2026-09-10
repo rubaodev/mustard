@@ -4,6 +4,7 @@ pub mod context_budget_gate;
 pub mod delegation_advisory;
 pub mod main_context_counter;
 pub mod metrics_observer;
+pub mod pending_gate;
 pub mod skill_usage_observer;
 pub mod crystallise_nudge;
 pub mod stop_gate;
