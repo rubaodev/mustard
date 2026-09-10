@@ -1,6 +1,6 @@
 ---
 name: core-doc-pattern
-description: Use when adding or refactoring a top-level `{Foo}Doc` TOML-document wrapper struct inside packages/core/src/domain/vocabulary/.
+description: Use when adding or refactoring a top-level `{X}Doc` TOML document wrapper under packages/core/src/domain/vocabulary.
 paths:
   - packages/core/src/domain/vocabulary/**
 tags: [add, refactor]
@@ -17,19 +17,44 @@ metadata:
 
 ## Purpose
 
-A `{Foo}Doc` struct is the top-level deserialisation target for a whole on-disk TOML file — the wrapper around a `Vec` of table-array entries plus any document-level options. `VocabularyDoc` (mod.rs) wraps `.claude/vocab/regression.toml`'s `[[layer]]` array plus the optional `[thresholds]` table; `StackRegistryDoc` (stacks.rs) wraps `[[stack]]` entries the same way. Both are pure parse targets — no IO inside the struct itself, the file read happens in a sibling `load_from_file`/`load` function.
+A `{X}Doc` is the deserialisation target for a whole on-disk TOML file — `VocabularyDoc` for `.claude/vocab/regression.toml`, `StackRegistryDoc` for `.claude/vocab/stacks.toml`. Both wrap a single `Vec<...>` behind a `[[table]]` array key and both are pure on `&str`: parsing is separated from filesystem access so the parser is unit-testable without touching disk, and the file-reading half distinguishes "file does not exist" (a typed, fail-open-friendly error) from a genuine IO failure or an unparseable body.
 
 ## Convention
 
 Folder: packages/core/src/domain/vocabulary/** · Extension: .rs · Files of this role in this subproject: 2
 
-Both exemplars derive `Debug, Clone, Default, PartialEq, Eq, Deserialize` (no `Serialize` — these are read-only config, never written back by this crate) and use `#[serde(default, rename = "...")]` on the table-array field so an empty/absent section still parses instead of erroring. Each carries its own `parse_str(raw: &str) -> Result<Self, VocabError>` inherent method (pure, testable without touching disk) and the file-reading half lives in a separate `load`/`load_from_file` function that distinguishes "file absent" (a typed not-found error, fail-open for callers) from a genuine IO error from a parse error.
+`{X}Doc` derives `Debug, Clone, Default, PartialEq, Eq, Deserialize`, holding one `#[serde(default, rename = "...")] pub {field}: Vec<{Item}>` for the TOML table array (plus optional secondary fields like `thresholds`). It exposes `pub fn parse_str(raw: &str) -> Result<Self, VocabError>` (pure) and `pub fn load_from_file(path: &Path) -> Result<Self, VocabError>` (IO), where `load_from_file` maps `io::ErrorKind::NotFound` to a dedicated `VocabError::FileNotFound` variant distinct from `VocabError::Io`, matching the crate Guard on fail-open file reads.
 
 ## How to apply
 
-A new top-level TOML document struct is named `{Thing}Doc`, derives `Debug, Clone, Default, PartialEq, Eq, Deserialize`, uses `#[serde(default, rename = "...")]` on its table-array field so a minimal or empty file still parses, and exposes a pure `parse_str(&str) -> Result<Self, VocabError>` plus a separate disk-reading function that keeps "not found" distinct from "IO error" distinct from "malformed TOML" — mirroring `VocabError`'s three-way split.
+Add the new `{X}Doc` in its own `vocabulary/{name}.rs` module alongside the item struct(s) it wraps. Give it `parse_str` (pure, unit-tested directly on TOML strings) and, if it is meant to load from `.claude/vocab/`, a `load_from_file` that follows the `FileNotFound` vs `Io` vs `InvalidToml` three-way split `VocabularyDoc`/`StackRegistryDoc` both use.
 
 ## Examples
 
-- Ref: packages/core/src/domain/vocabulary/mod.rs
-- Ref: packages/core/src/domain/vocabulary/stacks.rs
+Ref: packages/core/src/domain/vocabulary/mod.rs
+```rust
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct VocabularyDoc {
+    /// Every `[[layer]]` table entry, in document order.
+    #[serde(default, rename = "layer")]
+    pub layers: Vec<VocabLayer>,
+    #[serde(default)]
+    pub thresholds: GateThresholds,
+}
+
+impl VocabularyDoc {
+    pub fn parse_str(raw: &str) -> Result<Self, VocabError> {
+        toml::from_str::<Self>(raw).map_err(|e| VocabError::InvalidToml(e.to_string()))
+    }
+
+    pub fn load_from_file(path: &Path) -> Result<Self, VocabError> {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => Self::parse_str(&raw),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(VocabError::FileNotFound(path.display().to_string()))
+            }
+            Err(e) => Err(VocabError::Io(e.to_string())),
+        }
+    }
+}
+```

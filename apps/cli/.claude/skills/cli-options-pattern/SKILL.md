@@ -1,6 +1,6 @@
 ---
 name: cli-options-pattern
-description: Use when adding or refactoring a new `mustard <verb>` command's flag struct in apps/cli/src/commands/
+description: Use when adding or refactoring a command module under apps/cli/src/commands/ that needs a flags struct to carry its CLI options.
 paths:
   - apps/cli/src/commands/**
 tags: [add, refactor]
@@ -17,20 +17,50 @@ metadata:
 
 ## Purpose
 
-Every `mustard` subcommand takes its CLI flags through a small, dedicated `<Verb>Options` struct passed by reference into the command's entry function, never as loose positional booleans. `add.rs`'s `AddOptions` carries a single `force` flag, `config.rs`'s `ConfigOptions` carries `yes`, and `init.rs`'s `InitOptions` carries `force`, `yes`, and `dry_run`. Keeping the flags struct separate from the function body lets the CLI layer (`main.rs`/`dispatch`) construct it from `clap` parsing while the library function itself stays testable with a plain literal. Each field is documented with a `///` doc-comment stating what the flag does, not just its name.
+Each `mustard` subcommand (`add`, `config`, `init`) takes its flags bundled in a dedicated `*Options` struct instead of a long parameter list. The struct sits at the top of the command's module, right after the imports and the module doc-comment, and is the single argument type the public entry function accepts by reference. This keeps call sites uniform (`&AddOptions`, `&ConfigOptions`, `&InitOptions`) and makes `..Default::default()` usable in tests to set only the flags a scenario cares about.
 
 ## Convention
 
 Folder: apps/cli/src/commands/** · Extension: .rs · Files of this role in this subproject: 4
 
-The three exemplars each define their Options struct near the top of the file, right after the module-level `//!` doc comment and `use` block, and right before the entry function that consumes it. All three derive `Debug, Default, Clone` — no other derives (no `Serialize`/`Deserialize`; these structs never round-trip through JSON, unlike the manifest/config types the same files also define). Fields are `pub`, plain `bool` in all three exemplars, and each carries a one-line `///` doc comment above it explaining the flag's effect from the user's point of view (e.g. `/// Print intended actions without touching disk.` on `InitOptions::dry_run`). The entry function signature always takes `options: &<Verb>Options` (by reference, never by value) alongside a `&Path` for the target directory/project.
+The three exemplars each declare `pub struct <Cmd>Options` with `#[derive(Debug, Default, Clone)]`, public fields (no builder), and a doc-comment on the struct plus one line per field explaining what the flag does. Fields are plain `bool` flags in all three exemplars (`force`, `yes`, `dry_run`); `ConfigOptions` has a single field, `AddOptions` has one, `InitOptions` has three. The struct is declared before the function that consumes it, and that function takes `options: &<Cmd>Options`.
 
 ## How to apply
 
-A new `mustard <verb>` command gets its own file `apps/cli/src/commands/<verb>.rs` with a `<Verb>Options` struct following this exact derive set (`Debug, Default, Clone`) and doc-commented `pub bool` fields for each flag. The entry function is `pub fn <verb>(cwd_or_project_path: &Path, .. , options: &<Verb>Options) -> Result<()>` (or a richer outcome enum per `core-outcome-pattern`, as `init.rs` does with `InitOutcome`, when `Ok(())` would blur a real branch like "the operator cancelled" versus "nothing needed to change"). Tests under `#[cfg(test)] mod tests` construct the options struct directly via `<Verb>Options::default()` or a literal, never through clap.
+A new command module under `apps/cli/src/commands/` that takes flags declares its own `pub struct <Cmd>Options` near the top of the file, deriving `Debug, Default, Clone`, with one doc-commented public field per flag. The command's public entry function takes `options: &<Cmd>Options` as a parameter. Tests that need a specific flag combination construct it as `&<Cmd>Options { flag: true, ..<Cmd>Options::default() }` rather than listing every field.
 
 ## Examples
 
-- Ref: apps/cli/src/commands/add.rs (`AddOptions { force: bool }`, consumed by `pub fn add(cwd: &Path, template_spec: &str, options: &AddOptions)`)
-- Ref: apps/cli/src/commands/config.rs (`ConfigOptions { yes: bool }`, thin wrapper delegating to `git_flow::configure`)
-- Ref: apps/cli/src/commands/init.rs (`InitOptions { force, yes, dry_run: bool }`, paired with the richer `InitOutcome` enum for its entry function's return type)
+Ref: apps/cli/src/commands/add.rs
+```rust
+/// Flags accepted by `mustard add`.
+#[derive(Debug, Default, Clone)]
+pub struct AddOptions {
+    /// Overwrite files that already exist in `.claude/`.
+    pub force: bool,
+}
+```
+
+Ref: apps/cli/src/commands/config.rs
+```rust
+/// Flags accepted by `mustard config`.
+#[derive(Debug, Default, Clone)]
+pub struct ConfigOptions {
+    /// Accept defaults without prompting.
+    pub yes: bool,
+}
+```
+
+Ref: apps/cli/src/commands/init.rs
+```rust
+/// Flags accepted by `mustard init`.
+#[derive(Debug, Default, Clone)]
+pub struct InitOptions {
+    /// Overwrite an existing `.claude/` without a backup.
+    pub force: bool,
+    /// Accept defaults without prompting.
+    pub yes: bool,
+    /// Print intended actions without touching disk.
+    pub dry_run: bool,
+}
+```
