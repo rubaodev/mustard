@@ -44,6 +44,10 @@ pub struct Report {
     title: String,
     subtitle: String,
     lang: String,
+    /// O que vem depois de `Mustard · ` na faixa do cabeçalho, quando houver.
+    kind: Option<String>,
+    /// Itens extras da linha `.meta`, cada um já montado como `<li>…</li>`.
+    meta: Vec<String>,
     body: String,
 }
 
@@ -55,22 +59,46 @@ impl Report {
             title: title.into(),
             subtitle: subtitle.into(),
             lang: DEFAULT_LANG.to_string(),
+            kind: None,
+            meta: Vec::new(),
             body: String::new(),
         }
     }
 
     /// Troca o idioma do atributo `lang` do `<html>` (padrão `en`) — o resumo
     /// da spec sai em `pt-BR`, os relatórios técnicos seguem em inglês.
-    // `expect`, e não `allow`: o chamador real (o resumo da spec) chega numa
-    // onda seguinte; quando chegar, a expectativa deixa de se cumprir e o
-    // `-D warnings` da CI obriga a remover esta linha — ela não fica esquecida.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first caller is the spec summary page, added in a later wave")
-    )]
     #[must_use]
     pub fn with_lang(mut self, lang: impl Into<String>) -> Self {
         self.lang = lang.into();
+        self
+    }
+
+    /// Diz que documento é este na faixa do cabeçalho: `Mustard · {kind}`.
+    #[must_use]
+    pub fn with_kind(mut self, kind: impl Into<String>) -> Self {
+        self.kind = Some(kind.into());
+        self
+    }
+
+    /// Acrescenta à linha `.meta` um par rótulo + valor; o valor sai em
+    /// destaque (`<b>`), como `spec <b>slug</b>` no layout aprovado.
+    #[must_use]
+    pub fn with_meta(mut self, label: &str, value: &str) -> Self {
+        self.meta.push(format!("<li>{} <b>{}</b></li>", escape(label), escape(value)));
+        self
+    }
+
+    /// Acrescenta à linha `.meta` um texto solto, sem valor em destaque.
+    #[must_use]
+    pub fn with_note(mut self, text: &str) -> Self {
+        self.meta.push(format!("<li>{}</li>", escape(text)));
+        self
+    }
+
+    /// Acrescenta HTML já montado pelo chamador, fora de uma seção — o destaque
+    /// de abertura, subtítulos `h3` dentro de uma seção longa, o rodapé.
+    pub fn raw(&mut self, html: &str) -> &mut Self {
+        self.body.push_str(html);
         self
     }
 
@@ -95,15 +123,27 @@ impl Report {
     /// Render the finished standalone HTML document.
     #[must_use]
     pub fn render(&self) -> String {
+        let kind = self
+            .kind
+            .as_deref()
+            .map_or_else(|| "Mustard".to_string(), |k| format!("Mustard · {}", escape(k)));
+        // Um subtítulo vazio não vira um `<li>` vazio: o resumo da spec monta a
+        // linha só com os pares de `with_meta`.
+        let mut meta = String::new();
+        if !self.subtitle.is_empty() {
+            let _ = write!(meta, "<li>{}</li>", escape(&self.subtitle));
+        }
+        for item in &self.meta {
+            meta.push_str(item);
+        }
         format!(
             "<!doctype html>\n<html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
 <title>{title}</title><style>{style}</style></head><body><main>\
-<header class=\"doc\"><p class=\"kind\">Mustard</p><h1>{title}</h1>\
-<ul class=\"meta\"><li>{subtitle}</li></ul></header>{body}</main></body></html>\n",
+<header class=\"doc\"><p class=\"kind\">{kind}</p><h1>{title}</h1>\
+<ul class=\"meta\">{meta}</ul></header>{body}</main></body></html>\n",
             lang = escape(&self.lang),
             title = escape(&self.title),
-            subtitle = escape(&self.subtitle),
             style = STYLE,
             body = self.body,
         )
@@ -243,6 +283,35 @@ mod tests {
                 "li em grid: {selector}{{{decls}}}"
             );
         }
+    }
+
+    /// As fontes Geist e Geist Mono vêm embutidas no CSS (data URI woff2), e a
+    /// página continua sem nenhuma referência externa.
+    #[test]
+    fn report_embeds_the_geist_fonts() {
+        let html = Report::new("QA", "x").render();
+        for family in ["font-family:\"Geist\"", "font-family:\"Geist Mono\""] {
+            assert!(html.contains(family), "@font-face de {family} ausente");
+        }
+        assert_eq!(html.matches("url(data:font/woff2;base64,").count(), 2, "duas fontes embutidas");
+        assert!(!html.contains("http://") && !html.contains("https://"));
+        assert!(!html.contains("src=") && !html.contains("href="));
+    }
+
+    /// A faixa do cabeçalho diz que documento é, e a linha `.meta` junta os
+    /// pares com o valor em destaque; um subtítulo vazio não deixa `<li>` vazio.
+    #[test]
+    fn report_header_carries_kind_and_meta_pairs() {
+        let html = Report::new("Resumo", "")
+            .with_kind("spec para aprovar")
+            .with_meta("spec", "demo")
+            .with_note("aguardando aprovação")
+            .render();
+        assert!(html.contains("<p class=\"kind\">Mustard · spec para aprovar</p>"), "{html}");
+        assert!(html.contains(
+            "<ul class=\"meta\"><li>spec <b>demo</b></li><li>aguardando aprovação</li></ul>"
+        ));
+        assert!(!html.contains("<li></li>"));
     }
 
     #[test]

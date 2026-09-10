@@ -10,7 +10,11 @@ The conversation's own channel. `orchestrator.md` classifies the request and `di
 mustard-rt run material-add --spec {slug} --kind decision   --subject "<what>"  --detail "<why>"
 mustard-rt run material-add --spec {slug} --kind definition --subject "<term>"  --detail "<what it means here>"
 mustard-rt run material-add --spec {slug} --kind finding    --subject "<claim>" --detail "<file>" [--line N]
+mustard-rt run material-add --spec {slug} --kind risk       --subject "<risk>"  --detail "<what mitigates it>" --severity alta|media|baixa
+mustard-rt run material-add --spec {slug} --kind summary    --subject "<the whole conversation so far>"
 ```
+
+**The summary is ONE text, and the newest replaces the last** — rewrite it whole as the conversation moves; a `--detail` on it is refused. A `risk` with no `--severity` is refused: a risk without a weight does not tell the reader whether to stop and read it. A `clarification` (question + answer) is recorded ON ITS OWN when the user answers a question — never by hand. The spec page reads all of them: `mustard-rt run spec-doc --spec {slug}` writes `.claude/spec/{slug}/resumo.html`.
 
 One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open from ▸6 on:** the base gate's event log creates `.claude/spec/{slug}/`, so a decision settled before the draft still lands. `unknown_spec` means no gate minted that slug — no unit is open.
 

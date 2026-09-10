@@ -305,14 +305,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          already substituted",
     ),
     (
-        "material-add",
-        "severity",
-        "the weight of the `risk` kind, born in the same unit as the kind itself; \
-         the prose that teaches the material channel lives in `plugin/`, outside \
-         the subproject this wave may touch - once it spells `--severity`, the \
-         necessity check below fails this row and it goes",
-    ),
-    (
         "pipeline-summary",
         "self-test",
         "a self-check face whose only caller is an acceptance criterion; its help \

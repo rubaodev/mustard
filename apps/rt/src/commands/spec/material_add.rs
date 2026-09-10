@@ -58,23 +58,23 @@ pub(crate) const MATERIAL_FILE: &str = "spec-material.json";
 
 /// One term and what it means in THIS spec.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Definition {
-    term: String,
-    meaning: String,
+pub(crate) struct Definition {
+    pub(crate) term: String,
+    pub(crate) meaning: String,
 }
 
 /// One decision and the reason it was taken.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Decision {
-    decision: String,
-    reason: String,
+pub(crate) struct Decision {
+    pub(crate) decision: String,
+    pub(crate) reason: String,
 }
 
 /// One verified statement plus the file that makes it checkable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Finding {
-    statement: String,
-    file: String,
+pub(crate) struct Finding {
+    pub(crate) statement: String,
+    pub(crate) file: String,
     /// The line, when the claim is line-precise.
     ///
     /// `u32`, matching `spec_draft`'s own `Finding` exactly. It was `u64` for
@@ -84,7 +84,7 @@ struct Finding {
     /// hand-edited JSON. Two spellings of one contract is how a writer lands
     /// material where no reader looks — the type is half of that contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    line: Option<u32>,
+    pub(crate) line: Option<u32>,
 }
 
 /// O peso de um risco. Vocabulário fechado, e é ESTE enum que o `spec-draft`
@@ -128,20 +128,20 @@ impl Severity {
 /// JSON que o `spec-draft` lê — o mesmo desenho de `Decision { decision }`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(clippy::struct_field_names)]
-struct Risk {
-    risk: String,
-    mitigation: String,
-    severity: Severity,
+pub(crate) struct Risk {
+    pub(crate) risk: String,
+    pub(crate) mitigation: String,
+    pub(crate) severity: Severity,
 }
 
 /// Uma pergunta feita ao usuário e a resposta que ele deu. `notes` é o texto
 /// livre que o usuário acrescentou à escolha, quando acrescentou.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct Clarification {
-    question: String,
-    answer: String,
+pub(crate) struct Clarification {
+    pub(crate) question: String,
+    pub(crate) answer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    notes: Option<String>,
+    pub(crate) notes: Option<String>,
 }
 
 /// The accumulating document. Field names and shape mirror what
@@ -153,21 +153,37 @@ struct Clarification {
 /// drift with nothing detecting it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Material {
+pub(crate) struct Material {
     #[serde(default)]
-    definitions: Vec<Definition>,
+    pub(crate) definitions: Vec<Definition>,
     #[serde(default)]
-    decisions: Vec<Decision>,
+    pub(crate) decisions: Vec<Decision>,
     #[serde(default)]
-    findings: Vec<Finding>,
+    pub(crate) findings: Vec<Finding>,
     // Os campos novos somem do arquivo quando vazios: um material que não os
     // usa sai byte a byte igual ao de antes deles existirem.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    risks: Vec<Risk>,
+    pub(crate) risks: Vec<Risk>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    clarifications: Vec<Clarification>,
+    pub(crate) clarifications: Vec<Clarification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
+}
+
+/// Lê o material de `spec_dir` para EXIBIR — o resumo da spec em HTML.
+///
+/// Pelo mesmo tipo que esta porta grava, para que o documento nunca leia uma
+/// grafia do contrato diferente da que o escritor produz. `None` quando o
+/// arquivo falta, não abre ou não parseia: quem só mostra não conserta, e a
+/// recusa com remédio é deste `material-add` (e do `spec-draft`), que falham
+/// fechados na hora de gravar.
+#[must_use]
+pub(crate) fn read_material(spec_dir: &Path) -> Option<Material> {
+    let raw = std::fs::read_to_string(spec_dir.join(MATERIAL_FILE)).ok()?;
+    if raw.trim().is_empty() {
+        return Some(Material::default());
+    }
+    serde_json::from_str(&raw).ok()
 }
 
 /// What the caller is recording.

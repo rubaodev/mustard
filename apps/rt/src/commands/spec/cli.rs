@@ -519,6 +519,23 @@ pub enum SpecCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Monta o resumo legível da spec em `.claude/spec/<slug>/resumo.html`, no
+    /// layout padrão do Mustard: resumo da conversa, onde estamos, o que foi
+    /// esclarecido, decisões, riscos, a spec, critérios com o estado da prova,
+    /// ondas com as skills prescritas, evidências, pendências abertas e o
+    /// próximo passo.
+    ///
+    /// Vem ANTES de qualquer pergunta de aprovação: o usuário recusou aprovar
+    /// uma spec que só conseguia ler no terminal. Devolve `{ok, path, url,
+    /// hash, changed}` — `url` é o `file://` que o usuário clica, e `changed`
+    /// diz se a página mudou desde a última geração (só então ela é regravada).
+    #[command(name = "spec-doc")]
+    #[command(display_order = 99)]
+    SpecDoc {
+        /// Slug da spec em `.claude/spec/`.
+        #[arg(long)]
+        spec: String,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -671,6 +688,9 @@ pub fn dispatch(cmd: SpecCmd) {
                 to.as_deref(),
                 reason.as_deref(),
             );
+        }
+        SpecCmd::SpecDoc { spec: slug } => {
+            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug });
         }
     }
 }
