@@ -3,8 +3,8 @@
   "languages": [
     {
       "language": "rust",
-      "files": 492,
-      "loc": 238570
+      "files": 494,
+      "loc": 240244
     },
     {
       "language": "tsx",
@@ -362,7 +362,7 @@
     {
       "dir": "apps/rt",
       "role": "L1",
-      "files": 310
+      "files": 312
     },
     {
       "dir": "apps/dashboard",
@@ -24364,7 +24364,7 @@
     {
       "path": "apps/rt/src/shared/context.rs",
       "language": "rust",
-      "loc": 1456,
+      "loc": 1549,
       "imports": [
         "mustard_core::CLAUDE_LOCAL_MD",
         "mustard_core::CLAUDE_MD",
@@ -24607,216 +24607,252 @@
         },
         {
           "kind": "function",
-          "name": "approval_marker_path",
-          "line": 845,
+          "name": "mark_unit_closed",
+          "line": 846,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "clarified_marker_path",
+          "name": "unit_closed_blocks",
+          "line": 855,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "record_unit_closed_block",
           "line": 871,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "write_unit_closed",
+          "line": 875,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "take_unit_closed",
+          "line": 896,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unit_closed_marker",
+          "line": 916,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "approval_marker_path",
+          "line": 945,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "clarified_marker_path",
+          "line": 971,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "stop_gate_counter_path",
-          "line": 897,
+          "line": 997,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "MarkerProvenance",
-          "line": 914,
+          "line": 1014,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 916,
+          "line": 1016,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "via",
-          "line": 919,
+          "line": 1019,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "session",
-          "line": 921,
+          "line": 1021,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "at",
-          "line": 923,
+          "line": 1023,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "terms",
-          "line": 927,
+          "line": 1027,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 930,
+          "line": 1030,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "records_substance",
-          "line": 942,
+          "line": 1042,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "marker_body",
-          "line": 960,
+          "line": 1060,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clarify_marker_body",
-          "line": 980,
+          "line": 1080,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "one_line",
-          "line": 1006,
+          "line": 1106,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_marker_provenance",
-          "line": 1023,
+          "line": 1123,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "normalise_spec_dir",
-          "line": 1075,
+          "line": 1175,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "current_wave",
-          "line": 1119,
+          "line": 1219,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_freshly_written_footprint_reads_back_as_private",
-          "line": 1146,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "a_shared_install_resolves_the_shared_file_even_beside_a_local_layer",
-          "line": 1166,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "only_the_two_instruction_layers_are_guards_file_names",
-          "line": 1180,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "a_tree_without_a_repository_reads_as_shared",
-          "line": 1191,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "clarified_marker_path_has_expected_shape",
-          "line": 1201,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stop_gate_counter_path_has_expected_shape",
-          "line": 1220,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "marker_body_is_the_single_writer_shape",
           "line": 1246,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "a_shared_install_resolves_the_shared_file_even_beside_a_local_layer",
+          "line": 1266,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "only_the_two_instruction_layers_are_guards_file_names",
+          "line": 1280,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_tree_without_a_repository_reads_as_shared",
+          "line": 1291,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "clarified_marker_path_has_expected_shape",
+          "line": 1301,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop_gate_counter_path_has_expected_shape",
+          "line": 1320,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "marker_body_is_the_single_writer_shape",
+          "line": 1346,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "read_marker_provenance_round_trips_and_degrades",
-          "line": 1258,
+          "line": 1358,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clarify_marker_body_round_trips_terms_and_reason",
-          "line": 1298,
+          "line": 1398,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "normalise_spec_dir_resolves_directory_file_and_slug",
-          "line": 1343,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "current_spec_returns_none_when_no_states_dir",
-          "line": 1382,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "current_spec_falls_back_to_pipeline_states",
-          "line": 1391,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "session_for_spec_resolves_bound_session_not_newest",
-          "line": 1416,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "session_id_falls_back_to_newest_session_dir",
           "line": 1443,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "current_spec_returns_none_when_no_states_dir",
+          "line": 1482,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "current_spec_falls_back_to_pipeline_states",
+          "line": 1491,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "session_for_spec_resolves_bound_session_not_newest",
+          "line": 1516,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "session_id_falls_back_to_newest_session_dir",
+          "line": 1543,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "newest_session_dir_returns_none_on_missing_dir",
-          "line": 1460,
+          "line": 1560,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_binding_reaches_the_reading_session",
-          "line": 1475,
+          "line": 1575,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unbind_session_spec_clears_the_binding",
-          "line": 1519,
+          "line": 1619,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pending_branch_round_trips_then_clears",
-          "line": 1542,
+          "line": 1642,
           "supertypes": []
         }
       ],
-      "fan_in": 53
+      "fan_in": 54
     },
     {
       "path": "apps/rt/src/shared/prompt.rs",
@@ -26168,7 +26204,7 @@
     {
       "path": "apps/rt/src/shared/events/writer_ndjson.rs",
       "language": "rust",
-      "loc": 485,
+      "loc": 497,
       "imports": [
         "mustard_core::io::claude_paths::ClaudePaths",
         "mustard_core::io::fs",
@@ -26308,67 +26344,67 @@
         {
           "kind": "function",
           "name": "event_dir_resolves_under_spec",
-          "line": 320,
+          "line": 332,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "event_dir_resolves_under_wave_role",
-          "line": 327,
+          "line": 339,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "event_dir_falls_back_to_session",
-          "line": 335,
+          "line": 347,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_event_creates_ndjson_file",
-          "line": 343,
+          "line": 355,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_event_keeps_large_payload_inline",
-          "line": 367,
+          "line": 379,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_event_extracts_render_hints",
-          "line": 390,
+          "line": 402,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "epoch_ms_round_trips_a_known_timestamp",
-          "line": 413,
+          "line": 425,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "epoch_ms_handles_leap_year_in_march",
-          "line": 421,
+          "line": 433,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "event_writer_ndjson_hot_path",
-          "line": 435,
+          "line": 447,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "hot_path_ceiling_us",
-          "line": 493,
+          "line": 505,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "hot_path_ceiling_is_loose_on_virtualised_runners",
-          "line": 503,
+          "line": 515,
           "supertypes": []
         }
       ],
@@ -27434,7 +27470,7 @@
     {
       "path": "apps/rt/src/hooks/observe/wave_start_observer.rs",
       "language": "rust",
-      "loc": 223,
+      "loc": 224,
       "imports": [
         "crate::shared::events::economy",
         "crate::shared::events::writer_ndjson::write_event",
@@ -27496,25 +27532,25 @@
         {
           "kind": "function",
           "name": "wave_number_parses_from_slug",
-          "line": 172,
+          "line": 173,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_wave_dir_matches_number_and_slug",
-          "line": 183,
+          "line": 184,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "already_signalled_detects_prior_start_and_complete",
-          "line": 196,
+          "line": 197,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "observer_no_ops_without_active_wave_env",
-          "line": 221,
+          "line": 222,
           "supertypes": []
         }
       ],
@@ -28002,7 +28038,7 @@
     {
       "path": "apps/rt/src/hooks/observe/wave_complete_observer.rs",
       "language": "rust",
-      "loc": 277,
+      "loc": 278,
       "imports": [
         "crate::commands::review::review_spans::{VerdictEntry, VERDICT_GREEN, VERDICT_RED}",
         "crate::commands::review::review_spans::{self, ConsolidationCheck}",
@@ -28072,55 +28108,55 @@
         {
           "kind": "function",
           "name": "green",
-          "line": 187,
+          "line": 188,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "red",
-          "line": 197,
+          "line": 198,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "empty_ledger_is_not_complete",
-          "line": 208,
+          "line": 209,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_ledger_with_a_child_is_complete",
-          "line": 216,
+          "line": 217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "red_ledger_is_not_complete",
-          "line": 224,
+          "line": 225,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_number_parses_from_slug",
-          "line": 233,
+          "line": 234,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_wave_dir_matches_number_and_slug",
-          "line": 244,
+          "line": 245,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "already_emitted_detects_prior_wave_complete",
-          "line": 263,
+          "line": 264,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "observer_no_ops_without_active_wave_env",
-          "line": 281,
+          "line": 282,
           "supertypes": []
         }
       ],
@@ -28909,6 +28945,180 @@
         }
       ],
       "fan_in": 2
+    },
+    {
+      "path": "apps/rt/src/hooks/task/pending_gate.rs",
+      "language": "rust",
+      "loc": 464,
+      "imports": [
+        "crate::commands::event::pending::{format_pending_items, open_pending, OpenPending}",
+        "crate::commands::event::pending::{pending_at, PendingOpts}",
+        "crate::shared::context::mark_unit_closed",
+        "crate::shared::context::{record_unit_closed_block, take_unit_closed, unit_closed_blocks}",
+        "mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict}",
+        "mustard_core::platform::error::Error",
+        "serde_json::Value",
+        "serde_json::json",
+        "std::path::Path",
+        "super::*",
+        "tempfile::tempdir"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "struct",
+          "name": "PendingGate",
+          "line": 81,
+          "supertypes": [
+            "Check"
+          ]
+        },
+        {
+          "kind": "method",
+          "name": "evaluate",
+          "line": 84,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "omitted_items",
+          "line": 119,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "cites",
+          "line": 131,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "normalize",
+          "line": 137,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mentions_id",
+          "line": 143,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mentions_title",
+          "line": 149,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "occurs_whole",
+          "line": 157,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "block_reason",
+          "line": 170,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ctx",
+          "line": 190,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stop",
+          "line": 200,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "project_with_open_items",
+          "line": 211,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "project_with_two_open_items",
+          "line": 232,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "verdict",
+          "line": 236,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_gate_blocks_closing_turn_that_omits_open_item",
+          "line": 244,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_gate_ignores_turn_without_closure",
+          "line": 273,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_pending_block_swallowed_by_another_gate_is_checked_again",
+          "line": 295,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_cited_closure_consumes_the_marker",
+          "line": 322,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_short_title_is_not_cited_by_a_longer_word",
+          "line": 336,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_title_counts_as_a_citation_and_the_gate_self_restricts",
+          "line": 364,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_closure_in_a_blocked_continuation_is_checked_and_never_leaks",
+          "line": 393,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "git",
+          "line": 420,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_closure_recorded_in_a_worktree_arms_the_main_checkout",
+          "line": 434,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_id_is_matched_whole",
+          "line": 471,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_recorded_closure_arms_the_gate_for_its_session",
+          "line": 482,
+          "supertypes": []
+        }
+      ],
+      "fan_in": 1
     },
     {
       "path": "apps/rt/src/hooks/task/metrics_observer.rs",
@@ -30413,7 +30623,7 @@
     {
       "path": "apps/rt/src/hooks/task/mod.rs",
       "language": "rust",
-      "loc": 11,
+      "loc": 12,
       "imports": [],
       "namespaces": [],
       "declarations": []
@@ -35828,7 +36038,7 @@
     {
       "path": "apps/rt/src/hooks/session/session_start_inject.rs",
       "language": "rust",
-      "loc": 1097,
+      "loc": 1201,
       "imports": [
         "crate::shared::branch_state::{awaiting_prune, LocalOnlyPr}",
         "mustard_core::ClaudePaths",
@@ -35849,7 +36059,7 @@
         {
           "kind": "struct",
           "name": "SessionStartInject",
-          "line": 102,
+          "line": 106,
           "supertypes": [
             "Check"
           ]
@@ -35857,259 +36067,283 @@
         {
           "kind": "function",
           "name": "harness_dir",
-          "line": 109,
+          "line": 113,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sessions_dir",
-          "line": 116,
+          "line": 120,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "current_session_id",
-          "line": 123,
+          "line": 127,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_harness_init",
-          "line": 141,
+          "line": 145,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_old_sessions",
-          "line": 178,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spawn_otel_collector",
-          "line": 217,
+          "line": 221,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_pid",
-          "line": 266,
+          "line": 270,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "exe_rebuilt_since_pid_file",
-          "line": 277,
+          "line": 281,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "free_otel_port",
-          "line": 306,
+          "line": 310,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_spec_hygiene",
-          "line": 320,
+          "line": 324,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "evaluate",
-          "line": 345,
+          "line": 349,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_start_core",
-          "line": 358,
+          "line": 362,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "version_drift_notice",
-          "line": 478,
+          "line": 488,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stale_plugin_line",
-          "line": 510,
+          "line": 520,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "plugin_behind_binary_line",
-          "line": 548,
+          "line": 558,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_pending_notice",
-          "line": 589,
+          "line": 599,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_notice",
+          "line": 649,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ctx",
-          "line": 626,
+          "line": 674,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_input",
-          "line": 635,
+          "line": 683,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compact_rearms_the_prompt_family_without_folding_it_in",
-          "line": 658,
+          "line": 706,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_session_start_trigger_allows",
-          "line": 700,
+          "line": 748,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "drift_notice_absent_without_mustard_json",
-          "line": 717,
+          "line": 765,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "drift_notice_absent_when_stamp_matches",
-          "line": 723,
+          "line": 771,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "drift_notice_fires_on_mismatch_and_names_upsert",
-          "line": 735,
+          "line": 783,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "drift_notice_fires_on_missing_stamp",
-          "line": 745,
+          "line": 793,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stale_plugin_is_announced_at_session_start",
-          "line": 759,
+          "line": 807,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stale_plugin_notice_stays_quiet_without_proof",
-          "line": 774,
+          "line": 822,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git",
-          "line": 784,
+          "line": 832,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_advisory_absent_without_mustard_json",
-          "line": 798,
+          "line": 846,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_advisory_names_units_whose_branch_outlived_the_merge",
-          "line": 808,
+          "line": 856,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "add_pending",
+          "line": 901,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "session_start_lists_open_pending_items",
+          "line": 919,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_notice_caps_the_list_and_stays_quiet_when_empty",
+          "line": 943,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "harness_init_creates_dirs_and_emits_session_start",
-          "line": 852,
+          "line": 965,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "harness_init_creates_harness_dir_no_jsonl",
-          "line": 887,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "write_active_spec",
-          "line": 904,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "hygiene_noop_completed_spec_stays_flat",
-          "line": 911,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "hygiene_noop_implementing_spec_stays_flat",
-          "line": 926,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "hygiene_noop_blocked_spec_stays_flat",
-          "line": 940,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "no_grain_model_returns_allow",
-          "line": 960,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "a_plugin_left_behind_by_a_package_install_is_named",
           "line": 1000,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "write_active_spec",
+          "line": 1017,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hygiene_noop_completed_spec_stays_flat",
+          "line": 1024,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hygiene_noop_implementing_spec_stays_flat",
+          "line": 1039,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hygiene_noop_blocked_spec_stays_flat",
+          "line": 1053,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "no_grain_model_returns_allow",
+          "line": 1073,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_plugin_left_behind_by_a_package_install_is_named",
+          "line": 1113,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "seed_session_injectable",
-          "line": 1019,
+          "line": 1132,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_input_with_source",
-          "line": 1035,
+          "line": 1148,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_start_injects_declared_file_once",
-          "line": 1045,
+          "line": 1158,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compact_resets_markers_and_reinjects",
-          "line": 1085,
+          "line": 1198,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clear_resets_markers_and_reinjects",
-          "line": 1123,
+          "line": 1236,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_declared_file_degrades_to_allow",
-          "line": 1162,
+          "line": 1275,
           "supertypes": []
         }
       ],
@@ -38190,16 +38424,19 @@
     {
       "path": "apps/rt/src/commands/review/pr_door.rs",
       "language": "rust",
-      "loc": 1230,
+      "loc": 1384,
       "imports": [
         "crate::commands::agent::render::reference::files_section_paths",
         "crate::commands::agent::render::skills::build_skills_list",
+        "crate::commands::event::pending::{close_pending, open_pending, OpenPending, UNIT_PENDING_KEY}",
+        "crate::commands::event::pending::{pending_at, PendingOpts}",
         "crate::commands::git_settle::{git_out, main_checkout_root, settle_at}",
         "crate::commands::review::dependency_precheck::detect_subproject",
         "crate::commands::review::review_result",
         "crate::commands::work_unit_open::checkout_holding_branch",
         "crate::shared::pr_provider::{provider_for, PrChecks}",
         "crate::shared::work_kind::BaseFlow",
+        "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}",
         "serde::Serialize",
         "serde_json::Value",
         "serde_json::json",
@@ -38215,469 +38452,505 @@
         {
           "kind": "function",
           "name": "gh_out",
-          "line": 109,
+          "line": 116,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_json",
-          "line": 132,
+          "line": 139,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "project_root",
-          "line": 142,
+          "line": 149,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bases_and_branch",
-          "line": 157,
+          "line": 164,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_of_branch",
-          "line": 170,
+          "line": 177,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_rel_path",
-          "line": 175,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_text_of_unit",
-          "line": 192,
+          "line": 199,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrFacts",
-          "line": 209,
+          "line": 216,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "number",
-          "line": 210,
+          "line": 217,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 212,
+          "line": 219,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_pr",
-          "line": 217,
+          "line": 224,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_subproject",
-          "line": 245,
+          "line": 252,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrEntry",
-          "line": 258,
+          "line": 265,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "number",
-          "line": 259,
+          "line": 266,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "title",
-          "line": 260,
+          "line": 267,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "mergeable",
-          "line": 264,
+          "line": 271,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "draft",
-          "line": 268,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "head",
-          "line": 270,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PrListReport",
           "line": 275,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "ok",
-          "line": 279,
+          "name": "head",
+          "line": 277,
           "supertypes": []
         },
         {
-          "kind": "field",
-          "name": "reason",
-          "line": 281,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "branch",
+          "kind": "struct",
+          "name": "PrListReport",
           "line": 282,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "ok",
+          "line": 286,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 288,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "branch",
+          "line": 289,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "bases",
-          "line": 290,
+          "line": 297,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "prs",
-          "line": 292,
+          "line": 299,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "gh_error",
-          "line": 294,
+          "line": 301,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "hint",
-          "line": 296,
+          "line": 303,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_entry",
-          "line": 301,
+          "line": 308,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "list_at",
-          "line": 331,
+          "line": 338,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrReviewReport",
-          "line": 407,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "ok",
-          "line": 410,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 412,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "pr",
-          "line": 413,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "head",
           "line": 414,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "spec",
+          "name": "ok",
           "line": 417,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "spec_path",
-          "line": 422,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "subproject",
-          "line": 424,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "patterns",
-          "line": 428,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "recorded",
-          "line": 430,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "verdict",
-          "line": 432,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "review_brief",
-          "line": 443,
-          "supertypes": []
-        },
-        {
-          "kind": "enum",
-          "name": "MergeConsent",
-          "line": 512,
-          "supertypes": []
-        },
-        {
-          "kind": "enum_member",
-          "name": "Proceed",
-          "line": 514,
-          "supertypes": []
-        },
-        {
-          "kind": "enum_member",
-          "name": "Ask",
-          "line": 517,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
           "name": "reason",
-          "line": 517,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "checks_reason",
-          "line": 528,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "merge_consent",
-          "line": 559,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "recorded_verdict",
-          "line": 587,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "PrMergeReport",
-          "line": 624,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "ok",
-          "line": 629,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "action",
-          "line": 632,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reason",
-          "line": 634,
+          "line": 419,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "pr",
-          "line": 635,
+          "line": 420,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 637,
+          "line": 421,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 639,
+          "line": 424,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec_path",
+          "line": 429,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "subproject",
+          "line": 431,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "patterns",
+          "line": 435,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "recorded",
+          "line": 437,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "verdict",
+          "line": 439,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "review_brief",
+          "line": 450,
+          "supertypes": []
+        },
+        {
+          "kind": "enum",
+          "name": "MergeConsent",
+          "line": 519,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Proceed",
+          "line": 521,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Ask",
+          "line": 524,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 524,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "checks_reason",
+          "line": 535,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "merge_consent",
+          "line": 566,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "recorded_verdict",
+          "line": 594,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PrMergeReport",
+          "line": 631,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "ok",
+          "line": 636,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "action",
+          "line": 639,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
           "line": 641,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "checks",
+          "name": "pr",
+          "line": 642,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "head",
+          "line": 644,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec",
           "line": 646,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "warning",
+          "name": "verdict",
           "line": 648,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "checks",
+          "line": 653,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "warning",
+          "line": 655,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "settle",
-          "line": 652,
+          "line": 659,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "hint",
-          "line": 654,
+          "line": 661,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "pending_closed",
+          "line": 665,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "pending_open",
+          "line": 670,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "merge_core",
-          "line": 667,
+          "line": 683,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "gh_merge",
-          "line": 829,
+          "name": "after_merge",
+          "line": 863,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "emit",
-          "line": 838,
+          "name": "linked_pending",
+          "line": 876,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "run_list",
-          "line": 843,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "run_review",
-          "line": 848,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "run_merge",
-          "line": 866,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "git",
-          "line": 889,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "repo",
+          "name": "record_merge",
           "line": 897,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "pr_list_refuses_off_an_integration_base_and_names_it",
-          "line": 914,
+          "name": "gh_merge",
+          "line": 920,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "pr_list_rows_keep_the_provider_word_and_sort_by_number",
+          "name": "emit",
+          "line": 929,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_list",
+          "line": 934,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_review",
+          "line": 939,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_merge",
           "line": 957,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "git",
+          "line": 980,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "repo",
+          "line": 988,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_list_refuses_off_an_integration_base_and_names_it",
+          "line": 1005,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_list_rows_keep_the_provider_word_and_sort_by_number",
+          "line": 1048,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "pr_merge_without_verdict_warns_and_asks_instead_of_merging",
-          "line": 992,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "a_base_to_base_promotion_is_merged_but_never_pruned",
-          "line": 1049,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "pr_merge_consent_asks_for_anything_but_approved",
           "line": 1083,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "a_base_to_base_promotion_is_merged_but_never_pruned",
+          "line": 1140,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_merge_consent_asks_for_anything_but_approved",
+          "line": 1174,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "pr_merge_does_not_merge_while_provider_checks_run",
-          "line": 1131,
+          "line": 1222,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_refuses_when_provider_checks_failed",
-          "line": 1170,
+          "line": 1261,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_reads_the_verdict_review_result_recorded",
-          "line": 1221,
+          "line": 1312,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_merge_closes_linked_pending_item",
+          "line": 1333,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "door_flow",
-          "line": 1238,
+          "line": 1401,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_of_branch_reads_the_unit_out_of_the_head_ref",
-          "line": 1248,
+          "line": 1411,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_review_brief_names_the_spec_and_records_the_verdict",
-          "line": 1263,
+          "line": 1426,
           "supertypes": []
         }
       ],
@@ -42318,7 +42591,7 @@
     {
       "path": "apps/rt/src/commands/pipeline/wave_done.rs",
       "language": "rust",
-      "loc": 1429,
+      "loc": 1430,
       "imports": [
         "crate::commands::agent::agent_prompt_render::PROMPT_REF_MARKER",
         "crate::commands::agent::context_inject",
@@ -42347,223 +42620,223 @@
         {
           "kind": "function",
           "name": "unaccounted_reality_obligations",
-          "line": 118,
+          "line": 119,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "accounts_for",
-          "line": 156,
+          "line": 157,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recorded_return_text",
-          "line": 208,
+          "line": 209,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "materialize_wave_memory",
-          "line": 292,
+          "line": 293,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Lesson",
-          "line": 359,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "text",
           "line": 360,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "wave",
+          "name": "text",
           "line": 361,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "role",
+          "name": "wave",
           "line": 362,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "session",
+          "name": "role",
           "line": 363,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "recorded",
+          "name": "session",
           "line": 364,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "recorded",
+          "line": 365,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "recorded_lessons",
-          "line": 373,
+          "line": 374,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "memory_body",
-          "line": 391,
+          "line": 392,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "free_memory_path",
-          "line": 412,
+          "line": 413,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "render_memory_file",
-          "line": 445,
+          "line": 446,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cache_wave_diff",
-          "line": 490,
+          "line": 491,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "declared_wave_files",
-          "line": 518,
+          "line": 519,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cache_wave_diff_resolves_wave_dir_and_writes_atomically",
-          "line": 533,
+          "line": 534,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git_available",
-          "line": 555,
+          "line": 556,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git",
-          "line": 559,
+          "line": 560,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "round_repo",
-          "line": 565,
+          "line": 566,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cached_diff",
-          "line": 604,
+          "line": 605,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_wave_caches_only_its_own_declared_files",
-          "line": 616,
+          "line": 617,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "anchored_spec",
-          "line": 656,
+          "line": 657,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_decision",
-          "line": 665,
+          "line": 666,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "memory_files",
-          "line": 685,
+          "line": 686,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_lesson_reaches_the_next_round",
-          "line": 708,
+          "line": 709,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_wave_keeps_its_own_memory",
-          "line": 787,
+          "line": 788,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_wave_keeps_its_own_memory_and_the_fifth_was_value_filtered_not_dropped",
-          "line": 879,
+          "line": 880,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_wave_keeps_its_own_memory_through_the_real_dispatch_chain",
-          "line": 941,
+          "line": 942,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_memory_with_no_recorded_wave_says_so",
-          "line": 1103,
+          "line": 1104,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "value_filter_rejects_process_residue",
-          "line": 1138,
+          "line": 1139,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_agent_stop",
-          "line": 1192,
+          "line": 1193,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_done_flags_unreported_reality_obligation",
-          "line": 1219,
+          "line": 1220,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_sibling_waves_report_does_not_clear_this_waves_duty",
-          "line": 1270,
+          "line": 1271,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "child_returns",
-          "line": 1304,
+          "line": 1305,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "each_waves_finalisation_reads_only_its_own_record",
-          "line": 1391,
+          "line": 1392,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "obligation_match_is_by_id_not_substring",
-          "line": 1486,
+          "line": 1487,
           "supertypes": []
         }
       ]
@@ -47029,7 +47302,7 @@
     {
       "path": "apps/rt/src/commands/event/emit_pipeline.rs",
       "language": "rust",
-      "loc": 2817,
+      "loc": 2979,
       "imports": [
         "crate::commands::event::work_branch::compute_work_branch",
         "crate::commands::spec::spec_slug",
@@ -47049,6 +47322,7 @@
         "serde_json::{json, Value}",
         "std::path::Path",
         "super::*",
+        "super::pending::{format_pending_items, open_pending, OpenPending, UNIT_PENDING_KEY}",
         "tempfile::tempdir"
       ],
       "namespaces": [],
@@ -47056,613 +47330,667 @@
         {
           "kind": "struct",
           "name": "EmitPipelineOpts",
-          "line": 126,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "kind",
-          "line": 128,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "spec",
-          "line": 130,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "payload",
-          "line": 132,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "allow_no_qa",
           "line": 136,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "kind",
+          "line": 138,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "spec",
+          "line": 140,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "payload",
+          "line": 142,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "allow_no_qa",
+          "line": 146,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "intent",
-          "line": 143,
+          "line": 153,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "unit_name",
-          "line": 154,
+          "line": 164,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "base",
-          "line": 162,
+          "line": 172,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "work_kind",
-          "line": 174,
+          "line": 184,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "pending",
+          "line": 189,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PendingEcho",
+          "line": 194,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "open",
+          "line": 195,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "linked",
+          "line": 196,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "work_kind_of_flow_kind",
-          "line": 193,
+          "line": 215,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "derive_work_kind",
-          "line": 213,
+          "line": 235,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cut_base_is_ordinary",
-          "line": 244,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "parse_payload_tolerant",
           "line": 266,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "parse_payload_tolerant",
+          "line": 288,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "run",
-          "line": 290,
+          "line": 312,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "effect_cwd",
-          "line": 378,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "unknown_kind_message",
-          "line": 388,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "validate_kind_or_exit",
-          "line": 407,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "resolve_work_kind_or_exit",
+          "name": "resolve_pending_link_or_exit",
           "line": 419,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "pending_link_refusal",
+          "line": 434,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "with_pending_link",
+          "line": 466,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "announce_open_pending",
+          "line": 480,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "effect_cwd",
+          "line": 494,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unknown_kind_message",
+          "line": 504,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "validate_kind_or_exit",
+          "line": 523,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "resolve_work_kind_or_exit",
+          "line": 535,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "resolve_kind_base_or_exit",
-          "line": 465,
+          "line": 581,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "enforce_base_gate_or_exit",
-          "line": 505,
+          "line": 621,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "enforce_base_gate_at",
-          "line": 520,
+          "line": 636,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "enforce_qa_gate_or_exit",
-          "line": 592,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "parse_payload_or_exit",
-          "line": 611,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "MintedName",
-          "line": 633,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "slug",
-          "line": 635,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "renamed_from",
-          "line": 637,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "name_from",
-          "line": 640,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "mint_unit_name_at",
-          "line": 673,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "mint_unit_name",
           "line": 708,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "parse_payload_or_exit",
+          "line": 727,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "MintedName",
+          "line": 749,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "slug",
+          "line": 751,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "renamed_from",
+          "line": 753,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "name_from",
+          "line": 756,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mint_unit_name_at",
+          "line": 789,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "mint_unit_name",
+          "line": 824,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "emit_primary_and_alias",
-          "line": 741,
+          "line": 857,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sync_status_transition",
-          "line": 777,
+          "line": 893,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "apply_wave_complete",
-          "line": 808,
+          "line": 924,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mark_pending_work_branch",
-          "line": 845,
+          "line": 961,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "finalize_complete",
-          "line": 878,
+          "line": 994,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cleanup_terminal_state",
-          "line": 887,
+          "line": 1003,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "success_line",
-          "line": 918,
+          "line": 1034,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed",
-          "line": 964,
+          "line": 1091,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_terminal_event",
-          "line": 991,
+          "line": 1118,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_wave_failed_twin",
-          "line": 1021,
+          "line": 1148,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "failed_wave_number",
-          "line": 1054,
+          "line": 1181,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_spec_path",
-          "line": 1089,
+          "line": 1216,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tag_legacy_alias",
-          "line": 1110,
+          "line": 1237,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event",
-          "line": 1135,
+          "line": 1262,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "state_from_status_word",
-          "line": 1193,
+          "line": 1320,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "phase_token_for_stage",
-          "line": 1230,
+          "line": 1357,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stage_rank",
-          "line": 1249,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "meta_path_for",
-          "line": 1263,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "patch_meta_for_transition",
-          "line": 1291,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "patch_meta_complete",
-          "line": 1345,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "emit_completed_status_if_needed",
           "line": 1376,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "meta_path_for",
+          "line": 1390,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "patch_meta_for_transition",
+          "line": 1418,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "patch_meta_complete",
+          "line": 1472,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "emit_completed_status_if_needed",
+          "line": 1503,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "sync_wave_started",
-          "line": 1416,
+          "line": 1543,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sync_parent_started",
-          "line": 1451,
+          "line": 1578,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reconcile_wave_checklist",
-          "line": 1488,
+          "line": 1615,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_wave_start",
-          "line": 1526,
+          "line": 1653,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_wave_retry",
-          "line": 1564,
+          "line": 1691,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_dispatch_failure",
-          "line": 1619,
+          "line": 1746,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bump_parent_progress",
-          "line": 1694,
+          "line": 1821,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "settle_final_wave",
-          "line": 1799,
+          "line": 1926,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_pipeline_complete",
-          "line": 1848,
+          "line": 1975,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_omitted_type_derives_from_the_payload_kind_or_refuses",
-          "line": 1886,
+          "line": 2013,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_base_that_admits_hotfix_refuses_to_derive",
-          "line": 1910,
+          "line": 2037,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "work_type_in_kind_flag_gets_payload_hint",
-          "line": 1918,
+          "line": 2045,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_base_gate_mints_the_canonical_slug",
-          "line": 1943,
+          "line": 2070,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "operator_name_wins_over_the_derivation",
-          "line": 2014,
+          "line": 2141,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "known_kinds_list_covers_legacy_and_new_kinds",
-          "line": 2090,
+          "line": 2217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_maps_legacy_status_terminal_to_outcome",
-          "line": 2122,
+          "line": 2249,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_maps_legacy_phase_to_stage",
-          "line": 2133,
+          "line": 2260,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "alias_event_returns_none_for_new_kinds",
-          "line": 2142,
+          "line": 2269,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tag_legacy_alias_sets_flag_on_object",
-          "line": 2150,
+          "line": 2277,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "valid_json_payload_parses",
-          "line": 2157,
+          "line": 2284,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "null_payload_when_none",
-          "line": 2164,
+          "line": 2291,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_payload_tolerant_recovers_powershell_escaped_json",
-          "line": 2180,
+          "line": 2307,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_routed",
-          "line": 2205,
+          "line": 2332,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "status_wave_failed_emits_the_wave_failed_twin",
-          "line": 2224,
+          "line": 2351,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_failed_twin_prefers_payload_wave_and_skips_non_failures",
-          "line": 2258,
+          "line": 2385,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "each_kind_appended_once_with_correct_event_name",
-          "line": 2293,
+          "line": 2420,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_scope_payload_round_trips",
-          "line": 2321,
+          "line": 2448,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pipeline_task_complete_payload_round_trips",
-          "line": 2348,
+          "line": 2475,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "optional_fields_absent_in_minimal_payload",
-          "line": 2377,
+          "line": 2504,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_no_events_dir",
-          "line": 2394,
+          "line": 2521,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_requires_overall_pass",
-          "line": 2403,
+          "line": 2530,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_only_fail",
-          "line": 2424,
+          "line": 2551,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_false_when_overall_skip",
-          "line": 2438,
+          "line": 2565,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "qa_result_passed_uses_most_recent_event",
-          "line": 2453,
+          "line": 2580,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_error_does_not_propagate_as_nonzero",
-          "line": 2491,
+          "line": 2618,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_bumps_parent_progress",
-          "line": 2515,
+          "line": 2642,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "reconcile_wave_checklist_marks_existing_files_only",
-          "line": 2563,
+          "line": 2690,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_advances_parent_stage_to_execute",
-          "line": 2589,
+          "line": 2716,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_complete_does_not_regress_later_stage",
-          "line": 2614,
+          "line": 2741,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_start_advances_parent_stage_to_execute",
-          "line": 2640,
+          "line": 2767,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "final_wave_auto_finalizes_when_no_acceptance_criteria",
-          "line": 2677,
+          "line": 2804,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "final_wave_awaits_close_when_acceptance_criteria_present",
-          "line": 2719,
+          "line": 2846,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_spec_meta",
-          "line": 2759,
+          "line": 2886,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stage_transition_patches_meta_stage",
-          "line": 2770,
+          "line": 2897,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "outcome_transition_pins_close_on_terminal",
-          "line": 2800,
+          "line": 2927,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_sets_outcome_completed_and_stage_close",
-          "line": 2825,
+          "line": 2952,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "patch_meta_complete_noop_when_spec_missing",
-          "line": 2848,
+          "line": 2975,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "projected_status",
-          "line": 2855,
+          "line": 2982,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_also_emits_completed_status_when_not_terminal",
-          "line": 2869,
+          "line": 2996,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "complete_status_emit_is_idempotent_when_already_completed",
-          "line": 2888,
+          "line": 3015,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "active_spec",
-          "line": 2914,
+          "line": 3041,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_pipeline_names_an_overlapping_active_spec",
-          "line": 2930,
+          "line": 3057,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_unit_opens_linked_to_an_open_pending_item",
+          "line": 3135,
           "supertypes": []
         }
       ],
@@ -50043,7 +50371,7 @@
     {
       "path": "apps/rt/src/commands/event/mod.rs",
       "language": "rust",
-      "loc": 12,
+      "loc": 13,
       "imports": [],
       "namespaces": [],
       "declarations": []
@@ -50051,7 +50379,7 @@
     {
       "path": "apps/rt/src/commands/event/cli.rs",
       "language": "rust",
-      "loc": 226,
+      "loc": 277,
       "imports": [
         "clap::Subcommand",
         "crate::commands::{event}",
@@ -50186,75 +50514,129 @@
           "supertypes": []
         },
         {
+          "kind": "field",
+          "name": "pending",
+          "line": 125,
+          "supertypes": []
+        },
+        {
           "kind": "enum_member",
           "name": "EventProjections",
-          "line": 122,
+          "line": 129,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "view",
-          "line": 127,
+          "line": 134,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 130,
+          "line": 137,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "wave",
-          "line": 133,
+          "line": 140,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "format",
-          "line": 136,
+          "line": 143,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Notebook",
-          "line": 146,
+          "line": 153,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "add",
-          "line": 150,
+          "line": 157,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "unit",
-          "line": 154,
+          "line": 161,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 159,
+          "line": 166,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "explains_symptom",
-          "line": 173,
+          "line": 180,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "root",
-          "line": 176,
+          "line": 183,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Pending",
+          "line": 192,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "add",
+          "line": 195,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 198,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "detail",
+          "line": 201,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "close",
+          "line": 204,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "drop",
+          "line": 207,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 211,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "root",
+          "line": 214,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "dispatch",
-          "line": 181,
+          "line": 219,
           "supertypes": []
         }
       ]
@@ -50496,6 +50878,360 @@
         }
       ],
       "fan_in": 2
+    },
+    {
+      "path": "apps/rt/src/commands/event/pending.rs",
+      "language": "rust",
+      "loc": 575,
+      "imports": [
+        "crate::commands::git_settle::main_checkout_root",
+        "serde::{Deserialize, Serialize}",
+        "serde_json::{json, Map, Value}",
+        "std::path::{Path, PathBuf}",
+        "std::process::Command",
+        "super::*",
+        "tempfile::tempdir"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "struct",
+          "name": "PendingOpts",
+          "line": 41,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "root",
+          "line": 44,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "add",
+          "line": 45,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 46,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "detail",
+          "line": 47,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "close",
+          "line": 48,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "drop",
+          "line": 49,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 50,
+          "supertypes": []
+        },
+        {
+          "kind": "enum",
+          "name": "Status",
+          "line": 58,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Open",
+          "line": 59,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Closed",
+          "line": 60,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Dropped",
+          "line": 61,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "as_str",
+          "line": 65,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "PendingItem",
+          "line": 77,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "id",
+          "line": 78,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 79,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "detail",
+          "line": 80,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "status",
+          "line": 81,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 84,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "Ledger",
+          "line": 92,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "items",
+          "line": 94,
+          "supertypes": []
+        },
+        {
+          "kind": "enum",
+          "name": "Action",
+          "line": 98,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "List",
+          "line": 99,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Add",
+          "line": 100,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 100,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "detail",
+          "line": 100,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Settle",
+          "line": 101,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "id",
+          "line": 101,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "status",
+          "line": 101,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reason",
+          "line": 101,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "one_line",
+          "line": 106,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "refused",
+          "line": 110,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "resolve_action",
+          "line": 116,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ledger_root",
+          "line": 183,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "load",
+          "line": 195,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "next_id",
+          "line": 222,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "item_json",
+          "line": 232,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "write",
+          "line": 245,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_at",
+          "line": 255,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "OpenPending",
+          "line": 356,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "id",
+          "line": 357,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "title",
+          "line": 358,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "open_pending",
+          "line": 369,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "close_pending",
+          "line": 388,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "format_pending_items",
+          "line": 406,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run",
+          "line": 418,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "git",
+          "line": 432,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "repo",
+          "line": 438,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "opts",
+          "line": 452,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "add",
+          "line": 464,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ids",
+          "line": 473,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_item_added_without_unit_is_listed",
+          "line": 482,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pending_close_without_reason_is_refused",
+          "line": 517,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "material_injectable_names_the_pending_door",
+          "line": 564,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_corrupt_ledger_is_refused_rather_than_discarded",
+          "line": 588,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ids_are_sequential_a_repeat_folds_and_stray_flags_refuse",
+          "line": 604,
+          "supertypes": []
+        }
+      ],
+      "fan_in": 3
     },
     {
       "path": "apps/rt/src/commands/checklist/mark_checklist_item.rs",
@@ -66473,7 +67209,7 @@
     {
       "path": "apps/rt/src/commands/spec/approve_spec.rs",
       "language": "rust",
-      "loc": 1924,
+      "loc": 1925,
       "imports": [
         "ac_negative_check::{Confirmation, Control, Proof}",
         "crate::commands::review::{ac_negative_check, qa_run}",
@@ -66808,193 +67544,193 @@
         {
           "kind": "function",
           "name": "emit_via_route",
-          "line": 938,
+          "line": 939,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit_sequence_and_read",
-          "line": 959,
+          "line": 960,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_refuses_scaffold_residue",
-          "line": 998,
+          "line": 999,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_sequence_default_stops_at_approved",
-          "line": 1135,
+          "line": 1136,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_sequence_resume_appends_execute_stage",
-          "line": 1144,
+          "line": 1145,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_sequence_wave_plan_tags_stage_with_wave_one",
-          "line": 1156,
+          "line": 1157,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fresh_session_emits_plan_then_approved_in_order",
-          "line": 1170,
+          "line": 1171,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resume_branch_emits_execute_stage_after_approval",
-          "line": 1186,
+          "line": 1187,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_wave_plan",
-          "line": 1203,
+          "line": 1204,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave_plan_stage_patches_wave_one_meta",
-          "line": 1225,
+          "line": 1226,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "parse_approval_mode_maps_values",
-          "line": 1259,
+          "line": 1260,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_gate_blocks_strict_without_marker_and_proceeds_with_it",
-          "line": 1271,
+          "line": 1272,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "background_job_without_user_stops_at_plan",
-          "line": 1283,
+          "line": 1284,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_marker_presence_toggles_with_the_file",
-          "line": 1291,
+          "line": 1292,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_is_full_reads_meta_scope",
-          "line": 1315,
+          "line": 1316,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_full_spec",
-          "line": 1342,
+          "line": 1343,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clarify_gate_blocks_full_without_marker_and_proceeds_with_a_record",
-          "line": 1356,
+          "line": 1357,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "light_spec_is_not_clarify_gated",
-          "line": 1391,
+          "line": 1392,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "combined_refusal_lists_all_missing_gates",
-          "line": 1418,
+          "line": 1419,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clarify_only_missing_refuses_with_single_requirement",
-          "line": 1438,
+          "line": 1439,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_only_missing_refuses_with_single_requirement",
-          "line": 1456,
+          "line": 1457,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_refusal_names_the_gestures_that_actually_mint",
-          "line": 1486,
+          "line": 1487,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "both_present_approves",
-          "line": 1527,
+          "line": 1528,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approve_refuses_a_marker_that_recorded_nothing",
-          "line": 1549,
+          "line": 1550,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approve_spec_echoes_provenance",
-          "line": 1638,
+          "line": 1639,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "report_does_not_claim_a_gesture_that_did_not_happen",
-          "line": 1686,
+          "line": 1687,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unreadable_marker_body_still_approves",
-          "line": 1745,
+          "line": 1746,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_criteria",
-          "line": 1793,
+          "line": 1794,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_proof_ledger",
-          "line": 1811,
+          "line": 1812,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_refuses_a_criterion_with_no_recorded_proof",
-          "line": 1843,
+          "line": 1844,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "approval_reads_the_confirmation_column",
-          "line": 1942,
+          "line": 1943,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_proof_precondition_ignores_the_mode_and_spares_a_spec_with_no_criteria",
-          "line": 2012,
+          "line": 2013,
           "supertypes": []
         }
       ],
@@ -68068,7 +68804,7 @@
           "supertypes": []
         }
       ],
-      "fan_in": 8
+      "fan_in": 9
     },
     {
       "path": "apps/rt/src/commands/mod.rs",
@@ -73608,7 +74344,7 @@
     {
       "path": "apps/rt/src/registry.rs",
       "language": "rust",
-      "loc": 936,
+      "loc": 954,
       "imports": [
         "crate::hooks::bash::bash_command_gate::BashCommandGate",
         "crate::hooks::observe::amend_window_inject::AmendWindowInject",
@@ -73635,6 +74371,7 @@
         "crate::hooks::task::delegation_advisory::DelegationAdvisory",
         "crate::hooks::task::main_context_counter::MainContextCounter",
         "crate::hooks::task::metrics_observer::MetricsObserver",
+        "crate::hooks::task::pending_gate::PendingGate",
         "crate::hooks::task::skill_usage_observer::SkillUsageObserver",
         "crate::hooks::task::stop_gate::StopGate",
         "crate::hooks::task::subagent_inject::SubagentInject",
@@ -73659,67 +74396,67 @@
         {
           "kind": "enum",
           "name": "ToolMatch",
-          "line": 59,
+          "line": 60,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Any",
-          "line": 62,
+          "line": 63,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Named",
-          "line": 64,
+          "line": 65,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "matches",
-          "line": 70,
+          "line": 71,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Module",
-          "line": 81,
+          "line": 82,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "id",
-          "line": 84,
+          "line": 85,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "applies_to",
-          "line": 86,
+          "line": 87,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "check",
-          "line": 89,
+          "line": 90,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "observer",
-          "line": 92,
+          "line": 93,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "matches",
-          "line": 98,
+          "line": 99,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Registry",
-          "line": 106,
+          "line": 107,
           "supertypes": [
             "Default"
           ]
@@ -73727,109 +74464,109 @@
         {
           "kind": "field",
           "name": "modules",
-          "line": 107,
+          "line": 108,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "new",
-          "line": 120,
+          "line": 121,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "applicable",
-          "line": 666,
+          "line": 683,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "by_id",
-          "line": 676,
+          "line": 693,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "default",
-          "line": 682,
+          "line": 699,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "applicable_ids",
-          "line": 692,
+          "line": 709,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bash_command_gate_applies_to_bash_events",
-          "line": 705,
+          "line": 722,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wildcard_counters_apply_to_every_pre_tool_use",
-          "line": 718,
+          "line": 735,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "task_family_applies_on_pre_tool_use_task",
-          "line": 730,
+          "line": 747,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "subagent_lifecycle_runs_only_the_counters",
-          "line": 739,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "skill_post_tool_use_runs_skill_usage_observer",
-          "line": 749,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "exit_plan_mode_post_tool_use_runs_plan_approval_observer",
           "line": 756,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "skill_post_tool_use_runs_skill_usage_observer",
+          "line": 766,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "exit_plan_mode_post_tool_use_runs_plan_approval_observer",
+          "line": 773,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "ask_user_question_post_tool_use_runs_approval_marker_observer",
-          "line": 775,
+          "line": 792,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stop_gate_is_the_check_on_the_stop_trigger",
-          "line": 794,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "by_id_finds_registered_modules",
           "line": 811,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "by_id_finds_registered_modules",
+          "line": 828,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "fase4c_auto_open_observers_apply_to_their_events",
-          "line": 854,
+          "line": 872,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "wave5_session_families_apply_to_their_events",
-          "line": 882,
+          "line": 900,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_edit_family_applies_on_pre_tool_use",
-          "line": 911,
+          "line": 929,
           "supertypes": []
         }
       ],
@@ -75727,7 +76464,7 @@
     {
       "path": "apps/rt/tests/run_command_surface.rs",
       "language": "rust",
-      "loc": 503,
+      "loc": 504,
       "imports": [
         "clap::{Command, Subcommand}",
         "mustard_rt::commands::RunCmd",
@@ -75739,73 +76476,73 @@
         {
           "kind": "function",
           "name": "repo_root",
-          "line": 141,
+          "line": 142,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_files",
-          "line": 147,
+          "line": 148,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_run_tokens",
-          "line": 182,
+          "line": 183,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_command_tree",
-          "line": 224,
+          "line": 225,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_subcommand_names_are_locked",
-          "line": 233,
+          "line": 234,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_declared_command_keeps_its_help_slot",
-          "line": 247,
+          "line": 248,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_documented_run_command_exists",
-          "line": 276,
+          "line": 277,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_run_tokens_catches_every_spelling_and_skips_placeholders",
-          "line": 319,
+          "line": 320,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "amendment_path_is_published_and_instructed",
-          "line": 359,
+          "line": 360,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "finish_ritual_names_submodules",
-          "line": 455,
+          "line": 456,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_path_flag_aliases_are_interchangeable",
-          "line": 498,
+          "line": 499,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_dir_flag_aliases_are_interchangeable",
-          "line": 521,
+          "line": 522,
           "supertypes": []
         }
       ]
@@ -87040,7 +87777,7 @@
     {
       "path": "packages/core/src/platform/project_seed.rs",
       "language": "rust",
-      "loc": 3147,
+      "loc": 3165,
       "imports": [
         "crate::domain::command_detect::detect_commands",
         "crate::domain::config::{Injectable, ProjectConfig, Runtime}",
@@ -87663,170 +88400,176 @@
         },
         {
           "kind": "function",
+          "name": "the_line_merge_backfills_the_pending_ledger",
+          "line": 2347,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "the_seeded_gitignore_holds_back_the_gate_markers",
-          "line": 2355,
+          "line": 2372,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_removes_planted_orchestrator_and_root_lines",
-          "line": 2400,
+          "line": 2417,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_retires_legacy_response_style_injectable",
-          "line": 2424,
+          "line": 2441,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_backfills_the_dispatch_half_on_a_pre_split_project",
-          "line": 2469,
+          "line": 2486,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_manifest_without_sibling_hooks_does_not_authorise_the_move",
-          "line": 2528,
+          "line": 2545,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_consolidates_the_router_onto_userpromptsubmit",
-          "line": 2581,
+          "line": 2598,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "migration_does_not_reimpose_a_router_the_operator_dropped",
-          "line": 2664,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "migration_preserves_foreign_claude_md_and_is_byte_preserving",
           "line": 2681,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "migration_preserves_foreign_claude_md_and_is_byte_preserving",
+          "line": 2698,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "retire_removes_only_the_planted_placeholder_pair",
-          "line": 2718,
+          "line": 2735,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "retire_preserves_a_user_authored_mustard_marketplace",
-          "line": 2739,
+          "line": 2756,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "retire_drops_emptied_containers",
-          "line": 2755,
+          "line": 2772,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_dead_skill_validate_key_is_renamed",
-          "line": 2773,
+          "line": 2790,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_migration_leaves_the_operators_other_keys_where_they_were",
-          "line": 2806,
+          "line": 2823,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_live_skill_validate_key_wins_when_both_names_are_present",
-          "line": 2824,
+          "line": 2841,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_settings_file_without_the_dead_key_is_untouched",
-          "line": 2839,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "report_serializes_deterministically_without_volatile_fields",
           "line": 2856,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "report_serializes_deterministically_without_volatile_fields",
+          "line": 2873,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "the_settings_destination_and_its_reported_name_agree",
-          "line": 2881,
+          "line": 2898,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_footprint_is_derived_from_the_seeds_it_hides",
-          "line": 2906,
+          "line": 2923,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_injectables_are_always_rewritten",
-          "line": 2968,
+          "line": 2985,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_unreadable_injectable_is_rewritten_not_silently_preserved",
-          "line": 3016,
+          "line": 3033,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_router_rides_the_self_healing_event_and_neither_half_overflows",
-          "line": 3063,
+          "line": 3080,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "no_rule_reaches_a_depth_that_is_not_ours",
-          "line": 3116,
+          "line": 3133,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_private_marks_are_rules_an_install_writes",
-          "line": 3158,
+          "line": 3175,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "detect_install_mode_degrades_to_shared_without_a_repository",
-          "line": 3179,
+          "line": 3196,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "install_and_work",
-          "line": 3224,
+          "line": 3241,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "collect_files",
-          "line": 3317,
+          "line": 3337,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "probe_repo",
-          "line": 3336,
+          "line": 3356,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "check_ignore",
-          "line": 3364,
+          "line": 3384,
           "supertypes": []
         }
       ],
@@ -88540,7 +89283,7 @@
     {
       "path": "packages/core/src/io/claude_paths.rs",
       "language": "rust",
-      "loc": 885,
+      "loc": 901,
       "imports": [
         "std::path::{Path, PathBuf}",
         "super::*",
@@ -88647,379 +89390,391 @@
         {
           "kind": "method",
           "name": "for_project",
-          "line": 215,
+          "line": 218,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "compose_unchecked",
-          "line": 250,
+          "line": 253,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "root",
-          "line": 258,
+          "line": 261,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "claude_dir",
-          "line": 264,
+          "line": 267,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "cache_dir",
-          "line": 272,
+          "line": 275,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "harness_dir",
-          "line": 278,
+          "line": 281,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "metrics_dir",
-          "line": 284,
+          "line": 287,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "agent_state_dir",
-          "line": 290,
+          "line": 293,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "commands_dir",
-          "line": 296,
+          "line": 299,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "skills_dir",
-          "line": 302,
+          "line": 305,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "agent_memory_dir",
-          "line": 308,
+          "line": 311,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "spec_dir",
-          "line": 314,
+          "line": 317,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "pending_dir",
+          "line": 324,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "pending_ledger_path",
+          "line": 331,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "graph_dir",
-          "line": 320,
+          "line": 337,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "capabilities_dir",
-          "line": 328,
+          "line": 345,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "pipeline_states_dir",
-          "line": 344,
+          "line": 361,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "pipeline_state_file",
-          "line": 353,
+          "line": 370,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "claude_md_path",
-          "line": 366,
+          "line": 383,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "settings_json_path",
-          "line": 372,
+          "line": 389,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "settings_local_json_path",
-          "line": 387,
+          "line": 404,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "mustard_json_path",
-          "line": 401,
+          "line": 418,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "pipeline_config_md_path",
-          "line": 407,
+          "line": 424,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "detect_cache_path",
-          "line": 416,
+          "line": 433,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "knowledge_seen_path",
-          "line": 423,
+          "line": 440,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "documented_dirs",
-          "line": 432,
+          "line": 449,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "cache_files",
-          "line": 439,
+          "line": 456,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "audit_orphans",
-          "line": 451,
+          "line": 468,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "for_spec",
-          "line": 498,
+          "line": 515,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "spec_dir_or_unchecked",
-          "line": 532,
+          "line": 549,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "project_root",
-          "line": 544,
+          "line": 561,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "dir",
-          "line": 550,
+          "line": 567,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "name",
-          "line": 556,
+          "line": 573,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "spec_md_path",
-          "line": 562,
+          "line": 579,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "meta_json_path",
-          "line": 568,
+          "line": 585,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "wave_plan_md_path",
-          "line": 575,
+          "line": 592,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "events_dir",
-          "line": 582,
+          "line": 599,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "qa_report_json_path",
-          "line": 588,
+          "line": 605,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "qa_report_html_path",
-          "line": 594,
+          "line": 611,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "for_wave",
-          "line": 604,
+          "line": 621,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "spec",
-          "line": 620,
+          "line": 637,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "dir",
-          "line": 626,
+          "line": 643,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "slug",
-          "line": 632,
+          "line": 649,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "spec_md_path",
-          "line": 638,
+          "line": 655,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "meta_json_path",
-          "line": 644,
+          "line": 661,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "diff_md_path",
-          "line": 650,
+          "line": 667,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "qa_report_json_path",
-          "line": 657,
+          "line": 674,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "violates_dot_claude_guard",
-          "line": 666,
+          "line": 683,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_valid_wave_slug",
-          "line": 680,
+          "line": 697,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "for_project_sets_root",
-          "line": 706,
+          "line": 723,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compose_unchecked_skips_i1_guard",
-          "line": 713,
+          "line": 730,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "for_project_rejects_terminal_dot_claude",
-          "line": 729,
+          "line": 746,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "for_project_rejects_dot_claude_dot_claude_sequence",
-          "line": 740,
+          "line": 757,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cache_dir_under_root_dot_cache",
-          "line": 751,
+          "line": 768,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "for_spec_rejects_empty_name",
-          "line": 762,
+          "line": 779,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "for_spec_rejects_path_traversal",
-          "line": 770,
+          "line": 787,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "for_wave_rejects_malformed_slug",
-          "line": 788,
+          "line": 805,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "documented_dirs_includes_all_top_level_dirs",
-          "line": 819,
+          "line": 836,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cache_files_lists_every_owned_cache",
-          "line": 856,
+          "line": 874,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "paths_are_idempotent",
-          "line": 875,
+          "line": 893,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "audit_orphans_returns_empty_on_clean_tree",
-          "line": 887,
+          "line": 905,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "audit_orphans_flags_unknown_dir_and_cache_file",
-          "line": 904,
+          "line": 922,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_and_wave_paths_use_canonical_layout",
-          "line": 919,
+          "line": 937,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_dir_or_unchecked_matches_the_happy_path",
-          "line": 933,
+          "line": 951,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_dir_or_unchecked_falls_back_when_guard_rejects",
-          "line": 950,
+          "line": 968,
           "supertypes": []
         }
       ],
@@ -102538,13 +103293,13 @@
     }
   ],
   "graph": {
-    "nodes": 679,
-    "edges": 565,
+    "nodes": 681,
+    "edges": 571,
     "cyclic": true,
     "top_fan_in": [
       {
         "module": "apps/rt/src/shared/context.rs",
-        "degree": 53
+        "degree": 54
       },
       {
         "module": "apps/rt/src/commands/mod.rs",
@@ -102575,12 +103330,12 @@
         "degree": 10
       },
       {
-        "module": "packages/core/src/domain/model/view/mod.rs",
+        "module": "apps/rt/src/commands/git_settle.rs",
         "degree": 9
       },
       {
-        "module": "apps/rt/src/commands/git_settle.rs",
-        "degree": 8
+        "module": "packages/core/src/domain/model/view/mod.rs",
+        "degree": 9
       },
       {
         "module": "apps/rt/src/shared/events/writer_ndjson.rs",
@@ -102707,6 +103462,10 @@
         "degree": 3
       },
       {
+        "module": "apps/rt/src/commands/event/pending.rs",
+        "degree": 3
+      },
+      {
         "module": "apps/rt/src/commands/pipeline/dispatch_plan.rs",
         "degree": 3
       },
@@ -102793,16 +103552,16 @@
       {
         "module": "apps/dashboard/src/lib/query-client.ts",
         "degree": 2
-      },
-      {
-        "module": "apps/rt/src/commands/agent/render/reference.rs",
-        "degree": 2
       }
     ],
     "top_fan_out": [
       {
         "module": "apps/rt/src/registry.rs",
-        "degree": 41
+        "degree": 42
+      },
+      {
+        "module": "apps/rt/src/commands/review/pr_door.rs",
+        "degree": 9
       },
       {
         "module": "apps/rt/src/commands/spec/spec_draft.rs",
@@ -102810,10 +103569,6 @@
       },
       {
         "module": "apps/rt/src/commands/event/base_gate.rs",
-        "degree": 8
-      },
-      {
-        "module": "apps/rt/src/commands/review/pr_door.rs",
         "degree": 8
       },
       {
@@ -102857,6 +103612,10 @@
         "degree": 5
       },
       {
+        "module": "apps/rt/src/commands/event/emit_pipeline.rs",
+        "degree": 5
+      },
+      {
         "module": "apps/rt/src/commands/maint/worktree_gc.rs",
         "degree": 5
       },
@@ -102886,10 +103645,6 @@
       },
       {
         "module": "apps/rt/src/commands/economy/otel/collector.rs",
-        "degree": 4
-      },
-      {
-        "module": "apps/rt/src/commands/event/emit_pipeline.rs",
         "degree": 4
       },
       {
@@ -103068,7 +103823,7 @@
       },
       {
         "name": "L2",
-        "modules": 56
+        "modules": 55
       },
       {
         "name": "L3",
@@ -103080,11 +103835,11 @@
       },
       {
         "name": "L5",
-        "modules": 11
+        "modules": 13
       },
       {
         "name": "L6",
-        "modules": 4
+        "modules": 5
       },
       {
         "name": "L7",
@@ -103103,7 +103858,12 @@
       },
       {
         "module": "apps/rt/src/registry.rs",
-        "fan_out": 41,
+        "fan_out": 42,
+        "breadth": 5
+      },
+      {
+        "module": "apps/rt/src/commands/review/pr_door.rs",
+        "fan_out": 9,
         "breadth": 5
       },
       {
@@ -103143,11 +103903,6 @@
       },
       {
         "module": "apps/rt/src/commands/event/base_gate.rs",
-        "fan_out": 8,
-        "breadth": 4
-      },
-      {
-        "module": "apps/rt/src/commands/review/pr_door.rs",
         "fan_out": 8,
         "breadth": 4
       },
@@ -103197,6 +103952,11 @@
         "breadth": 3
       },
       {
+        "module": "apps/rt/src/commands/event/emit_pipeline.rs",
+        "fan_out": 5,
+        "breadth": 3
+      },
+      {
         "module": "apps/rt/src/commands/maint/worktree_gc.rs",
         "fan_out": 5,
         "breadth": 3
@@ -103204,11 +103964,6 @@
       {
         "module": "apps/rt/src/hooks/task/subagent_inject.rs",
         "fan_out": 5,
-        "breadth": 3
-      },
-      {
-        "module": "apps/rt/src/commands/event/emit_pipeline.rs",
-        "fan_out": 4,
         "breadth": 3
       },
       {
@@ -103472,6 +104227,11 @@
         "breadth": 2
       },
       {
+        "module": "apps/rt/src/hooks/task/pending_gate.rs",
+        "fan_out": 2,
+        "breadth": 2
+      },
+      {
         "module": "apps/rt/src/hooks/task/stop_gate.rs",
         "fan_out": 2,
         "breadth": 2
@@ -103690,11 +104450,6 @@
         "module": "apps/rt/src/commands/agent/agent_prompt_render.rs",
         "fan_out": 1,
         "breadth": 1
-      },
-      {
-        "module": "apps/rt/src/commands/agent/cli.rs",
-        "fan_out": 1,
-        "breadth": 1
       }
     ]
   },
@@ -103751,12 +104506,13 @@
     {
       "affix": "Opts",
       "kind": "suffix",
-      "count": 27,
+      "count": 28,
       "common_dir": "apps/rt/src/commands/spec",
       "dirs": [
         "apps/rt/src/commands/spec",
         "apps/rt/src/commands/maint",
         "apps/rt/src/commands/pipeline",
+        "apps/rt/src/commands/event",
         "apps/rt/src/commands/review"
       ],
       "decl_kind": "struct",
@@ -103954,6 +104710,26 @@
       ]
     },
     {
+      "affix": "Gate",
+      "kind": "suffix",
+      "count": 13,
+      "common_dir": "apps/rt/src/hooks/write",
+      "dirs": [
+        "apps/rt/src/hooks/write",
+        "apps/rt/src/hooks/task"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "mustard_core::platform::error::Error",
+        "mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict}",
+        "serde_json::json",
+        "std::path::Path",
+        "tempfile::tempdir",
+        "crate::util::format_gate_message"
+      ]
+    },
+    {
       "affix": "Summary",
       "kind": "suffix",
       "count": 13,
@@ -103975,26 +104751,6 @@
         "std::path::{Path, PathBuf}",
         "api-client",
         "discovery"
-      ]
-    },
-    {
-      "affix": "Gate",
-      "kind": "suffix",
-      "count": 12,
-      "common_dir": "apps/rt/src/hooks/write",
-      "dirs": [
-        "apps/rt/src/hooks/write",
-        "apps/rt/src/hooks/task"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "mustard_core::platform::error::Error",
-        "mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict}",
-        "serde_json::json",
-        "std::path::Path",
-        "tempfile::tempdir",
-        "crate::util::format_gate_message"
       ]
     },
     {
@@ -104038,6 +104794,26 @@
       ]
     },
     {
+      "affix": "Item",
+      "kind": "suffix",
+      "count": 10,
+      "common_dir": "apps/rt/src/commands/pipeline",
+      "dirs": [
+        "apps/rt/src/commands/pipeline",
+        "packages/core/src/domain/spec"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "tempfile::tempdir",
+        "serde::{Deserialize, Serialize}",
+        "std::path::{Path, PathBuf}",
+        "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}",
+        "mustard_core::io::fs",
+        "serde::Serialize"
+      ]
+    },
+    {
       "affix": "File",
       "kind": "suffix",
       "count": 9,
@@ -104054,26 +104830,6 @@
         "serde::Serialize",
         "std::collections::{BTreeMap, BTreeSet}",
         "std::process::Command"
-      ]
-    },
-    {
-      "affix": "Item",
-      "kind": "suffix",
-      "count": 9,
-      "common_dir": "apps/rt/src/commands/pipeline",
-      "dirs": [
-        "apps/rt/src/commands/pipeline",
-        "packages/core/src/domain/spec"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "tempfile::tempdir",
-        "mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION}",
-        "mustard_core::io::fs",
-        "serde::Serialize",
-        "serde::{Deserialize, Serialize}",
-        "std::path::{Path, PathBuf}"
       ]
     },
     {
@@ -104377,6 +105133,24 @@
         "tempfile::tempdir",
         "anyhow::{Context, Result, bail}",
         "crate::commands::git_flow"
+      ]
+    },
+    {
+      "affix": "Pending",
+      "kind": "suffix",
+      "count": 5,
+      "common_dir": "apps/rt/src/commands/event",
+      "dirs": [
+        "apps/rt/src/commands/event"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::Path",
+        "mustard_core::io::fs",
+        "tempfile::tempdir",
+        "serde_json::json",
+        "serde_json::{json, Value}"
       ]
     },
     {
@@ -104909,25 +105683,6 @@
       ]
     },
     {
-      "affix": "Git",
-      "kind": "prefix",
-      "count": 3,
-      "common_dir": "apps/dashboard/src/lib",
-      "dirs": [
-        "apps/dashboard/src/lib"
-      ],
-      "decl_kind": "interface",
-      "implements": null,
-      "collaborators": [
-        "api-client",
-        "discovery",
-        "economy",
-        "react-query",
-        "std::path::Path",
-        "store"
-      ]
-    },
-    {
       "affix": "Guard",
       "kind": "suffix",
       "count": 3,
@@ -105374,6 +106129,15 @@
       ]
     },
     {
+      "affix": "Git",
+      "kind": "prefix",
+      "count": 2,
+      "common_dir": "apps/dashboard/src/lib",
+      "decl_kind": "interface",
+      "implements": null,
+      "collaborators": []
+    },
+    {
       "affix": "Graph",
       "kind": "prefix",
       "count": 2,
@@ -105559,18 +106323,6 @@
       "decl_kind": "struct",
       "implements": null,
       "collaborators": []
-    },
-    {
-      "affix": "Pending",
-      "kind": "prefix",
-      "count": 2,
-      "common_dir": "apps/rt/src/commands/scan_guards",
-      "decl_kind": "enum",
-      "implements": null,
-      "collaborators": [
-        "mustard_core::io::fs",
-        "std::path::Path"
-      ]
     },
     {
       "affix": "Phase",
@@ -105817,17 +106569,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+State slice",
+      "name": "tipo base+Kind slice",
       "roles": [
         "(core)",
-        "State"
+        "Kind"
       ],
       "optional_roles": [
         "Ac",
         "Function",
-        "Kind",
         "Mode",
         "Report",
+        "State",
         "Term",
         "View"
       ],
@@ -105856,12 +106608,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **State** para `<Name>`.",
+        "Adicione o **Kind** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -105932,7 +106684,7 @@
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
@@ -105975,26 +106727,26 @@
       "exemplars": [
         {
           "level": "simples",
-          "entity": "Error",
+          "entity": "Ledger",
           "roles_present": [
             "tipo base",
             "Entry"
           ],
           "files": [
-            "apps/rt/src/commands/maint/worktree_gc.rs",
-            "packages/core/src/platform/error.rs"
+            "apps/rt/src/commands/event/pending.rs",
+            "apps/scan/tests/fixtures/generated_mix/src/handwritten.ts"
           ]
         },
         {
           "level": "média",
-          "entity": "Kept",
+          "entity": "Evidence",
           "roles_present": [
             "tipo base",
-            "Entry"
+            "Pr"
           ],
           "files": [
-            "apps/rt/src/commands/maint/worktree_gc.rs",
-            "apps/rt/src/commands/wave/wave_dependency.rs"
+            "apps/rt/src/hooks/session/spec_hygiene_observer.rs",
+            "apps/rt/src/shared/branch_state.rs"
           ]
         },
         {
@@ -106666,33 +107418,34 @@
       "summary": "Vertical slice recurring across 2 entities (Locale, Workspace). Core roles: tipo base, Error."
     },
     {
-      "name": "tipo base+Git slice",
+      "name": "tipo base+Gate slice",
       "roles": [
         "(core)",
-        "Git"
+        "Gate"
       ],
       "optional_roles": [],
       "recurrence": 2,
       "entities": [
         "Pending",
-        "Reachability"
+        "Size"
       ],
       "confidence": 0.72,
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `apps/rt/src/commands/scan_guards/` (ex.: `list.rs`, modelado em `apps/rt/src/commands/scan_guards/list.rs`).",
-        "Adicione o **Git** para `<Name>` em `apps/dashboard/src/lib/` (ex.: `dashboard.ts`, modelado em `apps/dashboard/src/lib/dashboard.ts`)."
+        "Adicione o **Gate** para `<Name>` em `apps/rt/src/hooks/task/` (ex.: `<name>_gate.rs`, modelado em `apps/rt/src/hooks/task/pending_gate.rs`)."
       ],
       "exemplars": [
         {
           "level": "simples",
-          "entity": "Reachability",
+          "entity": "Size",
           "roles_present": [
             "tipo base",
-            "Git"
+            "Gate"
           ],
           "files": [
-            "apps/rt/src/shared/branch_state.rs"
+            "apps/rt/src/hooks/write/size_gate.rs",
+            "apps/scan/tests/fixtures/graph_csharp/src/Catalog/Shapes.cs"
           ]
         },
         {
@@ -106700,11 +107453,12 @@
           "entity": "Pending",
           "roles_present": [
             "tipo base",
-            "Git"
+            "Gate"
           ],
           "files": [
-            "apps/dashboard/src/lib/dashboard.ts",
-            "apps/rt/src/commands/scan_guards/list.rs"
+            "apps/rt/src/commands/event/pending.rs",
+            "apps/rt/src/commands/scan_guards/list.rs",
+            "apps/rt/src/hooks/task/pending_gate.rs"
           ]
         }
       ],
@@ -106716,21 +107470,21 @@
           "role": "tipo base"
         },
         {
-          "path": "apps/dashboard/src/lib/dashboard.ts",
-          "start_line": 656,
-          "snippet": "export interface Git<Name> {\n  staged: number;\n  unstaged: number;\n  untracked: number;\n}\n\n/**\n * One changed file from `git status --porcelain` — mirrors the Rust\n * `GitChangedFile` (`serde(rename_all = \"snake_case\")`). A single file can be",
-          "role": "Git"
+          "path": "apps/rt/src/hooks/task/pending_gate.rs",
+          "start_line": 81,
+          "snippet": "pub struct <Name>Gate;\n\nimpl Check for <Name>Gate {\n    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {\n        // Fato 1 — o `Stop` da sessão principal. `stop_hook_active` NÃO libera\n        // aqui (ver \"`stop_hook_active` não libera\"): o contador é o limite.\n        if ctx.trigger != Some(Trigger::Stop) || input.is_subagent() {\n            return Ok(Verdict::Allow);\n        }",
+          "role": "Gate"
         }
       ],
       "exemplar": "Pending",
-      "summary": "Vertical slice recurring across 2 entities (Pending, Reachability). Core roles: tipo base, Git."
+      "summary": "Vertical slice recurring across 2 entities (Pending, Size). Core roles: tipo base, Gate."
     }
   ],
   "coverage": {
     "top_dirs": [
       {
         "dir": "apps",
-        "code_files": 581,
+        "code_files": 583,
         "other_files": 219
       },
       {
@@ -106863,7 +107617,7 @@
         "count": 1
       }
     ],
-    "code_files_read": 679,
+    "code_files_read": 681,
     "non_utf8_skipped": 0
   },
   "projects": [
@@ -106871,7 +107625,7 @@
       "name": "rt",
       "dir": "apps/rt",
       "kind": "cargo",
-      "code_files": 310,
+      "code_files": 312,
       "frameworks": [
         "mustard-core",
         "serde",
