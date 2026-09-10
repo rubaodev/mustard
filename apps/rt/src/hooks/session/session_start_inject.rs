@@ -1231,6 +1231,7 @@ mod tests {
                 current_dir: None,
                 home: None,
                 clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
+                owner_uid: crate::commands::maint::scratch_gc::current_uid(),
             },
             warn_bytes,
         };

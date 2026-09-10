@@ -27,6 +27,11 @@
 //! Um temp que é a home ou fica acima dela (`TMPDIR=$HOME`) é recusado em
 //! todos os modos: "dentro do temp" deixaria de proteger alguma coisa.
 //!
+//! O temp é compartilhado: a varredura não segue link em nível algum, só abre
+//! entradas do topo do temp que são do usuário atual, e toda exclusão — do
+//! `--path` e do `--apply` — passa pelo mesmo portão (`confine`): caminho
+//! resolvido, estritamente dentro do temp resolvido, dono conferido.
+//!
 //! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas
 //! que o `worktree-gc` recolhe pelo dono vivo ou morto, e duas portas
 //! apagando o mesmo alvo com critérios diferentes não se somam.
@@ -170,6 +175,9 @@ pub(crate) struct ScratchRoots {
     pub home: Option<PathBuf>,
     /// Qual data diz a idade de uma árvore.
     pub clock: AgeClock,
+    /// O uid que tem de ser dono de cada entrada do topo do temp. No Unix,
+    /// `None` (ninguém sabe quem roda) deixa nada passar; fora dele é ignorado.
+    pub owner_uid: Option<u32>,
 }
 
 impl ScratchRoots {
@@ -183,6 +191,7 @@ impl ScratchRoots {
             current_dir: std::env::current_dir().ok(),
             home: crate::util::home_dir(),
             clock: AgeClock::Changed,
+            owner_uid: current_uid(),
         }
     }
 }
@@ -253,6 +262,46 @@ fn checked_temp_root(roots: &ScratchRoots) -> Result<PathBuf, String> {
     Ok(temp)
 }
 
+/// O uid efetivo deste processo, sem `unsafe` nem `libc`: no Linux, o dono de
+/// `/proc/self` (o kernel o cria com o uid efetivo do processo); fora dele, o
+/// dono da home. `None` quando nenhum dos dois responde.
+#[cfg(unix)]
+pub(crate) fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .ok()
+        .or_else(|| crate::util::home_dir().and_then(|h| std::fs::metadata(h).ok()))
+        .map(|m| m.uid())
+}
+
+/// Fora do Unix não há uid.
+#[cfg(not(unix))]
+pub(crate) fn current_uid() -> Option<u32> {
+    None
+}
+
+/// Filtro de dono. O temp é compartilhado (`/tmp`): outro usuário pode criar
+/// ali um `claude-*` ou um `tmp.*` com links para onde quiser, e ele nunca é
+/// dono de uma pasta com o NOSSO uid. No Unix, sem saber quem roda
+/// (`uid` = `None`), nada passa; fora do Unix não há uid e tudo passa.
+fn owned_by(meta: &std::fs::Metadata, uid: Option<u32>) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        uid.is_some_and(|u| meta.uid() == u)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (meta, uid);
+        true
+    }
+}
+
+/// Uma pasta de verdade, não um link para uma (`symlink_metadata` não segue).
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir())
+}
+
 /// `~/.cache/mustard/scratch-target` — onde as cópias descartáveis compilam.
 pub fn shared_target_dir() -> Option<PathBuf> {
     crate::util::home_dir().map(|h| h.join(".cache").join("mustard").join("scratch-target"))
@@ -294,19 +343,31 @@ fn child_dirs(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Todas as pastas que passam no filtro 1, ordenadas por caminho.
-fn list_locations(temp_root: &Path) -> Vec<Location> {
+///
+/// Nenhum link é seguido em nível algum: [`child_dirs`] já descarta os links
+/// (`claude-*`, projeto, sessão e candidata), e o `scratchpad/` — o único nível
+/// montado por nome, não listado — é conferido com [`is_real_dir`]. Entrada do
+/// topo do temp que não é do usuário atual ([`owned_by`]) nem é aberta.
+fn list_locations(temp_root: &Path, owner_uid: Option<u32>) -> Vec<Location> {
     let mut out = Vec::new();
     for dir in child_dirs(temp_root) {
         let Some(name) = file_name(&dir) else {
             continue;
         };
+        if !std::fs::symlink_metadata(&dir).is_ok_and(|m| owned_by(&m, owner_uid)) {
+            continue;
+        }
         if name.starts_with(SESSION_ROOT_PREFIX) {
             // `claude-<uid>` é contêiner, nunca candidata: só as filhas do
             // `scratchpad/` de cada sessão são.
             for project in child_dirs(&dir) {
                 for session in child_dirs(&project) {
                     let owner = file_name(&session);
-                    for scratch in child_dirs(&session.join(SCRATCHPAD_DIR)) {
+                    let pad = session.join(SCRATCHPAD_DIR);
+                    if !is_real_dir(&pad) {
+                        continue;
+                    }
+                    for scratch in child_dirs(&pad) {
                         out.push(Location { path: scratch, session: owner.clone() });
                     }
                 }
@@ -440,8 +501,13 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
     let min_age = Duration::from_secs(MIN_AGE_HOURS * 3600);
     let mut candidates = Vec::new();
     let mut kept = Vec::new();
-    let locations = match checked_temp_root(roots) {
-        Ok(_) => list_locations(&roots.temp_root),
+    // A mesma fronteira da exclusão ([`confine`]): o que ela recusaria, a
+    // lista não mostra — o que o `--apply` apaga é exatamente o listado.
+    let locations: Vec<Location> = match checked_temp_root(roots) {
+        Ok(temp) => list_locations(&roots.temp_root, roots.owner_uid)
+            .into_iter()
+            .filter(|loc| confine(&loc.path, &temp, roots.owner_uid).is_ok())
+            .collect(),
         Err(_) => Vec::new(),
     };
 
@@ -503,19 +569,22 @@ fn empty_dir(dir: &Path) -> Result<(), String> {
 /// compilação compartilhada, e se a chamada foi recusada (temp inseguro).
 /// Sem stdout nem telemetria — o `run` cuida disso.
 fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
-    if let Err(error) = checked_temp_root(roots) {
-        let report = ScratchGcReport {
-            dry_run: !apply,
-            min_age_hours: MIN_AGE_HOURS,
-            candidates: Vec::new(),
-            candidates_bytes: 0,
-            kept: Vec::new(),
-            removed: Vec::new(),
-            errors: vec![ErrorRecord { path: roots.temp_root.display().to_string(), error }],
-            shared_target: None,
-        };
-        return (report, true);
-    }
+    let temp = match checked_temp_root(roots) {
+        Ok(temp) => temp,
+        Err(error) => {
+            let report = ScratchGcReport {
+                dry_run: !apply,
+                min_age_hours: MIN_AGE_HOURS,
+                candidates: Vec::new(),
+                candidates_bytes: 0,
+                kept: Vec::new(),
+                removed: Vec::new(),
+                errors: vec![ErrorRecord { path: roots.temp_root.display().to_string(), error }],
+                shared_target: None,
+            };
+            return (report, true);
+        }
+    };
     let survey = survey(roots);
     let candidates_bytes = survey.candidates_bytes();
     let mut report = ScratchGcReport {
@@ -532,13 +601,15 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
         return (report, false);
     }
 
+    // A fronteira é conferida DE NOVO logo antes de apagar, sobre o caminho
+    // resolvido: entre a varredura e a exclusão, um nível pode ter virado link.
     for candidate in &report.candidates {
-        match std::fs::remove_dir_all(&candidate.dir) {
+        let removal = confine(&candidate.dir, &temp, roots.owner_uid).and_then(|dir| {
+            std::fs::remove_dir_all(&dir).map_err(|e| format!("remove_dir_all failed: {e}"))
+        });
+        match removal {
             Ok(()) => report.removed.push(candidate.path.clone()),
-            Err(e) => report.errors.push(ErrorRecord {
-                path: candidate.path.clone(),
-                error: format!("remove_dir_all failed: {e}"),
-            }),
+            Err(error) => report.errors.push(ErrorRecord { path: candidate.path.clone(), error }),
         }
     }
 
@@ -564,9 +635,36 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
 /// `TMPDIR=$HOME`, "dentro do temp" deixaria de proteger alguma coisa.
 pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf, String> {
     let temp = checked_temp_root(roots)?;
+    let dir = confine(target, &temp, roots.owner_uid)?;
+    if !dir.is_dir() {
+        return Err(format!("refused: {} is not a directory", dir.display()));
+    }
+    if !holds_scratch_build(&dir) {
+        return Err(format!(
+            "refused: {} holds neither a copy of this project nor a build target/",
+            dir.display()
+        ));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("remove_dir_all failed: {e}"))?;
+    Ok(dir)
+}
+
+/// A fronteira de TODA exclusão — a mesma para `--path`, para o `--apply` e
+/// para a lista (portão e lista não podem discordar). Devolve o caminho
+/// resolvido, que é o que se apaga, ou o motivo da recusa:
+///
+/// - o caminho é resolvido (`canonicalize`): link nenhum sobrevive, e um link
+///   no temp apontando para fora vira o "fora", recusado como tal;
+/// - ele fica ESTRITAMENTE dentro do temp resolvido `temp` — nunca o próprio
+///   temp. Como [`checked_temp_root`] já garantiu que a home não mora dentro
+///   do temp, nada que passe aqui é a home nem uma pasta acima dela;
+/// - a entrada do topo do temp é do usuário atual ([`owned_by`]);
+/// - não é um `mustard-removal-*` (é do `worktree-gc`);
+/// - dentro de `claude-*/`, só vale o que está abaixo de um `scratchpad/`.
+fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf, String> {
     let dir = std::fs::canonicalize(target)
         .map_err(|e| format!("refused: cannot resolve {}: {e}", target.display()))?;
-    let Ok(rel) = dir.strip_prefix(&temp) else {
+    let Ok(rel) = dir.strip_prefix(temp) else {
         return Err(format!(
             "refused: {} is outside the temp directory {}",
             dir.display(),
@@ -601,16 +699,11 @@ pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf
             dir.display()
         ));
     }
-    if !dir.is_dir() {
-        return Err(format!("refused: {} is not a directory", dir.display()));
+    // `temp` e `dir` são resolvidos, então a entrada do topo é uma pasta real.
+    let top = temp.join(parts[0]);
+    if !std::fs::symlink_metadata(&top).is_ok_and(|m| owned_by(&m, owner_uid)) {
+        return Err(format!("refused: {} is not owned by the current user", top.display()));
     }
-    if !holds_scratch_build(&dir) {
-        return Err(format!(
-            "refused: {} holds neither a copy of this project nor a build target/",
-            dir.display()
-        ));
-    }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("remove_dir_all failed: {e}"))?;
     Ok(dir)
 }
 
@@ -754,6 +847,7 @@ mod tests {
             home: Some(base.join("home")),
             // As fixtures envelhecem pelo mtime; o ctime tem teste próprio.
             clock: AgeClock::Modified,
+            owner_uid: current_uid(),
         }
     }
 
@@ -1021,6 +1115,87 @@ mod tests {
             assert!(survey(&roots).candidates.is_empty(), "the survey lists nothing either");
             assert!(copy.join("Cargo.toml").exists(), "nothing is touched");
         }
+    }
+
+    /// Um `scratchpad/` que é link para fora do temp (outro usuário pode
+    /// plantá-lo no `/tmp` compartilhado): nada é listado através dele, o
+    /// `--apply` não apaga nada fora do temp, e o portão de exclusão recusa o
+    /// caminho mesmo que ele chegue até lá.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_scratchpad_is_neither_listed_nor_deleted() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let temp = fs::canonicalize(&roots.temp_root).unwrap();
+
+        // A árvore de fora: antiga, com cópia do projeto e `target/`.
+        let outside = base.path().join("outside");
+        project_copy(&outside.join("mirror"));
+        target_only(&outside.join("build"));
+        backdate_tree(&outside, 200);
+
+        let session = roots.temp_root.join("claude-evil").join("p").join("s");
+        fs::create_dir_all(&session).unwrap();
+        std::os::unix::fs::symlink(&outside, session.join(SCRATCHPAD_DIR)).unwrap();
+        // E um link direto no topo do temp para a mesma árvore.
+        std::os::unix::fs::symlink(outside.join("mirror"), roots.temp_root.join("tmp.link")).unwrap();
+
+        let (report, refused) = gc(&roots, true);
+        assert!(!refused);
+        assert!(report.candidates.is_empty(), "{:?}", report.candidates);
+        assert!(report.kept.is_empty(), "{:?}", report.kept);
+        assert!(report.removed.is_empty());
+        assert!(outside.join("mirror").join("Cargo.toml").exists(), "the outside copy survives --apply");
+        assert!(outside.join("build").join("target").exists(), "the outside target/ survives --apply");
+
+        // O portão sozinho: o caminho através do link resolve para fora.
+        let through = session.join(SCRATCHPAD_DIR).join("mirror");
+        let err = confine(&through, &temp, roots.owner_uid).unwrap_err();
+        assert!(err.contains("outside the temp directory"), "{err}");
+        let err = remove_path(&through, &roots).unwrap_err();
+        assert!(err.contains("outside the temp directory"), "{err}");
+        assert!(outside.join("mirror").exists());
+    }
+
+    /// Entrada do topo do temp que não é do usuário atual — um `claude-*` ou
+    /// `tmp.*` de outra pessoa no `/tmp` compartilhado — nem é aberta, e o
+    /// `--path` a recusa. O "outro dono" é simulado dizendo que o usuário
+    /// atual é outro uid: criar pasta com dono alheio pede privilégio.
+    #[cfg(unix)]
+    #[test]
+    fn temp_entries_of_another_user_are_skipped() {
+        let base = tempdir().unwrap();
+        let mut roots = fake_roots(base.path());
+        let me = roots.owner_uid.expect("the current uid resolves on unix");
+
+        let top = roots.temp_root.join("tmp.alheia");
+        project_copy(&top);
+        backdate_tree(&top, 30);
+        let pad = roots.temp_root.join("claude-9999").join("p").join("s").join(SCRATCHPAD_DIR).join("c");
+        target_only(&pad);
+        backdate_tree(&roots.temp_root.join("claude-9999"), 30);
+
+        // Do usuário atual: as duas são candidatas.
+        assert_eq!(survey(&roots).candidates.len(), 2);
+
+        // De outro dono: nada é listado, nada é apagado, e o `--path` recusa.
+        roots.owner_uid = Some(me.wrapping_add(1));
+        let (report, _) = gc(&roots, true);
+        assert!(report.candidates.is_empty() && report.removed.is_empty(), "{:?}", report.candidates);
+        let err = remove_path(&top, &roots).unwrap_err();
+        assert!(err.contains("not owned by the current user"), "{err}");
+        assert!(top.join("Cargo.toml").exists() && pad.join("target").exists());
+
+        // Sem saber quem roda, nada passa.
+        roots.owner_uid = None;
+        assert!(survey(&roots).candidates.is_empty());
+        assert!(remove_path(&top, &roots).is_err());
+
+        // O predicado sozinho.
+        let meta = fs::symlink_metadata(&top).unwrap();
+        assert!(owned_by(&meta, Some(me)));
+        assert!(!owned_by(&meta, Some(me.wrapping_add(1))));
+        assert!(!owned_by(&meta, None));
     }
 
     #[test]

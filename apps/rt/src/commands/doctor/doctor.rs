@@ -1990,6 +1990,7 @@ mod tests {
             current_dir: None,
             home: None,
             clock: AgeClock::Modified,
+            owner_uid: crate::commands::maint::scratch_gc::current_uid(),
         };
         let result = check_scratch_residue(&roots);
 
