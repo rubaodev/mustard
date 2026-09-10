@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 492,
-      "loc": 238461
+      "loc": 238570
     },
     {
       "language": "tsx",
@@ -68394,7 +68394,7 @@
     {
       "path": "apps/rt/src/commands/scan_patterns/apply.rs",
       "language": "rust",
-      "loc": 1203,
+      "loc": 1312,
       "imports": [
         "mustard_core::io::fs as mfs",
         "std::path::Path",
@@ -68476,260 +68476,290 @@
         },
         {
           "kind": "function",
+          "name": "line_present",
+          "line": 360,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "abbreviated_head",
+          "line": 371,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "examples_code_blocks",
-          "line": 351,
+          "line": 384,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pasted_lines",
-          "line": 392,
+          "line": 425,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_elision",
-          "line": 398,
+          "line": 431,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cited_refs",
-          "line": 404,
+          "line": 437,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "trim_unbalanced_close",
-          "line": 431,
+          "line": 464,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PathsKey",
-          "line": 443,
+          "line": 476,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "start",
-          "line": 445,
+          "line": 478,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "end",
-          "line": 448,
+          "line": 481,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "values",
-          "line": 450,
+          "line": 483,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "paths_key",
-          "line": 468,
+          "line": 501,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "split_values",
-          "line": 516,
+          "line": 549,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "declared_paths",
-          "line": 524,
+          "line": 557,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "canonical_paths_form",
-          "line": 536,
+          "line": 569,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "structure_defects",
-          "line": 574,
+          "line": 607,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "level_two_headings",
-          "line": 611,
+          "line": 644,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "normalise",
-          "line": 629,
+          "line": 662,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_content",
-          "line": 651,
+          "line": 684,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_mold_path",
-          "line": 671,
+          "line": 704,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mold",
-          "line": 680,
+          "line": 713,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_mold_path_accepts_the_shape_and_rejects_others",
-          "line": 685,
+          "line": 718,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_content_blanks_are_none",
-          "line": 697,
+          "line": 730,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "apply_reads_the_mold_body_from_a_file_path",
-          "line": 714,
+          "line": 747,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_exemplar",
-          "line": 740,
+          "line": 773,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "grounded_examples",
-          "line": 748,
+          "line": 781,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "valid_mold",
-          "line": 757,
+          "line": 790,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mold_with_examples",
-          "line": 763,
+          "line": 796,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "canonical_sections",
-          "line": 772,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "sections_with_examples",
-          "line": 777,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "run_writes_and_marks_generated",
-          "line": 792,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "run_is_create_only",
           "line": 805,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "sections_with_examples",
+          "line": 810,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_writes_and_marks_generated",
+          "line": 825,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "run_is_create_only",
+          "line": 838,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "a_collision_is_not_reported_as_a_preserve",
-          "line": 817,
+          "line": 850,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_malformed_mold_is_refused_never_written",
-          "line": 834,
+          "line": 867,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_preserves_the_paths_key",
-          "line": 860,
+          "line": 893,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_ref_to_a_file_that_does_not_exist_is_a_defect",
-          "line": 881,
+          "line": 914,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_widened_or_narrowed_paths_value_is_a_defect",
-          "line": 899,
+          "line": 932,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_inline_paths_value_is_accepted_and_written_as_a_list",
-          "line": 965,
+          "line": 998,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_mold_whose_headings_are_wrong_is_refused",
-          "line": 1031,
+          "line": 1064,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_mold_without_a_code_block_is_a_defect",
-          "line": 1069,
+          "line": 1102,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_code_block_absent_from_every_cited_ref_is_a_defect",
-          "line": 1142,
+          "line": 1175,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "write_long_exemplar",
+          "line": 1218,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_line_shortened_at_its_tail_still_grounds",
+          "line": 1232,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_abbreviated_line_with_no_matching_prefix_is_still_a_defect",
+          "line": 1251,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_mold_this_repository_carries_passes_the_structure_checks",
-          "line": 1194,
+          "line": 1314,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "repo_molds",
-          "line": 1229,
+          "line": 1349,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cited_refs_reads_the_canonical_decoration",
-          "line": 1264,
+          "line": 1384,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cited_refs_keeps_parentheses_that_belong_to_the_path",
-          "line": 1270,
+          "line": 1390,
           "supertypes": []
         }
       ],
