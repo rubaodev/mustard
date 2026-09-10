@@ -345,12 +345,12 @@ fn examples_defects(body: &str, root: &Path) -> Vec<String> {
 /// a prova por uma coincidência.
 const MIN_ABBREV_HEAD: usize = 12;
 
-/// Whether the pasted line `w` really is in `lines`.
+/// Se a linha colada `w` está mesmo em `lines`.
 ///
-/// A line the author did NOT abbreviate must be there verbatim once trimmed —
-/// that is the proof of reading, and it is not relaxed here. A line the author
-/// CUT with `...` is matched by its head instead, because the tail he removed
-/// was never claimed to be present.
+/// Uma linha que o autor NÃO abreviou tem de estar ali palavra por palavra,
+/// depois de aparada — é a prova de leitura, e ela não afrouxa aqui. Uma linha
+/// que ele CORTOU com `...` é casada pelo começo, porque o fim que ele removeu
+/// nunca foi apresentado como presente.
 ///
 /// Medido na primeira passada de enriquecimento real: 5 linhas em 712 vinham
 /// nessa forma, e cada uma reprovava o molde inteiro embora tivesse sido colada
@@ -1252,10 +1252,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_long_exemplar(dir.path());
 
+        // A linha ABREVIADA é a única que não bate. As outras duas são colagem
+        // verbatim do exemplar, de propósito: com uma linha comum já ausente, o
+        // `all` reprovaria antes de chegar na abreviada e o teste passaria sem
+        // ter julgado nada — foi assim que ele nasceu, e a revisão pegou.
         let invented = mold_with_examples(
             "api-service-pattern",
             &format!(
-                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct GhostService {{\n    pub cache: Cache, // inventado ...\n}}\n```"
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct UserService {{\n    pub cache: Cache, // um começo que o exemplar não tem ...\n}}\n```"
             ),
         );
         assert!(
@@ -1263,6 +1267,23 @@ mod tests {
                 .iter()
                 .any(|d| d.contains("appears in none of the cited")),
             "um começo inventado continua sendo defeito"
+        );
+
+        // E a abreviação vale só no FIM: cortar o COMEÇO é reescrever a linha,
+        // não encurtá-la. Hoje isso é recusado porque o que sobra antes do corte
+        // é vazio; sem esta trava, um refactor que casasse pelo ÚLTIMO corte em
+        // vez do primeiro aceitaria a linha e nada ficaria vermelho.
+        let head_cut = mold_with_examples(
+            "api-service-pattern",
+            &format!(
+                "- Ref: `{EXEMPLAR_REL}`\n\n```rust\npub struct UserService {{\n    ... the pool the house shares across requests\n}}\n```"
+            ),
+        );
+        assert!(
+            examples_defects(&head_cut, dir.path())
+                .iter()
+                .any(|d| d.contains("appears in none of the cited")),
+            "abreviar o COMEÇO é reescrita, não encurtamento"
         );
 
         assert_eq!(abbreviated_head("pub ..."), None, "um começo curto não identifica linha");
