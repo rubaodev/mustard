@@ -261,9 +261,22 @@ fn normalise(p: &str) -> String {
 mod tests {
     use super::*;
 
+    /// O exemplar que os moldes de teste citam, e o trecho que eles colam dele —
+    /// o apply exige que `## Examples` prove a leitura com as duas coisas.
+    const EXEMPLAR_REL: &str = "apps/api/src/exemplar.x";
+    const EXEMPLAR_SNIPPET: &str = "pub struct Thing {\n    pub id: String,\n}";
+
+    /// Põe o exemplar em `root`, para que o `Ref:` resolva e o trecho tenha onde
+    /// ser provado.
+    fn exemplar(root: &Path) {
+        let p = root.join(EXEMPLAR_REL);
+        std::fs::create_dir_all(p.parent().expect("the exemplar has a parent")).unwrap();
+        std::fs::write(&p, format!("{EXEMPLAR_SNIPPET}\n")).unwrap();
+    }
+
     fn mold(slug: &str, glob: &str) -> String {
         format!(
-            "---\nname: {slug}-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - {glob}\ntags: [add, refactor]\nsource: scan\n---\n\n## Purpose\nbody\n\n## Convention\nbody\n\n## How to apply\nbody\n\n## Examples\nbody\n"
+            "---\nname: {slug}-pattern\ndescription: Use when adding or refactoring an X.\npaths:\n  - {glob}\ntags: [add, refactor]\nsource: scan\n---\n\n## Purpose\nbody\n\n## Convention\nbody\n\n## How to apply\nbody\n\n## Examples\n- Ref: `{EXEMPLAR_REL}` — the shape\n\n```rust\n{EXEMPLAR_SNIPPET}\n```\n"
         )
     }
 
@@ -295,6 +308,7 @@ mod tests {
     fn a_refused_block_never_takes_the_good_ones_with_it() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        exemplar(root);
         let good = "apps/api/.claude/skills/api-good-pattern/SKILL.md";
         let bad = "apps/api/.claude/skills/api-bad-pattern/SKILL.md";
         let env = format!(
@@ -356,6 +370,7 @@ mod tests {
     fn relay_reads_an_envelope_from_a_file_path() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        exemplar(root);
         let target = "apps/api/.claude/skills/api-file-pattern/SKILL.md";
         let envelope = format!(
             "Here is my return.\n\n=== FILE: {target} ===\n{}\n=== END ===\n",
@@ -379,6 +394,7 @@ mod tests {
     fn relay_reads_the_harness_json_array_of_text_blocks() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        exemplar(root);
         let target = "apps/api/.claude/skills/api-json-pattern/SKILL.md";
         let envelope = format!(
             "Grounding complete. Delivering 1 mold.\n\n=== FILE: {target} ===\n{}\n=== END ===\n",
