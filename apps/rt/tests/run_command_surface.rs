@@ -48,6 +48,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "diagnose-otel",
     "diff-context",
     "digest-adherence-finalize",
+    "doc-page",
     "docs-stale-check",
     "doctor",
     "emit-event",

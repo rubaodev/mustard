@@ -923,7 +923,7 @@ fn evidence_html(material: &Material, i: &I18n) -> Option<String> {
                 Some(line) => format!("{}:{line}", f.file),
                 None => f.file.clone(),
             };
-            vec![("", inline(&f.statement)), ("where", escape(&place))]
+            vec![("", inline(&f.statement)), ("where", breakable_path(&escape(&place)))]
         })
         .collect();
     Some(rich_table(&[i.render("doc.col.seen"), i.render("doc.col.where")], &rows))
@@ -1087,6 +1087,21 @@ fn files_list(files: &[String]) -> String {
     }
     html.push_str("</ul>");
     html
+}
+
+/// Um caminho ou endereço já escapado, com um ponto de quebra (`<wbr>`) depois
+/// de cada `/`: a coluna Onde quebra a linha entre um trecho e outro, nunca no
+/// meio de uma palavra. O `//` de um endereço fica inteiro.
+fn breakable_path(escaped: &str) -> String {
+    let mut out = String::with_capacity(escaped.len() + escaped.len() / 4);
+    let mut chars = escaped.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c == '/' && chars.peek() != Some(&'/') {
+            out.push_str("<wbr>");
+        }
+    }
+    out
 }
 
 /// Uma tabela no molde do layout: cabeçalho escapado e células com HTML já
@@ -1302,7 +1317,7 @@ mod tests {
             "<li><strong>RO-1.1</strong> — Conferir como o navegador abre um <code>file://</code> local.</li>",
             "<span class=\"label\">Critérios:</span> AC-1, AC-2",
             // Evidência com arquivo:linha; pendência aberta.
-            "<td class=\"where\">apps/rt/src/report/mod.rs:97</td>",
+            "<td class=\"where\">apps/<wbr>rt/<wbr>src/<wbr>report/<wbr>mod.rs:97</td>",
             "<td class=\"id\">P-1</td><td>Humanize: medir se o texto está claro</td>",
             // Próximo passo pelo estágio.
             "Para aprovar, digite <code>/mustard:spec</code> neste branch.",
@@ -1317,6 +1332,55 @@ mod tests {
         let again = generate(root, "demo");
         assert!(again.ok && !again.changed, "{again:?}");
         assert_eq!(again.hash, report.hash);
+    }
+
+    /// AC-11 — na tabela de Evidências, a coluna Onde ganha um ponto de quebra
+    /// depois de cada barra, e só ali: nenhuma palavra é partida e o `//` de um
+    /// endereço fica inteiro. E a regra `td.where` do layout deixou de proibir a
+    /// quebra de linha, senão os `<wbr>` não serviriam para nada.
+    #[test]
+    fn evidence_location_wraps_at_path_separators() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed(root);
+        let findings = r#"[
+    {"statement": "o caminho inteiro espremia a coluna", "file": "apps/rt/src/commands/spec/spec_doc.rs", "line": 863},
+    {"statement": "a página publicada", "file": "https://claude.ai/code/artifacts/demo"}
+  ]"#;
+        let material = MATERIAL.replace(
+            r#"[{"statement": "o Report já existe", "file": "apps/rt/src/report/mod.rs", "line": 97}]"#,
+            findings,
+        );
+        assert_ne!(material, MATERIAL, "the fixture must carry the long findings");
+        fs::write(root.join(".claude/spec/demo/spec-material.json"), material).unwrap();
+
+        assert!(generate(root, "demo").ok);
+        let html = fs::read_to_string(root.join(".claude/spec/demo").join(DOC_FILE)).unwrap();
+
+        for cell in [
+            "<td class=\"where\">apps/<wbr>rt/<wbr>src/<wbr>commands/<wbr>spec/<wbr>spec_doc.rs:863</td>",
+            "<td class=\"where\">https://<wbr>claude.ai/<wbr>code/<wbr>artifacts/<wbr>demo</td>",
+        ] {
+            assert!(html.contains(cell), "missing {cell}:\n{html}");
+        }
+        let cells: Vec<&str> = html
+            .split("<td class=\"where\">")
+            .skip(1)
+            .filter_map(|rest| rest.split_once("</td>").map(|(cell, _)| cell))
+            .collect();
+        assert_eq!(cells.len(), 2, "{cells:?}");
+        for cell in cells {
+            assert!(!cell.contains("/<wbr>/"), "a break inside `//`: {cell}");
+            let slashes = cell.matches('/').count() - cell.matches("//").count();
+            assert_eq!(cell.matches("/<wbr>").count(), slashes, "a slash without a break: {cell}");
+        }
+
+        let rule = html
+            .split_once("td.where{")
+            .and_then(|(_, tail)| tail.split_once('}'))
+            .map(|(decls, _)| decls)
+            .expect("layout without a td.where rule");
+        assert!(!rule.contains("white-space:nowrap"), "td.where still forbids wrapping: {rule}");
     }
 
     /// AC-10 — o `flow` do material vira a seção Antes e depois, entre os riscos

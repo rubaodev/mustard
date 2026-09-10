@@ -275,6 +275,13 @@ mod tests {
         let code = rules.iter().find(|(sel, _)| sel == "code").expect("regra code ausente");
         assert!(code.1.contains("white-space:nowrap"), "code inline sem nowrap: {}", code.1);
         assert!(!css.contains("overflow-wrap:anywhere"), "overflow-wrap:anywhere proibido");
+        // A coluna Onde quebra a linha e fica em 40%, sem espremer a primeira.
+        let place = rules.iter().find(|(sel, _)| sel == "td.where").expect("regra td.where ausente");
+        assert!(
+            place.1.contains("white-space:normal") && place.1.contains("width:40%"),
+            "td.where: {}",
+            place.1
+        );
 
         // Nenhum li (nem pseudo-elemento dele) vira grid.
         for (selector, decls) in &rules {

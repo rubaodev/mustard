@@ -1167,7 +1167,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o usuário lê e o assistente recebe para corrigir.
         // Sem parênteses: o tom técnico os apagaria. `{words}`, `{opening}`,
-        // `{acronym}`, `{term}`, `{lines}` e `{limit}` vêm do chamador.
+        // `{acronym}`, `{term}`, `{lines}`, `{limit}`, `{found}` e `{expected}`
+        // vêm do chamador.
         ("clarity.long_sentence", Locale::PtBr) => "frase com {words} palavras: \"{opening}…\"",
         ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
         ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
@@ -1178,6 +1179,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "resposta com {lines} linhas de texto; o limite é {limit}"
         }
         ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines of prose; the limit is {limit}",
+        // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
+        // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
+        ("clarity.wrong_language", Locale::PtBr) => {
+            "resposta em {found}; o idioma do projeto e do usuário é {expected}"
+        }
+        ("clarity.wrong_language", Locale::EnUs) => {
+            "reply in {found}; the language of the project and the user is {expected}"
+        }
         // A nota ao usuário quando a resposta reprova, e o aviso que a próxima
         // mensagem leva ao assistente. Os defeitos vêm abaixo, um por linha.
         ("clarity.note.head", Locale::PtBr) => {
@@ -1646,6 +1655,7 @@ mod tests {
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.unexplained_term", &["{term}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
+            ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.note.head", &[][..]),
             ("clarity.next.head", &[][..]),
             ("clarity.more", &["{count}"][..]),

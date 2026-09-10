@@ -86,7 +86,10 @@ th{font-weight:600;font-size:13px;color:var(--muted);border-bottom:2px solid var
 tr:last-child td{border-bottom:0}
 .nw{white-space:nowrap}
 td.id{font-family:var(--mono);font-size:13.5px;color:var(--mustard-text);font-weight:500;white-space:nowrap}
-td.where{font-family:var(--mono);font-size:13px;white-space:nowrap;color:var(--muted)}
+/* A coluna Onde quebra a linha, só nos <wbr> que o gerador põe depois de cada
+   barra do caminho, e fica em 40% da tabela para não espremer a primeira
+   coluna. width, não max-width: max-width não vale em célula de tabela. */
+td.where{font-family:var(--mono);font-size:13px;white-space:normal;width:40%;color:var(--muted)}
 td.sev-alta{font-weight:650}
 
 dl{margin:0 0 12px;display:grid;gap:14px}

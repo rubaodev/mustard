@@ -898,3 +898,30 @@ fn review_agent_teaches_shared_target_and_scratch_gc() {
         assert!(body.contains(CLEANUP), "the {block} block must teach scratch-gc --path");
     }
 }
+
+/// AC-9 — a regra injetada do material manda todo HTML mostrado ao usuário
+/// passar pelo `doc-page` e ser publicado no claude.ai, e a página da spec
+/// gravar o endereço pela porta `spec-doc --published-url`.
+///
+/// Lida do template que o binário embute e conferida pelo mesmo extrator da
+/// catraca: a chamada tem de ser uma invocação de verdade, não o nome solto na
+/// prosa. Confere o fato, nunca a frase — prosa se reescreve.
+#[test]
+fn material_rule_sends_every_page_through_doc_page() {
+    let material = read_lossy(&repo_root().join("packages/core/templates/mustard/material.md"));
+    let invocations = extract_run_invocations(&material);
+    assert!(
+        invocations.iter().any(|inv| inv.name == "doc-page"),
+        "the material rule never tells the reader to run `mustard-rt run doc-page`"
+    );
+    assert!(
+        material.contains("claude.ai"),
+        "the material rule never says the page is published on claude.ai"
+    );
+    assert!(
+        invocations
+            .iter()
+            .any(|inv| inv.name == "spec-doc" && inv.flags.iter().any(|f| f == "published-url")),
+        "the material rule never tells the reader to record the address with `spec-doc --published-url`"
+    );
+}

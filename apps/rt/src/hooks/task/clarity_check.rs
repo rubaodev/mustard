@@ -117,8 +117,10 @@ impl Check for ClarityCheck {
         let record_path = record_path(root, session);
         let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
 
-        let report = measure(message, &invented_terms(root, &project_dir), &record.explained);
+        // O idioma do projeto serve duas vezes: é o que a prosa precisa ter e
+        // é o dos defeitos.
         let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+        let report = measure(message, &invented_terms(root, &project_dir), &record.explained, lang);
         let defects = report.defects(lang);
 
         for term in &report.explained {
@@ -248,6 +250,7 @@ fn metrics(report: &ClarityReport) -> Value {
         "unexplained_terms": report.unexplained_terms.len(),
         "prose_lines": report.prose_lines,
         "too_long": report.too_long,
+        "wrong_language": report.wrong_language.is_some(),
     })
 }
 
@@ -518,6 +521,27 @@ mod tests {
         let message = released["systemMessage"].as_str().unwrap_or_else(|| panic!("{released}"));
         assert!(message.contains("Mustard · clareza"), "{message}");
         assert!(message.contains("- CI sem as palavras por extenso"), "{message}");
+    }
+
+    /// Uma resposta em inglês num projeto em português reprova pelo idioma, e
+    /// o defeito segue pelos caminhos de sempre: a nota ao usuário e a
+    /// mensagem seguinte.
+    #[test]
+    fn a_reply_in_another_language_reaches_the_note_and_the_next_prompt() {
+        let dir = project(Some("didactic"));
+        let root = dir.path();
+        let reply = "The wave is done and the tests pass.\n\
+            The check now compares the language of the reply with the language of the project.\n\
+            It counts the common words of each language.\n\
+            A short reply is not judged at all.";
+        let Verdict::Inject { context: note } =
+            ClarityCheck.evaluate(&stop("s1", reply), &ctx(root, Trigger::Stop)).unwrap()
+        else {
+            panic!("a reply in another language speaks");
+        };
+        let defect = "- resposta em en-US; o idioma do projeto e do usuário é pt-BR";
+        assert!(note.contains(defect), "{note}");
+        assert!(next_context(root, "s1").contains(defect), "the defect waits for the assistant");
     }
 
     /// AC-8 — só um projeto que declarou o tom didático tem as respostas

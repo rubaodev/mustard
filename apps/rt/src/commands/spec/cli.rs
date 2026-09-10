@@ -543,6 +543,35 @@ pub enum SpecCmd {
         #[arg(long = "published-url")]
         published_url: Option<String>,
     },
+    /// Embrulha um corpo HTML no layout padrão do Mustard e grava a página em
+    /// `--out`.
+    ///
+    /// Todo HTML mostrado ao usuário (plano, relatório, resumo, spec) passa
+    /// por aqui, nunca por um visual próprio: o corpo é só o fragmento que vai
+    /// dentro de `<main>`; cabeçalho, fontes e cores vêm do layout. Devolve
+    /// `{ok, path}`; título vazio ou corpo ilegível são recusados sem gravar.
+    #[command(name = "doc-page")]
+    #[command(display_order = 101)]
+    DocPage {
+        /// O título da página, no `<title>` e no `<h1>`. Recusado quando vazio.
+        #[arg(long)]
+        title: String,
+        /// O arquivo com o fragmento HTML que vai dentro de `<main>`.
+        #[arg(long)]
+        body: PathBuf,
+        /// Uma linha solta sob o título, na faixa `.meta`.
+        #[arg(long)]
+        subtitle: Option<String>,
+        /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Idioma BCP-47 do atributo `lang` (sem ele, `en`).
+        #[arg(long)]
+        lang: Option<String>,
+        /// Onde gravar a página; diretórios ausentes são criados.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
@@ -698,6 +727,16 @@ pub fn dispatch(cmd: SpecCmd) {
         }
         SpecCmd::SpecDoc { spec: slug, published_url } => {
             spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug, published_url });
+        }
+        SpecCmd::DocPage { title, body, subtitle, kind, lang, out } => {
+            spec::doc_page::run(&spec::doc_page::DocPageOpts {
+                title,
+                body,
+                subtitle,
+                kind,
+                lang,
+                out,
+            });
         }
     }
 }

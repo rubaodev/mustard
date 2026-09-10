@@ -244,17 +244,27 @@ fn is_upsert_prompt(prompt: &str) -> bool {
 /// misunderstanding costs in a wrong answer, a correction and a rewrite.
 ///
 /// `None` for any other tone, and for a project with no `mustard.json`.
+///
+/// A regra também manda responder no idioma do usuário, que é o do projeto
+/// (`mustard.json` `lang`/`specLang`). Em 10/09/2026 o assistente respondeu em
+/// inglês por vários turnos a quem escreve em português: tinha acabado de ler
+/// skills e relatórios em inglês, e nada na regra falava de idioma (E-4).
 fn tone_rule(root: &Path) -> Option<String> {
     declares_didactic(root).then(|| {
+        let lang = ProjectConfig::load(root).i18n().lang;
+        format!(
             "[Mustard] This project declares `tone: didactic`. Write every user-facing answer so \
              it can be read once, by someone who did not write this code: ONE idea per sentence; \
              every technical term translated the first time it appears IN THIS CONVERSATION — \
              including names this project invented; no acronym without its full words; and no \
              path of reasoning longer than the point needs. Prefer the short true sentence to \
              the complete one. This governs what you SAY, never what you write into code, \
-             commits or specs."
-                .to_string()
-        })
+             commits or specs. Answer the user in the language they write in — this project's \
+             is {lang} (`mustard.json` `lang`/`specLang`) — even after reading skills, references \
+             or reports written in another language; code, commits and subagent prompts keep \
+             their own conventions."
+        )
+    })
 }
 
 /// `true` quando o `mustard.json` DECLAROU `tone: didactic`. A regra de escrita
@@ -534,6 +544,37 @@ mod tests {
             }
             other => panic!("an ordinary prompt must carry the rule, got {other:?}"),
         }
+    }
+
+    /// AC-6 — a regra de escrita manda responder no idioma em que o usuário
+    /// escreve, o do projeto, mesmo depois de ler material em outro idioma. O
+    /// idioma nomeado sai do `mustard.json`, nunca de um valor fixo.
+    #[test]
+    fn the_writing_rule_demands_the_user_language() {
+        let (_dir, verdict) = verdict_for("didactic", "uma mensagem comum");
+        let Verdict::Inject { context } = verdict else {
+            panic!("an ordinary prompt must carry the rule, got {verdict:?}");
+        };
+        assert!(context.contains("in the language they write in"), "{context}");
+        assert!(context.contains("this project's is pt-BR"), "{context}");
+        assert!(context.contains("skills, references or reports"), "{context}");
+        assert!(context.contains("subagent prompts keep their own conventions"), "{context}");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("mustard.json"), r#"{"lang":"en-US","tone":"didactic"}"#)
+            .expect("write config");
+        let c = Ctx {
+            project_dir: dir.path().to_string_lossy().to_string(),
+            trigger: Some(Trigger::UserPromptSubmit),
+            workspace_root: None,
+            inject_only: None,
+        };
+        let verdict =
+            PromptSubmitInject.evaluate(&prompt_input("a plain message"), &c).expect("the gate never errors");
+        let Verdict::Inject { context } = verdict else {
+            panic!("an ordinary prompt must carry the rule, got {verdict:?}");
+        };
+        assert!(context.contains("this project's is en-US"), "{context}");
     }
 
     /// The accented spelling a Brazilian operator actually writes is accepted.
