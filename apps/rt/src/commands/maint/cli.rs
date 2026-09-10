@@ -77,14 +77,18 @@ pub enum MaintCmd {
     #[command(name = "scratch-gc")]
     #[command(display_order = 100)]
     ScratchGc {
-        /// Só lista, sem apagar nada (o padrão).
-        #[arg(long, default_value_t = true, conflicts_with = "apply")]
+        /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
+        /// nem com `--path`: pedir para só listar e apontar uma pasta para
+        /// apagar é contraditório, e a exclusão não tem volta — o parser
+        /// recusa a chamada (exit 2) antes de qualquer coisa ser tocada.
+        #[arg(long, default_value_t = true, conflicts_with_all = ["apply", "path"])]
         dry_run: bool,
         /// Apaga as candidatas listadas. Obrigatório para mexer no disco.
         #[arg(long)]
         apply: bool,
-        /// Apaga só esta pasta, conferida, sem o filtro de idade.
-        #[arg(long)]
+        /// Apaga só esta pasta, conferida, sem o filtro de idade. Não combina
+        /// com `--apply`: são dois modos, e um calado pelo outro engana.
+        #[arg(long, conflicts_with = "apply")]
         path: Option<PathBuf>,
     },
     /// Kill-switch: set `"disableAllHooks": true` in `.claude/settings.json`
@@ -222,8 +226,10 @@ pub fn dispatch(cmd: MaintCmd) {
             });
         }
         MaintCmd::ScratchGc { dry_run, apply, path } => {
-            // `dry_run` vale `true` por padrão e o `conflicts_with` impede os
-            // dois juntos: `--apply` é quem decide.
+            // `dry_run` vale `true` por padrão e o `conflicts_with_all` recusa
+            // `--dry-run` junto de `--apply` OU de `--path`: quando um dos dois
+            // chega aqui, `dry_run` é só o padrão, nunca um pedido explícito.
+            // Por isso descartá-lo é seguro — quem decide é `--apply`/`--path`.
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
@@ -259,5 +265,43 @@ pub fn dispatch(cmd: MaintCmd) {
             maint::maint_validate::run(maint::maint_validate::MaintValidateOpts { dry_run });
         }
         MaintCmd::Upsert {} => maint::upsert::run(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MaintCmd;
+    use clap::Parser;
+
+    /// A wrapper so the family enum can be parsed on its own — the binary's own
+    /// `Cli` lives in `main.rs` and is out of reach from the lib.
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        cmd: MaintCmd,
+    }
+
+    /// `--dry-run --path X` apagava a pasta: o `dry_run` só conflitava com
+    /// `--apply` e o dispatch o descarta. Agora o parser recusa a combinação,
+    /// e o descarte no dispatch só vê o valor padrão.
+    #[test]
+    fn scratch_gc_dry_run_conflicts_with_path_and_apply() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["probe", "scratch-gc"];
+            argv.extend_from_slice(args);
+            Probe::try_parse_from(argv)
+        };
+        assert!(parse(&["--dry-run", "--path", "/tmp/x"]).is_err(), "--dry-run with --path must be refused");
+        assert!(parse(&["--dry-run", "--apply"]).is_err(), "--dry-run with --apply must be refused");
+        assert!(parse(&["--path", "/tmp/x", "--apply"]).is_err(), "--path with --apply must be refused");
+
+        let Ok(Probe { cmd: MaintCmd::ScratchGc { path, apply, .. } }) = parse(&["--path", "/tmp/x"]) else {
+            panic!("--path alone must parse");
+        };
+        assert_eq!(path.as_deref(), Some(std::path::Path::new("/tmp/x")));
+        assert!(!apply);
+        assert!(parse(&["--apply"]).is_ok());
+        assert!(parse(&["--dry-run"]).is_ok());
+        assert!(parse(&[]).is_ok());
     }
 }

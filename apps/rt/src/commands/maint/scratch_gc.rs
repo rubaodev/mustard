@@ -19,8 +19,13 @@
 //! 2. contém uma cópia deste projeto (`Cargo.toml` + `apps/rt`) ou uma pasta
 //!    `target/` de compilação — nela mesma ou numa filha direta, que é onde o
 //!    `git clone` dentro de um `mktemp -d` a deixa;
-//! 3. nada nela foi modificado há mais de [`MIN_AGE_HOURS`] horas;
+//! 3. nada nela mudou há mais de [`MIN_AGE_HOURS`] horas — arquivos e pastas,
+//!    pelo mais recente entre mtime e ctime ([`AgeClock::Changed`]): uma cópia
+//!    `cp -a` preserva o mtime da origem, mas não o ctime;
 //! 4. não é a pasta de trabalho da sessão atual.
+//!
+//! Um temp que é a home ou fica acima dela (`TMPDIR=$HOME`) é recusado em
+//! todos os modos: "dentro do temp" deixaria de proteger alguma coisa.
 //!
 //! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas
 //! que o `worktree-gc` recolhe pelo dono vivo ou morto, e duas portas
@@ -35,7 +40,9 @@
 //! - `--path <dir>`: apaga UMA pasta, sem o filtro de idade (o revisor apaga a
 //!   própria pasta recém-criada ao terminar), mas só depois de conferir os
 //!   filtros 1 e 2. Fora do diretório temporário — o repositório, a home — é
-//!   recusado com erro (exit 1) e nada é tocado.
+//!   recusado com erro (exit 1) e nada é tocado; um `mustard-removal-*` também
+//!   (é do `worktree-gc`). `--dry-run` não combina com `--apply` nem com
+//!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
 //! ## Compilação compartilhada
 //!
@@ -159,6 +166,10 @@ pub(crate) struct ScratchRoots {
     pub cap_bytes: u64,
     pub current_session: String,
     pub current_dir: Option<PathBuf>,
+    /// A home do usuário: o temp não pode ser ela nem uma pasta acima dela.
+    pub home: Option<PathBuf>,
+    /// Qual data diz a idade de uma árvore.
+    pub clock: AgeClock,
 }
 
 impl ScratchRoots {
@@ -170,8 +181,76 @@ impl ScratchRoots {
             cap_bytes: cap_bytes_from_env(),
             current_session: context::session_id(),
             current_dir: std::env::current_dir().ok(),
+            home: crate::util::home_dir(),
+            clock: AgeClock::Changed,
         }
     }
+}
+
+/// Qual data diz a idade de uma árvore (filtro 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgeClock {
+    /// A mais recente entre a modificação (mtime) e a mudança de inode (ctime,
+    /// no Unix; fora dele, a criação) de cada arquivo E pasta, raiz incluída.
+    /// `cp -a` e `rsync -a` preservam o mtime da origem — arquivos e pastas —
+    /// e uma cópia feita agora pareceria ter dias; o ctime nenhuma cópia
+    /// preserva, e ele diz quando a cópia nasceu.
+    Changed,
+    /// Só o mtime de arquivos e pastas. Existe para os testes: ctime não se
+    /// recua, e sem isto nenhum teste fabrica uma pasta antiga.
+    #[cfg(test)]
+    Modified,
+}
+
+/// A data que conta de uma entrada, pelo relógio escolhido.
+fn stamp(meta: &std::fs::Metadata, clock: AgeClock) -> Option<SystemTime> {
+    let modified = meta.modified().ok();
+    match clock {
+        AgeClock::Changed => match (modified, inode_changed(meta)) {
+            (Some(m), Some(c)) => Some(m.max(c)),
+            (m, c) => m.or(c),
+        },
+        #[cfg(test)]
+        AgeClock::Modified => modified,
+    }
+}
+
+/// Quando o inode mudou pela última vez (ctime) — uma cópia não o preserva.
+#[cfg(unix)]
+fn inode_changed(meta: &std::fs::Metadata) -> Option<SystemTime> {
+    use std::os::unix::fs::MetadataExt;
+    let secs = u64::try_from(meta.ctime()).ok()?;
+    let nanos = u64::try_from(meta.ctime_nsec()).ok()?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs).checked_add(Duration::from_nanos(nanos))?)
+}
+
+/// Fora do Unix não há ctime; a criação faz o papel — a cópia do Windows
+/// grava a criação com a hora da cópia.
+#[cfg(not(unix))]
+fn inode_changed(meta: &std::fs::Metadata) -> Option<SystemTime> {
+    meta.created().ok()
+}
+
+/// O diretório temporário resolvido, desde que não seja a raiz do disco, a
+/// home, nem uma pasta acima da home. `TMPDIR=$HOME` faria da home inteira um
+/// "temp", e toda cópia do projeto guardada nela passaria nos filtros.
+fn checked_temp_root(roots: &ScratchRoots) -> Result<PathBuf, String> {
+    let temp = std::fs::canonicalize(&roots.temp_root).map_err(|e| {
+        format!("refused: cannot resolve the temp directory {}: {e}", roots.temp_root.display())
+    })?;
+    if temp.parent().is_none() {
+        return Err(format!("refused: the temp directory {} is the filesystem root", temp.display()));
+    }
+    if let Some(home) = roots.home.as_deref() {
+        let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+        if home.starts_with(&temp) {
+            return Err(format!(
+                "refused: the temp directory {} is the home directory or contains it (check TMPDIR)",
+                temp.display()
+            ));
+        }
+    }
+    Ok(temp)
 }
 
 /// `~/.cache/mustard/scratch-target` — onde as cópias descartáveis compilam.
@@ -299,15 +378,17 @@ struct Measure {
 }
 
 /// Mede uma árvore numa passada só, sem seguir links simbólicos
-/// (`DirEntry::metadata` não os segue).
+/// (`DirEntry::metadata` e `symlink_metadata` não os seguem).
 ///
-/// A idade vem do ARQUIVO mais recente, não da pasta: a data de uma pasta só
-/// muda quando uma filha direta entra ou sai, e um agente compilando fundo em
-/// `target/debug/deps/` a deixaria parecendo abandonada. Sem arquivo algum, a
-/// data da própria raiz responde.
-fn measure(root: &Path) -> Measure {
+/// A idade vem da entrada MAIS RECENTE da árvore inteira — arquivos E pastas,
+/// a raiz incluída — pelo relógio de [`AgeClock`]. Só os arquivos não bastam:
+/// um agente compilando fundo em `target/debug/deps/` muda arquivos, mas uma
+/// cópia recém-feita com `cp -a`/`rsync -a` traz as datas da origem em tudo,
+/// e só o ctime (que nenhuma cópia preserva) diz que ela nasceu agora.
+fn measure(root: &Path, clock: AgeClock) -> Measure {
     let mut bytes: u64 = 0;
-    let mut newest: Option<SystemTime> = None;
+    let mut newest: Option<SystemTime> =
+        std::fs::symlink_metadata(root).ok().and_then(|m| stamp(&m, clock));
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(read) = std::fs::read_dir(&dir) else {
@@ -317,17 +398,16 @@ fn measure(root: &Path) -> Measure {
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
+            if let Some(t) = stamp(&meta, clock) {
+                newest = Some(newest.map_or(t, |n| n.max(t)));
+            }
             if meta.is_dir() {
                 stack.push(entry.path());
-                continue;
-            }
-            bytes = bytes.saturating_add(meta.len());
-            if let Ok(modified) = meta.modified() {
-                newest = Some(newest.map_or(modified, |n| n.max(modified)));
+            } else {
+                bytes = bytes.saturating_add(meta.len());
             }
         }
     }
-    let newest = newest.or_else(|| std::fs::metadata(root).and_then(|m| m.modified()).ok());
     Measure { bytes, newest }
 }
 
@@ -351,13 +431,21 @@ impl Survey {
 
 /// Aplica os quatro filtros e mede a compilação compartilhada. Não apaga
 /// nada — é a leitura que o `doctor --residue` também usa.
+///
+/// Com um temp que é a home ou fica acima dela ([`checked_temp_root`]) não há
+/// candidata: listar a home como sobra é mentira, e medi-la estouraria o
+/// prazo do início da sessão.
 pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
     let now = SystemTime::now();
     let min_age = Duration::from_secs(MIN_AGE_HOURS * 3600);
     let mut candidates = Vec::new();
     let mut kept = Vec::new();
+    let locations = match checked_temp_root(roots) {
+        Ok(_) => list_locations(&roots.temp_root),
+        Err(_) => Vec::new(),
+    };
 
-    for loc in list_locations(&roots.temp_root) {
+    for loc in locations {
         if !holds_scratch_build(&loc.path) {
             continue;
         }
@@ -368,7 +456,7 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
             kept.push(KeptRecord { path, reason: "current session".into() });
             continue;
         }
-        let measured = measure(&loc.path);
+        let measured = measure(&loc.path, roots.clock);
         let Some(elapsed) = measured.newest.and_then(|t| now.duration_since(t).ok()) else {
             // Data ilegível ou no futuro: sem medida não há autorização.
             kept.push(KeptRecord { path, reason: "unknown age".into() });
@@ -387,7 +475,7 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
     }
 
     let shared_target = roots.shared_target.as_deref().filter(|p| p.is_dir()).map(|p| {
-        let size_bytes = measure(p).bytes;
+        let size_bytes = measure(p, roots.clock).bytes;
         SharedTargetRecord {
             path: p.display().to_string(),
             size_bytes,
@@ -412,8 +500,22 @@ fn empty_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// Varredura + (com `apply`) exclusão das candidatas e do excesso da
-/// compilação compartilhada. Sem stdout nem telemetria — o `run` cuida disso.
-fn gc(roots: &ScratchRoots, apply: bool) -> ScratchGcReport {
+/// compilação compartilhada, e se a chamada foi recusada (temp inseguro).
+/// Sem stdout nem telemetria — o `run` cuida disso.
+fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
+    if let Err(error) = checked_temp_root(roots) {
+        let report = ScratchGcReport {
+            dry_run: !apply,
+            min_age_hours: MIN_AGE_HOURS,
+            candidates: Vec::new(),
+            candidates_bytes: 0,
+            kept: Vec::new(),
+            removed: Vec::new(),
+            errors: vec![ErrorRecord { path: roots.temp_root.display().to_string(), error }],
+            shared_target: None,
+        };
+        return (report, true);
+    }
     let survey = survey(roots);
     let candidates_bytes = survey.candidates_bytes();
     let mut report = ScratchGcReport {
@@ -427,7 +529,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> ScratchGcReport {
         shared_target: survey.shared_target,
     };
     if !apply {
-        return report;
+        return (report, false);
     }
 
     for candidate in &report.candidates {
@@ -449,7 +551,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> ScratchGcReport {
         }
     }
 
-    report
+    (report, false)
 }
 
 /// `--path`: confere os filtros 1 e 2 e apaga UMA pasta, sem o filtro de
@@ -458,12 +560,12 @@ fn gc(roots: &ScratchRoots, apply: bool) -> ScratchGcReport {
 ///
 /// O caminho é resolvido (`canonicalize`) ANTES de qualquer conferência: um
 /// link no temp apontando para o repositório vira o repositório, e é recusado
-/// como tal.
-pub(crate) fn remove_path(target: &Path, temp_root: &Path) -> Result<PathBuf, String> {
+/// como tal. O próprio temp também é conferido ([`checked_temp_root`]): com
+/// `TMPDIR=$HOME`, "dentro do temp" deixaria de proteger alguma coisa.
+pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf, String> {
+    let temp = checked_temp_root(roots)?;
     let dir = std::fs::canonicalize(target)
         .map_err(|e| format!("refused: cannot resolve {}: {e}", target.display()))?;
-    let temp = std::fs::canonicalize(temp_root)
-        .map_err(|e| format!("refused: cannot resolve the temp directory {}: {e}", temp_root.display()))?;
     let Ok(rel) = dir.strip_prefix(&temp) else {
         return Err(format!(
             "refused: {} is outside the temp directory {}",
@@ -480,6 +582,15 @@ pub(crate) fn remove_path(target: &Path, temp_root: &Path) -> Result<PathBuf, St
         .collect();
     if parts.is_empty() {
         return Err(format!("refused: {} is the temp directory itself", dir.display()));
+    }
+    // A mesma exclusão da varredura: `mustard-removal-*` é worktree que o git
+    // ainda tem registrada, e apagá-la daqui deixaria o registro apontando
+    // para uma pasta que não existe. Quem a recolhe é o `worktree-gc`.
+    if parts[0].to_str().is_some_and(|n| n.starts_with(REMOVAL_WORKTREE_PREFIX)) {
+        return Err(format!(
+            "refused: {} is a registered removal worktree; worktree-gc owns it",
+            dir.display()
+        ));
     }
     // Dentro de `claude-<uid>/` só vale o que está abaixo de um `scratchpad/`:
     // os níveis de cima são a estrutura da sessão, não uma cópia.
@@ -504,7 +615,7 @@ pub(crate) fn remove_path(target: &Path, temp_root: &Path) -> Result<PathBuf, St
 }
 
 /// O relatório do modo `--path`, e se a pasta foi recusada.
-fn path_report(target: &Path, temp_root: &Path) -> (ScratchGcReport, bool) {
+fn path_report(target: &Path, roots: &ScratchRoots) -> (ScratchGcReport, bool) {
     let mut report = ScratchGcReport {
         dry_run: false,
         min_age_hours: MIN_AGE_HOURS,
@@ -515,7 +626,7 @@ fn path_report(target: &Path, temp_root: &Path) -> (ScratchGcReport, bool) {
         errors: Vec::new(),
         shared_target: None,
     };
-    let refused = match remove_path(target, temp_root) {
+    let refused = match remove_path(target, roots) {
         Ok(dir) => {
             report.removed.push(dir.display().to_string());
             false
@@ -557,8 +668,8 @@ pub fn run(opts: ScratchGcOpts) {
     let started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
     let (report, refused) = match opts.path.as_deref() {
-        Some(target) => path_report(target, &roots.temp_root),
-        None => (gc(&roots, opts.apply), false),
+        Some(target) => path_report(target, &roots),
+        None => gc(&roots, opts.apply),
     };
 
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
@@ -580,6 +691,42 @@ pub fn run(opts: ScratchGcOpts) {
     if refused {
         std::process::exit(1);
     }
+}
+
+/// Fixture de teste: recua o mtime de TODA a árvore — arquivos e pastas, a
+/// raiz incluída — em `hours` horas (mais um minuto de folga). Com
+/// [`AgeClock::Modified`] a árvore passa a parecer antiga; com
+/// [`AgeClock::Changed`] não, porque o ctime não recua — é o que prova que uma
+/// cópia `cp -a` recém-feita não vira candidata.
+#[cfg(test)]
+pub(crate) fn backdate_tree(root: &Path, hours: u64) {
+    let when = SystemTime::now() - Duration::from_secs(hours * 3600 + 60);
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(entry.path());
+            } else {
+                set_mtime(&entry.path(), when);
+            }
+        }
+        set_mtime(&dir, when);
+    }
+}
+
+/// Recua o mtime de um arquivo ou pasta. No Unix um descritor só de leitura
+/// basta ao dono (`futimens`); no Windows a pasta só abre com
+/// `FILE_FLAG_BACKUP_SEMANTICS`, e mudar a data pede `FILE_WRITE_ATTRIBUTES`.
+#[cfg(test)]
+fn set_mtime(path: &Path, when: SystemTime) {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        opts.read(false).access_mode(0x0100).custom_flags(0x0200_0000);
+    }
+    opts.open(path).unwrap().set_modified(when).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +751,9 @@ mod tests {
             cap_bytes: DEFAULT_SHARED_TARGET_CAP_BYTES,
             current_session: CURRENT.to_string(),
             current_dir: None,
+            home: Some(base.join("home")),
+            // As fixtures envelhecem pelo mtime; o ctime tem teste próprio.
+            clock: AgeClock::Modified,
         }
     }
 
@@ -624,24 +774,6 @@ mod tests {
         fs::write(dir.join("target").join("debug").join("deps").join("libx.rlib"), vec![0u8; 2048]).unwrap();
     }
 
-    /// Envelhece todos os arquivos da árvore em `hours` horas. A idade vem do
-    /// arquivo mais recente, então basta mexer nos arquivos — e `set_modified`
-    /// num arquivo aberto para escrita funciona em toda plataforma.
-    fn age_tree(dir: &Path, hours: u64) {
-        let when = SystemTime::now() - Duration::from_secs(hours * 3600 + 60);
-        let mut stack = vec![dir.to_path_buf()];
-        while let Some(d) = stack.pop() {
-            for entry in fs::read_dir(&d).unwrap().flatten() {
-                let p = entry.path();
-                if entry.file_type().unwrap().is_dir() {
-                    stack.push(p);
-                } else {
-                    let file = fs::OpenOptions::new().write(true).open(&p).unwrap();
-                    file.set_modified(when).unwrap();
-                }
-            }
-        }
-    }
 
     /// AC-1 — sem opção, a candidata antiga é listada com tamanho e idade, e
     /// nada é apagado.
@@ -651,9 +783,9 @@ mod tests {
         let roots = fake_roots(base.path());
         let old = roots.temp_root.join("tmp.old1");
         project_copy(&old);
-        age_tree(&old, 20);
+        backdate_tree(&old, 20);
 
-        let report = gc(&roots, /* apply = */ false);
+        let (report, _) = gc(&roots, /* apply = */ false);
 
         assert!(report.dry_run);
         assert_eq!(report.candidates.len(), 1, "{:?}", report.candidates);
@@ -681,12 +813,12 @@ mod tests {
 
         let old = tmp.join("tmp.old");
         project_copy(&old);
-        age_tree(&old, 30);
+        backdate_tree(&old, 30);
 
         // Clone dentro de um `mktemp -d`: a cópia está uma pasta abaixo.
         let nested = tmp.join("tmp.nested");
         project_copy(&nested.join("mustard"));
-        age_tree(&nested, 30);
+        backdate_tree(&nested, 30);
 
         let young = tmp.join("tmp.young");
         project_copy(&young);
@@ -694,23 +826,23 @@ mod tests {
         let foreign = tmp.join("outra-coisa");
         fs::create_dir_all(&foreign).unwrap();
         fs::write(foreign.join("notas.txt"), "nao e do mustard").unwrap();
-        age_tree(&foreign, 30);
+        backdate_tree(&foreign, 30);
 
         let sessions = tmp.join("claude-1000").join("-home-x-proj");
         let mine = sessions.join(CURRENT).join(SCRATCHPAD_DIR).join("copia");
         target_only(&mine);
-        age_tree(&mine, 30);
+        backdate_tree(&mine, 30);
         let other = sessions.join("sess-antiga").join(SCRATCHPAD_DIR).join("copia");
         target_only(&other);
-        age_tree(&other, 30);
+        backdate_tree(&other, 30);
 
         // A pasta de onde o comando roda também é da sessão atual.
         let running = tmp.join("tmp.running");
         project_copy(&running);
-        age_tree(&running, 30);
+        backdate_tree(&running, 30);
         roots.current_dir = Some(running.join("apps").join("rt"));
 
-        let report = gc(&roots, /* apply = */ true);
+        let (report, _) = gc(&roots, /* apply = */ true);
 
         assert!(!old.exists(), "old project copy removed");
         assert!(!nested.exists(), "old mktemp folder holding a clone removed");
@@ -755,12 +887,12 @@ mod tests {
         // O "repositório": cópia completa do projeto, mas fora do temp.
         let repo = base.path().join("repo");
         project_copy(&repo);
-        let err = remove_path(&repo, &roots.temp_root).unwrap_err();
+        let err = remove_path(&repo, &roots).unwrap_err();
         assert!(err.contains("outside the temp directory"), "{err}");
         assert!(repo.join("Cargo.toml").exists(), "the repository is untouched");
 
         // A "home": contém o temp, então também está fora dele.
-        let err = remove_path(base.path(), &roots.temp_root).unwrap_err();
+        let err = remove_path(base.path(), &roots).unwrap_err();
         assert!(err.contains("outside the temp directory"), "{err}");
         assert!(roots.temp_root.exists());
 
@@ -769,22 +901,29 @@ mod tests {
         {
             let link = roots.temp_root.join("tmp.link");
             std::os::unix::fs::symlink(&repo, &link).unwrap();
-            let err = remove_path(&link, &roots.temp_root).unwrap_err();
+            let err = remove_path(&link, &roots).unwrap_err();
             assert!(err.contains("outside the temp directory"), "{err}");
             assert!(repo.join("Cargo.toml").exists(), "a symlink never reaches the repository");
         }
 
         // O próprio temp, a estrutura da sessão e uma pasta alheia: recusados.
-        assert!(remove_path(&roots.temp_root, &roots.temp_root).is_err());
+        assert!(remove_path(&roots.temp_root, &roots).is_err());
         let session_layout = roots.temp_root.join("claude-1000").join("proj");
         target_only(&session_layout);
-        assert!(remove_path(&session_layout, &roots.temp_root).is_err());
+        assert!(remove_path(&session_layout, &roots).is_err());
         assert!(session_layout.exists());
         let foreign = roots.temp_root.join("outra-coisa");
         fs::create_dir_all(&foreign).unwrap();
         fs::write(foreign.join("notas.txt"), "x").unwrap();
-        assert!(remove_path(&foreign, &roots.temp_root).is_err());
+        assert!(remove_path(&foreign, &roots).is_err());
         assert!(foreign.join("notas.txt").exists());
+
+        // Worktree de prova de remoção: é do `worktree-gc`, mesmo sendo cópia.
+        let removal = roots.temp_root.join("mustard-removal-abc");
+        project_copy(&removal);
+        let err = remove_path(&removal, &roots).unwrap_err();
+        assert!(err.contains("worktree-gc owns it"), "{err}");
+        assert!(removal.join("Cargo.toml").exists(), "a registered worktree is never removed here");
     }
 
     /// `--path` apaga a pasta recém-criada do revisor: sem filtro de idade.
@@ -797,9 +936,9 @@ mod tests {
         let scratch = roots.temp_root.join("claude-1000").join("proj").join("sess").join(SCRATCHPAD_DIR).join("c");
         target_only(&scratch);
 
-        assert!(remove_path(&fresh, &roots.temp_root).is_ok());
+        assert!(remove_path(&fresh, &roots).is_ok());
         assert!(!fresh.exists());
-        assert!(remove_path(&scratch, &roots.temp_root).is_ok());
+        assert!(remove_path(&scratch, &roots).is_ok());
         assert!(!scratch.exists());
     }
 
@@ -815,25 +954,73 @@ mod tests {
 
         // Abaixo do teto: nada muda.
         roots.cap_bytes = 1_000_000;
-        let report = gc(&roots, true);
+        let (report, _) = gc(&roots, true);
         let st = report.shared_target.as_ref().unwrap();
         assert!(!st.over_cap && !st.emptied);
         assert!(shared.join("debug").join("big.rlib").exists());
 
         // Acima do teto, sem `--apply`: só relata.
         roots.cap_bytes = 1024;
-        let report = gc(&roots, false);
+        let (report, _) = gc(&roots, false);
         let st = report.shared_target.as_ref().unwrap();
         assert!(st.over_cap && !st.emptied);
         assert!(shared.join("debug").join("big.rlib").exists());
 
         // Acima do teto, com `--apply`: esvazia e mantém a pasta.
-        let report = gc(&roots, true);
+        let (report, _) = gc(&roots, true);
         let st = report.shared_target.as_ref().unwrap();
         assert!(st.over_cap && st.emptied, "{st:?}");
         assert_eq!(st.size_bytes, 4096);
         assert!(shared.is_dir(), "the folder itself stays for CARGO_TARGET_DIR");
         assert_eq!(fs::read_dir(&shared).unwrap().count(), 0, "and it is empty");
+    }
+
+    /// Uma cópia `cp -a`/`rsync -a` recém-feita traz o mtime da origem em
+    /// arquivos E pastas. Pelo mtime ela parece ter 72 horas; pelo relógio de
+    /// produção (ctime, que cópia nenhuma preserva) ela nasceu agora — e o
+    /// `--apply` não a toca.
+    #[test]
+    fn fresh_copy_with_preserved_mtimes_is_not_a_candidate() {
+        let base = tempdir().unwrap();
+        let mut roots = fake_roots(base.path());
+        let fresh = roots.temp_root.join("tmp.cp-a");
+        project_copy(&fresh);
+        backdate_tree(&fresh, 72);
+
+        // A fixture funcionou: só pelo mtime, a cópia seria candidata.
+        let (report, _) = gc(&roots, false);
+        assert_eq!(report.candidates.len(), 1, "fixture must look 72h old by mtime alone");
+
+        roots.clock = AgeClock::Changed;
+        let (report, _) = gc(&roots, true);
+        assert!(report.candidates.is_empty(), "{:?}", report.candidates);
+        assert!(report.removed.is_empty());
+        assert!(fresh.join("Cargo.toml").exists(), "work in progress survives --apply");
+        let kept = report.kept.iter().find(|k| k.path == fresh.display().to_string());
+        assert_eq!(kept.map(|k| k.reason.as_str()), Some("younger than 12h"));
+    }
+
+    /// `TMPDIR=$HOME` (ou uma pasta acima da home) não vira licença: o
+    /// `--path`, o `--apply` e a varredura recusam, e nada é tocado.
+    #[test]
+    fn temp_root_at_or_above_home_is_refused() {
+        let base = tempdir().unwrap();
+        let mut roots = fake_roots(base.path());
+        let copy = roots.temp_root.join("mustard");
+        project_copy(&copy);
+        backdate_tree(&copy, 30);
+
+        for home in [roots.temp_root.clone(), roots.temp_root.join("rubens")] {
+            fs::create_dir_all(&home).unwrap();
+            roots.home = Some(home);
+            let err = remove_path(&copy, &roots).unwrap_err();
+            assert!(err.contains("home directory"), "{err}");
+            let (report, refused) = gc(&roots, true);
+            assert!(refused, "--apply with an unsafe temp is refused");
+            assert!(report.removed.is_empty() && report.candidates.is_empty());
+            assert!(survey(&roots).candidates.is_empty(), "the survey lists nothing either");
+            assert!(copy.join("Cargo.toml").exists(), "nothing is touched");
+        }
     }
 
     #[test]

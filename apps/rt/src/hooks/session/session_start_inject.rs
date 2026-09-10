@@ -1212,18 +1212,14 @@ mod tests {
         .unwrap();
 
         // Um diretório temporário falso com uma cópia descartável de um dia
-        // atrás — a idade vem do arquivo mais recente, então basta envelhecer
-        // os dois arquivos.
+        // atrás — a árvore inteira envelhecida pelo mtime, o relógio das
+        // fixtures (o ctime não recua).
         let temp_root = dir.path().join("tmp");
         let old = temp_root.join("tmp.old");
         std::fs::create_dir_all(old.join("apps").join("rt")).unwrap();
         std::fs::write(old.join("Cargo.toml"), "[workspace]\n").unwrap();
         std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 4096]).unwrap();
-        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
-        for f in [old.join("Cargo.toml"), old.join("apps").join("rt").join("big.bin")] {
-            let file = std::fs::OpenOptions::new().write(true).open(&f).unwrap();
-            file.set_modified(when).unwrap();
-        }
+        crate::commands::maint::scratch_gc::backdate_tree(&old, 24);
         let total = std::fs::metadata(old.join("Cargo.toml")).unwrap().len() + 4096;
 
         let probe = |warn_bytes: u64| ScratchProbe {
@@ -1233,6 +1229,8 @@ mod tests {
                 cap_bytes: u64::MAX,
                 current_session: "s-scratch".to_string(),
                 current_dir: None,
+                home: None,
+                clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
             },
             warn_bytes,
         };

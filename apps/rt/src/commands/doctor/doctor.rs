@@ -1966,7 +1966,7 @@ mod tests {
     /// compilação compartilhada.
     #[test]
     fn doctor_residue_reports_scratch_leftovers() {
-        use crate::commands::maint::scratch_gc::{human_bytes, ScratchRoots};
+        use crate::commands::maint::scratch_gc::{backdate_tree, human_bytes, AgeClock, ScratchRoots};
 
         let base = tempdir().unwrap();
         let temp_root = base.path().join("tmp");
@@ -1974,12 +1974,8 @@ mod tests {
         std::fs::create_dir_all(old.join("apps").join("rt")).unwrap();
         write_file(&old.join("Cargo.toml"), "[workspace]\n");
         std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 3 * 1024]).unwrap();
-        // Idade vem do arquivo mais recente: envelhecer os dois arquivos basta.
-        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
-        for f in [old.join("Cargo.toml"), old.join("apps").join("rt").join("big.bin")] {
-            let file = std::fs::OpenOptions::new().write(true).open(&f).unwrap();
-            file.set_modified(when).unwrap();
-        }
+        // A árvore inteira envelhecida pelo mtime, o relógio das fixtures.
+        backdate_tree(&old, 24);
         let candidate_bytes = std::fs::metadata(old.join("Cargo.toml")).unwrap().len() + 3 * 1024;
 
         let shared = base.path().join("cache").join("scratch-target");
@@ -1992,6 +1988,8 @@ mod tests {
             cap_bytes: 1024 * 1024,
             current_session: "sess-current".to_string(),
             current_dir: None,
+            home: None,
+            clock: AgeClock::Modified,
         };
         let result = check_scratch_residue(&roots);
 
