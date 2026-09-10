@@ -844,6 +844,20 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              `mustard-rt run git-settle --report` to check each one's state and \
              `mustard-rt run git-settle --unit <branch>` to prune. Advisory, never blocking."
         }
+        // Aviso de sobras do início da sessão: `{total}` e `{count}` são
+        // preenchidos pelo chamador (`session_start_inject::scratch_notice`).
+        ("scratch.residue.notice", Locale::PtBr) => {
+            "[Mustard] As cópias descartáveis antigas no diretório temporário somam {total} \
+             em {count} pasta(s). Diga ao usuário que o disco está sendo gasto com sobras e \
+             ofereça `mustard-rt run scratch-gc` para listar o que sai e \
+             `mustard-rt run scratch-gc --apply` para apagar. Aviso, nunca bloqueio."
+        }
+        ("scratch.residue.notice", Locale::EnUs) => {
+            "[Mustard] Old throwaway copies in the temp directory add up to {total} across \
+             {count} folder(s). Tell the user the disk is being spent on leftovers and offer \
+             `mustard-rt run scratch-gc` to list what would go and \
+             `mustard-rt run scratch-gc --apply` to delete it. Advisory, never blocking."
+        }
 
         // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
         // each named for what was actually measured (a diagnostic must never
@@ -1588,6 +1602,7 @@ mod tests {
             ("deliver.publish", &[][..]),
             ("pending.notice", &["{count}", "{items}"][..]),
             ("pending.gate.block", &["{count}", "{items}"][..]),
+            ("scratch.residue.notice", &["{total}", "{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

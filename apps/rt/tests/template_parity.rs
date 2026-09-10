@@ -140,13 +140,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          (flagged as dark surface in the F1 LOT C report)",
     ),
     (
-        "scratch-gc",
-        "scratch-copy collector (commands/maint/scratch_gc.rs) landing in wave 1 \
-         of the scratch-gc unit; its prose caller is the reviewer's cleanup step \
-         in plugin/agents/mustard-review.md, written in wave 2 - drop this row \
-         there",
-    ),
-    (
         "security-scan",
         "secret/permission scanner with an exit-code contract \
          (commands/review/security_scan.rs, JS-era port); no product caller \
@@ -861,5 +854,47 @@ fn runtime_whitelist_stays_sorted_live_and_not_redundant() {
             "RUNTIME_WHITELIST entry {name} now has a static product caller - \
              the row is redundant, drop it"
         );
+    }
+}
+
+/// AC-7 — o revisor e o agente de onda aprendem, pela própria instrução, a
+/// compilar a cópia descartável na compilação compartilhada e a apagá-la pela
+/// porta `scratch-gc --path`, nunca pela exclusão recursiva que a trava nega.
+///
+/// O caminho escrito na prosa é conferido contra o do código
+/// ([`shared_target_dir`](mustard_rt::commands::maint::scratch_gc::shared_target_dir)):
+/// se um mudar sem o outro, as cópias passam a compilar num lugar que a porta
+/// não mede nem esvazia. O roteiro do agente de onda é conferido nos DOIS
+/// blocos — o de despacho e o de nova tentativa —, porque o agente que refaz
+/// uma onda também compila.
+#[test]
+fn review_agent_teaches_shared_target_and_scratch_gc() {
+    const SHARED_TARGET: &str = "CARGO_TARGET_DIR=\"$HOME/.cache/mustard/scratch-target\"";
+    const CLEANUP: &str = "mustard-rt run scratch-gc --path \"$D\"";
+
+    let code = mustard_rt::commands::maint::scratch_gc::shared_target_dir()
+        .expect("the home directory resolves in the test environment");
+    assert!(
+        code.ends_with(".cache/mustard/scratch-target"),
+        "the prose names $HOME/.cache/mustard/scratch-target; the code builds {}",
+        code.display()
+    );
+
+    let root = repo_root();
+    let review = read_lossy(&root.join("plugin/agents/mustard-review.md"));
+    assert!(review.contains(SHARED_TARGET), "the reviewer must build scratch copies in the shared target");
+    assert!(review.contains(CLEANUP), "the reviewer must remove its scratch copy through scratch-gc --path");
+
+    let template = read_lossy(&root.join("apps/rt/src/commands/agent/agent_prompt_template.md"));
+    for block in ["dispatch", "retry"] {
+        let open = format!("<!-- TEMPLATE: {block} -->");
+        let close = format!("<!-- /TEMPLATE: {block} -->");
+        let body = template
+            .split_once(&open)
+            .and_then(|(_, rest)| rest.split_once(&close))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("the {block} block is missing from the wave-agent template"));
+        assert!(body.contains(SHARED_TARGET), "the {block} block must teach the shared target");
+        assert!(body.contains(CLEANUP), "the {block} block must teach scratch-gc --path");
     }
 }
