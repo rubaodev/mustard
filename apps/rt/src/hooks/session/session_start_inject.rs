@@ -463,9 +463,12 @@ fn session_start_core(
     // só existe na memória da conversa se perde quando ela acaba; relido aqui,
     // ele atravessa a sessão.
     let pending = pending_notice(Path::new(&cwd), terrain_lang);
-    // ONE composed Inject (the dispatcher fold is last-writer-wins):
-    // terrain first, injectables after, the advisories last — blank-line
-    // separated.
+    // ONE composed Inject. This is the only `Check` that injects on
+    // `SessionStart`, so the order below is the order the window reads (the
+    // dispatcher fold joins Injects in registry order and has nothing to join
+    // here): terrain first, injectables after, the advisories last —
+    // blank-line separated. All of it is ONE response under the 10,000
+    // character ceiling, which is why the prompt family stays out (above).
     let parts: Vec<String> = [terrain, injected, drift, stale, behind, prune, pending]
         .into_iter()
         .flatten()

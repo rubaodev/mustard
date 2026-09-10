@@ -1153,9 +1153,10 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 /// next prompt re-delivers. `sessionStart` cannot do that — it only fires on
 /// openings, and `fork` matched no matcher at all until this unit.
 ///
-/// Mustard's own dispatcher fold is still last-writer-wins, so two Injects
-/// within ONE invocation would drop one; a hook per injectable sidesteps that
-/// without touching the dispatcher. Rationale in full:
+/// Mustard's own dispatcher fold joins the Injects of ONE invocation into a
+/// single response, and that response has ONE 10,000-character ceiling — so
+/// joining never buys an injectable room of its own. A hook per injectable is
+/// what does, without touching the dispatcher. Rationale in full:
 /// `plugin/refs/mustard/router-rationale.md`.
 ///
 /// The didactic response style used to ride `sessionStart` here; it is now the

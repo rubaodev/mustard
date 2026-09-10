@@ -406,7 +406,7 @@ fn role_is_readonly(role: &str) -> bool {
 /// `*context.md` the map links — not just a single root `CONTEXT.md`. The
 /// resolved bodies are concatenated; a project with only a root `CONTEXT.md`
 /// behaves exactly as before. Empty string when nothing resolves.
-fn read_context_md(project: &Path) -> String {
+pub(crate) fn read_context_md(project: &Path) -> String {
     // Resolve the root CONTEXT.md plus a CONTEXT-MAP.md (when present) — the
     // resolver dedups, expands the map, and silently skips missing files.
     let mut requested: Vec<String> = Vec::new();

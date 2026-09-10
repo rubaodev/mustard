@@ -34,11 +34,11 @@ use std::hash::Hash;
 
 /// One generic match emitted by [`KeyedAutomaton::scan`]: the key the term
 /// belongs to, the original term, and the byte span in the haystack.
-pub(super) struct KeyedHit<K> {
-    pub(super) key: K,
-    pub(super) term: String,
-    pub(super) start: usize,
-    pub(super) end: usize,
+pub(crate) struct KeyedHit<K> {
+    pub(crate) key: K,
+    pub(crate) term: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 /// The shared `aho-corasick` engine, generic over the *key* each term is
@@ -49,7 +49,9 @@ pub(super) struct KeyedHit<K> {
 /// This is the only place in the crate that touches the `aho-corasick` API —
 /// every multi-pattern scan goes through here so the engine is never
 /// duplicated.
-pub(super) struct KeyedAutomaton<K> {
+// Visível na crate inteira porque o medidor de clareza (`domain::clarity`)
+// também casa vários termos de uma vez e precisa reusar este mesmo motor.
+pub(crate) struct KeyedAutomaton<K> {
     ac: AhoCorasick,
     // Parallel to the patterns handed to `AhoCorasick::new`. Index by
     // `Match::pattern().as_usize()` to recover the original term + key.
@@ -70,7 +72,7 @@ impl<K: Copy + Eq + Hash> KeyedAutomaton<K> {
     /// boundary, which is silently lethal for performance and correctness.
     ///
     /// Returns [`VocabError::NoTerms`] when no non-empty term survives.
-    pub(super) fn from_groups(
+    pub(crate) fn from_groups(
         groups: impl IntoIterator<Item = (K, Vec<String>)>,
     ) -> Result<Self, VocabError> {
         let mut seen_terms: HashSet<String> = HashSet::new();
@@ -121,7 +123,7 @@ impl<K: Copy + Eq + Hash> KeyedAutomaton<K> {
     }
 
     /// Scan a haystack and emit one [`KeyedHit`] per match, left to right.
-    pub(super) fn scan(&self, haystack: &str) -> Vec<KeyedHit<K>> {
+    pub(crate) fn scan(&self, haystack: &str) -> Vec<KeyedHit<K>> {
         self.ac
             .find_iter(haystack)
             .filter_map(|m| {

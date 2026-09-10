@@ -1,0 +1,929 @@
+//! `clarity` — mede uma resposta do assistente contra a regra de tom didático.
+//!
+//! A regra que o assistente recebe em toda mensagem quando o projeto declara
+//! `tone: didactic` pede quatro coisas: uma ideia por frase; termo técnico e
+//! nome inventado traduzidos na primeira vez da conversa; nenhuma sigla sem as
+//! palavras por extenso; e nenhuma resposta maior do que o assunto pede. Este
+//! módulo confere essas quatro coisas por sinais objetivos — quantas palavras
+//! tem cada frase, quais siglas e termos aparecem sem explicação, quantas
+//! linhas de texto a resposta tem. Ele não tenta entender o sentido do texto.
+//!
+//! Função pura: sem disco, sem log, sem relógio. A lista de nomes inventados
+//! vem do chamador (lista do output style, Definições da spec ativa, glossário
+//! `CONTEXT.md`); aqui não existe lista de termos escrita à mão. A única lista
+//! fixa é a das poucas siglas que dispensam expansão.
+//!
+//! Fica fora da medição tudo o que não é texto corrido: blocos de código,
+//! código inline, URLs, caminhos de arquivo, linhas de tabela e JSON. Cada
+//! linha de texto é medida sozinha: numa resposta de chat a quebra de linha
+//! separa ideias, e um item de lista conta como frase.
+
+use crate::domain::vocabulary::aho::KeyedAutomaton;
+use crate::platform::i18n::{translate, Locale};
+use std::cmp::Reverse;
+
+/// Palavras acima das quais uma frase conta como longa.
+pub const MAX_SENTENCE_WORDS: usize = 25;
+
+/// Linhas de texto acima das quais a resposta conta como longa demais.
+pub const MAX_PROSE_LINES: usize = 20;
+
+/// Quantas palavras do começo de uma frase longa vão para o relatório: o
+/// bastante para o leitor achar a frase, pouco para não repetir a resposta.
+const OPENING_WORDS: usize = 8;
+
+/// Siglas que dispensam expansão. São o vocabulário da web e do git que quem
+/// usa o Mustard lê todo dia sem pensar; escrever "HTML (linguagem de marcação
+/// de hipertexto)" deixaria a frase mais difícil, o contrário do que a regra
+/// pede. A lista é curta de propósito: sigla fora dela precisa das palavras por
+/// extenso na primeira vez.
+const COMMON_ACRONYMS: &[&str] = &[
+    "API", "CPU", "CSS", "HTML", "HTTP", "HTTPS", "ID", "JSON", "OK", "PDF", "PR", "SQL", "URL",
+    "UTF",
+];
+
+/// Travessão ou hífen colado logo depois do termo: abre um aposto que explica o
+/// termo em qualquer ponto da frase ("o slug — o nome curto da spec — mudou").
+const APPOSITION_MARKS: &[&str] = &[" — ", " - "];
+
+/// Dois-pontos colado logo depois do termo. Só explica quando o termo abre a
+/// frase, como num glossário ("CI: integração contínua"). No meio da frase
+/// ("Troquei o slug: agora é outro") ele anuncia o que vem depois, não o termo.
+const LABEL_MARK: &str = ": ";
+
+/// Expressões que anunciam a explicação quando ocupam as palavras logo depois
+/// do termo ("o CI, ou seja, a integração contínua"). Mais adiante na frase
+/// não contam: "o CI falhou, e o que é pior" não explica o CI.
+const EXPLAINING_PHRASES: &[&str] = &[
+    "que é", "que são", "ou seja", "isto é", "which is", "which are", "meaning",
+];
+
+/// Quantas palavras depois do termo podem trazer uma [`EXPLAINING_PHRASES`].
+const PHRASE_WINDOW: usize = 2;
+
+/// Pontuação que fecha o termo sem separá-lo do que vem depois (ênfase do
+/// markdown, aspas): "**slug** — o nome curto" ainda é o termo colado ao
+/// travessão.
+const TERM_CLOSERS: &[char] = &['*', '_', '"', '\'', '”', '»'];
+
+/// Pontuação que abre uma palavra sem fazer parte dela (parêntese, aspas,
+/// ênfase do markdown).
+const LEADERS: &[char] = &['(', '[', '"', '\'', '«', '“', '*', '_'];
+
+/// Pontuação que fecha uma palavra sem fazer parte dela.
+const TRAILERS: &[char] = &[
+    ')', ']', '"', '\'', '»', '”', '*', '_', '.', ',', ';', ':', '!', '?', '…',
+];
+
+/// Pontuação que pode vir colada depois do ponto final de uma frase.
+const CLOSERS: &[char] = &['"', '\'', ')', ']', '»', '”', '*', '_'];
+
+/// Uma frase acima do limite de palavras.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LongSentence {
+    /// Quantas palavras a frase tem.
+    pub words: usize,
+    /// As primeiras palavras da frase, para o leitor saber qual é.
+    pub opening: String,
+}
+
+/// O resultado da medição de uma resposta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClarityReport {
+    /// Frases acima de [`MAX_SENTENCE_WORDS`], na ordem em que aparecem.
+    pub long_sentences: Vec<LongSentence>,
+    /// Siglas sem as palavras por extenso nesta resposta nem antes na sessão.
+    pub unexpanded_acronyms: Vec<String>,
+    /// Nomes inventados cujo primeiro uso na sessão veio sem tradução.
+    pub unexplained_terms: Vec<String>,
+    /// Linhas de texto corrido, sem código, tabela nem JSON.
+    pub prose_lines: usize,
+    /// A resposta passou de [`MAX_PROSE_LINES`] linhas de texto.
+    pub too_long: bool,
+    /// Nenhum defeito encontrado.
+    pub passed: bool,
+    /// Siglas e termos que esta resposta explicou. O chamador acumula na
+    /// sessão e devolve em `already_explained` na próxima medição.
+    pub explained: Vec<String>,
+}
+
+impl ClarityReport {
+    /// Uma linha curta por defeito, no idioma pedido, tirada do catálogo i18n.
+    #[must_use]
+    pub fn defects(&self, lang: Locale) -> Vec<String> {
+        let mut out = Vec::new();
+        for sentence in &self.long_sentences {
+            out.push(
+                translate("clarity.long_sentence", lang)
+                    .replace("{words}", &sentence.words.to_string())
+                    .replace("{opening}", &sentence.opening),
+            );
+        }
+        for acronym in &self.unexpanded_acronyms {
+            out.push(translate("clarity.unexpanded_acronym", lang).replace("{acronym}", acronym));
+        }
+        for term in &self.unexplained_terms {
+            out.push(translate("clarity.unexplained_term", lang).replace("{term}", term));
+        }
+        if self.too_long {
+            out.push(
+                translate("clarity.too_long", lang)
+                    .replace("{lines}", &self.prose_lines.to_string())
+                    .replace("{limit}", &MAX_PROSE_LINES.to_string()),
+            );
+        }
+        out
+    }
+}
+
+/// Mede `text` contra a regra de tom didático.
+///
+/// `known_terms` são os nomes inventados do projeto; `already_explained` são as
+/// siglas e termos que respostas anteriores da mesma sessão já explicaram (o
+/// campo [`ClarityReport::explained`] de cada medição anterior, acumulado).
+#[must_use]
+pub fn measure(text: &str, known_terms: &[String], already_explained: &[String]) -> ClarityReport {
+    let lines = prose_lines(text);
+    let sentences: Vec<&str> = lines.iter().flat_map(|line| split_sentences(line)).collect();
+
+    let long_sentences = long_sentences(&sentences);
+    let mut explained = Vec::new();
+    let unexpanded_acronyms =
+        unexpanded_acronyms(&sentences, known_terms, already_explained, &mut explained);
+    let unexplained_terms =
+        unexplained_terms(&sentences, known_terms, already_explained, &mut explained);
+    let too_long = lines.len() > MAX_PROSE_LINES;
+    let passed = long_sentences.is_empty()
+        && unexpanded_acronyms.is_empty()
+        && unexplained_terms.is_empty()
+        && !too_long;
+
+    ClarityReport {
+        long_sentences,
+        unexpanded_acronyms,
+        unexplained_terms,
+        prose_lines: lines.len(),
+        too_long,
+        passed,
+        explained,
+    }
+}
+
+/// Frases com mais de [`MAX_SENTENCE_WORDS`] palavras, com o começo de cada uma.
+fn long_sentences(sentences: &[&str]) -> Vec<LongSentence> {
+    sentences
+        .iter()
+        .filter_map(|sentence| {
+            let words = words(sentence).count();
+            (words > MAX_SENTENCE_WORDS).then(|| LongSentence {
+                words,
+                opening: words_of(sentence, OPENING_WORDS),
+            })
+        })
+        .collect()
+}
+
+/// Siglas sem expansão em nenhum ponto desta resposta nem antes na sessão.
+/// As que ganharam expansão entram em `explained`.
+fn unexpanded_acronyms(
+    sentences: &[&str],
+    known_terms: &[String],
+    already_explained: &[String],
+    explained: &mut Vec<String>,
+) -> Vec<String> {
+    // Ordem de primeira aparição, e se alguma ocorrência trouxe a expansão.
+    let mut seen: Vec<(String, bool)> = Vec::new();
+    for sentence in sentences {
+        for (start, end, acronym) in acronyms_in(sentence) {
+            let skip = COMMON_ACRONYMS.contains(&acronym)
+                || already_explained.iter().any(|done| done == acronym)
+                // um nome inventado em maiúsculas segue a regra dos termos
+                || known_terms.iter().any(|term| term.trim() == acronym);
+            if skip {
+                continue;
+            }
+            let expanded_here = explained_at(sentence, start, end);
+            match seen.iter_mut().find(|(known, _)| known == acronym) {
+                Some((_, expanded)) => *expanded |= expanded_here,
+                None => seen.push((acronym.to_string(), expanded_here)),
+            }
+        }
+    }
+    let mut missing = Vec::new();
+    for (acronym, expanded) in seen {
+        if expanded {
+            push_unique(explained, acronym);
+        } else {
+            missing.push(acronym);
+        }
+    }
+    missing
+}
+
+/// Nomes inventados cujo primeiro uso na sessão veio sem tradução. Os usos
+/// seguintes não contam: basta traduzir uma vez. Os que ganharam tradução
+/// entram em `explained`.
+fn unexplained_terms(
+    sentences: &[&str],
+    known_terms: &[String],
+    already_explained: &[String],
+    explained: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(matcher) = term_matcher(known_terms) else {
+        return Vec::new();
+    };
+    let mut first_seen: Vec<&str> = Vec::new();
+    let mut missing = Vec::new();
+    for sentence in sentences {
+        for hit in matcher.scan(sentence) {
+            if !bounded(sentence, hit.start, hit.end, true) {
+                continue;
+            }
+            let Some(term) = known_terms.get(hit.key).map(|term| term.trim()) else {
+                continue;
+            };
+            if already_explained.iter().any(|done| done == term) {
+                continue;
+            }
+            let translated_here = explained_at(sentence, hit.start, hit.end);
+            if translated_here {
+                push_unique(explained, term.to_string());
+            }
+            if !first_seen.contains(&term) {
+                first_seen.push(term);
+                if !translated_here {
+                    missing.push(term.to_string());
+                }
+            }
+        }
+    }
+    missing
+}
+
+/// O casador dos nomes inventados, sobre o motor único de `vocabulary::aho`.
+/// Cada termo é um grupo, com a grafia original e a de começo de frase
+/// ("slug" e "Slug"). Os grupos vão do termo mais longo para o mais curto: com
+/// `LeftmostFirst`, "spec ativa" precisa vencer "spec" quando os dois começam
+/// no mesmo ponto. `None` quando a lista não tem termo nenhum.
+fn term_matcher(known_terms: &[String]) -> Option<KeyedAutomaton<usize>> {
+    let mut order: Vec<usize> = (0..known_terms.len()).collect();
+    order.sort_by_key(|&idx| Reverse(known_terms[idx].trim().len()));
+    let groups = order.into_iter().map(|idx| {
+        let term = known_terms[idx].trim();
+        let mut spellings = vec![term.to_string()];
+        let capitalized = capitalize(term);
+        if capitalized != term {
+            spellings.push(capitalized);
+        }
+        (idx, spellings)
+    });
+    KeyedAutomaton::from_groups(groups).ok()
+}
+
+/// A mesma palavra com a primeira letra maiúscula.
+fn capitalize(term: &str) -> String {
+    let mut chars = term.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Acrescenta `item` a `list` só se ainda não estiver lá.
+fn push_unique(list: &mut Vec<String>, item: String) {
+    if !list.contains(&item) {
+        list.push(item);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Explicação de um termo ou sigla
+// ---------------------------------------------------------------------------
+
+/// A ocorrência em `sentence[start..end]` vem acompanhada da explicação?
+///
+/// A explicação precisa vir LOGO DEPOIS do termo. Conta como explicação:
+/// - um parêntese logo depois com texto em minúsculas ("CI (integração
+///   contínua)");
+/// - o termo sozinho num parêntese depois das palavras que ele resume
+///   ("integração contínua (CI)");
+/// - o termo seguido direto de travessão ou hífen ([`APPOSITION_MARKS`]), ou
+///   de dois-pontos quando o termo abre a frase ([`LABEL_MARK`]);
+/// - "que é", "ou seja" e afins nas [`PHRASE_WINDOW`] palavras seguintes.
+///
+/// Dois-pontos, travessão ou "que é" mais adiante na frase não contam: em "O
+/// CI falhou: veja o log" o dois-pontos explica a falha, não o CI.
+fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
+    let is_decoration =
+        |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '"' | '\'' | '“' | '”' | '«' | '»');
+    let after = &sentence[end..];
+    // O `s` do plural ("slugs") ainda é o termo.
+    let after = after
+        .strip_prefix('s')
+        .filter(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+        .unwrap_or(after);
+    let next = after.trim_start_matches(is_decoration);
+
+    if let Some(inner) = next.strip_prefix('(') {
+        let inner = inner.split(')').next().unwrap_or_default();
+        if inner.chars().any(char::is_lowercase) {
+            return true;
+        }
+    }
+
+    let before = sentence[..start].trim_end_matches(is_decoration);
+    if next.starts_with(')') {
+        if let Some(words_before) = before.strip_suffix('(') {
+            if words_before.chars().any(char::is_alphabetic) {
+                return true;
+            }
+        }
+    }
+
+    let glued = after.trim_start_matches(TERM_CLOSERS);
+    if APPOSITION_MARKS.iter().any(|mark| glued.starts_with(mark)) {
+        return true;
+    }
+    let opens_sentence = !before.chars().any(char::is_alphanumeric);
+    if opens_sentence && glued.starts_with(LABEL_MARK) {
+        return true;
+    }
+
+    let following: Vec<String> = after
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|word| !word.is_empty())
+        .take(PHRASE_WINDOW)
+        .collect();
+    EXPLAINING_PHRASES.iter().any(|phrase| {
+        let wanted: Vec<&str> = phrase.split_whitespace().collect();
+        following.len() >= wanted.len() && following.iter().zip(&wanted).all(|(got, want)| got == want)
+    })
+}
+
+/// `text[start..end]` é uma palavra inteira: nenhuma letra, dígito ou `_`
+/// colado antes nem depois. Com `plural`, um `s` final ainda conta como a
+/// mesma palavra ("slugs" é uso de "slug").
+fn bounded(text: &str, start: usize, end: usize, plural: bool) -> bool {
+    let joins = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    if joins(text[..start].chars().next_back()) {
+        return false;
+    }
+    let mut after = text[end..].chars();
+    match after.next() {
+        Some('s') if plural => !joins(after.next()),
+        next => !joins(next),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Siglas
+// ---------------------------------------------------------------------------
+
+/// Siglas de `sentence`: palavras de 2 a 6 letras maiúsculas, com um `s` de
+/// plural opcional ("PRs"). Devolve o trecho da palavra inteira e a sigla.
+/// `_` conta como parte da palavra, então `MUSTARD_WORKSPACE_ROOT` não vira
+/// três siglas — e `pt_BR` também não vira sigla nenhuma.
+/// Fica de fora o que só parece sigla: ver [`mimics_acronym`].
+fn acronyms_in(sentence: &str) -> Vec<(usize, usize, &str)> {
+    let runs = word_runs(sentence);
+    runs.iter()
+        .enumerate()
+        .filter_map(|(idx, &(start, end))| {
+            let run = &sentence[start..end];
+            let core = run.strip_suffix('s').filter(|c| is_acronym(c)).unwrap_or(run);
+            let counts = is_acronym(core) && !mimics_acronym(sentence, &runs, idx, core);
+            counts.then_some((start, end, core))
+        })
+        .collect()
+}
+
+/// O trecho `(início, fim)` de cada palavra de `sentence`, na ordem: letras,
+/// dígitos e `_` seguidos.
+fn word_runs(sentence: &str) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut run_start: Option<usize> = None;
+    let ends = std::iter::once((sentence.len(), ' '));
+    for (at, ch) in sentence.char_indices().chain(ends) {
+        let in_word = ch.is_alphanumeric() || ch == '_';
+        match (in_word, run_start) {
+            (true, None) => run_start = Some(at),
+            (false, Some(start)) => {
+                run_start = None;
+                runs.push((start, at));
+            }
+            _ => {}
+        }
+    }
+    runs
+}
+
+/// De 2 a 6 letras, todas maiúsculas sem acento.
+fn is_acronym(word: &str) -> bool {
+    (2..=6).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// A palavra `runs[idx]`, com cara de sigla (`core`), é outra coisa escrita em
+/// maiúsculas:
+/// - ênfase: faz parte de uma sequência de palavras em maiúsculas ("IN THIS
+///   CONVERSATION") ou é uma palavra comprida com vogais ("NUNCA", "RESUMO");
+/// - a região de um código de idioma ("pt-BR", "en-US");
+/// - um numeral romano ("Fase II", "onda IV").
+///
+/// Limite aceito: ênfase curta e com poucas vogais, sozinha ("MUST"), continua
+/// contando como sigla — não há como separá-la de "SSH" só pela forma.
+fn mimics_acronym(sentence: &str, runs: &[(usize, usize)], idx: usize, core: &str) -> bool {
+    is_roman_numeral(core)
+        || is_shouted_word(core)
+        || in_shouted_sequence(sentence, runs, idx)
+        || is_locale_region(sentence, runs[idx].0, core)
+}
+
+/// Só I, V e X: "II", "IV", "IX". O I sozinho nem chega a ser candidato.
+fn is_roman_numeral(core: &str) -> bool {
+    core.bytes().all(|b| matches!(b, b'I' | b'V' | b'X'))
+}
+
+/// Cinco letras ou mais e ao menos duas vogais: palavra em maiúsculas por
+/// ênfase ("NUNCA", "SEMPRE"). Sigla de verdade raramente tem tantas vogais.
+fn is_shouted_word(core: &str) -> bool {
+    let vowels = core.bytes().filter(|b| b"AEIOU".contains(b)).count();
+    core.len() >= 5 && vowels >= 2
+}
+
+/// A palavra está em maiúsculas e encosta, separada só por espaço, em outra
+/// palavra em maiúsculas: a frase inteira está gritando ("NÃO USE ISSO").
+/// Vírgula quebra a sequência, então "CI, QA e SSH" continua sendo três siglas.
+fn in_shouted_sequence(sentence: &str, runs: &[(usize, usize)], idx: usize) -> bool {
+    let shouted = |&(start, end): &(usize, usize)| {
+        let word = &sentence[start..end];
+        // duas letras no mínimo: o artigo "O" ou "A" no começo da frase não
+        // transforma "O CI" em ênfase
+        word.chars().count() >= 2 && word.chars().all(|c| c.is_alphabetic() && c.is_uppercase())
+    };
+    let joined = |left: &(usize, usize), right: &(usize, usize)| {
+        shouted(left)
+            && shouted(right)
+            && sentence[left.1..right.0].chars().all(char::is_whitespace)
+    };
+    let current = &runs[idx];
+    let with_previous = idx.checked_sub(1).is_some_and(|prev| joined(&runs[prev], current));
+    let with_next = runs.get(idx + 1).is_some_and(|next| joined(current, next));
+    with_previous || with_next
+}
+
+/// A sigla é a região de um código de idioma `xx-XX`: duas letras maiúsculas
+/// depois de hífen e de duas minúsculas que começam a palavra ("pt-BR"). A
+/// forma `xx_XX` já é uma palavra só, por causa do `_`.
+fn is_locale_region(sentence: &str, start: usize, core: &str) -> bool {
+    if core.len() != 2 {
+        return false;
+    }
+    let Some(before) = sentence[..start].strip_suffix('-') else {
+        return false;
+    };
+    let language = before.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    let joins = language.chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
+    before.len() - language.len() == 2 && !joins
+}
+
+// ---------------------------------------------------------------------------
+// Texto corrido: o que sobra depois de tirar código, tabela, JSON e caminhos
+// ---------------------------------------------------------------------------
+
+/// As linhas de texto corrido da resposta, já limpas de código inline, alvos
+/// de link, URLs e caminhos. Linhas vazias, blocos de código, tabelas, JSON e
+/// linhas que ficaram sem palavra não entram.
+fn prose_lines(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut fence: Option<&str> = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(marker) = fence {
+            if line.starts_with(marker) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(marker) = fence_marker(line) {
+            fence = Some(marker);
+            continue;
+        }
+        if line.is_empty() || is_table_line(line) || is_json_line(line) {
+            continue;
+        }
+        let cleaned = clean_inline(strip_line_marker(line));
+        if words(&cleaned).next().is_some() {
+            lines.push(cleaned);
+        }
+    }
+    lines
+}
+
+/// A cerca que abre um bloco de código (três ou mais crases ou tis).
+fn fence_marker(line: &str) -> Option<&str> {
+    let fence_char = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = line.len() - line.trim_start_matches(fence_char).len();
+    (len >= 3).then(|| &line[..len])
+}
+
+/// Linha de tabela markdown: começa com `|` ou tem duas barras fora de código.
+fn is_table_line(line: &str) -> bool {
+    line.starts_with('|') || strip_inline_code(line).matches('|').count() >= 2
+}
+
+/// Linha de JSON solto: abre ou fecha objeto/lista, ou é um par `"chave":`.
+fn is_json_line(line: &str) -> bool {
+    let mut chars = line.chars();
+    match chars.next() {
+        Some('{' | '}' | ']') => true,
+        Some('[') => chars
+            .find(|c| !c.is_whitespace())
+            .is_none_or(|c| matches!(c, '{' | '[' | ']' | '"') || c.is_ascii_digit()),
+        Some('"') => line.contains("\":"),
+        _ => false,
+    }
+}
+
+/// Tira a marca de citação, título ou item de lista do começo da linha.
+fn strip_line_marker(line: &str) -> &str {
+    let line = line.trim_start_matches(|c: char| c == '>' || c.is_whitespace());
+    if let Some(rest) = line.strip_prefix('#') {
+        let rest = rest.trim_start_matches('#');
+        if rest.is_empty() || rest.starts_with(' ') {
+            return rest.trim();
+        }
+    }
+    for bullet in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(bullet) {
+            return rest.trim();
+        }
+    }
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0 {
+        let rest = &line[digits..];
+        if let Some(rest) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return rest.trim();
+        }
+    }
+    line
+}
+
+/// Tira código inline, alvos de link, URLs e caminhos de uma linha de texto.
+/// De um caminho descartado sobra só a pontuação final, que ainda marca o fim
+/// da frase.
+fn clean_inline(line: &str) -> String {
+    let without_code = strip_inline_code(line);
+    let without_targets = strip_link_targets(&without_code);
+    let mut kept: Vec<&str> = Vec::new();
+    for token in without_targets.split_whitespace() {
+        let lead = token.len() - token.trim_start_matches(LEADERS).len();
+        let core = token[lead..].trim_end_matches(TRAILERS);
+        if !core.is_empty() && is_url_or_path(core) {
+            let trail = &token[lead + core.len()..];
+            if !trail.is_empty() {
+                kept.push(trail);
+            }
+        } else {
+            kept.push(token);
+        }
+    }
+    kept.join(" ")
+}
+
+/// Troca cada trecho de código inline por um espaço. Crase sem par fica como
+/// texto.
+fn strip_inline_code(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('`') {
+        out.push_str(&rest[..open]);
+        let from_open = &rest[open..];
+        let run = from_open.len() - from_open.trim_start_matches('`').len();
+        let body = &from_open[run..];
+        match body.find(&from_open[..run]) {
+            Some(close) => {
+                out.push(' ');
+                rest = &body[close + run..];
+            }
+            None => {
+                out.push_str(from_open);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Tira o alvo `(...)` de cada link markdown `[texto](alvo)`; o texto fica.
+fn strip_link_targets(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find("](") {
+        out.push_str(&rest[..=at]);
+        let target = &rest[at + 2..];
+        rest = target.find(')').map_or("", |close| &target[close + 1..]);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// URL, tag, caminho de arquivo ou nome de arquivo com extensão.
+fn is_url_or_path(core: &str) -> bool {
+    let lower = core.to_ascii_lowercase();
+    if lower.contains("://") || lower.starts_with("www.") || lower.starts_with("mailto:") {
+        return true;
+    }
+    if core.starts_with('<') {
+        return true;
+    }
+    if core.contains(['/', '\\']) {
+        // "e/ou" e "CI/CD" continuam texto; caminho tem raiz, duas barras ou
+        // extensão no último trecho.
+        let separators = core.matches(['/', '\\']).count();
+        let last = core.rsplit(['/', '\\']).next().unwrap_or_default();
+        return core.starts_with(['/', '.', '~']) || separators >= 2 || last.contains('.');
+    }
+    has_file_extension(core)
+}
+
+/// `nome.ext`, com extensão curta e ao menos uma minúscula ("mod.rs",
+/// "CLAUDE.md"); "3.5" continua número.
+fn has_file_extension(core: &str) -> bool {
+    core.rsplit_once('.').is_some_and(|(name, ext)| {
+        name.chars().any(char::is_alphanumeric)
+            && (1..=5).contains(&ext.len())
+            && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            && ext.chars().any(|c| c.is_ascii_lowercase())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Frases e palavras
+// ---------------------------------------------------------------------------
+
+/// Parte uma linha em frases: termina em `.`, `!`, `?` ou `…` seguido de
+/// espaço ou do fim da linha ("3.5" não parte). Frase sem palavra é descartada.
+fn split_sentences(line: &str) -> Vec<&str> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for (at, ch) in line.char_indices() {
+        if at < start || !matches!(ch, '.' | '!' | '?' | '…') {
+            continue;
+        }
+        let closed = line[at + ch.len_utf8()..].trim_start_matches(CLOSERS);
+        if closed.is_empty() || closed.starts_with(char::is_whitespace) {
+            let end = line.len() - closed.len();
+            push_sentence(&mut sentences, &line[start..end]);
+            start = end;
+        }
+    }
+    push_sentence(&mut sentences, &line[start..]);
+    sentences
+}
+
+fn push_sentence<'a>(sentences: &mut Vec<&'a str>, candidate: &'a str) {
+    let candidate = candidate.trim();
+    if words(candidate).next().is_some() {
+        sentences.push(candidate);
+    }
+}
+
+/// As palavras de um trecho: pedaços entre espaços com ao menos uma letra ou
+/// dígito (um travessão solto não é palavra).
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace().filter(|token| token.chars().any(char::is_alphanumeric))
+}
+
+/// As primeiras `n` palavras de um trecho, separadas por um espaço.
+fn words_of(text: &str, n: usize) -> String {
+    words(text).take(n).collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn terms(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    /// AC-1: a frase acima do limite sai com a contagem e o começo dela; a
+    /// frase curta e o item de lista curto não saem.
+    #[test]
+    fn clarity_flags_long_sentences() {
+        let long = "Esta frase foi escrita de propósito para passar do limite de palavras \
+                    que a regra de tom aceita numa única frase da resposta e por isso \
+                    precisa aparecer.";
+        let text = format!("Uma frase curta. {long}\n- item curto\n- outro item curto");
+        let report = measure(&text, &[], &[]);
+
+        assert_eq!(report.long_sentences.len(), 1, "{report:?}");
+        assert_eq!(report.long_sentences[0].words, 28);
+        assert_eq!(
+            report.long_sentences[0].opening,
+            "Esta frase foi escrita de propósito para passar"
+        );
+        assert!(!report.passed);
+        assert_eq!(
+            report.defects(Locale::PtBr),
+            vec!["frase com 28 palavras: \"Esta frase foi escrita de propósito para passar…\""]
+        );
+
+        // Exatamente no limite ainda passa; o item de lista é frase própria.
+        let at_limit = vec!["palavra"; MAX_SENTENCE_WORDS].join(" ");
+        let item = format!("- {}", vec!["item"; MAX_SENTENCE_WORDS + 1].join(" "));
+        assert!(measure(&at_limit, &[], &[]).passed);
+        assert_eq!(measure(&item, &[], &[]).long_sentences[0].words, MAX_SENTENCE_WORDS + 1);
+    }
+
+    /// AC-2: sigla sem as palavras por extenso é apontada; com a expansão entre
+    /// parênteses (antes ou depois), já expandida na sessão ou de uso comum,
+    /// não é.
+    #[test]
+    fn clarity_flags_unexpanded_acronym() {
+        let bare = measure("O CI falhou de novo.", &[], &[]);
+        assert_eq!(bare.unexpanded_acronyms, vec!["CI"]);
+        assert!(!bare.passed);
+        assert_eq!(bare.defects(Locale::PtBr), vec!["CI sem as palavras por extenso"]);
+
+        let expanded = measure("O CI (integração contínua) falhou de novo.", &[], &[]);
+        assert!(expanded.unexpanded_acronyms.is_empty(), "{expanded:?}");
+        assert_eq!(expanded.explained, vec!["CI"]);
+
+        let reverse = measure("A integração contínua (CI) falhou.", &[], &[]);
+        assert!(reverse.unexpanded_acronyms.is_empty(), "{reverse:?}");
+
+        let later = measure("O CI falhou.", &[], &terms(&["CI"]));
+        assert!(later.unexpanded_acronyms.is_empty());
+
+        let common = measure("Abri o PR e os PRs com JSON e HTML.", &[], &[]);
+        assert!(common.unexpanded_acronyms.is_empty(), "{common:?}");
+    }
+
+    /// AC-3: o nome inventado sem tradução no primeiro uso da sessão é
+    /// apontado; traduzido uma vez, os usos seguintes passam — na mesma
+    /// resposta e nas próximas.
+    #[test]
+    fn clarity_invented_term_needs_translation_once() {
+        let known = terms(&["slug", "work unit"]);
+
+        let first = measure("Troquei o slug da spec.", &known, &[]);
+        assert_eq!(first.unexplained_terms, vec!["slug"]);
+        assert_eq!(first.defects(Locale::PtBr), vec!["slug usado sem tradução"]);
+
+        let translated = measure(
+            "Troquei o slug (o nome curto da spec, usado nas pastas). Depois o slug foi salvo.",
+            &known,
+            &[],
+        );
+        assert!(translated.unexplained_terms.is_empty(), "{translated:?}");
+        assert_eq!(translated.explained, vec!["slug"]);
+
+        let next_reply = measure("O slug mudou de novo.", &known, &translated.explained);
+        assert!(next_reply.unexplained_terms.is_empty());
+        assert!(next_reply.passed);
+
+        let dash = measure("O slug — o nome curto da spec — mudou.", &known, &[]);
+        assert!(dash.unexplained_terms.is_empty(), "{dash:?}");
+
+        // Começo de frase e plural contam como uso; palavra maior não conta.
+        assert_eq!(measure("Slugs mudaram.", &known, &[]).unexplained_terms, vec!["slug"]);
+        assert!(measure("Rodei o slugify.", &known, &[]).unexplained_terms.is_empty());
+    }
+
+    /// AC-13: a explicação só conta quando vem logo depois do termo.
+    /// Dois-pontos, travessão ou "que é" mais adiante na frase falam de outra
+    /// coisa, e a sigla ou o nome inventado continua sem explicação.
+    #[test]
+    fn clarity_explanation_must_follow_the_term() {
+        let known = terms(&["slug"]);
+
+        // Mais adiante na frase: aponta.
+        for text in [
+            "O CI falhou: veja o log.",
+            "O CI falhou, e o que é pior, parou tudo.",
+            "O CI falhou, e o que e pior, parou tudo.",
+            "O CI falhou — veja o log.",
+        ] {
+            let report = measure(text, &known, &[]);
+            assert_eq!(report.unexpanded_acronyms, vec!["CI"], "{text}: {report:?}");
+            assert!(report.explained.is_empty(), "{text}: {report:?}");
+        }
+        // Dois-pontos colado ao termo, mas no meio da frase: anuncia o que vem
+        // depois, não o termo.
+        for text in ["Troquei o slug: agora é outro", "Troquei o slug: agora e outro"] {
+            let report = measure(text, &known, &[]);
+            assert_eq!(report.unexplained_terms, vec!["slug"], "{text}: {report:?}");
+        }
+
+        // Logo depois do termo: não aponta.
+        for text in [
+            "CI: integracao continua, falhou.",
+            "CI: integração contínua, falhou.",
+            "**CI**: integração contínua, falhou.",
+            "O CI — integração contínua — falhou.",
+            "O **CI** — integração contínua — falhou.",
+            "O CI - integração contínua - falhou.",
+            "O CI, ou seja, a integração contínua, falhou.",
+            "O CI, que é a integração contínua, falhou.",
+            "O CI (integração contínua) falhou.",
+            "A integração contínua (CI) falhou.",
+        ] {
+            let report = measure(text, &known, &[]);
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+            assert_eq!(report.explained, vec!["CI"], "{text}");
+        }
+        // O plural ainda é o termo colado à explicação.
+        let plural = measure("Os slugs, ou seja, os nomes curtos, mudaram.", &known, &[]);
+        assert!(plural.unexplained_terms.is_empty(), "{plural:?}");
+    }
+
+    /// AC-4: blocos de código, código inline, caminhos, links, URLs, tabelas e
+    /// JSON não contam como frase, sigla nem termo.
+    #[test]
+    fn clarity_ignores_code_and_paths() {
+        let known = terms(&["slug"]);
+        let text = r#"Resumo curto.
+
+```rust
+fn slug_for(API: &str) -> String { todo!() } // uma linha de codigo bem comprida que passaria do limite de palavras se fosse texto comum de uma resposta
+```
+
+Rode `cargo test -p mustard-core SQL slug` e veja packages/core/src/domain/clarity/mod.rs e CLAUDE.md.
+Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XYZ.
+
+| Coluna | CI | slug |
+|--------|----|------|
+| uma linha de tabela com muitas palavras que nunca deve contar como frase longa nem como sigla | ABC | slug |
+
+{"key": "SLUG", "ABC": 1}
+"#;
+        let report = measure(text, &known, &[]);
+        assert!(report.long_sentences.is_empty(), "{report:?}");
+        assert!(report.unexpanded_acronyms.is_empty(), "{report:?}");
+        assert!(report.unexplained_terms.is_empty(), "{report:?}");
+        assert_eq!(report.prose_lines, 3);
+        assert!(report.passed);
+    }
+
+    /// Mais de vinte linhas de texto reprovam a resposta pelo tamanho.
+    #[test]
+    fn clarity_reply_over_twenty_prose_lines_is_too_long() {
+        let fits = vec!["Uma linha curta."; MAX_PROSE_LINES].join("\n");
+        assert!(measure(&fits, &[], &[]).passed);
+
+        let over = vec!["Uma linha curta."; MAX_PROSE_LINES + 1].join("\n");
+        let report = measure(&over, &[], &[]);
+        assert!(report.too_long && !report.passed);
+        assert_eq!(
+            report.defects(Locale::EnUs),
+            vec!["reply with 21 lines of prose; the limit is 20"]
+        );
+    }
+
+    /// Ênfase em maiúsculas não é sigla: nem a palavra comprida com vogais,
+    /// nem a sequência de palavras gritadas. Sigla de verdade continua
+    /// apontada, e a ênfase curta sozinha ("MUST") é o limite aceito.
+    #[test]
+    fn clarity_ignores_caps_emphasis() {
+        for text in [
+            "NUNCA rode isso sem ler o RESUMO.",
+            "SEMPRE confira antes de seguir.",
+            "Use only what was said IN THIS CONVERSATION.",
+            "**NÃO USE ISSO** em produção.",
+        ] {
+            let report = measure(text, &[], &[]);
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+        }
+
+        let real = measure("NUNCA pule o CI. O QA e o SSH falharam.", &[], &[]);
+        assert_eq!(real.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{real:?}");
+        // Vírgula quebra a sequência: siglas enfileiradas não viram ênfase.
+        let listed = measure("Falharam CI, QA, SSH.", &[], &[]);
+        assert_eq!(listed.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{listed:?}");
+
+        let short = measure("You MUST read it.", &[], &[]);
+        assert_eq!(short.unexpanded_acronyms, vec!["MUST"], "{short:?}");
+    }
+
+    /// Código de idioma e numeral romano não são sigla; a sigla colada por
+    /// hífen a outra coisa que não um idioma continua apontada.
+    #[test]
+    fn clarity_ignores_locale_codes_and_roman_numerals() {
+        for text in [
+            "Escrevo em pt-BR, en-US e pt_BR.",
+            "A Fase II e a onda IV terminaram, e o capítulo IX também.",
+            "O item III vem antes do XI.",
+        ] {
+            let report = measure(text, &[], &[]);
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+        }
+
+        let near_locale = measure("O CI roda em pt-BR.", &[], &[]);
+        assert_eq!(near_locale.unexpanded_acronyms, vec!["CI"], "{near_locale:?}");
+        let hyphen = measure("O CI-QA e o anti-SSH falharam.", &[], &[]);
+        assert_eq!(hyphen.unexpanded_acronyms, vec!["CI", "QA", "SSH"], "{hyphen:?}");
+    }
+}

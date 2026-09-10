@@ -44,10 +44,11 @@ pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestr
 /// invocations and every one of their `additionalContext` blocks is kept
 /// (measured 2026-08-25 — two siblings emitting 6,000 characters each both
 /// arrived intact). So each injectable gets its own hook registration and its
-/// own ceiling, and there is no composite budget between them. Mustard's own
-/// composer still folds the injectables of ONE invocation into a single
-/// `additionalContext` (`hooks::session::*_inject` — the dispatcher fold is
-/// last-writer-wins), which is why the split is a hook per file rather than two
+/// own ceiling, and there is no composite budget between them. Within ONE
+/// invocation everything shares one ceiling: `hooks::session::*_inject`
+/// composes its injectables into a single `additionalContext`, and the
+/// dispatcher fold joins every `Inject` of the invocation into that same
+/// response — which is why the split is a hook per file rather than two
 /// `Inject`s in one. Rationale in full:
 /// `plugin/refs/mustard/router-rationale.md`.
 pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md");

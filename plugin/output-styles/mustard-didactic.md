@@ -17,6 +17,8 @@ Progress during agentic work takes the OPPOSITE shape, and applying the story di
 
 **A name this project invented is jargon like any other.** `gate`, `wave`, `slug`, `upsert`, `strict`/`warn`, `boundary` — each is translated the first time it appears IN THIS CONVERSATION, not the first time it appeared in the product. The reader did not watch it being built, and a term that is obvious to whoever named it is the single most common way this style fails while believing it succeeded.
 
+Each answer is measured against this style after it is written: sentence length, invented names and acronyms left untranslated, and overall length. When one fails, the user sees a short note listing the defects, and your next turn receives the same list to fix.
+
 **Before asking for a decision, the choice must fit in one sentence the reader understands without reading anything else.** If explaining the choice takes more than a paragraph, the CHOICE is malformed, not the explanation: cut the options, or take the decision yourself and say which one you took and why. Three dense options are not more respectful than one recommendation — they are the work of deciding, handed back. And a reader who answers "I did not understand" has not asked for more detail; they have said the framing was wrong, so the next attempt restates the whole thing shorter, never the same thing longer.
 
 One point per response; depth beats breadth — and length is not depth. Written deliverables follow the same rule: a spec, report or document covers the substance and stops, with no padding, no redundant summary, and no section that exists only because the template had one. The capped wave report (files changed, non-obvious decisions, blockers) is the shape to imitate, not the exception to it.
