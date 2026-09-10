@@ -9,6 +9,7 @@
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
 use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
+use crate::hooks::observe::clarification_observer::ClarificationObserver;
 use crate::hooks::observe::picker_approval_observer::PickerApprovalObserver;
 use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
@@ -500,6 +501,17 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ApprovalMarkerObserver)),
             },
+            // Gravador de esclarecimentos — na MESMA pergunta, grava pergunta,
+            // resposta escolhida e notas como `clarification` no material da
+            // unidade ativa, sem depender de o assistente registrar. Não
+            // destrava nada, então texto livre também conta. Sem unidade ativa,
+            // nada é gravado. Observer puro, fail-open, nunca bloqueia.
+            Module {
+                id: "clarification_observer",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
+                check: None,
+                observer: Some(Box::new(ClarificationObserver)),
+            },
             // Plan-mode approval recorder — the primary source of the same
             // `<spec>/.approved-by-user` marker. When the user ACCEPTS the
             // plan-mode plan (`ExitPlanMode` succeeds with the plan payload)
@@ -808,6 +820,26 @@ mod tests {
     }
 
     #[test]
+    fn ask_user_question_post_tool_use_runs_clarification_observer() {
+        let registry = Registry::new();
+        // Ao lado do gravador de aprovação, na mesma pergunta respondida.
+        let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"));
+        assert!(ids.contains(&"clarification_observer"));
+        assert!(ids.contains(&"approval_marker_observer"));
+        // Nunca no lado Pre, nem numa ferramenta qualquer.
+        assert!(
+            !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
+                .contains(&"clarification_observer")
+        );
+        assert!(
+            !applicable_ids(&registry, Trigger::PostToolUse, Some("Bash"))
+                .contains(&"clarification_observer")
+        );
+        let module = registry.by_id("clarification_observer").expect("registered");
+        assert!(module.check.is_none(), "a pure Observer never carries a verdict");
+    }
+
+    #[test]
     fn stop_gate_is_the_check_on_the_stop_trigger() {
         let registry = Registry::new();
         // `stop_gate` rides `Stop` (any tool / none) alongside the observer.
@@ -837,6 +869,7 @@ mod tests {
             "skill_usage_observer",
             "tool_result_observer",
             "approval_marker_observer",
+            "clarification_observer",
             "plan_approval_observer",
             "size_gate",
             "secret_files",

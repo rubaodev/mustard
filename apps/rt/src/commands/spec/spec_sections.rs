@@ -46,6 +46,10 @@ fn variants(key: &str) -> Option<&'static [&'static str]> {
         // resolver instead of growing a second parser.
         "definitions" => &["Definitions", "Definições"],
         "evidence" => &["Evidence", "Evidências"],
+        // Os riscos do canal de material. O rascunho escreve o título no idioma
+        // da spec, então as duas grafias precisam resolver aqui — é por esta
+        // tabela que o `--material-only` acha a seção para trocá-la.
+        "risks" => &["Risks", "Riscos"],
         // The reality obligations a plan declares per wave — duties to check the
         // world OUTSIDE the repository (an official document, a live endpoint, a
         // stored row) before writing the code they govern. Rendered into each
@@ -84,6 +88,7 @@ const CANONICAL_KEYS: &[&str] = &[
     "decisions",
     "definitions",
     "evidence",
+    "risks",
     "reality-obligations",
     "dependencies",
     "entityinfo",

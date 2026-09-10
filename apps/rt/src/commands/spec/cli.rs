@@ -325,7 +325,8 @@ pub enum SpecCmd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
         spec: String,
-        /// Which channel: `definition`, `decision` or `finding`.
+        /// Which channel: `definition`, `decision`, `finding`, `risk`,
+        /// `clarification` or `summary`.
         #[arg(long)]
         kind: String,
         /// The first half: the term, the decision, or the statement.
@@ -346,7 +347,11 @@ pub enum SpecCmd {
         ///
         /// Same `allow_hyphen_values` reasoning as `--subject`: a reason is
         /// prose too, and it names flags.
-        #[arg(long, allow_hyphen_values = true)]
+        ///
+        /// Opcional no parser porque o `summary` é um texto só e não tem
+        /// segunda metade; a exigência dos outros tipos continua no
+        /// `material-add`, que recusa com `incomplete_entry` e diz o que falta.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
         detail: String,
         /// A finding's line number, when the claim is line-precise.
         ///
@@ -354,6 +359,10 @@ pub enum SpecCmd {
         /// would let the door accept a value the draft refuses.
         #[arg(long)]
         line: Option<u32>,
+        /// O peso de um `risk`: `alta`, `media` ou `baixa`. Obrigatório para
+        /// risco; ignorado pelos outros tipos.
+        #[arg(long)]
+        severity: Option<String>,
     },
     /// Deliberately change ONE acceptance criterion after the spec artefacts are
     /// frozen, and prove the replacement still knows how to fail.
@@ -601,13 +610,16 @@ pub fn dispatch(cmd: SpecCmd) {
                 instruction,
             });
         }
-        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line } => {
+        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line, severity } => {
             spec::material_add::run(&spec::material_add::MaterialAddOpts {
                 spec: slug,
                 kind,
                 subject,
                 detail,
                 line,
+                severity,
+                // As notas vêm só do observador de `AskUserQuestion`.
+                notes: None,
             });
         }
         SpecCmd::AcAmend {

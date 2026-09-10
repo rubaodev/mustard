@@ -311,6 +311,37 @@ struct Finding {
     line: Option<u32>,
 }
 
+/// Um risco, o que o atenua e o seu peso. O peso é o MESMO enum que o
+/// `material-add` grava — um valor que o escritor aceita nunca é um que este
+/// carregador falhando fechado recusa.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+// `risk` repete o nome do tipo porque é a chave do JSON — o contrato do
+// `material-add`, igual a `Decision { decision }`.
+#[allow(clippy::struct_field_names)]
+struct Risk {
+    /// O risco.
+    risk: String,
+    /// O que o atenua.
+    mitigation: String,
+    /// `alta`, `media` ou `baixa`.
+    severity: crate::commands::spec::material_add::Severity,
+}
+
+/// Uma pergunta feita ao usuário e a resposta que ele deu. Fica só no material
+/// (o documento da spec a lê de lá); o `spec.md` não ganha seção para ela.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Clarification {
+    question: String,
+    answer: String,
+    // Declarado para o `deny_unknown_fields` aceitar a chave que o observador
+    // grava; quem lê as notas é o documento da spec, não este rascunho.
+    #[serde(default)]
+    #[allow(dead_code)]
+    notes: Option<String>,
+}
+
 /// The structured material a conversation produced, carried into the draft by
 /// `spec-draft --material <FILE>`.
 ///
@@ -332,13 +363,39 @@ struct ConversationMaterial {
     decisions: Vec<Decision>,
     #[serde(default)]
     findings: Vec<Finding>,
+    // Os tipos novos são CONHECIDOS por nome, e o `deny_unknown_fields` segue
+    // valendo para qualquer outra chave: o canal continua falhando fechado para
+    // o que é realmente desconhecido. Só os riscos viram seção no `spec.md`;
+    // resumo e esclarecimentos ficam no material, lidos pelo documento.
+    #[serde(default)]
+    risks: Vec<Risk>,
+    #[serde(default)]
+    clarifications: Vec<Clarification>,
+    #[serde(default)]
+    summary: Option<String>,
 }
 
 impl ConversationMaterial {
     /// `true` when the channel carries nothing — the draft must then be
     /// byte-identical to a draft with no channel at all.
     fn is_empty(&self) -> bool {
-        self.definitions.is_empty() && self.decisions.is_empty() && self.findings.is_empty()
+        self.definitions.is_empty()
+            && self.decisions.is_empty()
+            && self.findings.is_empty()
+            && self.risks.is_empty()
+            && self.clarifications.is_empty()
+            && self.summary.as_deref().is_none_or(|s| s.trim().is_empty())
+    }
+}
+
+/// O título da seção de riscos no idioma da spec. Diferente das três seções
+/// acima, nenhuma máquina recorta os riscos por onda, então o título segue o
+/// idioma do leitor; as duas grafias estão registradas em `spec_sections`,
+/// e é por lá que o `--material-only` acha e troca a seção.
+fn risks_heading(lang: Locale) -> &'static str {
+    match lang {
+        Locale::PtBr => "Riscos",
+        Locale::EnUs => "Risks",
     }
 }
 
@@ -389,6 +446,18 @@ fn load_material(path: &Path) -> Result<ConversationMaterial, String> {
             ));
         }
     }
+    for (i, r) in material.risks.iter().enumerate() {
+        if r.risk.trim().is_empty() || r.mitigation.trim().is_empty() {
+            return Err(format!("risks[{i}]: a risk needs the risk and what mitigates it"));
+        }
+    }
+    for (i, c) in material.clarifications.iter().enumerate() {
+        if c.question.trim().is_empty() || c.answer.trim().is_empty() {
+            return Err(format!(
+                "clarifications[{i}]: a clarification needs the question and the answer it got"
+            ));
+        }
+    }
     Ok(material)
 }
 
@@ -416,7 +485,7 @@ fn load_material(path: &Path) -> Result<ConversationMaterial, String> {
 /// The ids are POSITIONAL within their kind, so they are stable for as long as
 /// the list only grows — which is how the channel is used (one `material-add`
 /// per settled point, appended).
-fn render_material_sections(material: &ConversationMaterial) -> Option<String> {
+fn render_material_sections(material: &ConversationMaterial, lang: Locale) -> Option<String> {
     if material.is_empty() {
         return None;
     }
@@ -460,7 +529,22 @@ fn render_material_sections(material: &ConversationMaterial) -> Option<String> {
             );
         }
     }
-    Some(block)
+    if !material.risks.is_empty() {
+        let _ = write!(block, "\n## {}\n\n", risks_heading(lang));
+        for (i, r) in material.risks.iter().enumerate() {
+            let _ = writeln!(
+                block,
+                "- [R-{}] {}\n  Severity: {}\n  Mitigation: {}",
+                i + 1,
+                r.risk.trim(),
+                r.severity.as_str(),
+                r.mitigation.trim()
+            );
+        }
+    }
+    // Um material só com resumo e esclarecimentos não escreve seção nenhuma:
+    // eles moram no material, e o `spec.md` fica igual ao de um canal vazio.
+    (!block.is_empty()).then_some(block)
 }
 
 /// Splice the material sections onto the `spec.md` [`spec_scaffold::write_spec_md`]
@@ -476,8 +560,12 @@ fn render_material_sections(material: &ConversationMaterial) -> Option<String> {
 /// # Errors
 ///
 /// The freshly-written `spec.md` could not be read back or rewritten.
-fn append_material_sections(output: &Path, material: &ConversationMaterial) -> Result<(), String> {
-    let Some(block) = render_material_sections(material) else {
+fn append_material_sections(
+    output: &Path,
+    material: &ConversationMaterial,
+    lang: Locale,
+) -> Result<(), String> {
+    let Some(block) = render_material_sections(material, lang) else {
         return Ok(());
     };
     let path = output.join("spec.md");
@@ -568,7 +656,10 @@ fn material_only_result(
         return None;
     };
     let mut out = strip_material_sections(&body);
-    if let Some(block) = render_material_sections(material) {
+    // O `run_at` já validou o `--lang` antes de chegar aqui; o recuo só existe
+    // para quem chama esta função direto.
+    let lang = Locale::from_str(&opts.lang).unwrap_or(Locale::PtBr);
+    if let Some(block) = render_material_sections(material, lang) {
         if !out.ends_with('\n') {
             out.push('\n');
         }
@@ -745,7 +836,7 @@ fn stale_waves_warning(slug: &str, waves: &[String]) -> String {
 /// fresh render replaces them rather than stacking a second copy underneath.
 fn strip_material_sections(body: &str) -> String {
     let mut text = body.to_string();
-    for key in ["definitions", "decisions", "evidence"] {
+    for key in ["definitions", "decisions", "evidence", "risks"] {
         while let Some(block) = crate::commands::spec::spec_sections::section_block(&text, key) {
             text = text.replacen(&block, "", 1);
         }
@@ -1106,7 +1197,7 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 
     // The conversation channel — each kind in a section of its own. A no-op
     // when nothing was carried.
-    if let Err(e) = append_material_sections(&output, &material) {
+    if let Err(e) = append_material_sections(&output, &material, lang_locale) {
         emit_error("write conversation material", &e);
         return 0;
     }
@@ -2877,6 +2968,89 @@ mod tests {
         assert!(msg.contains("Evidence"), "the rejection names the destination: {msg}");
     }
 
+    /// AC-3 — o material com riscos, resumo e esclarecimentos NÃO aborta o
+    /// rascunho (o carregador falha fechado, e antes estas chaves eram
+    /// desconhecidas), e os riscos ganham a seção deles no idioma da spec.
+    ///
+    /// O arquivo é escrito pelo `material-add` de verdade e lido pelo
+    /// carregador de verdade: duas grafias de um contrato só se pegam com o
+    /// escritor e o leitor no mesmo teste.
+    #[test]
+    fn spec_draft_carries_risks_without_aborting() {
+        use crate::commands::spec::material_add::{add, MaterialAddOpts, MATERIAL_FILE};
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        std::fs::create_dir_all(project.join(".claude/spec/demo")).unwrap();
+        let record = |kind: &str, subject: &str, detail: &str, severity: Option<&str>| {
+            let r = add(
+                project,
+                &MaterialAddOpts {
+                    spec: "demo".into(),
+                    kind: kind.into(),
+                    subject: subject.into(),
+                    detail: detail.into(),
+                    line: None,
+                    severity: severity.map(str::to_string),
+                    notes: Some("uma vez por versão".into()),
+                },
+            );
+            assert!(r.ok, "{kind}: {r:?}");
+        };
+        record("decision", "o layout v4 é o padrão", "aprovado pelo usuário", None);
+        record("risk", "o navegador abre sem pedir", "um interruptor de ambiente desliga", Some("alta"));
+        record("clarification", "Abrir o navegador sozinho?", "Só na aprovação", None);
+        record("summary", "A conversa fechou o layout v4 como padrão.", "", None);
+        let material_path = project.join(".claude/spec/demo").join(MATERIAL_FILE);
+
+        let loaded = load_material(&material_path).expect("the new kinds must load, not abort");
+        assert_eq!((loaded.risks.len(), loaded.clarifications.len()), (1, 1));
+        assert!(loaded.summary.is_some());
+
+        let out = project.join("pt");
+        run(SpecDraftOpts {
+            intent: "Demo intent".into(),
+            slug: None,
+            scope: "light".into(),
+            lang: "pt-BR".into(),
+            signals: None,
+            output: Some(out.clone()),
+            material: Some(material_path.clone()),
+            material_only: false,
+            no_material_reason: Some("fixture: the channel itself is under test".into()),
+            waves: 0,
+            plan: None,
+            force: false,
+            query_terms: None,
+            force_scope: false,
+        });
+        let body = std::fs::read_to_string(out.join("spec.md"))
+            .expect("a material carrying risks must not abort the draft");
+        assert!(body.contains("\n## Riscos\n"), "risks heading:\n{body}");
+        assert!(body.contains("- [R-1] o navegador abre sem pedir"), "risk:\n{body}");
+        assert!(body.contains("  Severity: alta"), "severity:\n{body}");
+        assert!(
+            body.contains("  Mitigation: um interruptor de ambiente desliga"),
+            "a risk carries what mitigates it:\n{body}"
+        );
+        assert!(body.contains("- [K-1] o layout v4 é o padrão"), "the old kinds still land:\n{body}");
+        // Resumo e esclarecimentos ficam SÓ no material.
+        assert!(!body.contains("A conversa fechou o layout v4"), "summary stays out:\n{body}");
+        assert!(!body.contains("Abrir o navegador sozinho?"), "clarification stays out:\n{body}");
+        // O título é canônico — o validador não o lê como seção estranha.
+        assert_eq!(
+            crate::commands::spec::spec_sections::canonical_key("## Riscos"),
+            Some("risks")
+        );
+
+        // Numa spec em inglês, o mesmo risco sai sob o título inglês.
+        let raw = std::fs::read_to_string(&material_path).unwrap();
+        let en = draft_with_material(project, &project.join("en"), Some(&raw));
+        assert!(en.contains("\n## Risks\n"), "en-US risks heading:\n{en}");
+        // E o `--material-only` troca a seção em vez de empilhar uma segunda.
+        let stripped = strip_material_sections(&body);
+        assert!(!stripped.contains("## Riscos"), "the refresh strips the risks:\n{stripped}");
+    }
+
     /// Invisible when unused: a channel that carries nothing produces the exact
     /// bytes a draft with no channel produces — no empty headings, no
     /// placeholders, no trailing whitespace drift. Both drafts land in a
@@ -2905,6 +3079,16 @@ mod tests {
             ("no-reason", r#"{"decisions": [{"decision": "x", "reason": "  "}]}"#),
             ("no-file", r#"{"findings": [{"statement": "x", "file": ""}]}"#),
             ("typo-key", r#"{"decision": [{"decision": "x", "reason": "y"}]}"#),
+            (
+                "no-mitigation",
+                r#"{"risks": [{"risk": "x", "mitigation": " ", "severity": "alta"}]}"#,
+            ),
+            (
+                "bad-severity",
+                r#"{"risks": [{"risk": "x", "mitigation": "y", "severity": "grave"}]}"#,
+            ),
+            ("no-answer", r#"{"clarifications": [{"question": "x", "answer": ""}]}"#),
+            ("typo-risk", r#"{"risk": [{"risk": "x", "mitigation": "y", "severity": "alta"}]}"#),
             ("not-json", "definitions: none"),
         ] {
             let path = dir.path().join(format!("{name}.json"));
