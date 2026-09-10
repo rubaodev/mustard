@@ -22,6 +22,19 @@ mustard-rt run spec-draft --slug {slug} --intent "{intent}" --material .claude/s
 
 A full `--force` re-draft is for a spec whose NARRATIVE changed. Reach for it and you rewrite the whole body to get one decision in — measured in the field, that cost the operator a save-and-splice script on every round of the conversation, which is a good way to stop recording decisions at all.
 
+## Pending
+
+**Work agreed beyond the unit being opened is recorded BEFORE the gate call** — one item per agreed piece of work, including an ORDER between units. The pending ledger lives outside every unit (`.claude/pending/ledger.json` in the main checkout), so it takes an item with no unit open and outlives the unit that delivers it. Measured 2026-09-09: three works agreed in the order 2 → 3 → 1; the order belonged to no unit, and the closing summary dropped the third.
+
+```
+mustard-rt run pending --add --title "<what was agreed>" --detail "<scope / why>"
+mustard-rt run pending --close P-{n} --reason "<what delivered it>"
+mustard-rt run pending --drop P-{n} --reason "<why it no longer stands>"
+mustard-rt run pending
+```
+
+An item leaves the list ONLY with a reason — a blank `--reason` is refused and nothing is written. Without a flag it lists what is open.
+
 ## Where it lands
 
 `spec-draft` checks `{kind}/{slug}` out in the MAIN checkout, so the whole unit is authored ON it: `spec.md`, the waves, the ceremony and the code alike. There is no `.claude/spec/` carve-out; a spec write on a bare integration base is DENIED like any other write — the branch the gate minted is the only place this material exists. An old `{base}_{slug}` name still reads as its unit.

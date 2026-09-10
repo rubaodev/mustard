@@ -175,6 +175,37 @@ pub enum EventCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// The PENDING ledger: work agreed in the conversation that has not closed
+    /// yet. It lives OUTSIDE every unit, in `.claude/pending/ledger.json` of the
+    /// main checkout, so it is recorded with no unit open, survives a branch
+    /// switch and outlives the unit that delivers it. Without a flag it LISTS
+    /// `{ok, open, closed}`; `--add` records one item and prints its `P-{n}` id;
+    /// `--close`/`--drop` settle one, always with a non-blank `--reason`.
+    #[command(display_order = 98)]
+    Pending {
+        /// Record a new item (needs `--title` and `--detail`).
+        #[arg(long, conflicts_with_all = ["close", "drop"])]
+        add: bool,
+        /// What was agreed, one line.
+        #[arg(long)]
+        title: Option<String>,
+        /// Its scope or reason, one line.
+        #[arg(long)]
+        detail: Option<String>,
+        /// Settle the item `P-{n}` as DELIVERED.
+        #[arg(long, value_name = "ID", conflicts_with = "drop")]
+        close: Option<String>,
+        /// Settle the item `P-{n}` as dropped ON PURPOSE.
+        #[arg(long, value_name = "ID")]
+        drop: Option<String>,
+        /// Why the item leaves the list. Required by `--close`/`--drop`; a
+        /// blank one is refused and nothing is written.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `event`-family `run` subcommand.
@@ -225,6 +256,17 @@ pub fn dispatch(cmd: EventCmd) {
                 add.as_deref(),
                 explains_symptom,
             );
+        }
+        EventCmd::Pending { add, title, detail, close, drop, reason, root } => {
+            event::pending::run(&event::pending::PendingOpts {
+                root,
+                add,
+                title,
+                detail,
+                close,
+                drop,
+                reason,
+            });
         }
     }
 }

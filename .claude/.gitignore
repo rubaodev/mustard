@@ -93,3 +93,6 @@ spec/*/economy-baselines.json
 spec/*/wave-*/diff.md
 spec/*/wave-*/prompt.md
 spec/*/wave-*/warnings.txt
+
+# Added by Mustard: patterns the seed gained after this file was written.
+pending/
