@@ -1,6 +1,6 @@
 ---
 name: core-kind-pattern
-description: Use when adding or refactoring a coarse classification enum (`{Foo}Kind`) inside packages/core/src/domain/model/view/.
+description: Use when adding or refactoring a coarse-classification enum (`{X}Kind`) inside packages/core/src/domain/model/view.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,19 +17,57 @@ metadata:
 
 ## Purpose
 
-`{Foo}Kind` enums classify a raw event/string into a small closed set the dashboard renders (icon, colour, badge) without re-parsing the source string. `TimelineKind` (timeline.rs) classifies raw event names (`"pipeline.scope"`, `"qa.result"`, …) into ten variants plus an `Other` catch-all. `SegmentState`/`WorkspaceAlertKind` (workspace.rs) play the same role for phase-segment rendering and alert grouping. These enums live beside the struct(s) they classify, in the same file, not in a separate module.
+A `{X}Kind` enum exists to let a `ViewModel` bucket a raw string (an event name, an alert category) into a small closed set the dashboard can render an icon or color for, without the UI reparsing the raw string. The two exemplars — `TimelineKind` and `WorkspaceAlertKind` — both wrap a value that only the projection layer ever produces from live event data, and both keep an explicit fallback variant (`Other`) rather than making the enum a strict subset that could panic on an unrecognised input. The type stays pure `serde` data: no IO, no panics, matching the crate-wide `domain/model` purity guard.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 2
 
-The two exemplars derive `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` and add `#[serde(rename_all = "lowercase")]` (`TimelineKind`) or `"kebab-case"` (`WorkspaceAlertKind`) depending on the wire convention the sibling struct already uses. Each variant carries a doc comment naming the concrete raw string(s) it maps from. `TimelineKind` closes with a catch-all `Other` variant so an unrecognised raw event still renders instead of failing; `WorkspaceAlertKind` is closed (no catch-all) because it enumerates a fixed, exhaustively-known alert taxonomy — pick whichever fits the domain: open-ended external strings need a catch-all, an internally-declared alert taxonomy does not.
+`{X}Kind` derives `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` (add `PartialOrd, Ord` only when a `BTreeMap`/dedup consumer needs it, as `WorkspaceAlertKind` does — document why in a doc comment, don't add it speculatively). Serde renaming is `lowercase` for a bare-word set (`TimelineKind`) or `kebab-case` for hyphenated wire values (`WorkspaceAlertKind`); pick the one matching the actual dashboard string. A classification enum built from a raw string carries an associated `fn classify(event: &str) -> Self` (or `fn parse`) with a catch-all fallback arm — never a bare `unreachable!()` on unknown input.
 
 ## How to apply
 
-A new classification enum for a view struct goes in the same file as that struct (or the file most tightly coupled to it), named `{Struct}Kind` or a domain-specific name (`SegmentState`) when "Kind" reads oddly. Add an inherent `classify(raw: &str) -> Self` (or `Self::parse`) associated function with a `match` over the known raw strings, doc-comment each variant with the literal string(s) it recognises, and add a `#[cfg(test)] mod tests` block asserting both known mappings and the fallback/unknown case.
+Add the new `{X}Kind` next to the `ViewModel` struct it classifies, in the same file (`view/{name}.rs`), above the struct. If the enum is derived from event-name matching, give it a `classify`/`parse` associated function with an explicit fallback variant, and cover both a known and an unknown input in `#[cfg(test)] mod tests`.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/timeline.rs
-- Ref: packages/core/src/domain/model/view/workspace.rs
+Ref: packages/core/src/domain/model/view/timeline.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineKind {
+    /// `pipeline.scope` — spec was bootstrapped.
+    Scope,
+    /// `pipeline.phase` — phase transition.
+    Phase,
+    ...
+    /// Anything we don't classify above. The raw event string still survives
+    /// in `payload_summary` so the UI can render it verbatim.
+    Other,
+}
+
+impl TimelineKind {
+    /// Classify a raw event name into a coarse kind.
+    #[must_use]
+    pub fn classify(event: &str) -> Self {
+        match event {
+            "pipeline.scope" => Self::Scope,
+            ...
+            _ => Self::Other,
+        }
+    }
+}
+```
+
+Ref: packages/core/src/domain/model/view/workspace.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceAlertKind {
+    /// A pipeline is blocked (`pipeline.pause` event present, no resume yet).
+    Blocked,
+    /// A spec's most recent `qa.result.payload.overall` is `"fail"`.
+    QaFail,
+    ...
+}
+```

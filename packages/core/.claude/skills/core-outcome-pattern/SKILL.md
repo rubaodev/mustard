@@ -1,6 +1,6 @@
 ---
 name: core-outcome-pattern
-description: Use when adding or refactoring a small closed `{Foo}Outcome` enum reporting what a side-effecting operation actually did, inside packages/core/src/platform/.
+description: Use when adding or refactoring an `{X}Outcome` enum reporting what a write operation actually did, under packages/core/src/platform.
 paths:
   - packages/core/src/platform/**
 tags: [add, refactor]
@@ -17,20 +17,40 @@ metadata:
 
 ## Purpose
 
-A `{Foo}Outcome` enum is the honest report of what a write/mutation actually did — never a `bool`, because a caller that wants to render "already there, nothing changed" vs "just added it" needs more than true/false. `RegisterOutcome` (dashboard_registry.rs: `Added`/`AlreadyPresent`), `RecordOutcome` (project_seed.rs: `Nothing`/`Recorded`/…), and `SeedOutcome` (project_seed.rs: `Created`/`Updated`/`Preserved`) all follow this shape: a two- or three-variant enum returned from a function that writes something, consumed by a report struct or printed directly by the CLI face.
+An `{X}Outcome` reports what a write/seed function actually did — `RegisterOutcome`, `VisibilityOutcome` (dashboard_registry.rs) and `SeedOutcome` (project_seed.rs) all exist so a caller can say "already there, nothing written" honestly instead of claiming a change that did not happen. Every writer in this cluster is idempotent, and the outcome enum is how that idempotency is surfaced to the caller (and, transitively, to the JSON report the CLI/runtime prints) rather than silently discarded. `git_exclude.rs`'s `ExcludeOutcome` is the one structural cousin that is a struct (facts) rather than an enum, because its two outcomes are not mutually exclusive in the type (an append list plus an optional failure reason).
 
 ## Convention
 
 Folder: packages/core/src/platform/** · Extension: .rs · Files of this role in this subproject: 3
 
-All three exemplars derive `Debug, Clone, Copy, PartialEq, Eq` (small, stack-only enums); `RecordOutcome` additionally derives `Serialize, Deserialize` with `#[serde(rename_all = "camelCase")]` because it rides inside a JSON report struct (`UpsertReport`), while the other two stay in-process only. Each variant's doc comment states the concrete condition that produces it, and the "nothing happened" variant is always named plainly (`AlreadyPresent`, `Preserved`, `Nothing`) rather than folded into a boolean. The producing function's own doc comment cross-references which variant means what in context.
+`{X}Outcome` derives `Debug, Clone, Copy, PartialEq, Eq` and has 2-3 variants named as PAST-TENSE facts (`Added`, `AlreadyPresent`, `Created`, `Updated`, `Preserved`) — never a boolean, because a boolean loses the "why" a reviewer needs from a report. The writer function that returns it must be genuinely idempotent: calling it twice with identical input returns a different (non-mutating) variant the second time, and a unit test asserts exactly that ("registering twice is a no-op").
 
 ## How to apply
 
-A new outcome enum for a mutating function is named `{Verb}Outcome` or `{Noun}Outcome`, lives beside the function that returns it, derives `Debug, Clone, Copy, PartialEq, Eq` (add `Serialize, Deserialize` + `rename_all = "camelCase"` only if it will be embedded in a JSON report), and names its "no-op" variant explicitly rather than collapsing the result to a boolean. Never reuse an existing outcome enum across two unrelated operations — one enum per operation keeps each variant's meaning unambiguous.
+Define the new `{X}Outcome` right above the writer function that returns it, in the same `platform/{name}.rs` file. Add a doc comment per variant explaining what state on disk it corresponds to, and pair it with a test that calls the writer twice and asserts the second call reports the "no-op" variant.
 
 ## Examples
 
-- Ref: packages/core/src/platform/dashboard_registry.rs
-- Ref: packages/core/src/platform/project_seed.rs
-- Ref: packages/core/src/platform/git_exclude.rs
+Ref: packages/core/src/platform/dashboard_registry.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterOutcome {
+    /// The path was not in the registry and now is.
+    Added,
+    /// The path was already registered; nothing was written.
+    AlreadyPresent,
+}
+```
+
+Ref: packages/core/src/platform/project_seed.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedOutcome {
+    /// The file did not exist and was written.
+    Created,
+    /// The file existed and its content changed (backfill / overwrite).
+    Updated,
+    /// The file existed and was left byte-identical.
+    Preserved,
+}
+```

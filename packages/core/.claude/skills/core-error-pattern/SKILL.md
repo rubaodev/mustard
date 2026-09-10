@@ -1,6 +1,6 @@
 ---
 name: core-error-pattern
-description: Use when adding or refactoring a typed `thiserror`-based `{Foo}Error` enum for a module under packages/core/src/io/ or packages/core/src/platform/.
+description: Use when adding or refactoring a `thiserror`-based error enum — either module-local (`<Concept>Error`) or the crate-wide `platform::error::Error` — under `io/**` or `platform/**`.
 paths:
   - packages/core/src/io/**
   - packages/core/src/platform/**
@@ -18,20 +18,69 @@ metadata:
 
 ## Purpose
 
-Each IO/platform module that can fail in more than one distinguishable way owns a local `{Module}Error` enum instead of routing every failure through the crate-wide `Error`. `ClaudePathsError` (claude_paths.rs) and `WorkspaceError` (workspace.rs) are the two clearest examples: both are `#[derive(Debug, thiserror::Error)]`, both keep the offending value on the variant for diagnostics, and both exist because the crate-wide `Error` would blur distinctions the caller needs to act on differently (e.g. "not found" vs "guard violated" vs "override invalid").
+This crate never panics on a fallible I/O or parsing path: `unwrap`/`expect` are `deny` outside tests, per the crate's own Guards. Two exemplars (`ClaudePathsError`, `WorkspaceError`) show the module-local pattern — a small `thiserror::Error` enum owned by the one module whose invariants it guards, returned from that module's constructors. `platform::error::Error` shows the crate-wide pattern — one `#[non_exhaustive]` enum every side-effecting layer converges on via `?` and `#[from]`, aliased as the crate's `Result<T>`. Both patterns share the same posture: every variant is documented with WHY it exists and WHAT a caller should do about it, not just what failed.
 
 ## Convention
 
 Folder: packages/core/src/io/**, packages/core/src/platform/** · Extension: .rs · Files of this role in this subproject: 5
 
-Both exemplars derive only `Debug, thiserror::Error` — no `Clone`/`PartialEq` unless a test needs `matches!` (which both use, so equality is checked via `matches!(err, Variant(_))` rather than `assert_eq!`). Each `#[error("...")]` message is a lowercase, punctuation-free sentence that embeds the offending value with `{0:?}` or a named field. Every variant carries a doc comment explaining WHEN it fires, and the struct/fn that can return it documents each variant under a `# Errors` section. `dashboard_registry.rs` shows the alternative for a module with only ONE recoverable branch: it returns `Result<_, String>` instead of introducing an enum — reach for `{Foo}Error` only once a module has ≥2 distinguishable failure causes a caller might match on.
+Every error enum here derives `#[derive(Debug, thiserror::Error)]` and gives each variant an `#[error("...")]` message written in lowercase, imperative-fact style (`"path contains forbidden .claude/.claude/ sequence...: {0:?}"`, `"io error: {0}"`), never a capitalized sentence. A variant that wraps an inner error uses `#[from]` (`Io(#[from] std::io::Error)`) so `?` composes automatically; a variant that reports a semantic failure carries `String`/named fields instead of the raw source. The crate-wide `Error` is `#[non_exhaustive]` — its own doc-comment states that consumers outside this crate must keep a `_` arm in every `match`. A module-local error type stays local (not folded into `platform::error::Error`) when its failure modes are pure/local invariants (a malformed spec slug, a forbidden path shape) that have nothing to do with side effects.
 
 ## How to apply
 
-A new module-local error type is named `{Module}Error`, declared near the top of the module it guards, derives `Debug, thiserror::Error` (add `Clone`/`PartialEq`/`Eq` only if a caller needs to compare two errors), and gives every variant a `#[error("...")]` message plus a doc comment. Convert it into the crate-wide `Error` only at the boundary that needs to, via a `From` impl or an explicit `.map_err`, not by making the module return `Error` directly.
+Add a new module-local error type beside the type/functions it guards, named `<Concept>Error`, and only reach for `platform::error::Error` when the new failure is a genuine crate-wide side-effect failure (I/O, parse, config) that other layers already handle uniformly. Never invent a second `NotFound`/`Parse`/`Io`-shaped variant in a module-local enum when the crate-wide one already covers that case — compose with `#[from]` or bubble the `platform::error::Result` instead. Adding a variant to `platform::error::Error` is safe by design (`#[non_exhaustive]`); adding one to a module-local enum requires checking every `match` on that specific type since it is not `#[non_exhaustive]`.
 
 ## Examples
 
-- Ref: packages/core/src/io/claude_paths.rs
-- Ref: packages/core/src/io/workspace.rs
-- Ref: packages/core/src/platform/dashboard_registry.rs
+Ref: packages/core/src/io/claude_paths.rs
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum ClaudePathsError {
+    #[error("path contains forbidden .claude/.claude/ sequence or terminates in .claude: {0:?}")]
+    ForbiddenDotClaudeDotClaude(PathBuf),
+    #[error("spec name is empty")]
+    EmptySpecName,
+    #[error("spec name contains path separator: {0:?}")]
+    SpecNameHasSeparator(String),
+    #[error("spec name contains traversal segment '..': {0:?}")]
+    SpecNameTraversal(String),
+    #[error("wave slug does not match wave-<n>[-role]: {0:?}")]
+    InvalidWaveSlug(String),
+}
+```
+
+Ref: packages/core/src/io/workspace.rs
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceError {
+    #[error("workspace anchor not found searching from {searched_from:?}")]
+    AnchorNotFound {
+        searched_from: PathBuf,
+    },
+    #[error("resolved path contains forbidden .claude/.claude/ sequence: {resolved:?}")]
+    ForbiddenDotClaudeDotClaude {
+        resolved: PathBuf,
+    },
+    #[error("MUSTARD_WORKSPACE_ROOT override invalid ({reason}): {path:?}")]
+    OverrideInvalid {
+        path: PathBuf,
+        reason: String,
+    },
+}
+```
+
+Ref: packages/core/src/platform/error.rs
+```rust
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("parse error: {0}")]
+    Parse(String),
+    #[error("config error: {0}")]
+    Config(String),
+}
+```

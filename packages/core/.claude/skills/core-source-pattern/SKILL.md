@@ -1,6 +1,6 @@
 ---
 name: core-source-pattern
-description: Use when adding or refactoring a closed `{Foo}Source` enum naming where an economy record originated, inside packages/core/src/domain/economy/.
+description: Use when adding or refactoring a closed `{X}Source` enum naming which subsystem produced an economy event under packages/core/src/domain/economy.
 paths:
   - packages/core/src/domain/economy/**
 tags: [add, refactor]
@@ -17,19 +17,57 @@ metadata:
 
 ## Purpose
 
-`SavingsSource` (model.rs) is the one `{Foo}Source` enum in this subproject: it names which Mustard subsystem produced a token-savings event (`RtkRewrite`, `ModelRoutingDowngrade`, `BashGuardBlock`, …), and the dashboard groups savings by this enum, so each variant maps 1:1 to a UI breakdown column. `writer.rs` is the paired consumer: `savings_event`'s `savings_suffix`/`savings_source_string` helpers exhaustively match every `SavingsSource` variant to build the NDJSON event name and payload field.
+`SavingsSource` names which Mustard intervention produced a token-savings event; it is defined once in `model.rs` and consumed by `writer.rs`'s event builders to derive both the NDJSON event name and the payload's `source` field. Keeping it `#[non_exhaustive]` lets a future intervention add a variant without an API break for downstream matches, while the paired `as_str`/`from_str_opt` functions give a single, tested round-trip between the enum and its two different string spellings (snake_case for the payload field, kebab-case for the dotted event-name suffix).
 
 ## Convention
 
 Folder: packages/core/src/domain/economy/** · Extension: .rs · Files of this role in this subproject: 2
 
-`SavingsSource` derives `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "snake_case")]` and `#[non_exhaustive]` — new sources are expected to be added later without that being a breaking change for downstream matches. It exposes `as_str(self) -> &'static str` (the canonical wire string) and `from_str_opt(raw: &str) -> Option<Self>` (the fail-open inverse: unknown strings return `None`, they never default to a variant or panic). Every variant carries a doc comment naming the concrete Mustard intervention it represents and the estimation heuristic behind its token count, when non-obvious.
+`{X}Source` derives `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize`, is `#[serde(rename_all = "snake_case")]`, and is marked `#[non_exhaustive]`. Every variant carries a doc comment explaining the concrete mechanism it measures (which hook, which heuristic, what the baseline is). It ships `pub fn as_str(self) -> &'static str` (the canonical snake_case string) and `pub fn from_str_opt(raw: &str) -> Option<Self>` (the inverse, `None` on unknown — fail-open) — a downstream event builder derives any OTHER string spelling (like the kebab-case event-name suffix) from `as_str`'s output or its own private map, never by hand-duplicating the match.
 
 ## How to apply
 
-A new economy source variant is added to `SavingsSource` in `model.rs` (never a second parallel enum), with a doc comment explaining what intervention produces it and how its `tokens_saved` value is estimated; `as_str`/`from_str_opt` in the same `impl` block are extended in lockstep, and `writer.rs`'s `savings_suffix` match is extended so the new source gets an NDJSON event name — the compiler's exhaustiveness check on that match is what keeps the two in sync.
+Add the new variant to `SavingsSource` in `economy/model.rs`, with both `as_str` and `from_str_opt` arms, and a matching arm in `writer.rs`'s `savings_suffix` if the event name needs a distinct kebab-case spelling. Extend the `savings_source_roundtrip_string` test's array to cover the new variant.
 
 ## Examples
 
-- Ref: packages/core/src/domain/economy/model.rs
-- Ref: packages/core/src/domain/economy/writer.rs
+Ref: packages/core/src/domain/economy/model.rs
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SavingsSource {
+    /// Tokens saved by `rtk` rewriting a verbose command into its summary form.
+    RtkRewrite,
+    ...
+}
+
+impl SavingsSource {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RtkRewrite => "rtk_rewrite",
+            ...
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_opt(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "rtk_rewrite" => Self::RtkRewrite,
+            ...
+            _ => return None,
+        })
+    }
+}
+```
+
+Ref: packages/core/src/domain/economy/writer.rs
+```rust
+fn savings_suffix(source: SavingsSource) -> &'static str {
+    match source {
+        SavingsSource::RtkRewrite => "rtk-rewrite",
+        ...
+    }
+}
+```
