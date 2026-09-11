@@ -314,24 +314,51 @@ pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
 /// `meta.json`, both of which the pipeline already maintains — a status bar
 /// redrawn every turn must not enumerate the spec tree. `None` when the project
 /// is not a Mustard install or no unit is active.
+///
+/// Com a página da unidade publicada ([`published_url`]), o segmento inteiro
+/// vira um link clicável (OSC 8, aceito pela barra do Claude Code) para ela.
+/// Quando o checkout está no branch da própria unidade, o segmento de git já
+/// mostra o nome, então aqui fica só a etapa (`▸ PLAN`).
+///
+/// [`published_url`]: crate::commands::spec::spec_doc::published_url
 #[must_use]
 pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     if !mustard_core::ProjectConfig::exists(cwd) {
         return None;
     }
-    let slug = crate::shared::context::current_spec(&cwd.to_string_lossy())
-        .filter(|s| !s.is_empty())?;
+    let root = cwd.to_string_lossy();
+    let slug = crate::shared::context::current_spec(&root).filter(|s| !s.is_empty())?;
     // The stage is a convenience, not the point: an unreadable or half-written
     // `meta.json` still leaves the unit NAMED, which is the whole job here.
     let stage = std::fs::read_to_string(cwd.join(".claude/spec").join(&slug).join("meta.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|m| m.get("phase").and_then(Value::as_str).map(str::to_string));
-    let text = match stage {
+    // A mesma leitura de branch que `current_spec` usa: se ela devolve esta
+    // unidade, o nome já está na linha de cima e repeti-lo é ruído. Sem etapa
+    // o nome fica, porque uma seta sozinha não diz nada.
+    let on_own_branch =
+        crate::shared::context::spec_of_checkout_branch(&root).as_deref() == Some(slug.as_str());
+    let label = match stage {
+        Some(phase) if on_own_branch => format!("\u{25b8} {phase}"),
         Some(phase) => format!("\u{25b8} {slug} {phase}"),
         None => format!("\u{25b8} {slug}"),
     };
+    // Um caractere de controle no endereço (arquivo editado à mão) quebraria a
+    // sequência e sujaria a barra; nesse caso o texto sai sem link.
+    let text = match crate::commands::spec::spec_doc::published_url(cwd, &slug)
+        .filter(|url| !url.chars().any(char::is_control))
+    {
+        Some(url) => hyperlink(&url, &label),
+        None => label,
+    };
     Some(Segment::new(SegmentKind::Unit, text))
+}
+
+/// `label` como hiperlink OSC 8 para `url`: `ESC ]8;;URL ESC \ label ESC ]8;; ESC \`.
+/// O terminal mostra só `label`; os bytes da sequência não ocupam coluna.
+fn hyperlink(url: &str, label: &str) -> String {
+    format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
 }
 
 /// Is the Mustard plugin listed in `settings` and switched OFF?
@@ -561,6 +588,81 @@ mod tests {
         std::fs::write(spec.join("meta.json"), "{ not json").unwrap();
         let seg = unit_segment(root).expect("a broken meta must not hide the unit");
         assert!(seg.text.contains("roteador-didatico"));
+    }
+
+    /// O texto que o terminal mostra: a sequência OSC 8 sai, o rótulo fica.
+    fn visible(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("\u{1b}]8;") {
+            out.push_str(&rest[..start]);
+            let Some(end) = rest[start..].find("\u{1b}\\") else {
+                return out;
+            };
+            rest = &rest[start + end + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// AC-5 — com endereço publicado gravado, o segmento da unidade vira link
+    /// para a página, e o nome não se repete quando o branch já o mostra.
+    ///
+    /// Cada estado usa uma raiz própria: `current_spec` guarda a resposta por
+    /// processo, e perguntar antes de semear guardaria a resposta vazia.
+    #[test]
+    fn statusline_links_the_published_page_and_drops_the_repeated_slug() {
+        let url = "https://claude.ai/code/artifacts/pagina-ligada";
+        let seed = |root: &Path, slug: &str| {
+            std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
+            let spec = root.join(".claude/spec").join(slug);
+            std::fs::create_dir_all(&spec).unwrap();
+            std::fs::write(spec.join("meta.json"), r#"{"phase":"PLAN"}"#).unwrap();
+            spec
+        };
+
+        // No branch da própria unidade: o branch mostra o nome, a barra só a etapa.
+        let own = tempfile::tempdir().unwrap();
+        let root = own.path();
+        let spec = seed(root, "pagina-ligada");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("git")
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "."]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/feature/pagina-ligada"]);
+
+        let plain = unit_segment(root).expect("the unit on its own branch reaches the bar");
+        assert_eq!(plain.text, "\u{25b8} PLAN", "no address yet: no link, and no repeated name");
+
+        std::fs::write(spec.join("published-url"), format!("{url}\n")).unwrap();
+        let linked = unit_segment(root).expect("a published unit reaches the bar");
+        assert!(
+            linked.text.starts_with(&format!("\u{1b}]8;;{url}\u{1b}\\")),
+            "the segment opens an OSC 8 link to the page: {:?}",
+            linked.text
+        );
+        assert!(linked.text.ends_with("\u{1b}]8;;\u{1b}\\"), "…and closes it: {:?}", linked.text);
+        assert_eq!(visible(&linked.text), "\u{25b8} PLAN", "the link hides nothing and adds nothing");
+
+        // Fora do branch da unidade o nome volta — nada mais o mostra — e o link fica.
+        let away = tempfile::tempdir().unwrap();
+        let spec = seed(away.path(), "outra-unidade");
+        let states = away.path().join(".claude/.pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(states.join("outra-unidade.json"), "{}").unwrap();
+        std::fs::write(spec.join("published-url"), format!("{url}\n")).unwrap();
+        let seg = unit_segment(away.path()).expect("an active unit off its branch reaches the bar");
+        assert!(seg.text.contains(&format!("\u{1b}]8;;{url}\u{1b}\\")), "{:?}", seg.text);
+        assert_eq!(visible(&seg.text), "\u{25b8} outra-unidade PLAN");
     }
 
     /// The inert flag reads the plugin switch, and never claims health it could

@@ -11,8 +11,12 @@
 //! ## Os fatos, todos necessários
 //!
 //! 1. É o `Stop` da sessão principal — nunca o de um subagente.
-//! 2. O projeto DECLAROU `tone: didactic` — o campo cru, pela mesma leitura da
-//!    regra ([`declares_didactic`]); o padrão resolvido não é uma escolha.
+//! 2. O projeto tem `mustard.json`. Nele o idioma da resposta é medido sempre
+//!    que o projeto DECLAROU um (`lang`/`specLang`), qualquer que seja o tom;
+//!    sem idioma declarado não há veredito de idioma. As quatro medições do tom didático só rodam
+//!    quando o projeto DECLAROU `tone: didactic` — o campo cru, pela mesma
+//!    leitura da regra ([`declares_didactic`]); o padrão resolvido não é uma
+//!    escolha.
 //! 3. O `Stop` trouxe `last_assistant_message`, o texto final do turno.
 //!
 //! ## O que faz
@@ -44,7 +48,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::clarity::{measure, ClarityReport};
+use mustard_core::domain::clarity::{measure, measure_language, ClarityReport};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::io::fs;
@@ -98,8 +102,9 @@ impl Check for ClarityCheck {
         let project_dir = ctx.project_dir_or_cwd(input);
         let root = Path::new(&project_dir);
 
-        // Fato 2 — o projeto pediu o tom didático.
-        if !declares_didactic(root) {
+        // Fato 2 — o Mustard está instalado. O tom didático decide só quais
+        // medições rodam, mais abaixo.
+        if !mustard_core::ProjectConfig::exists(root) {
             return Ok(Verdict::Allow);
         }
 
@@ -114,11 +119,19 @@ impl Check for ClarityCheck {
         };
 
         let session = input.session_id.as_deref();
+        let config = mustard_core::ProjectConfig::load(root);
+        // Os defeitos saem no idioma resolvido; o idioma que a prosa precisa
+        // ter é só o DECLARADO. O padrão resolvido é pt-BR, e um projeto em
+        // inglês que nunca declarou idioma teria toda resposta apontada.
+        let lang = config.i18n().lang;
+        let expected = config.declared_locale();
+        if !declares_didactic(root) {
+            return Ok(language_only(root, session, message, expected, lang));
+        }
+
         let record_path = record_path(root, session);
         let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
-
-        let report = measure(message, &invented_terms(root, &project_dir), &record.explained);
-        let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+        let report = measure(message, &invented_terms(root, &project_dir), &record.explained, expected);
         let defects = report.defects(lang);
 
         for term in &report.explained {
@@ -139,6 +152,38 @@ impl Check for ClarityCheck {
         }
         Ok(Verdict::Inject { context: with_head("clarity.note.head", &defects, lang) })
     }
+}
+
+/// Fora do tom didático só o idioma é medido. O defeito segue os mesmos
+/// caminhos: a nota ao usuário e o registro que a mensagem seguinte leva ao
+/// assistente. O registro só é gravado quando há defeito a guardar ou um
+/// defeito antigo a apagar — a reescrita no idioma certo, no mesmo turno,
+/// limpa o anterior. Nenhum evento é registrado: `assistant.clarity` traz as
+/// contagens da medição didática inteira, que aqui não rodou. Sem idioma
+/// declarado (`expected` vazio) não há veredito: nada é apontado.
+fn language_only(
+    root: &Path,
+    session: Option<&str>,
+    message: &str,
+    expected: Option<Locale>,
+    lang: Locale,
+) -> Verdict {
+    let defects: Vec<String> = expected
+        .and_then(|expected| measure_language(message, expected))
+        .map(|wrong| wrong.defect(lang))
+        .into_iter()
+        .collect();
+    if let Some(path) = record_path(root, session) {
+        let mut record = read_record(&path);
+        if !defects.is_empty() || !record.defects.is_empty() {
+            record.defects.clone_from(&defects);
+            write_record(&path, &record);
+        }
+    }
+    if defects.is_empty() {
+        return Verdict::Allow;
+    }
+    Verdict::Inject { context: with_head("clarity.note.head", &defects, lang) }
 }
 
 /// Os defeitos da última resposta, prontos para a mensagem seguinte do usuário
@@ -248,6 +293,7 @@ fn metrics(report: &ClarityReport) -> Value {
         "unexplained_terms": report.unexplained_terms.len(),
         "prose_lines": report.prose_lines,
         "too_long": report.too_long,
+        "wrong_language": report.wrong_language.is_some(),
     })
 }
 
@@ -478,31 +524,67 @@ mod tests {
         assert!(!next_context(root, "s1").contains("reprovou"), "the newest reply rules");
     }
 
-    /// AC-7 — com a resposta reprovada e o documento da spec mudado, o usuário
-    /// vê a nota e o link numa só mensagem: todas as travas do `Stop`, na ordem
-    /// do registro, pelo `fold` e pela saída de verdade.
+    /// AC-7 — com a resposta reprovada e o documento da spec mudado, o fim é
+    /// barrado pela ordem de publicar: todas as travas do `Stop`, na ordem do
+    /// registro, pelo `fold` e pela saída de verdade. A nota ao usuário não sai
+    /// nesse fim — o bloqueio vence o `fold` —, mas a medição roda e os defeitos
+    /// ficam guardados para a mensagem seguinte; a continuação que a ordem pede,
+    /// solta pelo `stop_hook_active`, leva a nota ao usuário. O nome ficou o de
+    /// antes porque a spec `humanize` o cita num critério.
     #[test]
     fn clarity_note_and_doc_link_share_the_stop_message() {
         let dir = project(Some("didactic"));
         let root = dir.path();
         open_unit(root, "# Demo\n\n## Contexto\n\nPrimeira versão.\n");
-
-        let input = stop("s1", FAILING);
         let c = ctx(root, Trigger::Stop);
-        let mut outcome = Outcome::allow();
-        for module in Registry::new().applicable(Trigger::Stop, None) {
-            if let Some(check) = &module.check {
-                outcome.fold(check.evaluate(&input, &c).unwrap_or(Verdict::Allow));
+        let run_stop = |input: &HookInput| {
+            let mut outcome = Outcome::allow();
+            for module in Registry::new().applicable(Trigger::Stop, None) {
+                if let Some(check) = &module.check {
+                    outcome.fold(check.evaluate(input, &c).unwrap_or(Verdict::Allow));
+                }
             }
-        }
-        let json = hook_specific_output("Stop", &outcome).expect("the Stop speaks");
-        let parsed: Value = serde_json::from_str(&json).unwrap();
-        assert!(parsed.get("decision").is_none(), "never blocks: {json}");
-        let message = parsed["systemMessage"].as_str().unwrap_or_else(|| panic!("{json}"));
-        let link = message.find("resumo.html").unwrap_or_else(|| panic!("no doc link: {message}"));
-        let note = message.find("Mustard · clareza").unwrap_or_else(|| panic!("no note: {message}"));
+            let json = hook_specific_output("Stop", &outcome).expect("the Stop speaks");
+            serde_json::from_str::<Value>(&json).unwrap()
+        };
+
+        // A página mudou: a ordem de publicar barra o fim, sem nota ao usuário.
+        let blocked = run_stop(&stop("s1", FAILING));
+        assert_eq!(blocked["decision"].as_str(), Some("block"), "{blocked}");
+        let order = blocked["reason"].as_str().unwrap_or_else(|| panic!("{blocked}"));
+        assert!(order.contains("resumo.html") && order.contains("claude.ai"), "{order}");
+        assert!(blocked.get("systemMessage").is_none(), "{blocked}");
+        assert!(next_context(root, "s1").contains("reprovou"), "the defects still wait for the assistant");
+
+        // A continuação que a ordem pediu é solta, e a nota chega ao usuário.
+        let mut again = stop("s1", FAILING);
+        again.raw["stop_hook_active"] = serde_json::json!(true);
+        let released = run_stop(&again);
+        assert!(released.get("decision").is_none(), "the continuation is released: {released}");
+        let message = released["systemMessage"].as_str().unwrap_or_else(|| panic!("{released}"));
+        assert!(message.contains("Mustard · clareza"), "{message}");
         assert!(message.contains("- CI sem as palavras por extenso"), "{message}");
-        assert!(link < note, "registry order — the link, then the note: {message}");
+    }
+
+    /// Uma resposta em inglês num projeto em português reprova pelo idioma, e
+    /// o defeito segue pelos caminhos de sempre: a nota ao usuário e a
+    /// mensagem seguinte.
+    #[test]
+    fn a_reply_in_another_language_reaches_the_note_and_the_next_prompt() {
+        let dir = project(Some("didactic"));
+        let root = dir.path();
+        let reply = "The wave is done and the tests pass.\n\
+            The check now compares the language of the reply with the language of the project.\n\
+            It counts the common words of each language.\n\
+            A short reply is not judged at all.";
+        let Verdict::Inject { context: note } =
+            ClarityCheck.evaluate(&stop("s1", reply), &ctx(root, Trigger::Stop)).unwrap()
+        else {
+            panic!("a reply in another language speaks");
+        };
+        let defect = "- resposta em en-US; o idioma do projeto e do usuário é pt-BR";
+        assert!(note.contains(defect), "{note}");
+        assert!(next_context(root, "s1").contains(defect), "the defect waits for the assistant");
     }
 
     /// AC-8 — só um projeto que declarou o tom didático tem as respostas

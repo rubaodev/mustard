@@ -844,6 +844,20 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              `mustard-rt run git-settle --report` to check each one's state and \
              `mustard-rt run git-settle --unit <branch>` to prune. Advisory, never blocking."
         }
+        // Aviso de sobras do início da sessão: `{total}` e `{count}` são
+        // preenchidos pelo chamador (`session_start_inject::scratch_notice`).
+        ("scratch.residue.notice", Locale::PtBr) => {
+            "[Mustard] As cópias descartáveis antigas no diretório temporário somam {total} \
+             em {count} pasta(s). Diga ao usuário que o disco está sendo gasto com sobras e \
+             ofereça `mustard-rt run scratch-gc` para listar o que sai e \
+             `mustard-rt run scratch-gc --apply` para apagar. Aviso, nunca bloqueio."
+        }
+        ("scratch.residue.notice", Locale::EnUs) => {
+            "[Mustard] Old throwaway copies in the temp directory add up to {total} across \
+             {count} folder(s). Tell the user the disk is being spent on leftovers and offer \
+             `mustard-rt run scratch-gc` to list what would go and \
+             `mustard-rt run scratch-gc --apply` to delete it. Advisory, never blocking."
+        }
 
         // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
         // each named for what was actually measured (a diagnostic must never
@@ -1074,21 +1088,39 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
 
         // Entrega do resumo no fim da resposta
-        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — mensagem ao usuário,
-        // então segue o `specLang` e o tom. Sem parênteses no texto: o tom
-        // técnico os apaga. `{file}`, `{url}` e `{command}` vêm do chamador; o
-        // comando em si não se traduz.
-        ("deliver.head.awaiting", Locale::PtBr) => {
-            "Mustard · spec para aprovar: o {file} mudou. Formas de abrir:"
+        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — uma ordem ao
+        // assistente, que publica a página e entrega o link ao usuário. Segue o
+        // `specLang` e o tom, como a própria página. Sem parênteses no texto: o
+        // tom técnico os apaga. `{file}`, `{path}`, `{spec}`, `{url}` e
+        // `{command}` vêm do chamador; comandos e endereços não se traduzem.
+        ("deliver.head.awaiting", Locale::PtBr) => "Mustard · spec para aprovar: o {file} mudou.",
+        ("deliver.head.awaiting", Locale::EnUs) => "Mustard · spec awaiting approval: {file} changed.",
+        ("deliver.head.summary", Locale::PtBr) => "Mustard · resumo da spec: o {file} mudou.",
+        ("deliver.head.summary", Locale::EnUs) => "Mustard · spec summary: {file} changed.",
+        ("deliver.order", Locale::PtBr) => {
+            "Antes de encerrar, publique {path} no claude.ai como página, entregue o link ao \
+             usuário numa linha própria e grave o endereço com \
+             `mustard-rt run spec-doc --spec {spec} --published-url <endereço>`. Publicar faz \
+             parte da entrega e nunca é uma opção a oferecer ao usuário."
         }
-        ("deliver.head.awaiting", Locale::EnUs) => {
-            "Mustard · spec awaiting approval: {file} changed. Ways to open it:"
+        ("deliver.order", Locale::EnUs) => {
+            "Before you finish, publish {path} as a claude.ai page, hand the user its link on a \
+             line of its own, and record the address with \
+             `mustard-rt run spec-doc --spec {spec} --published-url <url>`. Publishing is part \
+             of the delivery and never an option to offer the user."
         }
-        ("deliver.head.summary", Locale::PtBr) => {
-            "Mustard · resumo da spec: o {file} mudou. Formas de abrir:"
+        ("deliver.order.same", Locale::PtBr) => {
+            "Já há um endereço gravado: republique no MESMO endereço, {url}, e entregue esse link."
         }
-        ("deliver.head.summary", Locale::EnUs) => {
-            "Mustard · spec summary: {file} changed. Ways to open it:"
+        ("deliver.order.same", Locale::EnUs) => {
+            "An address is already recorded: republish at that SAME address, {url}, and hand \
+             over that link."
+        }
+        ("deliver.fallback", Locale::PtBr) => {
+            "Sem ferramenta de publicação, entregue ao usuário as formas de abrir:"
+        }
+        ("deliver.fallback", Locale::EnUs) => {
+            "With no publishing tool, hand the user the ways to open it:"
         }
         ("deliver.click", Locale::PtBr) => "- Clique: {url}",
         ("deliver.click", Locale::EnUs) => "- Click: {url}",
@@ -1096,10 +1128,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("deliver.windows", Locale::EnUs) => "- Windows, in PowerShell: {command}",
         ("deliver.macos", _) => "- macOS: {command}",
         ("deliver.linux", _) => "- Linux: {command}",
-        ("deliver.publish", Locale::PtBr) => {
-            "- Peça ao assistente para publicar a página no claude.ai."
-        }
-        ("deliver.publish", Locale::EnUs) => "- Ask the assistant to publish it as a claude.ai page.",
 
         // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
         // e `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
@@ -1139,7 +1167,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o usuário lê e o assistente recebe para corrigir.
         // Sem parênteses: o tom técnico os apagaria. `{words}`, `{opening}`,
-        // `{acronym}`, `{term}`, `{lines}` e `{limit}` vêm do chamador.
+        // `{acronym}`, `{term}`, `{lines}`, `{limit}`, `{found}` e `{expected}`
+        // vêm do chamador.
         ("clarity.long_sentence", Locale::PtBr) => "frase com {words} palavras: \"{opening}…\"",
         ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
         ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
@@ -1150,21 +1179,29 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "resposta com {lines} linhas de texto; o limite é {limit}"
         }
         ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines of prose; the limit is {limit}",
+        // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
+        // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
+        ("clarity.wrong_language", Locale::PtBr) => {
+            "resposta em {found}; o idioma do projeto e do usuário é {expected}"
+        }
+        ("clarity.wrong_language", Locale::EnUs) => {
+            "reply in {found}; the language of the project and the user is {expected}"
+        }
         // A nota ao usuário quando a resposta reprova, e o aviso que a próxima
         // mensagem leva ao assistente. Os defeitos vêm abaixo, um por linha.
         ("clarity.note.head", Locale::PtBr) => {
-            "Mustard · clareza: a resposta acima fugiu do tom didático. A próxima corrige:"
+            "Mustard · clareza: a resposta acima fugiu da regra de escrita. A próxima corrige:"
         }
         ("clarity.note.head", Locale::EnUs) => {
-            "Mustard · clarity: the reply above missed the didactic tone. The next one fixes:"
+            "Mustard · clarity: the reply above missed the writing rule. The next one fixes:"
         }
         ("clarity.next.head", Locale::PtBr) => {
-            "[Mustard] A sua resposta anterior reprovou na medição do tom didático. Corrija \
-             estes pontos nesta resposta:"
+            "[Mustard] A sua resposta anterior reprovou na medição da escrita. Corrija estes \
+             pontos nesta resposta:"
         }
         ("clarity.next.head", Locale::EnUs) => {
-            "[Mustard] Your previous reply failed the didactic-tone measurement. Fix these \
-             points in this reply:"
+            "[Mustard] Your previous reply failed the writing measurement. Fix these points in \
+             this reply:"
         }
         // A última linha da lista quando há mais defeitos do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",
@@ -1583,11 +1620,14 @@ mod tests {
             ("doc.section.flow", &[][..]),
             ("deliver.head.awaiting", &["{file}"][..]),
             ("deliver.head.summary", &["{file}"][..]),
+            ("deliver.order", &["{path}", "{spec}", "claude.ai", "--published-url"][..]),
+            ("deliver.order.same", &["{url}"][..]),
+            ("deliver.fallback", &[][..]),
             ("deliver.click", &["{url}"][..]),
             ("deliver.windows", &["{command}"][..]),
-            ("deliver.publish", &[][..]),
             ("pending.notice", &["{count}", "{items}"][..]),
             ("pending.gate.block", &["{count}", "{items}"][..]),
+            ("scratch.residue.notice", &["{total}", "{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -1600,6 +1640,10 @@ mod tests {
         for key in ["deliver.macos", "deliver.linux"] {
             assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
         }
+        // A publicação deixou de ser uma opção oferecida ao usuário: a linha
+        // que a oferecia saiu do catálogo.
+        assert_eq!(translate("deliver.publish", Locale::PtBr), "<missing-key>");
+        assert_eq!(translate("deliver.publish", Locale::EnUs), "<missing-key>");
     }
 
     /// Os defeitos de clareza saem do catálogo nos dois idiomas, cada um com as
@@ -1611,6 +1655,7 @@ mod tests {
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.unexplained_term", &["{term}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
+            ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.note.head", &[][..]),
             ("clarity.next.head", &[][..]),
             ("clarity.more", &["{count}"][..]),

@@ -669,10 +669,26 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "plugin/refs/feature/full-plan.md",
         "the `wave-scaffold` renderer inside `plan-materialize` owns `wave-plan.md`",
     ),
+    // Publicar só em SSH, e como pedido do usuário: o contrato que o "sempre
+    // publicar" de 10/09/2026 substituiu.
+    ("plugin/commands/spec.md", "**Remote session — the page has to travel.**"),
+    (
+        "plugin/commands/spec.md",
+        "In a remote (SSH) session the link that counts is the page published to claude.ai, when a publishing tool exists",
+    ),
+    (
+        "plugin/commands/spec.md",
+        "and hand the user its `url` (the `file://…/resumo.html`) as a clickable link",
+    ),
+    (
+        "packages/core/src/platform/i18n.rs",
+        "Peça ao assistente para publicar a página no claude.ai",
+    ),
 ];
 
-/// AC-12 — em sessão remota, o roteiro do `/mustard:spec` manda publicar o
-/// documento como página do claude.ai ANTES da pergunta de aprovação.
+/// AC-12 — em sessão remota, o roteiro do `/mustard:spec` sabe que o `file://`
+/// não chega ao usuário, e os `scp` que ele ensina são o último recurso, só sem
+/// ferramenta de publicação — sempre ANTES da pergunta de aprovação.
 ///
 /// Numa sessão por SSH o `file://` aponta para o disco do servidor, e o
 /// navegador de lá nunca chega ao usuário: foi assim que ele ficou sem ler a
@@ -690,7 +706,7 @@ fn spec_door_teaches_remote_publishing() {
         .split("\n\n")
         .find(|p| p.contains("SSH_CONNECTION"))
         .unwrap_or_else(|| panic!("no paragraph of spec.md names the remote (SSH) session"));
-    for needle in ["SSH_CLIENT", "claude.ai", "resumo.html", "BEFORE", "AskUserQuestion", "scp"] {
+    for needle in ["SSH_CLIENT", "claude.ai", "resumo.html", "BEFORE", "AskUserQuestion", "scp", "last resort"] {
         assert!(paragraph.contains(needle), "the remote-session rule misses {needle}:\n{paragraph}");
     }
 
@@ -713,5 +729,76 @@ fn spec_door_teaches_remote_publishing() {
     assert!(
         hook.contains("\"SSH_CONNECTION\"") && hook.contains("\"SSH_CLIENT\""),
         "the delivery hook no longer detects SSH by the variables the prose names",
+    );
+}
+
+/// AC-4 — em TODA retomada, em qualquer etapa, o roteiro do `/mustard:spec`
+/// entrega o link publicado (`publishedUrl`) numa linha própria e, sem endereço
+/// gravado, publica a página e grava o endereço com `--published-url`.
+/// Publicar vale sempre, não só em SSH: os `scp` ficam como último recurso.
+///
+/// O gancho de fim de resposta só fala quando a página muda (E-2), então quem
+/// retomava uma unidade de página parada nunca via o link de novo. As duas
+/// metades são lidas: a prosa do §3, entre a chamada do `resume-bootstrap` e a
+/// regra que vale só para o plano, e o motor que a sustenta — o campo que a
+/// retomada devolve e a flag que o `spec-doc` declara, com os nomes da prosa.
+#[test]
+fn spec_door_hands_the_published_link_on_every_resume() {
+    let picker = read("plugin/commands/spec.md").replace("\r\n", "\n");
+    let paragraph = picker
+        .split("\n\n")
+        .find(|p| p.contains("publishedUrl"))
+        .unwrap_or_else(|| panic!("no paragraph of spec.md reads publishedUrl off the resume"));
+    for needle in [
+        "Every resume",
+        "every stage",
+        "on a line of its own",
+        "`null`",
+        "claude.ai",
+        "rtk mustard-rt run spec-doc --spec {specName} --published-url",
+        "never an option offered to the user",
+        "over SSH alike",
+    ] {
+        assert!(paragraph.contains(needle), "the resume rule misses {needle}:\n{paragraph}");
+    }
+
+    // No §3, depois da retomada e antes da regra do plano: vale para toda
+    // etapa, não só para a spec que espera aprovação.
+    let at = picker.find(paragraph).unwrap();
+    let boot = picker.find("rtk mustard-rt run resume-bootstrap").expect("the resume call");
+    let plan = picker.find("**On a `Plan`-stage spec").expect("the Plan-stage rule");
+    let route = picker.find("Route on the returned `stage`").expect("the stage routing");
+    assert!(
+        boot < at && at < plan && plan < route,
+        "the resume rule must sit after resume-bootstrap and ahead of the Plan-only rule",
+    );
+
+    // Os `scp` são o último recurso, só sem ferramenta de publicação.
+    let fallback = picker
+        .split("\n\n")
+        .find(|p| p.contains("`scp`"))
+        .unwrap_or_else(|| panic!("no paragraph of spec.md carries the scp fallback"));
+    assert!(
+        fallback.contains("last resort") && fallback.contains("Only when no tool that publishes"),
+        "the copy commands must be the fallback, not the rule:\n{fallback}",
+    );
+
+    assert_superseded_gone("plugin/commands/spec.md", &picker);
+    assert_superseded_gone(
+        "packages/core/src/platform/i18n.rs",
+        &read("packages/core/src/platform/i18n.rs"),
+    );
+
+    // A metade do motor: a retomada devolve `publishedUrl`, e o `spec-doc`
+    // declara a flag que a prosa manda usar.
+    let resume = read("apps/rt/src/commands/pipeline/resume_bootstrap/mod.rs");
+    assert!(
+        resume.contains("#[serde(rename = \"publishedUrl\")]"),
+        "resume-bootstrap no longer reports publishedUrl",
+    );
+    let cli = read("apps/rt/src/commands/spec/cli.rs");
+    assert!(
+        cli.contains("#[arg(long = \"published-url\")]"),
+        "spec-doc no longer declares --published-url",
     );
 }

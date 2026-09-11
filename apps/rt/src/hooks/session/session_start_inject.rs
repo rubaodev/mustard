@@ -37,6 +37,10 @@
 //!   running harness, so a session on an old plugin reads as aligned.
 //! - pending-prune advisory — delivered work units still carrying a live
 //!   branch get one line naming what is owed. Advisory, never blocking.
+//! - aviso de sobras — as cópias descartáveis antigas que o `scratch-gc`
+//!   apagaria, quando passam do limite (5 GiB, ajustável por
+//!   `MUSTARD_SCRATCH_WARN_BYTES`), viram uma linha com o total e o comando
+//!   que limpa. Abaixo do limite, nada. Nunca bloqueia.
 //! - aviso de pendências — o trabalho combinado que segue aberto no ledger
 //!   (`.claude/pending/ledger.json`) entra por último, uma linha com id e
 //!   título de cada item: uma sessão nova abre sabendo o que ficou combinado.
@@ -90,11 +94,13 @@ use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
+use mustard_core::I18n;
 use mustard_core::SupportedLocale;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
 use crate::shared::branch_state::{awaiting_prune, LocalOnlyPr};
 
 use mustard_core::time::now_iso8601;
@@ -347,7 +353,15 @@ impl Check for SessionStartInject {
     /// stayed green on the runner, where no plugin is installed at all. The
     /// argument IS the seam.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        session_start_core(input, ctx, mustard_core::installed_harness_version().as_deref())
+        // O diretório temporário é a segunda leitura da máquina e segue o
+        // mesmo caminho: montada aqui, entregue como argumento.
+        let scratch = ScratchProbe::from_env(input);
+        session_start_core(
+            input,
+            ctx,
+            mustard_core::installed_harness_version().as_deref(),
+            Some(&scratch),
+        )
     }
 }
 
@@ -359,10 +373,16 @@ impl Check for SessionStartInject {
 /// registry" — the case both plugin advisories already read as nothing to say.
 /// A test asserting silence then gets that silence from the code, not from
 /// whichever machine happens to run it.
+///
+/// `scratch` é a outra leitura da máquina, pelo mesmo motivo: onde varrer as
+/// cópias descartáveis e a partir de quanto avisar. `None` — o que todo teste
+/// que não fala de sobras passa — cala o aviso por construção, e as sobras
+/// reais do desenvolvedor nunca entram num teste de silêncio.
 fn session_start_core(
     input: &HookInput,
     ctx: &Ctx,
     installed: Option<&str>,
+    scratch: Option<&ScratchProbe>,
 ) -> Result<Verdict, Error> {
     if ctx.trigger != Some(Trigger::SessionStart) {
         return Ok(Verdict::Allow);
@@ -393,8 +413,8 @@ fn session_start_core(
     // once-per-session terrain map so the AI opens the session already
     // knowing the subprojects instead of grepping to orient. Fail-open: a
     // missing / unreadable model yields no terrain.
-    let terrain_lang =
-        crate::shared::context::project_config_cached(Path::new(&cwd)).i18n().lang;
+    let i18n = crate::shared::context::project_config_cached(Path::new(&cwd)).i18n();
+    let terrain_lang = i18n.lang;
     let terrain = crate::commands::orient::render_terrain(
         &crate::commands::orient::compute_orientation(Path::new(&cwd)),
         terrain_lang,
@@ -459,6 +479,9 @@ fn session_start_core(
     // alive. The prune command already existed and worked; what was missing
     // was anyone SAYING it was owed, so six units piled up unnoticed.
     let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
+    // Aviso de sobras: as cópias descartáveis antigas que passam do limite, no
+    // idioma e no tom do projeto. Vem antes das pendências, que fecham o bloco.
+    let residue = scratch_notice(Path::new(&cwd), scratch, i18n);
     // Aviso de pendências: o que foi combinado e segue aberto. Um combinado que
     // só existe na memória da conversa se perde quando ela acaba; relido aqui,
     // ele atravessa a sessão.
@@ -469,7 +492,7 @@ fn session_start_core(
     // here): terrain first, injectables after, the advisories last —
     // blank-line separated. All of it is ONE response under the 10,000
     // character ceiling, which is why the prompt family stays out (above).
-    let parts: Vec<String> = [terrain, injected, drift, stale, behind, prune, pending]
+    let parts: Vec<String> = [terrain, injected, drift, stale, behind, prune, residue, pending]
         .into_iter()
         .flatten()
         .collect();
@@ -664,6 +687,74 @@ pub(crate) fn pending_notice(root: &Path, lang: SupportedLocale) -> Option<Strin
                 "{items}",
                 &crate::commands::event::pending::format_pending_items(&open, PENDING_NOTICE_ITEMS),
             ),
+    )
+}
+
+/// Variável que ajusta, em bytes, a partir de quanto o aviso de sobras aparece
+/// — existe para teste e para máquina com disco apertado.
+const SCRATCH_WARN_ENV: &str = "MUSTARD_SCRATCH_WARN_BYTES";
+
+/// Limite padrão do aviso de sobras: 5 GiB. Abaixo disso as sobras não pesam
+/// no disco, e um aviso que aparece sem haver problema vira ruído.
+const DEFAULT_SCRATCH_WARN_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+/// O que o aviso de sobras precisa da máquina: onde varrer e a partir de
+/// quanto avisar. Montado no [`Check`], entregue ao [`session_start_core`] —
+/// a mesma costura do registro de plugins.
+struct ScratchProbe {
+    roots: ScratchRoots,
+    warn_bytes: u64,
+}
+
+impl ScratchProbe {
+    /// As raízes reais desta máquina e o limite de `MUSTARD_SCRATCH_WARN_BYTES`
+    /// quando é um número.
+    ///
+    /// A sessão que está abrindo é a sessão atual (filtro 4 da varredura): o
+    /// `scratchpad/` dela nunca conta como sobra. A compilação compartilhada
+    /// fica fora: o aviso soma só as cópias, e medi-la seria mais uma passada
+    /// pela árvore inteira no início de toda sessão.
+    fn from_env(input: &HookInput) -> Self {
+        let mut roots = ScratchRoots::from_env();
+        let session = current_session_id(input);
+        if session != "unknown" {
+            roots.current_session = session;
+        }
+        roots.shared_target = None;
+        let warn_bytes = std::env::var(SCRATCH_WARN_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_SCRATCH_WARN_BYTES);
+        Self { roots, warn_bytes }
+    }
+}
+
+/// Uma linha quando as cópias descartáveis antigas passam do limite: o total,
+/// quantas pastas e o comando que lista e apaga.
+///
+/// No molde do [`prune_pending_notice`] e do [`pending_notice`]: projeto sem
+/// `mustard.json` não é importunado, e abaixo do limite nada aparece. A conta
+/// sai da MESMA varredura do `scratch-gc` e do `doctor --residue`
+/// ([`survey`]), então o total do aviso é exatamente o que o
+/// `scratch-gc --apply` apagaria.
+///
+/// `None` também quando a leitura da máquina não foi entregue. O texto sai do
+/// catálogo (`scratch.residue.notice`), no idioma e no tom do projeto. Nunca
+/// bloqueia.
+fn scratch_notice(root: &Path, scratch: Option<&ScratchProbe>, i18n: I18n) -> Option<String> {
+    let probe = scratch?;
+    if !mustard_core::ProjectConfig::exists(root) {
+        return None;
+    }
+    let found = survey(&probe.roots);
+    let total = found.candidates_bytes();
+    if total <= probe.warn_bytes {
+        return None;
+    }
+    Some(
+        i18n.render("scratch.residue.notice")
+            .replace("{total}", &human_bytes(total))
+            .replace("{count}", &found.candidates.len().to_string()),
     )
 }
 
@@ -930,7 +1021,7 @@ mod tests {
         add_pending(root, "Humanize");
 
         let verdict =
-            session_start_core(&session_input("s-pend"), &ctx(root.to_str().unwrap()), NO_REGISTRY)
+            session_start_core(&session_input("s-pend"), &ctx(root.to_str().unwrap()), NO_REGISTRY, NO_SCRATCH)
                 .unwrap();
         let Verdict::Inject { context } = verdict else {
             panic!("open pending items must reach the session: {verdict:?}");
@@ -1079,7 +1170,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let verdict =
-            session_start_core(&session_input("s"), &ctx(dir.path().to_str().unwrap()), NO_REGISTRY)
+            session_start_core(&session_input("s"), &ctx(dir.path().to_str().unwrap()), NO_REGISTRY, NO_SCRATCH)
                 .unwrap();
         assert!(
             matches!(verdict, Verdict::Allow),
@@ -1101,6 +1192,72 @@ mod tests {
     /// it the honest "the registry did not answer" and both advisories are
     /// silent by construction, on every machine.
     const NO_REGISTRY: Option<&str> = None;
+
+    /// A leitura do diretório temporário que um teste entrega: nenhuma. O aviso
+    /// de sobras cala por construção, e as sobras reais da máquina que roda a
+    /// suíte nunca entram num teste que não fala delas.
+    const NO_SCRATCH: Option<&ScratchProbe> = None;
+
+    /// AC-6 — com as sobras acima do limite, o início da sessão mostra o total
+    /// e o comando que limpa; abaixo do limite, nada aparece.
+    #[test]
+    fn session_start_warns_when_scratch_is_large() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("mustard.json"),
+            format!(r#"{{"version":"{}"}}"#, mustard_core::harness_version()),
+        )
+        .unwrap();
+
+        // Um diretório temporário falso com uma cópia descartável de um dia
+        // atrás — a árvore inteira envelhecida pelo mtime, o relógio das
+        // fixtures (o ctime não recua).
+        let temp_root = dir.path().join("tmp");
+        let old = temp_root.join("tmp.old");
+        std::fs::create_dir_all(old.join("apps").join("rt")).unwrap();
+        std::fs::write(old.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 4096]).unwrap();
+        crate::commands::maint::scratch_gc::backdate_tree(&old, 24);
+        let total = std::fs::metadata(old.join("Cargo.toml")).unwrap().len() + 4096;
+
+        let probe = |warn_bytes: u64| ScratchProbe {
+            roots: ScratchRoots {
+                temp_root: temp_root.clone(),
+                shared_target: None,
+                cap_bytes: u64::MAX,
+                current_session: "s-scratch".to_string(),
+                current_dir: None,
+                home: None,
+                clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
+                owner_uid: crate::commands::maint::scratch_gc::current_uid(),
+            },
+            warn_bytes,
+        };
+        let context_of = |probe: &ScratchProbe| {
+            match session_start_core(
+                &session_input("s-scratch"),
+                &ctx(root.to_str().unwrap()),
+                NO_REGISTRY,
+                Some(probe),
+            )
+            .unwrap()
+            {
+                Verdict::Inject { context } => context,
+                _ => String::new(),
+            }
+        };
+
+        let above = context_of(&probe(1024));
+        assert!(above.contains(&human_bytes(total)), "carries the total: {above}");
+        assert!(above.contains("mustard-rt run scratch-gc"), "names the cleanup command: {above}");
+
+        // No limite exato ainda não passou dele: silêncio.
+        let below = context_of(&probe(total));
+        assert!(!below.contains("scratch-gc"), "below the limit nothing shows: {below}");
+        assert!(old.exists(), "the notice only reads");
+    }
 
     /// A package install moves the system binary and leaves the plugin behind,
     /// and until this advisory nothing said so.
@@ -1168,6 +1325,7 @@ mod tests {
             &session_input_with_source("s1", "startup"),
             &ctx(project),
             NO_REGISTRY,
+            NO_SCRATCH,
         )
         .unwrap();
         match v {
@@ -1189,6 +1347,7 @@ mod tests {
             &session_input_with_source("s1", "resume"),
             &ctx(project),
             NO_REGISTRY,
+            NO_SCRATCH,
         )
         .unwrap();
         assert!(
@@ -1292,6 +1451,7 @@ mod tests {
             &session_input_with_source("s1", "startup"),
             &ctx(project),
             NO_REGISTRY,
+            NO_SCRATCH,
         )
         .unwrap();
         assert!(matches!(v, Verdict::Allow), "missing declared file must fail open: {v:?}");

@@ -1,37 +1,54 @@
-//! `spec_doc_present` — no fim de cada resposta, entrega ao usuário o resumo
-//! legível da unidade aberta (`resumo.html`), só quando ele mudou.
+//! `spec_doc_present` — no fim de cada resposta em que o resumo legível da
+//! unidade aberta (`resumo.html`) mudou, barra o fim com uma ordem ao
+//! assistente: publicar a página no claude.ai, entregar o link ao usuário e
+//! gravar o endereço.
 //!
 //! ## Por que existe
 //!
 //! A página que o `spec-doc` monta só serve se chegar ao usuário. Em 10/09/2026
 //! ele recusou uma aprovação por não conseguir ler a spec no terminal (K-3) e
-//! escolheu a entrega (K-7): as formas de abrir o documento aparecem a cada
-//! mudança dele, e na espera de aprovação o navegador abre sozinho, uma vez por
-//! versão.
+//! escolheu a entrega (K-7). No mesmo dia, diante da linha que oferecia a
+//! publicação como opção dele, respondeu: "sempre tem que publicar, isso não é
+//! opção". Publicar deixou de ser um pedido do usuário e virou parte da entrega.
 //!
 //! ## Os fatos, todos necessários
 //!
-//! 1. É o `Stop` da sessão principal — nunca o de um subagente.
+//! 1. É o `Stop` da sessão principal — nunca o de um subagente — e não é a
+//!    continuação que um bloqueio pediu (`stop_hook_active`).
 //! 2. Há uma unidade aberta: `current_spec` nomeia uma, e o `meta.json` dela não
 //!    diz `Completed` (o mesmo corte do `crystallise_nudge`, pelo mesmo motivo:
 //!    o arquivo de estado de uma unidade fechada sobrevive até o `SessionEnd`).
 //! 3. O `spec-doc` monta a página, e o hash dela difere do último que ESTE
 //!    gancho mostrou. O marcador guarda o hash mostrado, não o gravado: uma
-//!    página regravada à mão por `run spec-doc` ainda chega ao usuário uma vez.
+//!    página regravada à mão por `run spec-doc` ainda é cobrada uma vez.
 //!
-//! Com os três, a resposta leva a mensagem com as formas de abrir.
+//! Com os três, o fim da resposta é barrado com a ordem.
 //!
-//! ## Por que `systemMessage`, e por que um `Inject`
+//! ## Por que um bloqueio, e não `systemMessage`
 //!
 //! RO-4.1, conferido em code.claude.com/docs/en/hooks.md em 10/09/2026:
-//! `systemMessage` é campo universal ("Warning message shown to the user"), e a
-//! seção do `Stop` não o descarta. Já `hookSpecificOutput.additionalContext` no
-//! `Stop` faz a conversa CONTINUAR — um link por ali custaria um turno. O
-//! `Verdict` mora no núcleo e não tem variante para o usuário; como no `Stop`
-//! não existe próximo turno onde injetar contexto, o `hook_output` lê um
-//! `Inject` do `Stop` como a mensagem ao usuário. Nunca bloqueia.
+//! `systemMessage` é "Warning message shown to the user" — chega ao usuário e
+//! nunca ao modelo (E-1). Quem publica é o assistente, então a ordem tem de
+//! chegar a ele, e no `Stop` o canal que chega é o bloqueio: um `Deny`, que o
+//! `hook_output` escreve como `decision: block` com o motivo, e a conversa
+//! continua com a ordem como próximo passo.
 //!
-//! ## Como o documento chega, conforme o lugar da sessão
+//! ## Sem laço
+//!
+//! Duas garantias independentes (K-2). O marcador da versão é gravado ANTES de
+//! barrar, então a mesma página nunca barra duas vezes. E a continuação que o
+//! bloqueio pede chega com `stop_hook_active`, que solta sem remontar a página:
+//! uma página que mude nessa continuação é cobrada no fim seguinte, porque o
+//! marcador não a viu. O endereço gravado fica fora da página (ver `spec-doc`),
+//! então gravá-lo não muda o hash nem pede outra publicação.
+//!
+//! ## O que a ordem diz
+//!
+//! Publicar `.claude/spec/<unidade>/resumo.html` no claude.ai — no MESMO
+//! endereço quando `published-url` já guarda um, citado na ordem —, entregar o
+//! link ao usuário numa linha própria e gravar o endereço com `run spec-doc`
+//! e `--published-url`. Sem ferramenta de publicação, as formas de abrir de
+//! sempre, conforme o lugar da sessão:
 //!
 //! - Sessão local: o link `file://`, que o terminal torna clicável.
 //! - Sessão por SSH (`SSH_CONNECTION` ou `SSH_CLIENT`): o arquivo está no
@@ -39,10 +56,9 @@
 //!   comandos `scp` prontos para colar — PowerShell do Windows, macOS e Linux —
 //!   com o usuário de `$USER` e o host do terceiro campo de `SSH_CONNECTION` (o
 //!   endereço do servidor).
-//! - Sempre: pedir ao assistente que publique a página no claude.ai.
 //!
-//! O texto sai do catálogo `i18n`, no idioma da spec e no tom do projeto — é
-//! mensagem ao usuário, como a própria página; os comandos não se traduzem.
+//! O texto sai do catálogo `i18n`, no idioma da spec e no tom do projeto; os
+//! comandos e os endereços não se traduzem.
 //! A origem do `scp` vai entre aspas simples, na regra de cada shell, para um
 //! caminho com espaço seguir válido. Uma camada só de aspas, a do shell local:
 //! o `scp` do OpenSSH 9 em diante usa SFTP e lê o caminho remoto literal.
@@ -54,14 +70,16 @@
 //! `WAYLAND_DISPLAY` no Linux; macOS e Windows sempre têm — e fora de SSH. Uma
 //! vez por versão: o marcador de abertura é gravado ANTES de abrir, então um
 //! marcador que não grava nunca vira uma aba nova por turno.
-//! `MUSTARD_DOC_OPEN=off` desliga só a abertura; as formas de abrir continuam.
+//! `MUSTARD_DOC_OPEN=off` desliga só a abertura; a ordem continua.
 //!
-//! ## Fail-open
+//! ## Quando algo falha
 //!
-//! Toda falha — spec ilegível, disco sem escrita, abridor ausente — só cala o
-//! gancho neste turno. Limite conhecido: se um gancho irmão bloquear este mesmo
-//! `Stop`, o `Deny` dele vence o `fold` e a mensagem se perde com o marcador já
-//! gravado; a próxima mudança do documento volta a mostrá-la.
+//! Spec ilegível, disco sem escrita, abridor ausente: o gancho só se cala neste
+//! turno, e um marcador que não grava nunca barra. Limites conhecidos: se um
+//! gancho irmão acima bloquear este mesmo `Stop`, o `Deny` dele vence o `fold`
+//! e a ordem se perde com o marcador já gravado — a próxima mudança da página a
+//! traz de volta; e, num fim barrado por esta ordem, a nota de clareza que o
+//! `clarity_check`, registrado depois, levaria ao usuário não sai.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -73,7 +91,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::I18n;
 use mustard_core::ClaudePaths;
 
-use crate::commands::spec::spec_doc::{generate, spec_i18n, DOC_FILE};
+use crate::commands::spec::spec_doc::{generate, spec_i18n, SpecDocReport, DOC_FILE};
 use crate::hooks::observe::approval_marker_observer::is_awaiting_approval;
 use crate::hooks::task::crystallise_nudge::spec_is_closed;
 use crate::shared::context::{approval_marker_path, current_spec};
@@ -84,7 +102,7 @@ const OPEN_ENV: &str = "MUSTARD_DOC_OPEN";
 /// Se o navegador pode abrir sozinho na espera de aprovação.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
-    /// Nunca abre; a mensagem continua aparecendo.
+    /// Nunca abre; a ordem continua aparecendo.
     Off,
     /// Abre uma vez por versão (padrão).
     On,
@@ -103,7 +121,8 @@ fn open_mode_from(raw: Option<&str>) -> OpenMode {
     }
 }
 
-/// Onde a sessão roda — o que decide como o documento chega ao usuário.
+/// Onde a sessão roda — o que decide como o documento chega ao usuário quando
+/// não há ferramenta de publicação.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seat {
     /// Disco e terminal na mesma máquina; `display` diz se há tela para abrir.
@@ -152,12 +171,13 @@ impl Seat {
     }
 }
 
-/// O gancho de fim de turno que entrega o resumo da spec.
+/// O gancho de fim de turno que manda publicar o resumo da spec.
 pub struct SpecDocPresent;
 
 impl Check for SpecDocPresent {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        // Fato 1 — o `Stop` da sessão principal.
+        // Fato 1 — o `Stop` da sessão principal. A continuação de um bloqueio
+        // se solta em `order_verdict`, antes de a página ser remontada.
         if ctx.trigger != Some(Trigger::Stop) || input.is_subagent() {
             return Ok(Verdict::Allow);
         }
@@ -173,12 +193,34 @@ impl Check for SpecDocPresent {
         }
 
         // Fato 3 — a página mudou desde a última entrega.
-        let message = present(root, &spec, open_mode(), &Seat::detect(), &open_with_system);
-        Ok(message.map_or(Verdict::Allow, |context| Verdict::Inject { context }))
+        Ok(order_verdict(input, root, &spec, open_mode(), &Seat::detect(), &open_with_system))
     }
 }
 
-/// Monta a página e devolve a mensagem ao usuário quando ela mudou desde a
+/// O veredito do fim de resposta da unidade `spec`. A continuação que um
+/// bloqueio pediu (`stop_hook_active`) solta antes de remontar a página, então
+/// não consome versão nenhuma (K-2); fora dela, a página que mudou barra o fim
+/// com a ordem de publicar.
+fn order_verdict(
+    input: &HookInput,
+    root: &Path,
+    spec: &str,
+    mode: OpenMode,
+    seat: &Seat,
+    opener: &dyn Fn(&Path) -> bool,
+) -> Verdict {
+    if stop_hook_active(input) {
+        return Verdict::Allow;
+    }
+    present(root, spec, mode, seat, opener).map_or(Verdict::Allow, |reason| Verdict::Deny { reason })
+}
+
+/// `true` na continuação que um bloqueio do `Stop` pediu.
+fn stop_hook_active(input: &HookInput) -> bool {
+    input.raw.get("stop_hook_active").and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// Monta a página e devolve a ordem ao assistente quando ela mudou desde a
 /// última entrega; na espera de aprovação, abre-a por `opener` uma vez por
 /// versão. `opener` é injetável para o teste nunca abrir um navegador de
 /// verdade.
@@ -207,18 +249,33 @@ fn present(
     if !remember(root, "shown", spec, &report.hash) {
         return None;
     }
-    // O idioma e o tom são os da página: a mensagem fala dela ao mesmo leitor.
+    // O idioma e o tom são os da página: a ordem fala dela.
     let i18n = file.parent().map(|dir| spec_i18n(root, dir)).unwrap_or_default();
-    Some(ways_to_open(awaiting, &file, &report.url, seat, &i18n))
+    Some(publish_order(awaiting, spec, &report, &file, seat, &i18n))
 }
 
-/// A mensagem: o que mudou e cada forma de abrir, uma por linha.
-fn ways_to_open(awaiting: bool, file: &Path, url: &str, seat: &Seat, i: &I18n) -> String {
+/// A ordem, uma instrução por linha: o que mudou; publicar, entregar o link e
+/// gravar o endereço; republicar no endereço gravado, quando há um; e, para
+/// quando não há ferramenta de publicação, cada forma de abrir.
+fn publish_order(
+    awaiting: bool,
+    spec: &str,
+    report: &SpecDocReport,
+    file: &Path,
+    seat: &Seat,
+    i: &I18n,
+) -> String {
     let head = if awaiting { "deliver.head.awaiting" } else { "deliver.head.summary" };
     let mut text = i.render(head).replace("{file}", DOC_FILE);
+    let order = i.render("deliver.order").replace("{path}", &report.path).replace("{spec}", spec);
+    let _ = write!(text, "\n{order}");
+    if let Some(url) = report.published_url.as_deref() {
+        let _ = write!(text, "\n{}", i.render("deliver.order.same").replace("{url}", url));
+    }
+    let _ = write!(text, "\n{}", i.render("deliver.fallback"));
     match seat {
         Seat::Local { .. } => {
-            let _ = write!(text, "\n{}", i.render("deliver.click").replace("{url}", url));
+            let _ = write!(text, "\n{}", i.render("deliver.click").replace("{url}", &report.url));
         }
         Seat::Remote { user, host } => {
             let source = format!("{user}@{host}:{}", file.display());
@@ -239,7 +296,6 @@ fn ways_to_open(awaiting: bool, file: &Path, url: &str, seat: &Seat, i: &I18n) -
             }
         }
     }
-    let _ = write!(text, "\n{}", i.render("deliver.publish"));
     text
 }
 
@@ -257,7 +313,7 @@ fn posix_quote(text: &str) -> String {
 
 /// Grava `hash` como a última versão que `what` (`shown` / `opened`) viu desta
 /// spec. `true` só quando a versão é nova E ficou gravada: um marcador que não
-/// grava responde `false`, e o gancho se cala em vez de repetir a cada turno.
+/// grava responde `false`, e o gancho se cala em vez de barrar a cada turno.
 fn remember(root: &Path, what: &str, spec: &str, hash: &str) -> bool {
     let Some(path) = marker_path(root, what, spec) else {
         return false;
@@ -357,36 +413,133 @@ mod tests {
         panic!("only an approval wait on a local screen opens the browser")
     }
 
-    /// AC-7 — o link aparece quando a página muda, e só então; chega ao
-    /// usuário como `systemMessage`, sem bloquear.
+    /// Um fim de resposta comum da sessão principal.
+    fn stop_input() -> HookInput {
+        HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            ..HookInput::default()
+        }
+    }
+
+    /// A continuação que um bloqueio do `Stop` pediu.
+    fn continuation() -> HookInput {
+        let mut input = stop_input();
+        input.raw = serde_json::json!({ "stop_hook_active": true });
+        input
+    }
+
+    /// AC-1 — quando a página muda, o fim da resposta é barrado com uma ordem ao
+    /// ASSISTENTE: publicar no claude.ai, entregar o link e gravar o endereço.
+    /// Chega ao modelo como bloqueio, nunca como `systemMessage`, e não oferece
+    /// mais a publicação ao usuário. Com um endereço gravado, a versão seguinte
+    /// manda republicar nele.
+    #[test]
+    fn stop_orders_the_assistant_to_publish_the_changed_page() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        seed(root, "Execute");
+
+        let verdict = order_verdict(&stop_input(), root, "demo", OpenMode::On, &LOCAL, &never);
+        let Verdict::Deny { reason } = &verdict else {
+            panic!("a changed page blocks the end of the answer: {verdict:?}");
+        };
+        for needle in [
+            "publique .claude/spec/demo/resumo.html no claude.ai como página",
+            "entregue o link ao usuário numa linha própria",
+            "`mustard-rt run spec-doc --spec demo --published-url <endereço>`",
+            "nunca é uma opção a oferecer ao usuário",
+            "Sem ferramenta de publicação, entregue ao usuário as formas de abrir:",
+            "- Clique: file://",
+        ] {
+            assert!(reason.contains(needle), "missing {needle}:\n{reason}");
+        }
+        assert!(!reason.contains("Peça ao assistente"), "publishing is not the user's option:\n{reason}");
+        assert!(!reason.contains("MESMO endereço"), "nothing recorded, nothing to republish over:\n{reason}");
+
+        // Chega ao modelo: `decision: block` com a ordem, sem `systemMessage`.
+        let outcome = Outcome {
+            verdict: Verdict::Deny {
+                reason: reason.clone(),
+            },
+            warnings: Vec::new(),
+        };
+        let json = hook_specific_output("Stop", &outcome).expect("a Stop deny emits");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["decision"].as_str(), Some("block"), "{json}");
+        assert_eq!(parsed["reason"].as_str(), Some(reason.as_str()), "{json}");
+        assert!(parsed.get("systemMessage").is_none(), "the order is not a note to the user: {json}");
+
+        // A mesma página nunca barra duas vezes.
+        assert_eq!(
+            order_verdict(&stop_input(), root, "demo", OpenMode::On, &LOCAL, &never),
+            Verdict::Allow,
+        );
+
+        // Com um endereço gravado, a versão seguinte manda republicar nele.
+        let url = "https://claude.ai/code/artifacts/demo-page";
+        std::fs::write(root.join(".claude/spec/demo/published-url"), format!("{url}\n")).unwrap();
+        rewrite_spec(root, "Segunda versão.");
+        let verdict = order_verdict(&stop_input(), root, "demo", OpenMode::On, &LOCAL, &never);
+        let Verdict::Deny { reason } = &verdict else {
+            panic!("the new version blocks again: {verdict:?}");
+        };
+        assert!(
+            reason.contains(&format!("republique no MESMO endereço, {url}, e entregue esse link")),
+            "{reason}",
+        );
+    }
+
+    /// AC-2 — a continuação que a ordem pediu chega com `stop_hook_active` e não
+    /// barra de novo; nem consome a versão, que um fim comum ainda cobra uma
+    /// vez. Pelo `evaluate`, com a unidade aberta de verdade.
+    #[test]
+    fn publish_order_releases_on_stop_hook_active() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        seed(root, "Execute");
+        // O arquivo de estado que `current_spec` lê.
+        let states = root.join(".claude/.pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(states.join("demo.json"), "{}").unwrap();
+        let ctx = Ctx {
+            project_dir: root.to_string_lossy().into_owned(),
+            trigger: Some(Trigger::Stop),
+            workspace_root: None,
+            inject_only: None,
+        };
+
+        // A página mudou, mas este fim é a continuação: solta.
+        assert_eq!(SpecDocPresent.evaluate(&continuation(), &ctx).unwrap(), Verdict::Allow);
+        assert_eq!(
+            order_verdict(&continuation(), root, "demo", OpenMode::On, &LOCAL, &never),
+            Verdict::Allow,
+        );
+
+        // A versão segue não vista: o fim comum seguinte barra com a ordem.
+        assert!(SpecDocPresent.evaluate(&stop_input(), &ctx).unwrap().is_blocking());
+        // A continuação dessa ordem solta, e a mesma versão não barra mais.
+        assert_eq!(SpecDocPresent.evaluate(&continuation(), &ctx).unwrap(), Verdict::Allow);
+        assert_eq!(SpecDocPresent.evaluate(&stop_input(), &ctx).unwrap(), Verdict::Allow);
+    }
+
+    /// AC-7 — a ordem aparece quando a página muda, e só então; sem ferramenta
+    /// de publicação, o link local vai na mesma mensagem.
     #[test]
     fn stop_presents_doc_link_only_when_changed() {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         seed(root, "Execute");
 
-        let first = present(root, "demo", OpenMode::On, &LOCAL, &never).expect("first turn shows");
+        let first = present(root, "demo", OpenMode::On, &LOCAL, &never).expect("first turn orders");
         assert!(first.contains("resumo da spec"), "{first}");
         assert!(first.contains("- Clique: file://") && first.contains("/resumo.html"), "{first}");
         assert!(first.contains("claude.ai"), "{first}");
-
-        let outcome = Outcome {
-            verdict: Verdict::Inject {
-                context: first.clone(),
-            },
-            warnings: Vec::new(),
-        };
-        let json = hook_specific_output("Stop", &outcome).expect("a Stop inject emits");
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["systemMessage"].as_str(), Some(first.as_str()));
-        assert!(parsed.get("decision").is_none(), "never blocks: {json}");
-        assert!(parsed.get("hookSpecificOutput").is_none(), "never continues: {json}");
 
         // A mesma página: silêncio, turno após turno.
         assert!(present(root, "demo", OpenMode::On, &LOCAL, &never).is_none());
         assert!(present(root, "demo", OpenMode::On, &LOCAL, &never).is_none());
 
-        // A spec mudou: a página muda, e o link volta — uma vez.
+        // A spec mudou: a página muda, e a ordem volta — uma vez.
         rewrite_spec(root, "Segunda versão.");
         assert!(present(root, "demo", OpenMode::On, &LOCAL, &never).is_some());
         assert!(present(root, "demo", OpenMode::On, &LOCAL, &never).is_none());
@@ -420,7 +573,7 @@ mod tests {
         let _ = present(root, "demo", OpenMode::On, &LOCAL, &opener);
         assert_eq!(opened.borrow().len(), 2);
 
-        // `MUSTARD_DOC_OPEN=off`: nada abre, e a mensagem continua.
+        // `MUSTARD_DOC_OPEN=off`: nada abre, e a ordem continua.
         assert_eq!(open_mode_from(Some("off")), OpenMode::Off);
         assert_eq!(open_mode_from(Some(" OFF ")), OpenMode::Off);
         assert_eq!(open_mode_from(None), OpenMode::On);
@@ -438,8 +591,9 @@ mod tests {
         assert_eq!(opened.borrow().len(), 2);
     }
 
-    /// Em SSH nada abre, mesmo esperando aprovação e com `DISPLAY`; a mensagem
-    /// traz os `scp` prontos e a publicação no claude.ai, e nenhum `file://`.
+    /// Em SSH nada abre, mesmo esperando aprovação e com `DISPLAY`; a ordem de
+    /// publicar vem primeiro, os `scp` prontos ficam para quando não há
+    /// ferramenta de publicação, e nenhum `file://` aparece.
     #[test]
     fn ssh_session_never_opens_and_lists_the_copy_commands() {
         let tmp = tempdir().unwrap();
@@ -451,42 +605,54 @@ mod tests {
         let message = present(root, "demo", OpenMode::On, &seat, &never).expect("shows");
         let source = format!("rubens@10.0.0.5:{}", root.join(".claude/spec/demo/resumo.html").display());
         for needle in [
+            "no claude.ai como página".to_string(),
+            "Sem ferramenta de publicação, entregue ao usuário as formas de abrir:".to_string(),
             format!(
                 "- Windows, no PowerShell: scp '{source}' $env:TEMP\\resumo.html; start $env:TEMP\\resumo.html"
             ),
             format!("- macOS: scp '{source}' /tmp/resumo.html && open /tmp/resumo.html"),
             format!("- Linux: scp '{source}' /tmp/resumo.html && xdg-open /tmp/resumo.html"),
-            "- Peça ao assistente para publicar a página no claude.ai.".to_string(),
         ] {
             assert!(message.contains(&needle), "missing {needle}:\n{message}");
         }
+        let order = message.find("no claude.ai").unwrap();
+        let fallback = message.find("Sem ferramenta de publicação").unwrap();
+        assert!(order < fallback, "publishing comes first, the copies are the fallback:\n{message}");
         assert!(!message.contains("file://"), "{message}");
+        assert!(!message.contains("Peça ao assistente"), "{message}");
     }
 
-    /// AC-11 — a mensagem de entrega fala o idioma da spec: pt-BR num projeto
-    /// que declara pt-BR, inglês num que declara en-US. Os comandos e o link não
-    /// se traduzem.
+    /// AC-11 — a ordem fala o idioma da spec: pt-BR num projeto que declara
+    /// pt-BR, inglês num que declara en-US. Os comandos e o link não se
+    /// traduzem.
     #[test]
     fn delivery_message_follows_spec_lang() {
         let pt = tempdir().unwrap();
         seed_in(pt.path(), "Plan", "pt-BR");
         let message = present(pt.path(), "demo", OpenMode::Off, &LOCAL, &never).expect("shows");
-        for needle in ["Mustard · spec para aprovar: o resumo.html mudou. Formas de abrir:", "- Clique: file://"] {
+        for needle in [
+            "Mustard · spec para aprovar: o resumo.html mudou.",
+            "Antes de encerrar, publique .claude/spec/demo/resumo.html no claude.ai como página",
+            "- Clique: file://",
+        ] {
             assert!(message.contains(needle), "missing {needle}:\n{message}");
         }
-        assert!(message.contains("- Peça ao assistente para publicar a página no claude.ai."), "{message}");
-        assert!(!message.contains("Ways to open"), "no English left in a pt-BR unit:\n{message}");
+        assert!(!message.contains("Before you finish"), "no English left in a pt-BR unit:\n{message}");
 
         let en = tempdir().unwrap();
         seed_in(en.path(), "Execute", "en-US");
         let message = present(en.path(), "demo", OpenMode::Off, &LOCAL, &never).expect("shows");
         for needle in [
-            "Mustard · spec summary: resumo.html changed. Ways to open it:",
+            "Mustard · spec summary: resumo.html changed.",
+            "Before you finish, publish .claude/spec/demo/resumo.html as a claude.ai page",
+            "`mustard-rt run spec-doc --spec demo --published-url <url>`",
+            "never an option to offer the user",
+            "With no publishing tool, hand the user the ways to open it:",
             "- Click: file://",
-            "- Ask the assistant to publish it as a claude.ai page.",
         ] {
             assert!(message.contains(needle), "missing {needle}:\n{message}");
         }
+        assert!(!message.contains("Ask the assistant"), "{message}");
     }
 
     /// AC-13 — um projeto num diretório com espaço ainda recebe um `scp` que

@@ -527,14 +527,50 @@ pub enum SpecCmd {
     ///
     /// Vem ANTES de qualquer pergunta de aprovação: o usuário recusou aprovar
     /// uma spec que só conseguia ler no terminal. Devolve `{ok, path, url,
-    /// hash, changed}` — `url` é o `file://` que o usuário clica, e `changed`
-    /// diz se a página mudou desde a última geração (só então ela é regravada).
+    /// hash, changed, publishedUrl}` — `url` é o `file://` que o usuário clica,
+    /// `changed` diz se a página mudou desde a última geração (só então ela é
+    /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
     #[command(display_order = 99)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
         spec: String,
+        /// O endereço em que a página foi publicada no claude.ai. Fica gravado
+        /// em `.claude/spec/<slug>/published-url` antes de a página ser
+        /// montada; a retomada e o gancho de fim de resposta o leem de lá.
+        /// Recusado quando não é um link `http(s)://`.
+        #[arg(long = "published-url")]
+        published_url: Option<String>,
+    },
+    /// Embrulha um corpo HTML no layout padrão do Mustard e grava a página em
+    /// `--out`.
+    ///
+    /// Todo HTML mostrado ao usuário (plano, relatório, resumo, spec) passa
+    /// por aqui, nunca por um visual próprio: o corpo é só o fragmento que vai
+    /// dentro de `<main>`; cabeçalho, fontes e cores vêm do layout. Devolve
+    /// `{ok, path}`; título vazio ou corpo ilegível são recusados sem gravar.
+    #[command(name = "doc-page")]
+    #[command(display_order = 101)]
+    DocPage {
+        /// O título da página, no `<title>` e no `<h1>`. Recusado quando vazio.
+        #[arg(long)]
+        title: String,
+        /// O arquivo com o fragmento HTML que vai dentro de `<main>`.
+        #[arg(long)]
+        body: PathBuf,
+        /// Uma linha solta sob o título, na faixa `.meta`.
+        #[arg(long)]
+        subtitle: Option<String>,
+        /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Idioma BCP-47 do atributo `lang` (sem ele, `en`).
+        #[arg(long)]
+        lang: Option<String>,
+        /// Onde gravar a página; diretórios ausentes são criados.
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -689,8 +725,18 @@ pub fn dispatch(cmd: SpecCmd) {
                 reason.as_deref(),
             );
         }
-        SpecCmd::SpecDoc { spec: slug } => {
-            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug });
+        SpecCmd::SpecDoc { spec: slug, published_url } => {
+            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug, published_url });
+        }
+        SpecCmd::DocPage { title, body, subtitle, kind, lang, out } => {
+            spec::doc_page::run(&spec::doc_page::DocPageOpts {
+                title,
+                body,
+                subtitle,
+                kind,
+                lang,
+                out,
+            });
         }
     }
 }

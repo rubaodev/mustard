@@ -45,3 +45,15 @@ An item leaves the list ONLY with a reason — a blank `--reason` is refused and
 `spec-draft` checks `{kind}/{slug}` out in the MAIN checkout, so the whole unit is authored ON it: `spec.md`, the waves, the ceremony and the code alike. There is no `.claude/spec/` carve-out; a spec write on a bare integration base is DENIED like any other write — the branch the gate minted is the only place this material exists. An old `{base}_{slug}` name still reads as its unit.
 
 The base the unit was cut from is RECORDED at the cut and fixes the `/git` PR target, never re-derived from the branch prefix. Same rule as a decision: what is settled once is written where it was settled, never reconstructed later from a name.
+
+## Pages
+
+**Every HTML page shown to the user — a plan, a report, a summary, a spec — goes through `doc-page`**, never a look of its own. Write only the fragment that goes inside `<main>`; the command brings the layout:
+
+```
+mustard-rt run doc-page --title "<title>" --body <fragment.html> --out <page.html> [--subtitle "<line>"] [--kind "<label>"] [--lang pt-BR]
+```
+
+The Mustard layout IS the project's design system: it beats any page-design guidance that asks for a fresh look per subject. Measured 2026-09-10: a page published in another project with a look of its own — the rule lived in one machine's memory, and memory does not travel.
+
+**Publishing is not an option.** When a publishing tool exists, the page is published on claude.ai, republished at the SAME address whenever it changes, and the link is handed to the user. The spec page records its address: `mustard-rt run spec-doc --spec {slug} --published-url <url>`. With no publishing tool, hand over the ways to open it that exist today.

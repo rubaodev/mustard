@@ -31,6 +31,7 @@ In doubt about API/version/pattern → search web for latest docs before impleme
 - Read each file once
 - Start from the anchors/context already handed to you above (`## REFERENCE`, `## TASK`) — do NOT re-derive or re-Grep what you were given; locate from them, then read
 - Max 3 build attempts, then STOP + report
+- Throwaway copy of the project (`D=$(mktemp -d)`): build it with `CARGO_TARGET_DIR="$HOME/.cache/mustard/scratch-target"` (the shared build — a private `target/` costs 2 to 5 GB per copy); when done, remove it with `mustard-rt run scratch-gc --path "$D"`, never with a recursive delete (the command guard denies it)
 - Return cap: follow pipeline-config.md Max Return limits (impl 40, explore 30, review 60, plan 80 lines). Return a condensed summary (files changed + non-obvious decisions + blockers) — not a re-grounding of what you read.
 
 ## CONVERSATION MATERIAL
@@ -72,6 +73,7 @@ Guards carregados via {guards_file} acima — respeite sem exceção.
 - Absolute paths, no cd
 - Read each file once (prior context cached — skip {guards_file}/guards/registry re-reads unless file changed on disk)
 - Max 3 build attempts, then STOP + report
+- Throwaway copy of the project (`D=$(mktemp -d)`): build it with `CARGO_TARGET_DIR="$HOME/.cache/mustard/scratch-target"` (the shared build — a private `target/` costs 2 to 5 GB per copy); when done, remove it with `mustard-rt run scratch-gc --path "$D"`, never with a recursive delete (the command guard denies it)
 - Return cap: follow pipeline-config.md Max Return limits. Focus on: files changed + non-obvious decisions + blockers only.
 
 ## ACCEPTANCE

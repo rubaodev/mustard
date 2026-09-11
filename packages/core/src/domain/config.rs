@@ -534,6 +534,19 @@ impl ProjectConfig {
             .collect()
     }
 
+    /// O idioma que o projeto DECLAROU (`lang`, depois `spec_lang`), ou `None`
+    /// quando nenhum dos dois está escrito ou se lê. Ao contrário de
+    /// [`ProjectConfig::i18n`], nunca cai no padrão: o padrão é a ausência de
+    /// uma escolha. Quem julga a resposta pelo idioma lê este, porque um
+    /// projeto em inglês sem idioma declarado não pode ser tratado como pt-BR.
+    #[must_use]
+    pub fn declared_locale(&self) -> Option<SupportedLocale> {
+        self.lang
+            .as_deref()
+            .or(self.spec_lang.as_deref())
+            .and_then(|s| s.parse::<SupportedLocale>().ok())
+    }
+
     /// Resolve the banner/drafter [`I18n`] (locale + tone) for this project.
     ///
     /// Locale precedence: `lang` then `spec_lang`; unparseable / absent ⇒
@@ -541,12 +554,7 @@ impl ProjectConfig {
     /// [`Tone::default`] (`didactic`). Reuses the `platform::i18n` primitives.
     #[must_use]
     pub fn i18n(&self) -> I18n {
-        let lang = self
-            .lang
-            .as_deref()
-            .or(self.spec_lang.as_deref())
-            .and_then(|s| s.parse::<SupportedLocale>().ok())
-            .unwrap_or_default();
+        let lang = self.declared_locale().unwrap_or_default();
         let tone = self.tone.as_deref().and_then(Tone::parse).unwrap_or_default();
         I18n::new(lang, tone)
     }

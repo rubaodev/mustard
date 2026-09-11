@@ -22,11 +22,21 @@
 //!
 //! ## Contrato
 //!
-//! Saída: `{ok, path, url, hash, changed}`. `changed` diz se o conteúdo mudou
+//! Saída: `{ok, path, url, hash, changed, publishedUrl}`. `changed` diz se o
+//! conteúdo mudou
 //! desde a última geração — o arquivo só é regravado quando muda, então rodar de
 //! novo não custa nada. Exit 0 quando monta; 1 numa recusa (nome inválido, spec
 //! inexistente, disco sem escrita). Fail-open no conteúdo: um arquivo ausente ou
 //! ilegível só apaga a seção que dependia dele.
+//!
+//! ## O endereço publicado
+//!
+//! Quem publica a página no claude.ai é o assistente, então o binário nunca
+//! fica sabendo o endereço sozinho (K-3). `--published-url <url>` o grava em
+//! `.claude/spec/<slug>/published-url`, uma linha, antes de montar a página; o
+//! relatório o devolve em `publishedUrl`, e [`published_url`] é o leitor único
+//! de quem precisa dele. O endereço fica fora da página: gravá-lo não muda o
+//! `hash`, e o gancho de fim de resposta não pede outra publicação por isso.
 //!
 //! ## A exceção à saída byte-estável, de propósito
 //!
@@ -58,6 +68,10 @@ use crate::shared::context::{approval_marker_path, CLARIFIED_MARKER};
 /// O arquivo que o comando escreve, dentro do diretório da spec.
 pub(crate) const DOC_FILE: &str = "resumo.html";
 
+/// O arquivo, dentro do diretório da spec, com o endereço em que o assistente
+/// publicou a página — uma linha, gravada por `spec-doc --published-url`.
+pub(crate) const PUBLISHED_URL_FILE: &str = "published-url";
+
 /// Os sete passos do processo, na ordem em que acontecem — cada um é a raiz
 /// das chaves `doc.step.<passo>.name` / `.desc` do catálogo.
 const STEPS: [&str; 7] = ["analyze", "plan", "approval", "execute", "review", "verify", "close"];
@@ -66,6 +80,9 @@ const STEPS: [&str; 7] = ["analyze", "plan", "approval", "execute", "review", "v
 pub struct SpecDocOpts {
     /// O slug da spec em `.claude/spec/`.
     pub spec: String,
+    /// O endereço em que o assistente publicou a página no claude.ai; gravado
+    /// em [`PUBLISHED_URL_FILE`] antes de a página ser montada.
+    pub published_url: Option<String>,
 }
 
 /// O relatório JSON. `path` é relativo ao repositório; `url` é o `file://`
@@ -79,20 +96,36 @@ pub(crate) struct SpecDocReport {
     pub(crate) hash: String,
     /// `true` quando o conteúdo mudou desde a última geração (e foi regravado).
     pub(crate) changed: bool,
+    /// O endereço publicado gravado para a unidade; `null` quando não há.
+    #[serde(rename = "publishedUrl")]
+    pub(crate) published_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) remedy: Option<String>,
 }
 
+/// Uma recusa: o código do erro e o que fazer.
+type Refusal = (&'static str, &'static str);
+
+const INVALID_SPEC: Refusal = (
+    "invalid_spec",
+    "pass the slug of a spec under .claude/spec/ — no path separators, no `..`",
+);
+const UNKNOWN_SPEC: Refusal = (
+    "unknown_spec",
+    "no spec directory of that name — build the page for the unit that is open",
+);
+
 impl SpecDocReport {
-    fn refused(error: &str, remedy: &str) -> Self {
+    fn refused((error, remedy): Refusal) -> Self {
         Self {
             ok: false,
             path: String::new(),
             url: String::new(),
             hash: String::new(),
             changed: false,
+            published_url: None,
             error: Some(error.to_string()),
             remedy: Some(remedy.to_string()),
         }
@@ -105,26 +138,20 @@ pub(crate) fn generate(root: &Path, spec: &str) -> SpecDocReport {
     let Ok(paths) =
         mustard_core::ClaudePaths::for_project(root).and_then(|p| p.for_spec(spec))
     else {
-        return SpecDocReport::refused(
-            "invalid_spec",
-            "pass the slug of a spec under .claude/spec/ — no path separators, no `..`",
-        );
+        return SpecDocReport::refused(INVALID_SPEC);
     };
     let dir = paths.dir().to_path_buf();
     if !dir.is_dir() {
-        return SpecDocReport::refused(
-            "unknown_spec",
-            "no spec directory of that name — build the page for the unit that is open",
-        );
+        return SpecDocReport::refused(UNKNOWN_SPEC);
     }
     let html = render(root, spec, &dir);
     let file = dir.join(DOC_FILE);
     let changed = std::fs::read_to_string(&file).ok().as_deref() != Some(html.as_str());
     if changed && mustard_core::io::fs::write_atomic(&file, html.as_bytes()).is_err() {
-        return SpecDocReport::refused(
+        return SpecDocReport::refused((
             "write_failed",
             "the page could not be written — check the spec directory is writable",
-        );
+        ));
     }
     SpecDocReport {
         ok: true,
@@ -132,15 +159,78 @@ pub(crate) fn generate(root: &Path, spec: &str) -> SpecDocReport {
         url: file_url(&file),
         hash: format!("{:016x}", fnv1a64(&[&html])),
         changed,
+        // O endereço fica fora da página: gravá-lo nunca muda o `hash`, senão o
+        // gancho de fim de resposta pediria outra publicação a cada gravação.
+        published_url: read_published(&dir),
         error: None,
         remedy: None,
     }
 }
 
+/// O endereço em que a página da unidade `slug` foi publicada, lido de
+/// `.claude/spec/<slug>/published-url`. `None` sem arquivo, com ele vazio ou
+/// com um nome que não é de spec. O leitor único de quem precisa do endereço:
+/// a retomada, a barra de status e o gancho de fim de resposta.
+#[must_use]
+pub fn published_url(root: &Path, slug: &str) -> Option<String> {
+    let paths =
+        mustard_core::ClaudePaths::for_project(root).and_then(|p| p.for_spec(slug)).ok()?;
+    read_published(paths.dir())
+}
+
+/// A primeira linha não vazia de [`PUBLISHED_URL_FILE`] em `dir`.
+fn read_published(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join(PUBLISHED_URL_FILE)).ok()?;
+    raw.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_string)
+}
+
+/// Grava `url` como o endereço publicado da unidade `slug`, numa linha. Recusa
+/// o que não é um link `http(s)://` inteiro e sem espaço — o arquivo guarda um
+/// endereço que alguém vai abrir — e uma spec que não existe. Recusa também
+/// caractere de controle: um ESC gravado vira sequência de terminal na barra de
+/// status e na retomada, que imprimem o endereço cru.
+fn record_published_url(root: &Path, slug: &str, url: &str) -> Result<(), Refusal> {
+    let url = url.trim();
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    if rest.is_none_or(str::is_empty)
+        || url.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err((
+            "invalid_published_url",
+            "pass the address the page was published at — one http(s):// link, no spaces",
+        ));
+    }
+    let Ok(paths) =
+        mustard_core::ClaudePaths::for_project(root).and_then(|p| p.for_spec(slug))
+    else {
+        return Err(INVALID_SPEC);
+    };
+    let dir = paths.dir();
+    if !dir.is_dir() {
+        return Err(UNKNOWN_SPEC);
+    }
+    mustard_core::io::fs::write_atomic(dir.join(PUBLISHED_URL_FILE), format!("{url}\n").as_bytes())
+        .map_err(|_| {
+            (
+                "write_failed",
+                "the address could not be written — check the spec directory is writable",
+            )
+        })
+}
+
 /// CLI entry — `mustard-rt run spec-doc`.
 pub fn run(opts: &SpecDocOpts) {
     let root = PathBuf::from(crate::shared::context::project_dir());
-    let report = generate(&root, &opts.spec);
+    // O endereço é gravado antes de a página ser montada: o relatório já sai
+    // com ele, e uma recusa não deixa nada gravado.
+    let recorded = opts
+        .published_url
+        .as_deref()
+        .map_or(Ok(()), |url| record_published_url(&root, &opts.spec, url));
+    let report = match recorded {
+        Ok(()) => generate(&root, &opts.spec),
+        Err(refusal) => SpecDocReport::refused(refusal),
+    };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -837,7 +927,7 @@ fn evidence_html(material: &Material, i: &I18n) -> Option<String> {
                 Some(line) => format!("{}:{line}", f.file),
                 None => f.file.clone(),
             };
-            vec![("", inline(&f.statement)), ("where", escape(&place))]
+            vec![("", inline(&f.statement)), ("where", breakable_path(&escape(&place)))]
         })
         .collect();
     Some(rich_table(&[i.render("doc.col.seen"), i.render("doc.col.where")], &rows))
@@ -1001,6 +1091,29 @@ fn files_list(files: &[String]) -> String {
     }
     html.push_str("</ul>");
     html
+}
+
+/// Um caminho ou endereço já escapado, com a barra como ÚNICO ponto de quebra:
+/// cada trecho (até a sua `/`, inclusive) vai num `<span class="nw">` que não
+/// quebra, e um `<wbr>` separa um trecho do seguinte. Só o `<wbr>` não bastava:
+/// com a célula em `white-space:normal`, o navegador também quebrava depois do
+/// hífen de um nome de pasta (`2026-09-10-pagina-…`). O `//` de um endereço fica
+/// inteiro, dentro do mesmo trecho.
+fn breakable_path(escaped: &str) -> String {
+    let mut out = String::with_capacity(escaped.len() * 2);
+    let mut segment = String::new();
+    let mut chars = escaped.chars().peekable();
+    while let Some(c) = chars.next() {
+        segment.push(c);
+        if c == '/' && chars.peek().is_some_and(|next| *next != '/') {
+            let _ = write!(out, "<span class=\"nw\">{segment}</span><wbr>");
+            segment.clear();
+        }
+    }
+    if !segment.is_empty() {
+        let _ = write!(out, "<span class=\"nw\">{segment}</span>");
+    }
+    out
 }
 
 /// Uma tabela no molde do layout: cabeçalho escapado e células com HTML já
@@ -1216,7 +1329,9 @@ mod tests {
             "<li><strong>RO-1.1</strong> — Conferir como o navegador abre um <code>file://</code> local.</li>",
             "<span class=\"label\">Critérios:</span> AC-1, AC-2",
             // Evidência com arquivo:linha; pendência aberta.
-            "<td class=\"where\">apps/rt/src/report/mod.rs:97</td>",
+            "<td class=\"where\"><span class=\"nw\">apps/</span><wbr><span class=\"nw\">rt/</span><wbr>\
+             <span class=\"nw\">src/</span><wbr><span class=\"nw\">report/</span><wbr>\
+             <span class=\"nw\">mod.rs:97</span></td>",
             "<td class=\"id\">P-1</td><td>Humanize: medir se o texto está claro</td>",
             // Próximo passo pelo estágio.
             "Para aprovar, digite <code>/mustard:spec</code> neste branch.",
@@ -1231,6 +1346,88 @@ mod tests {
         let again = generate(root, "demo");
         assert!(again.ok && !again.changed, "{again:?}");
         assert_eq!(again.hash, report.hash);
+    }
+
+    /// AC-11 — na tabela de Evidências, a coluna Onde quebra a linha só depois
+    /// de cada barra: cada trecho do caminho vai num `nowrap` inteiro (nem o
+    /// hífen de um nome de pasta quebra), o `<wbr>` fica só ENTRE trechos, e o
+    /// `//` de um endereço não se parte. E a regra `td.where` do layout deixou de
+    /// proibir a quebra de linha, senão os `<wbr>` não serviriam para nada.
+    #[test]
+    fn evidence_location_wraps_at_path_separators() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed(root);
+        let findings = r#"[
+    {"statement": "o caminho inteiro espremia a coluna", "file": "apps/rt/src/commands/spec/spec_doc.rs", "line": 863},
+    {"statement": "a página publicada", "file": "https://claude.ai/code/artifacts/demo"},
+    {"statement": "a pasta com hífens", "file": ".claude/spec/2026-09-10-pagina-spec-sempre-publicada/resumo.html"}
+  ]"#;
+        let material = MATERIAL.replace(
+            r#"[{"statement": "o Report já existe", "file": "apps/rt/src/report/mod.rs", "line": 97}]"#,
+            findings,
+        );
+        assert_ne!(material, MATERIAL, "the fixture must carry the long findings");
+        fs::write(root.join(".claude/spec/demo/spec-material.json"), material).unwrap();
+
+        assert!(generate(root, "demo").ok);
+        let html = fs::read_to_string(root.join(".claude/spec/demo").join(DOC_FILE)).unwrap();
+
+        const OPEN: &str = "<span class=\"nw\">";
+        for segment in [
+            "<span class=\"nw\">2026-09-10-pagina-spec-sempre-publicada/</span><wbr>",
+            "<span class=\"nw\">https://</span><wbr><span class=\"nw\">claude.ai/</span><wbr>",
+            "<span class=\"nw\">spec/</span><wbr><span class=\"nw\">spec_doc.rs:863</span></td>",
+        ] {
+            assert!(html.contains(segment), "missing {segment}:\n{html}");
+        }
+        let cells: Vec<&str> = html
+            .split("<td class=\"where\">")
+            .skip(1)
+            .filter_map(|rest| rest.split_once("</td>").map(|(cell, _)| cell))
+            .collect();
+        assert_eq!(cells.len(), 3, "{cells:?}");
+        for (cell, place) in cells.iter().zip([
+            "apps/rt/src/commands/spec/spec_doc.rs:863",
+            "https://claude.ai/code/artifacts/demo",
+            ".claude/spec/2026-09-10-pagina-spec-sempre-publicada/resumo.html",
+        ]) {
+            // O `<wbr>` só ENTRE trechos: cada pedaço entre dois `<wbr>` é
+            // exatamente um span `nw`, sem outra marca dentro.
+            let pieces: Vec<&str> = cell
+                .split("<wbr>")
+                .map(|piece| {
+                    piece
+                        .strip_prefix(OPEN)
+                        .and_then(|rest| rest.strip_suffix("</span>"))
+                        .filter(|text| !text.contains('<'))
+                        .unwrap_or_else(|| panic!("a piece outside a nowrap span: {piece:?} in {cell}"))
+                })
+                .collect();
+            // Os trechos, juntos, são o caminho inteiro: nada fica fora de um span.
+            assert_eq!(pieces.concat(), place, "{cell}");
+            // Cada trecho termina na sua barra, e barra só no fim (ou no `//`).
+            let (_, before_last) = pieces.split_last().expect("at least one piece");
+            for piece in before_last {
+                assert!(piece.ends_with('/'), "a break that is not after a slash: {cell}");
+            }
+            for piece in &pieces {
+                // O `//` sai primeiro: `https://` é um trecho só, inteiro.
+                let body = piece.replace("//", "");
+                let body = body.strip_suffix('/').unwrap_or(&body);
+                assert!(!body.contains('/'), "a slash without a break after it: {cell}");
+            }
+        }
+
+        let rule = |selector: &str| {
+            html.split_once(selector)
+                .and_then(|(_, tail)| tail.split_once('}'))
+                .map(|(decls, _)| decls.to_string())
+                .unwrap_or_else(|| panic!("layout without a {selector} rule"))
+        };
+        let place = rule("td.where{");
+        assert!(!place.contains("white-space:nowrap"), "td.where still forbids wrapping: {place}");
+        assert!(rule(".nw{").contains("white-space:nowrap"), "the .nw span must not wrap");
     }
 
     /// AC-10 — o `flow` do material vira a seção Antes e depois, entre os riscos
@@ -1313,5 +1510,75 @@ mod tests {
         assert_eq!(inline("crase `sem par"), "crase `sem par");
         assert_eq!(inline("- **RO-4.1** — ler `a**b`"), "- <strong>RO-4.1</strong> — ler <code>a**b</code>");
         assert_eq!(inline("um ** sozinho"), "um ** sozinho");
+    }
+
+    /// AC-3 — `--published-url` grava o endereço na pasta da spec, o relatório
+    /// o devolve em `publishedUrl` e a retomada o devolve no mesmo campo. Gravar
+    /// não muda a página — senão o gancho de fim de resposta pediria outra
+    /// publicação —, e o que não é link é recusado sem mexer no arquivo.
+    #[test]
+    fn published_url_is_recorded_and_resume_reports_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed(root);
+
+        let before = generate(root, "demo");
+        assert!(before.ok && before.published_url.is_none(), "{before:?}");
+        let json = serde_json::to_value(&before).unwrap();
+        assert!(json.get("publishedUrl").is_some_and(serde_json::Value::is_null), "null when none: {json}");
+
+        let url = "https://claude.ai/code/artifacts/demo-page";
+        record_published_url(root, "demo", &format!("  {url}\n")).expect("records the address");
+        let file = root.join(".claude/spec/demo").join(PUBLISHED_URL_FILE);
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{url}\n"));
+        assert_eq!(published_url(root, "demo").as_deref(), Some(url));
+
+        let after = generate(root, "demo");
+        assert_eq!(after.published_url.as_deref(), Some(url));
+        assert_eq!(serde_json::to_value(&after).unwrap()["publishedUrl"].as_str(), Some(url));
+        assert!(!after.changed && after.hash == before.hash, "recording the address never changes the page");
+
+        // A retomada lê o mesmo arquivo, pelo mesmo leitor.
+        let resume = crate::commands::pipeline::resume_bootstrap::bootstrap(root, "demo");
+        assert_eq!(serde_json::to_value(&resume).unwrap()["publishedUrl"].as_str(), Some(url));
+
+        // Recusas: o arquivo fica como estava.
+        for bad in ["claude.ai/code/artifacts/x", "https://", "https://a b", "ftp://x/y"] {
+            let refusal = record_published_url(root, "demo", bad).unwrap_err();
+            assert_eq!(refusal.0, "invalid_published_url", "{bad}");
+        }
+        assert_eq!(record_published_url(root, "nao-existe", url).unwrap_err().0, "unknown_spec");
+        assert_eq!(record_published_url(root, "../fora", url).unwrap_err().0, "invalid_spec");
+        assert_eq!(published_url(root, "demo").as_deref(), Some(url));
+    }
+
+    /// Caractere de controle no endereço é recusado com o mesmo erro, e nada é
+    /// gravado: nem o arquivo novo, nem por cima de um endereço já gravado. Um
+    /// ESC chegou a ser gravado ao vivo.
+    #[test]
+    fn published_url_refuses_control_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed(root);
+        let file = root.join(".claude/spec/demo").join(PUBLISHED_URL_FILE);
+        let bad = [
+            "https://claude.ai/code/artifacts/x\u{1b}[31m",
+            "https://claude.ai/\u{7}x",
+            "https://claude.ai/x\u{0}",
+            "https://claude.ai/x\u{7f}",
+        ];
+
+        for url in bad {
+            let refusal = record_published_url(root, "demo", url).unwrap_err();
+            assert_eq!(refusal.0, "invalid_published_url", "{url:?}");
+        }
+        assert!(!file.exists(), "a refused address writes nothing");
+
+        let good = "https://claude.ai/code/artifacts/demo-page";
+        record_published_url(root, "demo", good).expect("records the address");
+        for url in bad {
+            assert!(record_published_url(root, "demo", url).is_err(), "{url:?}");
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{good}\n"), "the recorded address stays");
     }
 }

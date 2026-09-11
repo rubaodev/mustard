@@ -856,3 +856,72 @@ fn runtime_whitelist_stays_sorted_live_and_not_redundant() {
         );
     }
 }
+
+/// AC-7 — o revisor e o agente de onda aprendem, pela própria instrução, a
+/// compilar a cópia descartável na compilação compartilhada e a apagá-la pela
+/// porta `scratch-gc --path`, nunca pela exclusão recursiva que a trava nega.
+///
+/// O caminho escrito na prosa é conferido contra o do código
+/// ([`shared_target_dir`](mustard_rt::commands::maint::scratch_gc::shared_target_dir)):
+/// se um mudar sem o outro, as cópias passam a compilar num lugar que a porta
+/// não mede nem esvazia. O roteiro do agente de onda é conferido nos DOIS
+/// blocos — o de despacho e o de nova tentativa —, porque o agente que refaz
+/// uma onda também compila.
+#[test]
+fn review_agent_teaches_shared_target_and_scratch_gc() {
+    const SHARED_TARGET: &str = "CARGO_TARGET_DIR=\"$HOME/.cache/mustard/scratch-target\"";
+    const CLEANUP: &str = "mustard-rt run scratch-gc --path \"$D\"";
+
+    let code = mustard_rt::commands::maint::scratch_gc::shared_target_dir()
+        .expect("the home directory resolves in the test environment");
+    assert!(
+        code.ends_with(".cache/mustard/scratch-target"),
+        "the prose names $HOME/.cache/mustard/scratch-target; the code builds {}",
+        code.display()
+    );
+
+    let root = repo_root();
+    let review = read_lossy(&root.join("plugin/agents/mustard-review.md"));
+    assert!(review.contains(SHARED_TARGET), "the reviewer must build scratch copies in the shared target");
+    assert!(review.contains(CLEANUP), "the reviewer must remove its scratch copy through scratch-gc --path");
+
+    let template = read_lossy(&root.join("apps/rt/src/commands/agent/agent_prompt_template.md"));
+    for block in ["dispatch", "retry"] {
+        let open = format!("<!-- TEMPLATE: {block} -->");
+        let close = format!("<!-- /TEMPLATE: {block} -->");
+        let body = template
+            .split_once(&open)
+            .and_then(|(_, rest)| rest.split_once(&close))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("the {block} block is missing from the wave-agent template"));
+        assert!(body.contains(SHARED_TARGET), "the {block} block must teach the shared target");
+        assert!(body.contains(CLEANUP), "the {block} block must teach scratch-gc --path");
+    }
+}
+
+/// AC-9 — a regra injetada do material manda todo HTML mostrado ao usuário
+/// passar pelo `doc-page` e ser publicado no claude.ai, e a página da spec
+/// gravar o endereço pela porta `spec-doc --published-url`.
+///
+/// Lida do template que o binário embute e conferida pelo mesmo extrator da
+/// catraca: a chamada tem de ser uma invocação de verdade, não o nome solto na
+/// prosa. Confere o fato, nunca a frase — prosa se reescreve.
+#[test]
+fn material_rule_sends_every_page_through_doc_page() {
+    let material = read_lossy(&repo_root().join("packages/core/templates/mustard/material.md"));
+    let invocations = extract_run_invocations(&material);
+    assert!(
+        invocations.iter().any(|inv| inv.name == "doc-page"),
+        "the material rule never tells the reader to run `mustard-rt run doc-page`"
+    );
+    assert!(
+        material.contains("claude.ai"),
+        "the material rule never says the page is published on claude.ai"
+    );
+    assert!(
+        invocations
+            .iter()
+            .any(|inv| inv.name == "spec-doc" && inv.flags.iter().any(|f| f == "published-url")),
+        "the material rule never tells the reader to record the address with `spec-doc --published-url`"
+    );
+}

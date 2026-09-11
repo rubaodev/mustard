@@ -582,13 +582,14 @@ impl Registry {
             },
             // `spec_doc_present` — a entrega do resumo da spec. No `Stop` da
             // sessão principal, com uma unidade aberta, remonta o `resumo.html`
-            // e, só quando ele mudou desde a última entrega, mostra ao usuário
-            // as formas de abrir (`systemMessage`); na espera de aprovação, com
-            // tela local e fora de SSH, abre o navegador uma vez por versão
-            // (`MUSTARD_DOC_OPEN=off` desliga). Um `Check` que só devolve
-            // `Allow`/`Inject` — nunca bloqueia. Registrado depois das três
+            // e, só quando ele mudou desde a última entrega, barra o fim com
+            // uma ordem ao assistente: publicar a página no claude.ai, entregar
+            // o link e gravar o endereço. Solta na continuação que o bloqueio
+            // pediu (`stop_hook_active`). Na espera de aprovação, com tela
+            // local e fora de SSH, abre o navegador uma vez por versão
+            // (`MUSTARD_DOC_OPEN=off` desliga). Registrado depois das três
             // travas do `Stop`, sem reordená-las: um bloqueio delas vence o
-            // `fold` e esta mensagem espera a próxima mudança.
+            // `fold` e esta ordem espera a próxima mudança.
             Module {
                 id: "spec_doc_present",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
@@ -600,8 +601,9 @@ impl Registry {
             // resposta contra a regra de tom, guarda os defeitos para a mensagem
             // seguinte levar ao assistente e registra `assistant.clarity` só com
             // as contagens. Quando reprova, devolve a nota ao usuário (`Inject`,
-            // que no `Stop` vira `systemMessage`); o `fold` junta os `Inject`, e
-            // a nota sai na mesma mensagem do link do documento. Nunca bloqueia.
+            // que no `Stop` vira `systemMessage`); o `fold` junta os `Inject`.
+            // Num fim barrado pela ordem de publicar do `spec_doc_present`, a
+            // nota não sai. Nunca bloqueia.
             // Registrado por último no `Stop`, sem reordenar os irmãos.
             Module {
                 id: "clarity_check",
