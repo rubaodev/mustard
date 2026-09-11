@@ -9,8 +9,9 @@
 //! defeito: a pasta sumia com `"dry_run": false`); `--path` válido apaga e sai
 //! com 0.
 //!
-//! O temp do binário é um temp falso (`TMPDIR`), para nenhuma pasta real da
-//! máquina entrar no alcance do teste.
+//! O temp do binário é um temp falso, para nenhuma pasta real da máquina entrar
+//! no alcance do teste. `std::env::temp_dir()` lê `TMPDIR` no Unix e `TMP`/
+//! `TEMP` no Windows, então as três apontam para ele.
 
 use std::fs;
 use std::path::Path;
@@ -30,6 +31,8 @@ fn scratch_gc(cwd: &Path, temp: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(cwd)
         .env("TMPDIR", temp)
+        .env("TMP", &temp)
+        .env("TEMP", &temp)
         .env("MUSTARD_SESSION_ID", "scratch-gc-exit-test")
         .output()
         .unwrap()
@@ -66,6 +69,8 @@ fn scratch_gc_path_exit_codes() {
         .env("TMPDIR", &temp)
         .env("HOME", &temp)
         .env("USERPROFILE", &temp)
+        .env("TMP", &temp)
+        .env("TEMP", &temp)
         .env("MUSTARD_SESSION_ID", "scratch-gc-exit-test")
         .output()
         .unwrap();
