@@ -35,8 +35,9 @@
 //!
 //! The three injecting concerns compose into a SINGLE [`Verdict::Inject`]:
 //! injectables first, banner next, the writing and language rules last
-//! (followed by the previous reply's clarity defects, when it failed). The dispatcher fold would join
-//! separate Injects too, but in registry order; this is the only `Check` that
+//! (followed by the previous reply's clarity defects, when it failed). The
+//! dispatcher fold would join separate Injects too, but in registry order;
+//! this is the only `Check` that
 //! injects on this event, so composing here keeps the order stated in one
 //! place. The composed text is ONE hook response under ONE 10,000-character
 //! ceiling.
@@ -269,14 +270,21 @@ fn tone_rule(root: &Path) -> Option<String> {
 /// regra falava de idioma (E-4). O usuário pediu que valesse para todo projeto,
 /// não só para quem declarou o tom didático. `None` sem `mustard.json`: num
 /// projeto sem o Mustard os ganchos ficam calados.
+///
+/// O idioma só é nomeado quando o projeto o DECLAROU: o padrão resolvido é
+/// pt-BR, e dizer "o deste projeto é pt-BR" a um projeto em inglês que nunca
+/// declarou idioma mandaria responder na língua errada. Sem declaração, a regra
+/// manda seguir o idioma do usuário sem nomear nenhum.
 fn language_rule(root: &Path) -> Option<String> {
     ProjectConfig::exists(root).then(|| {
-        let lang = ProjectConfig::load(root).i18n().lang;
+        let named = match ProjectConfig::load(root).declared_locale() {
+            Some(lang) => format!(" — this project's is {lang} (`mustard.json` `lang`/`specLang`) —"),
+            None => ",".to_string(),
+        };
         format!(
-            "[Mustard] Answer the user in the language they write in — this project's is {lang} \
-             (`mustard.json` `lang`/`specLang`) — even after reading skills, references or \
-             reports written in another language; code, commits and subagent prompts keep their \
-             own conventions."
+            "[Mustard] Answer the user in the language they write in{named} even after reading \
+             skills, references or reports written in another language; code, commits and \
+             subagent prompts keep their own conventions."
         )
     })
 }
@@ -599,6 +607,71 @@ mod tests {
             panic!("an ordinary prompt must carry the rule, got {verdict:?}");
         };
         assert!(context.contains("this project's is en-US"), "{context}");
+    }
+
+    /// AC-13 — sem `lang` nem `specLang` no `mustard.json`, o idioma nunca é
+    /// suposto: a regra manda seguir o idioma do usuário sem nomear idioma de
+    /// projeto, e uma resposta em inglês não ganha defeito de idioma — nem
+    /// fora do tom didático, nem nele. Com pt-BR declarado, o defeito continua.
+    #[test]
+    fn undeclared_language_is_never_assumed() {
+        use crate::hooks::task::clarity_check::ClarityCheck;
+
+        let english = "The wave is done and the tests pass.\n\
+            The check now compares the language of the reply with the language of the project.\n\
+            It counts the common words of each language.\n\
+            A short reply is not judged at all.";
+        let stop = HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            session_id: Some("s1".to_string()),
+            raw: serde_json::json!({ "last_assistant_message": english }),
+            ..HookInput::default()
+        };
+        let project = |config: &str| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
+            let c = Ctx {
+                project_dir: dir.path().to_string_lossy().to_string(),
+                trigger: Some(Trigger::UserPromptSubmit),
+                workspace_root: None,
+                inject_only: None,
+            };
+            (dir, c)
+        };
+        let context_of = |verdict: Verdict| match verdict {
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        };
+
+        for config in ["{}", r#"{"tone":"didactic"}"#] {
+            let (_dir, c) = project(config);
+            let rule = context_of(
+                PromptSubmitInject
+                    .evaluate(&prompt_input_with_session("uma mensagem comum", "s1"), &c)
+                    .expect("the gate never errors"),
+            );
+            assert!(rule.contains("in the language they write in"), "{config}: {rule}");
+            for named in ["this project's is", "pt-BR", "en-US"] {
+                assert!(!rule.contains(named), "{config}: an undeclared language is named ({named}): {rule}");
+            }
+
+            let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
+            let note = context_of(ClarityCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
+            let next = context_of(
+                PromptSubmitInject
+                    .evaluate(&prompt_input_with_session("e agora?", "s1"), &c)
+                    .expect("the gate never errors"),
+            );
+            for text in [&note, &next] {
+                assert!(!text.contains("resposta em"), "{config}: no language verdict: {text}");
+            }
+        }
+
+        // Com pt-BR declarado, a mesma resposta continua apontada.
+        let (_dir, c) = project(r#"{"specLang":"pt-BR"}"#);
+        let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
+        let note = context_of(ClarityCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
+        assert!(note.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{note}");
     }
 
     /// O veredito de um prompt que não recebe injetável nem aviso num projeto

@@ -11,8 +11,9 @@
 //! ## Os fatos, todos necessários
 //!
 //! 1. É o `Stop` da sessão principal — nunca o de um subagente.
-//! 2. O projeto tem `mustard.json`. Nele o idioma da resposta é medido sempre,
-//!    qualquer que seja o tom. As quatro medições do tom didático só rodam
+//! 2. O projeto tem `mustard.json`. Nele o idioma da resposta é medido sempre
+//!    que o projeto DECLAROU um (`lang`/`specLang`), qualquer que seja o tom;
+//!    sem idioma declarado não há veredito de idioma. As quatro medições do tom didático só rodam
 //!    quando o projeto DECLAROU `tone: didactic` — o campo cru, pela mesma
 //!    leitura da regra ([`declares_didactic`]); o padrão resolvido não é uma
 //!    escolha.
@@ -118,16 +119,19 @@ impl Check for ClarityCheck {
         };
 
         let session = input.session_id.as_deref();
-        // O idioma do projeto serve duas vezes: é o que a prosa precisa ter e
-        // é o dos defeitos.
-        let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+        let config = mustard_core::ProjectConfig::load(root);
+        // Os defeitos saem no idioma resolvido; o idioma que a prosa precisa
+        // ter é só o DECLARADO. O padrão resolvido é pt-BR, e um projeto em
+        // inglês que nunca declarou idioma teria toda resposta apontada.
+        let lang = config.i18n().lang;
+        let expected = config.declared_locale();
         if !declares_didactic(root) {
-            return Ok(language_only(root, session, message, lang));
+            return Ok(language_only(root, session, message, expected, lang));
         }
 
         let record_path = record_path(root, session);
         let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
-        let report = measure(message, &invented_terms(root, &project_dir), &record.explained, lang);
+        let report = measure(message, &invented_terms(root, &project_dir), &record.explained, expected);
         let defects = report.defects(lang);
 
         for term in &report.explained {
@@ -155,9 +159,17 @@ impl Check for ClarityCheck {
 /// assistente. O registro só é gravado quando há defeito a guardar ou um
 /// defeito antigo a apagar — a reescrita no idioma certo, no mesmo turno,
 /// limpa o anterior. Nenhum evento é registrado: `assistant.clarity` traz as
-/// contagens da medição didática inteira, que aqui não rodou.
-fn language_only(root: &Path, session: Option<&str>, message: &str, lang: Locale) -> Verdict {
-    let defects: Vec<String> = measure_language(message, lang)
+/// contagens da medição didática inteira, que aqui não rodou. Sem idioma
+/// declarado (`expected` vazio) não há veredito: nada é apontado.
+fn language_only(
+    root: &Path,
+    session: Option<&str>,
+    message: &str,
+    expected: Option<Locale>,
+    lang: Locale,
+) -> Verdict {
+    let defects: Vec<String> = expected
+        .and_then(|expected| measure_language(message, expected))
         .map(|wrong| wrong.defect(lang))
         .into_iter()
         .collect();

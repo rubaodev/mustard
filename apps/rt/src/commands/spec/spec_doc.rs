@@ -186,11 +186,15 @@ fn read_published(dir: &Path) -> Option<String> {
 
 /// Grava `url` como o endereço publicado da unidade `slug`, numa linha. Recusa
 /// o que não é um link `http(s)://` inteiro e sem espaço — o arquivo guarda um
-/// endereço que alguém vai abrir — e uma spec que não existe.
+/// endereço que alguém vai abrir — e uma spec que não existe. Recusa também
+/// caractere de controle: um ESC gravado vira sequência de terminal na barra de
+/// status e na retomada, que imprimem o endereço cru.
 fn record_published_url(root: &Path, slug: &str, url: &str) -> Result<(), Refusal> {
     let url = url.trim();
     let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
-    if rest.is_none_or(str::is_empty) || url.chars().any(char::is_whitespace) {
+    if rest.is_none_or(str::is_empty)
+        || url.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err((
             "invalid_published_url",
             "pass the address the page was published at — one http(s):// link, no spaces",
@@ -1546,5 +1550,35 @@ mod tests {
         assert_eq!(record_published_url(root, "nao-existe", url).unwrap_err().0, "unknown_spec");
         assert_eq!(record_published_url(root, "../fora", url).unwrap_err().0, "invalid_spec");
         assert_eq!(published_url(root, "demo").as_deref(), Some(url));
+    }
+
+    /// Caractere de controle no endereço é recusado com o mesmo erro, e nada é
+    /// gravado: nem o arquivo novo, nem por cima de um endereço já gravado. Um
+    /// ESC chegou a ser gravado ao vivo.
+    #[test]
+    fn published_url_refuses_control_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed(root);
+        let file = root.join(".claude/spec/demo").join(PUBLISHED_URL_FILE);
+        let bad = [
+            "https://claude.ai/code/artifacts/x\u{1b}[31m",
+            "https://claude.ai/\u{7}x",
+            "https://claude.ai/x\u{0}",
+            "https://claude.ai/x\u{7f}",
+        ];
+
+        for url in bad {
+            let refusal = record_published_url(root, "demo", url).unwrap_err();
+            assert_eq!(refusal.0, "invalid_published_url", "{url:?}");
+        }
+        assert!(!file.exists(), "a refused address writes nothing");
+
+        let good = "https://claude.ai/code/artifacts/demo-page";
+        record_published_url(root, "demo", good).expect("records the address");
+        for url in bad {
+            assert!(record_published_url(root, "demo", url).is_err(), "{url:?}");
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{good}\n"), "the recorded address stays");
     }
 }
